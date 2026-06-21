@@ -277,6 +277,19 @@ def test_cost_redaction_helper():
     assert out["children_detail"][0] == {"child_sku": "C", "qty_before": 10, "qty_after": 7}
 
 
+def test_field_change_formatting():
+    from ui.components.activity import _fields_changed_summary
+    # pieces render as clean integers (10 -> 2, not 10 -> 2.0)
+    assert _fields_changed_summary({"pieces": {"old": 10, "new": 2.0}}) == "Pieces: 10 → 2"
+    # quantity trims trailing zeros
+    assert _fields_changed_summary({"quantity": {"old": 5.0, "new": 3.5}}) == "Quantity: 5 → 3.5"
+    # money is currency-formatted
+    assert _fields_changed_summary({"total": {"old": 100, "new": 120}}, "USD") == "Total: $100.00 → $120.00"
+    # dates render as dates, not datetimes
+    assert _fields_changed_summary({"due_date": {"old": "2026-01-01T00:00:00+00:00", "new": "2026-02-01T00:00:00+00:00"}}) \
+        == "Due date: 2026-01-01 → 2026-02-01"
+
+
 def test_fmt_qty_trims_decimals():
     assert fmt_qty(8.0) == "8"
     assert fmt_qty(7.50) == "7.5"

@@ -239,7 +239,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed)
+        summary = _fields_changed_summary(fields_changed, currency)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -387,16 +387,38 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
     if event_type == "doc.updated":
-        return _fields_changed_summary(fields_changed)
+        return _fields_changed_summary(fields_changed, currency)
     if event_type == "doc.shared":
         return doc_ref or ""
     return ""
 
 
-def _fields_changed_summary(fields_changed: dict) -> str:
+# Field-type buckets for formatting change-summary values (H11).
+_QTY_FIELD_KEYS = frozenset({"quantity", "pieces", "reserved_quantity", "weight"})
+_MONEY_FIELD_KEYS = frozenset({"cost_total", "cost_price", "total", "subtotal", "tax_total",
+                               "amount", "amount_outstanding", "price", "unit_price"})
+_DATE_FIELD_KEYS = frozenset({"due_date", "issue_date", "expiry_date", "date", "payment_date"})
+
+
+def _fmt_field_value(key: str, value, currency: str | None) -> str:
+    """Format a single changed-field value by its field type: integer/clean pieces & qty,
+    currency money, ISO dates as dates; anything else falls back to capped text."""
+    if value is None:
+        return "none"
+    if key in _QTY_FIELD_KEYS:
+        return fmt_qty(value)
+    if key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total"):
+        return fmt_price(value, key, currency)
+    if key in _DATE_FIELD_KEYS or key.endswith("_date"):
+        return str(value)[:10]
+    s = str(value)
+    return s[:40] + "…" if len(s) > 40 else s
+
+
+def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
-    Scalar changes: "field: old → new" (values capped at 40 chars).
+    Scalar changes: "field: old → new", each value formatted by its field type.
     Complex changes (list/dict): "Lines edited", "Contact updated", etc.
     Unknown complex: "field updated".
     """
@@ -506,8 +528,8 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         if old == new:
             continue
 
-        old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if not _empty(old) else "none"
-        new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if not _empty(new) else "none"
+        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else "none"
+        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else "none"
         label = _FIELD_LABELS.get(k) or k.replace("_", " ").title()
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
