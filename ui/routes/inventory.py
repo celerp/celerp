@@ -3577,7 +3577,7 @@ function celerpPrintLabel(entityId, templateId) {
         if len(children) < 1:
             return Div(Span(t("inv.enter_at_least_one_split_quantity"), cls="flash flash--error"), id="item-action-error")
         try:
-            await api.split_item(token, entity_id, children)
+            await api.split_item(token, entity_id, {"children": children})
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         redirect = f"/inventory?q={quote(orig_sku)}" if orig_sku else f"/inventory/{entity_id}"
@@ -3637,7 +3637,7 @@ function celerpPrintLabel(entityId, templateId) {
                         pass
             children.append(child)
         try:
-            await api.split_item(token, entity_id, children)
+            await api.split_item(token, entity_id, {"children": children})
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         child_skus = [c["sku"] for c in children]
@@ -3714,7 +3714,7 @@ function celerpPrintLabel(entityId, templateId) {
                 _apply_complement(child, sell_by, complement, _default_umap)
             children.append(child)
         try:
-            await api.split_item(token, entity_id, children)
+            await api.split_item(token, entity_id, {"children": children})
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         return _split_redirect(orig_sku, [c["sku"] for c in children])
