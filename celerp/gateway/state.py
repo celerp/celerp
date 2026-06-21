@@ -93,11 +93,28 @@ def relay_session_headers() -> dict[str, str]:
     }
 
 
-def relay_subscribe_url(anchor: str = "") -> str:
-    """Return the celerp.com subscribe URL with the current instance_id pre-filled."""
-    from celerp.config import settings
-    iid = _instance_id or settings.gateway_instance_id
-    base = "https://celerp.com/subscribe"
-    url = f"{base}?instance_id={iid}" if iid else base
+SUBSCRIBE_UTM = "utm_source=app&utm_medium=inapp"
+
+
+def build_subscribe_url(instance_id: str = "", anchor: str = "", *, topup: bool = False, extra: str = "") -> str:
+    """Single source of truth for the in-app celerp.com/subscribe handoff URL.
+
+    Keeps the format identical everywhere: instance_id first (so attribution tags never
+    bury it and the link stays easy to assert on), then UTM tags, then any caller
+    ``extra`` query params, then an optional ``#anchor``. ``topup=True`` selects the
+    /subscribe/topup variant. Callers resolve the instance id however they need (the
+    gateway id, ``ensure_instance_id()``, or a value from a payload).
+    """
+    base = "https://celerp.com/subscribe/topup" if topup else "https://celerp.com/subscribe"
+    params = ([f"instance_id={instance_id}"] if instance_id else []) + [SUBSCRIBE_UTM]
+    if extra:
+        params.append(extra.lstrip("?&"))
+    url = f"{base}?{'&'.join(params)}"
     return f"{url}#{anchor}" if anchor else url
+
+
+def relay_subscribe_url(anchor: str = "") -> str:
+    """Subscribe URL pre-filled with the connected gateway instance id."""
+    from celerp.config import settings
+    return build_subscribe_url(_instance_id or settings.gateway_instance_id, anchor)
 

@@ -227,7 +227,10 @@ def test_forgot_password_cli_page_has_subscribe_link():
     from ui.routes.auth import _forgot_password_cli
     from fasthtml.common import to_xml
     html = to_xml(_forgot_password_cli())
-    assert "celerp.com/subscribe?instance_id=" in html
+    # Order-independent: the link must point at /subscribe and carry the instance_id,
+    # regardless of where attribution/UTM params sit in the query string.
+    assert "celerp.com/subscribe?" in html
+    assert "instance_id=" in html
 
 
 def test_forgot_password_email_form_exists():
