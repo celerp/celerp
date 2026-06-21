@@ -2,7 +2,7 @@
   "name": "property_rental",
   "display_name": "Property Rental",
   "hidden": true,
-  "hidden_reason": "Rental units are persistent assets with leases and occupancy over time, not goods-inventory items sold to zero. Honestly supporting this needs a dedicated rental module (Unit/Lease entities on the shared event store), not the inventory model. See context/2026-0621-property-rental-vertical-analysis.md. Re-enable when that module exists.",
+  "hidden_reason": "A lease is a recurring billing agreement over a term, which today's recurring-invoice schedule almost models but lacks (no term end-date, asset link, or deposit), and occupancy/rent-roll reporting doesn't exist yet. Not a new module - a small shared 'Agreement' extension + derived occupancy reports. See context/2026-0621-saas-property-verticals-market-readiness.md. Re-enable when that v1 lands.",
   "license": "MIT",
   "categories": [
     "residential_unit",
