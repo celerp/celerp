@@ -1017,10 +1017,35 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
     return {"updated": len(event_ids), "event_ids": event_ids}
 
 
+async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:
+    """item.transferred payload with from/to ids + resolved names for 'from -> to' history.
+
+    The source location is the item's current ``location_id`` (read before the event lands).
+    ``loc_map`` (id -> name) can be passed to avoid re-querying in a bulk loop.
+    """
+    from celerp.models.company import Location
+    if loc_map is None:
+        loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+        loc_map = {str(r.id): r.name for r in loc_rows}
+    proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    raw_from = proj.state.get("location_id") if proj else None
+    from_id = str(raw_from) if raw_from else None
+    to_id = str(to_location_id)
+    return {
+        "to_location_id": to_id,
+        "to_location_name": loc_map.get(to_id),
+        "from_location_id": from_id,
+        "from_location_name": loc_map.get(from_id) if from_id else None,
+    }
+
+
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    from celerp.models.company import Location
+    loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+    loc_map = {str(r.id): r.name for r in loc_rows}
     event_ids = []
     for entity_id in payload.entity_ids:
         entry = await emit_event(
@@ -1029,7 +1054,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
             entity_id=entity_id,
             entity_type="item",
             event_type="item.transferred",
-            data={"to_location_id": str(payload.to_location_id)},
+            data=await _build_transfer_data(session, company_id, entity_id, payload.to_location_id, loc_map),
             actor_id=user.id,
             location_id=payload.to_location_id,
             source="api",
@@ -1102,7 +1127,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.transferred",
-        data={"to_location_id": str(payload.to_location_id)},
+        data=await _build_transfer_data(session, company_id, entity_id, payload.to_location_id),
         actor_id=user.id,
         location_id=payload.to_location_id,
         source="api",

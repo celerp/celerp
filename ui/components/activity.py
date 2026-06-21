@@ -248,8 +248,11 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if new_qty is not None:
             return f"Qty → {fmt_qty(new_qty)}"
     if event_type == "item.transferred":
-        loc = data.get("location_name") or data.get("location_id", "")
-        return f"→ {loc}" if loc else ""
+        to = data.get("to_location_name") or data.get("to_location_id") or data.get("location_name") or data.get("location_id") or ""
+        frm = data.get("from_location_name") or data.get("from_location_id") or ""
+        if frm and to:
+            return f"{frm} → {to}"
+        return f"→ {to}" if to else ""
     if event_type == "item.expired":
         reason = data.get("reason", "")
         return str(reason)[:60] if reason else ""

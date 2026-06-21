@@ -65,6 +65,11 @@ class ItemStatusSet(BaseModel):
 
 class ItemTransferred(BaseModel):
     to_location_id: str
+    # Source location + resolved names for "from -> to" history (optional: pre-existing
+    # events and imports may lack them, and the renderer degrades gracefully).
+    from_location_id: str | None = None
+    from_location_name: str | None = None
+    to_location_name: str | None = None
 
 
 class ItemQuantityAdjusted(BaseModel):

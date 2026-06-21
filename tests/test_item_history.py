@@ -187,6 +187,41 @@ async def test_merge_denormalizes_skus(client):
     assert src["data"]["original_qty"] is not None
 
 
+@pytest.mark.asyncio
+async def test_transfer_records_from_to_with_names(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "Vault", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "Showroom", "type": "warehouse"}, headers=h)).json()
+    item_id = (await client.post("/items", json={"sku": "TR-1", "name": "x", "quantity": 1.0,
+                                                 "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    await client.post(f"/items/{item_id}/transfer", json={"to_location_id": loc2["id"]}, headers=h)
+
+    ev = [e for e in await _events(client, h, item_id) if e["event_type"] == "item.transferred"][0]
+    d = ev["data"]
+    assert d["from_location_id"] == loc1["id"] and d["from_location_name"] == "Vault"
+    assert d["to_location_id"] == loc2["id"] and d["to_location_name"] == "Showroom"
+    # Renders as "from -> to".
+    assert detail_from_entry(d, "item.transferred") == "Vault → Showroom"
+
+
+@pytest.mark.asyncio
+async def test_bulk_transfer_records_from_to(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "B", "type": "warehouse"}, headers=h)).json()
+    i1 = (await client.post("/items", json={"sku": "BT1", "name": "x", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    await client.post("/items/bulk/transfer", json={"entity_ids": [i1], "to_location_id": loc2["id"]}, headers=h)
+    ev = [e for e in await _events(client, h, i1) if e["event_type"] == "item.transferred"][0]
+    assert ev["data"]["from_location_name"] == "A" and ev["data"]["to_location_name"] == "B"
+
+
+def test_transfer_detail_degrades_gracefully():
+    # No source (e.g. item had no location) -> "-> to".
+    assert detail_from_entry({"to_location_name": "B"}, "item.transferred") == "→ B"
+    # Legacy event (only raw to_location_id) still renders something.
+    assert detail_from_entry({"to_location_id": "abc"}, "item.transferred") == "→ abc"
+
+
 # --------------------------------------------------------------------------- #
 # Render: helpers (pure, no server)
 # --------------------------------------------------------------------------- #
