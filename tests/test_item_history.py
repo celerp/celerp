@@ -226,6 +226,27 @@ def test_transfer_detail_degrades_gracefully():
 # Render: helpers (pure, no server)
 # --------------------------------------------------------------------------- #
 
+def test_cost_redaction_helper():
+    from celerp.services.activity_redaction import redact_event_costs, can_see_costs
+    assert can_see_costs("manager") and can_see_costs("admin") and can_see_costs("owner")
+    assert not can_see_costs("operator") and not can_see_costs("viewer") and not can_see_costs(None)
+    # cost pricing → amount stripped, marker set
+    assert redact_event_costs("item.pricing.set", {"price_type": "cost_total", "new_price": 5.0}) \
+        == {"price_type": "cost_total", "cost_redacted": True}
+    # sell price → untouched
+    assert redact_event_costs("item.pricing.set", {"price_type": "retail_price", "new_price": 9.0}) \
+        == {"price_type": "retail_price", "new_price": 9.0}
+    # fields_changed cost stripped, other fields kept
+    assert redact_event_costs("item.updated", {"fields_changed": {"cost_total": {"old": 1, "new": 2}, "name": {"old": "a", "new": "b"}}}) \
+        == {"fields_changed": {"name": {"old": "a", "new": "b"}}}
+    # transform cost totals removed, non-cost kept
+    assert redact_event_costs("item.transform", {"child_sku": "C", "parent_cost_total": 10, "child_cost_total": 9, "qty_before": 5}) \
+        == {"child_sku": "C", "qty_before": 5}
+    # split children_detail cost deltas removed
+    out = redact_event_costs("item.split", {"parent_sku": "M", "children_detail": [{"child_sku": "C", "qty_before": 10, "qty_after": 7, "cost_before": 100, "cost_after": 70}]})
+    assert out["children_detail"][0] == {"child_sku": "C", "qty_before": 10, "qty_after": 7}
+
+
 def test_fmt_qty_trims_decimals():
     assert fmt_qty(8.0) == "8"
     assert fmt_qty(7.50) == "7.5"

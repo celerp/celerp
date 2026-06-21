@@ -1214,3 +1214,41 @@ class TestSettingsRoleGuard:
         request.cookies = {"celerp_token": _make_jwt("manager")}
         assert _check_role(request, "manager") is None
         assert _check_role(request, "admin") is not None
+
+
+# ── Activity/ledger cost redaction (H3) ───────────────────────────────────────
+
+class TestActivityCostRedaction:
+    """Cost amounts must never ship to under-manager roles via the ledger/activity feed."""
+
+    @pytest.mark.asyncio
+    async def test_manager_sees_cost_in_ledger(self, client, session):
+        ctx = await _setup(client, session)
+        r = await client.get("/ledger", params={"entity_id": ctx["item_id"]}, headers=ctx["manager_h"])
+        assert r.status_code == 200, r.text
+        cost = [e for e in r.json()["items"]
+                if e["event_type"] == "item.pricing.set" and e["data"].get("price_type") in ("cost_total", "cost_price")]
+        assert cost and any("new_price" in e["data"] for e in cost), "manager must see cost amounts"
+
+    @pytest.mark.asyncio
+    async def test_operator_cost_redacted_in_ledger(self, client, session):
+        ctx = await _setup(client, session)
+        r = await client.get("/ledger", params={"entity_id": ctx["item_id"]}, headers=ctx["operator_h"])
+        assert r.status_code == 200, r.text
+        cost = [e for e in r.json()["items"]
+                if e["event_type"] == "item.pricing.set" and e["data"].get("price_type") in ("cost_total", "cost_price")]
+        assert cost, "cost rows are redacted in place, not removed (pagination integrity)"
+        for e in cost:
+            assert "new_price" not in e["data"], "operator must not receive the cost amount"
+            assert e["data"].get("cost_redacted") is True
+        # Nothing anywhere in the operator payload should carry a cost amount.
+        import json as _json
+        blob = _json.dumps(r.json())
+        assert '"cost_total"' not in blob or '"new_price"' not in blob
+
+    @pytest.mark.asyncio
+    async def test_operator_sees_noncost_events(self, client, session):
+        ctx = await _setup(client, session)
+        r = await client.get("/ledger", params={"entity_id": ctx["item_id"]}, headers=ctx["operator_h"])
+        # The item.created event is still visible to operators.
+        assert any(e["event_type"] == "item.created" for e in r.json()["items"])
