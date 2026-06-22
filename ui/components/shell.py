@@ -771,8 +771,8 @@ _STAR_CTA_JS = """
   fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('supporter-badge');
     if (!el || !d || !d.badge) return;
-    el.textContent = '\\u2605 ' + d.badge.label;
-    el.title = 'Thank you for being ' + d.badge.label;
+    el.textContent = '\\u2605';            // just the gold star
+    el.title = d.badge.label;              // tooltip: e.g. "Founding Supporter #1"
     el.style.display = '';
   }).catch(function(){});
 })();
@@ -784,18 +784,35 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
     shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
     on the dashboard (where setup lands) and onboarding."""
+    # Fetch the CTA copy + the user's badge together. If they've already claimed, show
+    # the relay's thank-you copy ({badge} -> their label); otherwise show the ask. All
+    # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
     js = (
         "(function(){"
-        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).then(function(d){"
-        "if(!d||!d.url||d.dismissed||d.mode==='neutral')return;"
+        "Promise.all(["
+        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).catch(function(){return null}),"
+        "fetch('/stars/badge').then(function(r){return r.json()}).catch(function(){return null})"
+        "]).then(function(res){"
+        "var d=res[0],bd=res[1];"
+        "if(!d||d.dismissed||d.mode==='neutral')return;"
         "var card=document.getElementById('star-supporter-card');if(!card)return;"
-        "var h=document.getElementById('star-card-headline');if(h)h.textContent=d.headline||'Star on GitHub';"
-        # Relay body is "intro\\n\\nfounding-promise"; first part is the lead, the rest
-        # (the first-100 badge promise) renders in the smaller sub-paragraph.
+        "var h=document.getElementById('star-card-headline');"
+        "var b=document.getElementById('star-card-body');"
+        "var b2=document.getElementById('star-card-body-2');"
+        "var claim=document.getElementById('star-card-claim');"
+        "var link=document.getElementById('star-card-star');"
+        "if(link&&d.url)link.href=d.url;"
+        "if(bd&&bd.badge){"  # claimed -> thank-you
+        "if(h)h.textContent=d.thanks_headline||'Thank you for your support!';"
+        "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
+        "if(b2)b2.style.display='none';"
+        "if(claim)claim.style.display='none';"
+        "}else{"  # not claimed -> the ask
+        "if(h)h.textContent=d.headline||'Star on GitHub';"
         "var parts=(d.body||'').split('\\n\\n');"
-        "var b=document.getElementById('star-card-body');if(b)b.textContent=parts[0]||'';"
-        "var b2=document.getElementById('star-card-body-2');if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
-        "var s=document.getElementById('star-card-star');if(s)s.href=d.url;"
+        "if(b)b.textContent=parts[0]||'';"
+        "if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
+        "}"
         "card.style.display='';"
         "}).catch(function(){});"
         "var dz=document.getElementById('star-card-dismiss');"
@@ -822,7 +839,7 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             # Smaller sub-paragraph for the founding-badge promise.
             P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
             Div(
-                A("Claim your badge", href="/stars/claim", cls="btn btn--primary"),
+                A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
                 style="margin-top:22px",
             ),
             id="star-supporter-card",
