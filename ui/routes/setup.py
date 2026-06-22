@@ -365,7 +365,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
             _cloud_form(),
-            title="Connect to Celerp Cloud - Celerp",
+            title="Connect to Celerp Connect - Celerp",
         )
 
 
@@ -616,7 +616,7 @@ def _cloud_form() -> FT:
             H1(t("page.one_last_thing"), cls="auth-title"),
             P(
                 "Your desktop app is ready. If you need your tools connected or your data backed up, "
-                "Cloud unlocks all of that.",
+                "Connect unlocks all of that.",
                 cls="auth-subtitle",
             ),
             cls="auth-header",

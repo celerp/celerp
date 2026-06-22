@@ -1835,7 +1835,7 @@ def setup_routes(app):
         chosen subscription_id and the original email.
         """
         def _tier_label(tier: str) -> str:
-            return {"cloud": "Cloud", "ai": "Cloud + AI", "team": "Team"}.get(tier, tier.title())
+            return {"cloud": "Connect", "ai": "AI + Connect", "team": "Team"}.get(tier, tier.title())
 
         def _match_row(m: dict, idx: int) -> FT:
             slug = m.get("slug")
@@ -4014,8 +4014,8 @@ def _ai_tab() -> FT:
             upgrade_banner(
                 "AI Assistant",
                 "Ask your ERP questions in plain English - inventory analysis, AR summaries, "
-                "CRM insights. Cloud (USD $29/mo) includes 100 free queries to try it. "
-                "Cloud + AI (USD $49/mo) gives 100 queries every month.",
+                "CRM insights. Connect (USD $29/mo) includes 100 free queries to try it. "
+                "AI + Connect (USD $49/mo) gives 100 queries every month.",
                 price="USD $29/mo",
                 anchor="cloud",
             ),
@@ -4052,9 +4052,9 @@ def _connectors_tab() -> FT:
         return Div(
             H3(t("settings.tab_connectors"), cls="settings-section-title"),
             upgrade_banner(
-                "Cloud Connectors",
+                "Connectors",
                 "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
-                "OAuth is handled by Celerp Cloud - no API keys to manage.",
+                "OAuth is handled by Celerp Connect - no API keys to manage.",
                 price="USD $29/mo",
                 anchor="cloud",
             ),
@@ -4075,7 +4075,7 @@ def _connectors_tab() -> FT:
     return Div(
         H3(t("settings.tab_connectors"), cls="settings-section-title"),
         P(
-            "Your instance is connected to Celerp Cloud. "
+            "Your instance is connected to Celerp Connect. "
             "Connectors use OAuth handled by the relay - no API keys needed on your side.",
             cls="settings-hint",
         ),

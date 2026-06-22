@@ -675,7 +675,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
                style="font-size:18px;"),
             P(
                 "Direct connections can only serve one authenticated user at a time. "
-                "If you require simultaneous multiple user access, Celerp Cloud can "
+                "If you require simultaneous multiple user access, Celerp Connect can "
                 "route your connections through a persistent relay allowing any number "
                 "of users to access the system simultaneously.",
                 cls="auth-subtitle",
