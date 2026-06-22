@@ -1608,7 +1608,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .doc-section--totals { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 16px; }
 .doc-section--totals-compact { display: flex; flex-direction: column; align-items: flex-end; padding: 12px 0; }
 .section-divider { border: none; border-top: 1px solid var(--c-border); margin: 10px 0; }
-.total-panel { width: 100%; max-width: 320px; padding: 0; }
+.total-panel { width: 100%; max-width: 320px; padding: 0; position: relative; }
 .total-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: none; font-size: 13px; gap: 32px; }
 .total-row--final { border-top: 2px solid var(--c-border); padding-top: 6px; margin-top: 4px; }
 .total-label { color: var(--c-text2); white-space: nowrap; }
@@ -1619,6 +1619,27 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .total-label--editable:hover { color: var(--c-text); }
 .total-value { font-weight: 500; color: var(--c-text); text-align: right; }
 .total-value--final { font-weight: 700; font-size: 15px; color: var(--c-accent); }
+
+/* Header-discount pencil: faint, sits after the Total amount and brightens on hover. */
+.btn-disc-edit {
+    background: none; border: none; cursor: pointer; padding: 0 0 0 6px;
+    color: var(--c-text-muted, #999); opacity: 0.55; font-size: 12px; line-height: 1;
+}
+.btn-disc-edit:hover { opacity: 1; color: var(--c-accent); }
+/* Inline discount popover anchored to the bottom-right of the totals panel (no blocking modal). */
+.disc-popover {
+    display: none; position: absolute; right: 0; top: 100%; z-index: 20; margin-top: 4px;
+    min-width: 220px; padding: 10px; background: var(--c-bg, #fff);
+    border: 1px solid var(--c-border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+}
+.disc-popover--open { display: block; }
+.disc-pop-row { display: flex; align-items: center; gap: 8px; }
+.disc-pop-input { flex: 1 1 auto; min-width: 0; }
+.disc-pop-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.disc-toggle { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; }
+.disc-type-btn { border: none; border-radius: 0; padding: 4px 10px; background: var(--c-bg2, #f3f3f3); color: var(--c-text2); cursor: pointer; font-weight: 600; }
+.disc-type-btn + .disc-type-btn { border-left: 1px solid var(--c-border); }
+.disc-type-btn--on { background: var(--c-accent); color: #fff; }
 
 /* Editable cells (click-to-edit inline fields) */
 .editable-cell { display: inline-block; min-width: 60px; min-height: 20px; padding: 2px 6px; border-radius: 4px; cursor: pointer; color: var(--c-text); font-size: 13px; border: 1px solid transparent; transition: background 0.1s, border-color 0.1s; }

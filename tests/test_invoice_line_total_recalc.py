@@ -190,6 +190,87 @@ class TestCelerpCollectLinesFunction:
         )
 
 
+# ── 4c. Invoice-level (header) discount ──────────────────────────────────────
+
+class TestHeaderDiscount:
+    """The whole-document discount: a pencil by the Total opens a %/$ popover; the discount reduces
+    the taxable base and tax scales by the same ratio so rows/discount/total reconcile."""
+
+    @pytest.mark.asyncio
+    async def test_pencil_and_popover_on_draft_invoice(self, ui_client):
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd", cookies=_authed())
+        assert r.status_code == 200
+        assert 'class="btn-disc-edit"' in r.text, "discount pencil missing on a draft invoice"
+        assert 'id="discount-popover"' in r.text, "discount popover missing"
+        assert 'id="doc-discount-value"' in r.text, "discount state input missing"
+        assert "<dialog" not in r.text.lower(), "discount editor must be an inline popover, not a modal dialog"
+
+    @pytest.mark.asyncio
+    async def test_no_pencil_on_credit_note(self, ui_client):
+        # A credit note is a reversal - a header discount is incoherent there, so no affordance.
+        doc = {**_DRAFT_DOC, "entity_id": "d:cn", "doc_type": "credit_note", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:cn", cookies=_authed())
+        assert r.status_code == 200
+        # The pencil button + popover markup are gated; only the JS handler mentions the class name.
+        assert 'class="btn-disc-edit"' not in r.text, "credit note should not show the discount pencil"
+        assert 'id="discount-popover"' not in r.text, "credit note should not render the discount popover"
+
+    @pytest.mark.asyncio
+    async def test_pencil_on_supplier_bill(self, ui_client):
+        doc = {**_DRAFT_DOC, "entity_id": "d:bill", "doc_type": "bill", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:bill", cookies=_authed())
+        assert r.status_code == 200
+        assert 'class="btn-disc-edit"' in r.text, "supplier bill should offer a header discount"
+        assert 'id="discount-popover"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_percentage_discount_scales_tax_and_total(self, ui_client):
+        # subtotal 1000, 5% line tax; a 10% header discount -> taxable 900, tax 45 (was 50), total 945.
+        line = {"description": "Widget", "quantity": 10, "unit_price": 100.0,
+                "discount_pct": 0, "line_total": 1000.0, "tax_rate": 5}
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd2", "doc_type": "invoice", "status": "final",
+               "line_items": [line], "subtotal": 1000.0, "tax": 45.0, "total": 945.0,
+               "total_amount": 945.0, "discount": 10, "discount_type": "percentage",
+               "discount_amount": 100.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd2", cookies=_authed())
+        assert r.status_code == 200
+        assert "Discount (10%)" in r.text, "discount row should name the percentage"
+        assert "-$100.00" in r.text, "discount amount row"
+        assert "$45.00" in r.text, "tax must scale to the discounted base (50 -> 45)"
+        assert "$945.00" in r.text, "total must be taxable + scaled tax"
+
+    @pytest.mark.asyncio
+    async def test_flat_discount_row_no_percent_label(self, ui_client):
+        line = {"description": "Widget", "quantity": 10, "unit_price": 100.0,
+                "discount_pct": 0, "line_total": 1000.0, "tax_rate": 0}
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd3", "doc_type": "invoice", "status": "final",
+               "line_items": [line], "subtotal": 1000.0, "tax": 0.0, "total": 850.0,
+               "total_amount": 850.0, "discount": 150, "discount_type": "flat",
+               "discount_amount": 150.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd3", cookies=_authed())
+        assert r.status_code == 200
+        assert "-$150.00" in r.text
+        assert "Discount (" not in r.text, "a flat discount must not show a percentage"
+        assert "$850.00" in r.text, "total = subtotal - flat discount (no tax)"
+
+    def test_print_view_shows_discount(self):
+        """The printable invoice shows the header discount between Subtotal and Total."""
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _doc_print_view
+        doc = {"doc_type": "invoice", "subtotal": 1000.0, "tax_total": 45.0, "total": 945.0,
+               "discount": 10, "discount_type": "percentage", "discount_amount": 100.0,
+               "line_items": [{"name": "Widget", "quantity": 10, "unit_price": 100.0, "line_total": 1000.0}]}
+        html = to_xml(_doc_print_view(doc))
+        assert "Discount (10%)" in html
+        assert "-$100.00" in html
+
+
 # ── 4b. Unit-price precision: no rounding-into-discount ──────────────────────
 
 def _doc_with(lines, **over):
