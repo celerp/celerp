@@ -761,10 +761,13 @@ _STAR_CTA_JS = """
   fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('star-cta');
     if (!el || !d || !d.url) return;
-    var label = d.cta_label || 'Star on GitHub';
-    if (d.mode === 'founding') label = 'Back us early \\u2605';
-    else if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;
-    el.textContent = label; el.href = d.url; el.style.display = '';
+    var label = '\\u2605 Star on GitHub';
+    if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
+    el.textContent = label;
+    el.href = d.url;
+    // Explain the ask on hover; the relay's body carries the founding pitch.
+    el.title = d.body || 'Celerp is open source \\u2014 a GitHub star helps other teams find us.';
+    el.style.display = '';
   }).catch(function(){});
   fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('supporter-badge');
@@ -775,6 +778,43 @@ _STAR_CTA_JS = """
   }).catch(function(){});
 })();
 """
+
+
+def star_supporter_card(medium: str = "dashboard") -> FT:
+    """The founding-supporter ask: a gold-bordered, dismissable card. Hydrates from
+    /stars/cta and shows only in a non-neutral mode (relay reachable) and when not
+    dismissed. Rendered on the dashboard (where setup lands) and the onboarding page."""
+    js = (
+        "(function(){"
+        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).then(function(d){"
+        "if(!d||!d.url||d.dismissed||d.mode==='neutral')return;"
+        "var card=document.getElementById('star-supporter-card');if(!card)return;"
+        "var h=document.getElementById('star-card-headline');if(h)h.textContent=d.headline||'Support Celerp';"
+        "var b=document.getElementById('star-card-body');if(b)b.textContent=d.body||'';"
+        "var s=document.getElementById('star-card-star');if(s)s.href=d.url;"
+        "card.style.display='';"
+        "}).catch(function(){});"
+        "var dz=document.getElementById('star-card-dismiss');"
+        "if(dz)dz.addEventListener('click',function(){"
+        "fetch('/stars/dismiss',{method:'POST'}).then(function(){"
+        "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
+        "})();"
+    )
+    return Div(
+        Div(
+            H3("", id="star-card-headline"),
+            P("", id="star-card-body", cls="auth-subtitle"),
+            Div(
+                A("Star on GitHub", id="star-card-star", href="#", target="_blank", rel="noopener", cls="btn btn--primary"),
+                A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),
+                Button("Maybe later", id="star-card-dismiss", type="button", cls="btn btn--ghost"),
+                cls="mt-md",
+            ),
+            id="star-supporter-card",
+            style="display:none;margin:16px 0;padding:20px;border:1px solid #d4af37;border-radius:10px;text-align:center",
+        ),
+        Script(js),
+    )
 
 
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
@@ -815,7 +855,8 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),
                         A("", id="star-cta", href="#", target="_blank", rel="noopener",
-                          cls="brand-footer-link", style="display:none;margin-left:16px"),
+                          cls="brand-footer-link",
+                          style="display:none;margin-left:16px;color:#d4af37;font-weight:600"),
                         cls="brand-footer",
                     ),
                     cls="content-area",

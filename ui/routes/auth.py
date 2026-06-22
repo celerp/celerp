@@ -22,7 +22,7 @@ from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
-from ui.components.shell import auth_shell, flash
+from ui.components.shell import auth_shell, flash, star_supporter_card
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
@@ -623,44 +623,6 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
     )
 
 
-_STAR_ONBOARDING_JS = """
-(function(){
-  fetch('/stars/cta?medium=onboarding').then(function(r){return r.json()}).then(function(d){
-    if(!d || !d.url || d.dismissed || d.mode==='neutral') return;
-    var card=document.getElementById('star-onboarding-card'); if(!card) return;
-    var h=document.getElementById('star-card-headline'); if(h) h.textContent=d.headline||'Support Celerp';
-    var b=document.getElementById('star-card-body'); if(b) b.textContent=d.body||'';
-    var s=document.getElementById('star-card-star'); if(s) s.href=d.url;
-    card.style.display='';
-  }).catch(function(){});
-  var dz=document.getElementById('star-card-dismiss');
-  if(dz) dz.addEventListener('click', function(){
-    fetch('/stars/dismiss',{method:'POST'}).then(function(){
-      var c=document.getElementById('star-onboarding-card'); if(c) c.style.display='none';
-    });
-  });
-})();
-"""
-
-
-def _star_onboarding_card() -> FT:
-    return Div(
-        Div(
-            H3("", id="star-card-headline"),
-            P("", id="star-card-body", cls="auth-subtitle"),
-            Div(
-                A("Star on GitHub", id="star-card-star", href="#", target="_blank", rel="noopener", cls="btn btn--primary"),
-                A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),
-                Button("Maybe later", id="star-card-dismiss", type="button", cls="btn btn--ghost"),
-                cls="mt-md",
-            ),
-            id="star-onboarding-card",
-            style="display:none;margin-top:24px;padding:20px;border:1px solid #d4af37;border-radius:10px;text-align:center",
-        ),
-        Script(_STAR_ONBOARDING_JS),
-    )
-
-
 def _onboarding_view() -> FT:
     integrations = [
         ("/onboarding/upload/items", "Import Inventory", "Upload CSV or JSON", "items"),
@@ -692,7 +654,7 @@ def _onboarding_view() -> FT:
             A(t("btn.go_to_dashboard"), href="/dashboard", cls="btn btn--secondary"),
             cls="mt-lg text-center",
         ),
-        _star_onboarding_card(),
+        star_supporter_card("onboarding"),
         cls="onboarding-card",
     )
 
