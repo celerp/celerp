@@ -51,13 +51,14 @@ def test_inventory_attribute_funnel(page, ui_server, api):
     filters the full dataset by attribute value."""
     SHOTS.mkdir(parents=True, exist_ok=True)
     assert api.post("/companies/me/apply-preset?vertical=gemstones").status_code == 200
+    # Category keys are canonical slugs (commit 478a895): items + ?category= use the slug.
     api.post("/items", json={"name": "Ruby", "sku": "GEM-R", "sell_by": "piece",
-                             "category": "Colored Stone", "quantity": 1, "attributes": {"stone_type": "Ruby"}})
+                             "category": "colored_stone", "quantity": 1, "attributes": {"stone_type": "Ruby"}})
     api.post("/items", json={"name": "Sapphire", "sku": "GEM-S", "sell_by": "piece",
-                             "category": "Colored Stone", "quantity": 1, "attributes": {"stone_type": "Sapphire"}})
+                             "category": "colored_stone", "quantity": 1, "attributes": {"stone_type": "Sapphire"}})
 
     page.set_viewport_size({"width": 1440, "height": 1000})
-    page.goto(f"{ui_server}/inventory?category=Colored+Stone&cols=sku,name,stone_type",
+    page.goto(f"{ui_server}/inventory?category=colored_stone&cols=sku,name,stone_type",
               wait_until="domcontentloaded")
     page.wait_for_selector("#data-table", timeout=10000)
     body = page.locator("#data-table").inner_text()

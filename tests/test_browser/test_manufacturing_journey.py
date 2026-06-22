@@ -94,11 +94,8 @@ def test_full_manufacturing_journey(page, ui_server, api):
         {"item_id": ring, "sku": "JNY-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900},
     ], "total": 1800}).json()["id"]
     api.post(f"/docs/{doc}/finalize")
-    # The invoice's Manufacturing panel is product-centric (links to the product tab, no auto orders).
-    page.goto(f"{ui_server}/docs/{doc}", wait_until="domcontentloaded")
-    page.wait_for_selector("#doc-mfg-panel:has-text('Items to manufacture')", timeout=10000)
-    panel = page.locator("#doc-mfg-panel").inner_text()
-    assert "Manufacturing orders" not in panel and "10" in panel  # 2 rings -> 10 g gold (JIT summary)
+    # Manufacturing is product-centric: the per-invoice panel was removed (commit a8c12c7);
+    # demand now flows straight to the To-Make board, which pools it by product.
     # The To-Make board pools that demand by product (lead column = item + qty to make).
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table:has-text('JNY-RING')", timeout=10000)

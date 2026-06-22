@@ -27,8 +27,11 @@ pytestmark = pytest.mark.browser
 SHOTS = Path("context/reviews/manufacturing")
 
 
-def _poll(api, predicate, tries: int = 40, delay: float = 0.25) -> bool:
-    """Poll the backend run list until `predicate(items)` is true."""
+def _poll(api, predicate, tries: int = 80, delay: float = 0.25) -> bool:
+    """Poll the backend run list until `predicate(items)` is true. The default window (20s) is
+    generous on purpose: in the full suite the shared event store is large, so a bulk Complete
+    (issue components -> receive output -> close run, each recomputing projections) settles more
+    slowly than it does in isolation."""
     for _ in range(tries):
         items = api.get("/manufacturing").json()["items"]
         if predicate(items):

@@ -195,15 +195,19 @@ def test_link_expiry_shows_date_input(page: Page, ui_server: str, api):
     _no_crash(page, "post-link-expiry-edit")
 
 
-# ── LA-10: Send button present on draft ───────────────────────────────────────
+# ── LA-10: Send affordance on an issued quotation ─────────────────────────────
 
-def test_send_button_on_draft(page: Page, ui_server: str, api):
-    """LA-10: Draft list detail shows Send button."""
-    eid = _create_list(api)
+def test_mark_sent_button_on_issued_quotation(page: Page, ui_server: str, api):
+    """LA-10: Lists use the invoice-consistent lifecycle (draft -> issue -> send), so a draft has
+    no send affordance. Email Send is relay-gated (hidden without a connected relay), but an issued
+    (finalized) quotation always offers the relay-free 'Mark as Sent'."""
+    eid = _create_list(api)  # quotation, draft
+    r = api.post(f"/lists/{eid}/finalize")
+    assert r.status_code in {200, 201, 204}, f"Could not issue list: {r.text}"
     page.goto(f"{ui_server}/lists/{eid}", wait_until="domcontentloaded")
-    _no_crash(page, "send-button")
-    send_btn = page.locator("button:has-text('Send')")
-    expect(send_btn).to_be_visible()
+    _no_crash(page, "mark-sent-button")
+    mark_sent = page.locator("button:has-text('Mark as Sent')")
+    expect(mark_sent).to_be_visible()
 
 
 # ── LA-11: Duplicate action ───────────────────────────────────────────────────
@@ -247,11 +251,10 @@ def test_type_tab_filters_table(page: Page, ui_server: str, api):
 def test_void_action(page: Page, ui_server: str, api):
     """LA-13: Voiding a sent list shows void status."""
     eid = _create_list(api)
-    # Send the list first so void button appears (only shows for non-draft, non-void).
-    # The send endpoint is /lists/{id}/send (api_client.send_list); /action/send is a
-    # UI-only route and 404s against the API server.
-    send_r = api.post(f"/lists/{eid}/send", json={})
-    assert send_r.status_code in {200, 201, 204}, f"Could not send list: {send_r.text}"
+    # Issue (finalize) the list so it leaves draft — the Void affordance shows for any non-draft,
+    # non-void list. (Email Send is relay-gated and not needed to reach a voidable state.)
+    finalize_r = api.post(f"/lists/{eid}/finalize")
+    assert finalize_r.status_code in {200, 201, 204}, f"Could not issue list: {finalize_r.text}"
     page.goto(f"{ui_server}/lists/{eid}", wait_until="domcontentloaded")
     _no_crash(page, "pre-void")
     # Click the Void <details> to expand it

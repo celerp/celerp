@@ -61,17 +61,17 @@ def test_contact_search_sends_q_param(page, contact_search_page):
     contact_cell.click()
     page.wait_for_selector(".combobox-wrap[data-search-url] .combobox-input", timeout=5000)
 
-    requests: list[str] = []
-    page.on("request", lambda req: requests.append(req.url) if "search-options" in req.url else None)
-
     inp = page.locator(".combobox-wrap[data-search-url] .combobox-input").first
-    inp.fill("Searchable")
-    # Wait for the debounced HTMX request (300ms delay + network round-trip)
-    page.wait_for_timeout(700)
-
-    matching = [u for u in requests if "q=" in u and "search-options" in u]
-    assert matching, f"No search-options request with q= fired. All requests: {requests}"
-    assert "Searchable" in matching[0] or "searchable" in matching[0].lower()
+    # Deterministically wait for the debounced search request rather than a fixed sleep, which
+    # races the 300ms debounce + network under suite load (the source of intermittent failures).
+    with page.expect_request(
+        lambda req: "search-options" in req.url and "q=" in req.url, timeout=5000
+    ) as req_info:
+        # Type char-by-char (real input events) rather than fill(): a single fill() event can land
+        # before HTMX attaches the 'input changed delay:300ms' trigger to the freshly-opened combobox.
+        inp.press_sequentially("Searchable", delay=20)
+    url = req_info.value.url
+    assert "Searchable" in url or "searchable" in url.lower(), f"q= did not carry the query: {url}"
 
 
 def test_contact_search_shows_results(page, contact_search_page):
@@ -82,9 +82,7 @@ def test_contact_search_shows_results(page, contact_search_page):
     page.wait_for_selector(".combobox-wrap[data-search-url] .combobox-input", timeout=5000)
 
     inp = page.locator(".combobox-wrap[data-search-url] .combobox-input").first
-    inp.fill("Alpha")
-    # Wait for HTMX to fire (300ms debounce) and the response to render
-    page.wait_for_timeout(700)
+    inp.press_sequentially("Alpha", delay=20)  # real input events trigger the HTMX search reliably
     page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     opts = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)")
@@ -102,8 +100,7 @@ def test_contact_search_select_commits_value(page, contact_search_page):
 
     inp = page.locator(".combobox-wrap[data-search-url] .combobox-input").first
     hidden = page.locator(".combobox-wrap[data-search-url] input[type=hidden]").first
-    inp.fill("Alpha")
-    page.wait_for_timeout(700)
+    inp.press_sequentially("Alpha", delay=20)
     page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     first_opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first
@@ -125,9 +122,9 @@ def test_clearing_search_restores_static_options(page, contact_search_page):
     page.wait_for_selector(".combobox-wrap[data-search-url] .combobox-input", timeout=5000)
 
     inp = page.locator(".combobox-wrap[data-search-url] .combobox-input").first
-    # Type to trigger server search
-    inp.fill("Alpha")
-    page.wait_for_timeout(700)
+    # Type to trigger server search, then wait for results so we know the search round-tripped.
+    inp.press_sequentially("Alpha", delay=20)
+    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
     # Now clear
     inp.fill("")
     page.wait_for_timeout(200)
