@@ -6580,7 +6580,10 @@ function celerpOpenDiscount() {{
     const tEl = document.getElementById('doc-discount-type');
     const input = document.getElementById('disc-pop-value');
     if (input && vEl) input.value = vEl.value || '';
-    celerpDiscType((tEl && tEl.value) || 'flat');
+    // Editing an existing discount keeps its type; a brand-new discount defaults to % (the common
+    // case), so an accidental Apply can't silently set a flat $0.
+    const _hasExisting = vEl && parseFloat(vEl.value || 0) > 0;
+    celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
     const willOpen = !pop.classList.contains('disc-popover--open');
     pop.classList.toggle('disc-popover--open', willOpen);
     if (willOpen && input) {{ input.focus(); input.select(); }}
@@ -7080,11 +7083,15 @@ async function celerpCsvImport(input, entityId) {{
     # Header (whole-document) discount: reduce the taxable base, then scale every tax line by the
     # same ratio. A uniform discount lowers each line's taxable amount proportionally, so scaling by
     # (taxable / subtotal) keeps any tax mix consistent without re-deriving per-line taxes.
-    discount = float(discount_value or 0)
     discount_raw = float(doc.get("discount") or 0)
     discount_type = doc.get("discount_type") or "flat"
-    if not discount and discount_raw:
-        discount = (subtotal * discount_raw / 100) if discount_type == "percentage" else discount_raw
+    if discount_type == "percentage":
+        # Always recompute a % discount from the CURRENT subtotal so it stays correct no matter how
+        # the lines changed (add / remove / edit / per-line discount), even if a stored
+        # discount_amount went stale. A flat discount is a fixed amount (capped at the subtotal).
+        discount = subtotal * discount_raw / 100
+    else:
+        discount = float(discount_value or 0) or discount_raw
     discount = min(discount, subtotal) if discount > 0 else 0.0
     taxable = subtotal - discount
     _disc_ratio = (taxable / subtotal) if (subtotal > 0 and discount > 0.005) else 1.0
@@ -7169,7 +7176,7 @@ async function celerpCsvImport(input, entityId) {{
         Div(Span(t("doc.total"), cls="total-label total-label--final"),
             Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             (Button("✎", type="button", cls="btn-disc-edit",
-                    title=t("doc.discount"), aria_label=t("doc.discount"),
+                    title="Add or edit discount", aria_label="Add or edit discount",
                     onclick="celerpOpenDiscount()") if _can_discount else ""),
             cls="total-row total-row--final"),
         # Conversion note: shown only when doc currency differs from company base currency
