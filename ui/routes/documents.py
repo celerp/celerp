@@ -7179,16 +7179,17 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
         Div(*tax_rows, id="doc-tax-rows"),
-        Div(Span(t("doc.total"), cls="total-label total-label--final"),
-            # The pencil sits just LEFT of the amount; the amount stays right-aligned (accounting
-            # format). Grouping them keeps the figure flush to the panel's right edge.
+        Div(
+            # The pencil sits just LEFT of the "Total:" label; the amount stays flush-right
+            # (accounting format).
             Span(
                 (Button("✎", type="button", cls="btn-disc-edit",
                         title="Add or edit discount", aria_label="Add or edit discount",
                         onclick="celerpOpenDiscount()") if _can_discount else ""),
-                Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
-                cls="total-final-right",
+                Span(t("doc.total"), cls="total-label total-label--final"),
+                cls="total-final-left",
             ),
+            Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             cls="total-row total-row--final"),
         # Conversion note: shown only when doc currency differs from company base currency
         *([Div(

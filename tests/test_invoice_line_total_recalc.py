@@ -208,16 +208,18 @@ class TestHeaderDiscount:
         assert "<dialog" not in r.text.lower(), "discount editor must be an inline popover, not a modal dialog"
 
     @pytest.mark.asyncio
-    async def test_pencil_left_of_right_aligned_total(self, ui_client):
-        # The pencil sits LEFT of the total amount (grouped in .total-final-right); the amount keeps
+    async def test_pencil_left_of_total_label(self, ui_client):
+        # The pencil sits LEFT of the "Total:" label (grouped in .total-final-left); the amount keeps
         # its right-aligned accounting position.
         doc = {**_DRAFT_DOC, "entity_id": "d:hdL", "doc_type": "invoice", "status": "draft"}
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
             r = await ui_client.get("/docs/d:hdL", cookies=_authed())
         assert r.status_code == 200
-        assert "total-final-right" in r.text
-        assert r.text.index('class="btn-disc-edit"') < r.text.index('id="doc-total"'), \
-            "pencil must render before (left of) the total amount"
+        assert "total-final-left" in r.text
+        # pencil -> Total label -> amount, in that order.
+        assert (r.text.index('class="btn-disc-edit"')
+                < r.text.index("total-label--final")
+                < r.text.index('id="doc-total"')), "pencil must render left of the Total label"
 
     @pytest.mark.asyncio
     async def test_secondary_button_is_cancel_until_discount_exists(self, ui_client):
