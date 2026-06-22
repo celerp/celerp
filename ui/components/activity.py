@@ -150,7 +150,8 @@ def fmt_price(value, price_type: str | None = None, currency: str | None = None)
 
 def _item_brief_summary(items, limit: int = 6) -> str:
     """'SKU ×qty, SKU ×qty' from a list of {sku/item_id, quantity} dicts — used to name the
-    items in document fulfillment/reversal activity entries."""
+    items in document fulfillment/receipt/reversal activity entries. Received items carry their
+    count as ``quantity_received``; fulfilled/reversed items as ``quantity``."""
     if not isinstance(items, list):
         return ""
     parts: list[str] = []
@@ -162,8 +163,12 @@ def _item_brief_summary(items, limit: int = 6) -> str:
             iid = str(it.get("item_id") or "")
             sku = iid[5:] if iid.startswith("item:") else iid
         if not sku:
+            sku = str(it.get("name") or "")
+        if not sku:
             continue
         qty = it.get("quantity")
+        if qty is None:
+            qty = it.get("quantity_received")
         parts.append(f"{sku} ×{fmt_qty(qty)}" if qty is not None else sku)
     summary = ", ".join(parts[:limit])
     if len(parts) > limit:
@@ -220,6 +225,12 @@ _SELF_DESCRIBING_EVENT_TYPES = frozenset({
 })
 
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
+
+# Document totals that are computed from line_items + header fields (see _recalc_list_totals).
+# Editing an item's price or quantity recalculates these, but the user's action was the line
+# edit alone - so they are suppressed from change summaries to avoid noise like
+# "Subtotal: x → y, Total: x → y" alongside the real "ItemName: x → y".
+_DERIVED_DOC_FIELDS = frozenset({"subtotal", "total", "tax_amount", "discount_amount", "amount_outstanding"})
 
 # Human-readable labels for field keys shown in activity change summaries.
 _FIELD_LABELS: dict[str, str] = {
@@ -430,6 +441,8 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         return _fields_changed_summary(fields_changed, currency)
     if event_type == "doc.shared":
         return doc_ref or ""
+    if event_type == "doc.received":
+        return _item_brief_summary(data.get("received_items"))
     if event_type in ("doc.fulfilled", "doc.partially_fulfilled"):
         summary = _item_brief_summary(data.get("fulfilled_items"))
         if event_type == "doc.partially_fulfilled":
@@ -474,7 +487,8 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
     user_fields = {k: v for k, v in fields_changed.items()
-                   if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
+                   if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
+                   and k not in {"attachments", "preview_image_id"}}
     if not user_fields:
         return ""
 

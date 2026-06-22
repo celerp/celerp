@@ -357,10 +357,44 @@ def test_field_change_formatting():
     # quantity trims trailing zeros
     assert _fields_changed_summary({"quantity": {"old": 5.0, "new": 3.5}}) == "Quantity: 5 → 3.5"
     # money is currency-formatted
-    assert _fields_changed_summary({"total": {"old": 100, "new": 120}}, "USD") == "Total: $100.00 → $120.00"
+    assert _fields_changed_summary({"amount": {"old": 100, "new": 120}}, "USD") == "Amount: $100.00 → $120.00"
     # dates render as dates, not datetimes
     assert _fields_changed_summary({"due_date": {"old": "2026-01-01T00:00:00+00:00", "new": "2026-02-01T00:00:00+00:00"}}) \
         == "Due date: 2026-01-01 → 2026-02-01"
+
+
+def test_derived_doc_totals_suppressed_in_summary():
+    # Editing an item's price recalculates subtotal/total, but the user's action was the line
+    # edit alone - the summary must name only the changed item, not the derived totals.
+    from ui.components.activity import _fields_changed_summary
+    fields = {
+        "line_items": {
+            "old": [{"sku": "WIDGET", "name": "Widget", "quantity": 2, "unit_price": 10}],
+            "new": [{"sku": "WIDGET", "name": "Widget", "quantity": 2, "unit_price": 15}],
+        },
+        "subtotal": {"old": 20, "new": 30},
+        "total": {"old": 20, "new": 30},
+        "tax_amount": {"old": 0, "new": 0},
+    }
+    summary = _fields_changed_summary(fields, "USD")
+    assert "Widget" in summary
+    assert "Subtotal" not in summary and "Total" not in summary
+    # A change that touches only derived totals (no real user field) renders nothing.
+    assert _fields_changed_summary({"subtotal": {"old": 20, "new": 30}, "total": {"old": 20, "new": 30}}) == ""
+
+
+def test_received_goods_names_items_like_fulfillment():
+    # Issue 2: receiving goods must name which goods were received, the same way fulfillment does.
+    from ui.components.activity import detail_from_entry
+    received = detail_from_entry(
+        {"received_items": [
+            {"sku": "WIDGET", "name": "Widget", "quantity_received": 5},
+            {"name": "Ad-hoc part", "quantity_received": 2},
+        ]},
+        "doc.received",
+    )
+    assert "WIDGET ×5" in received
+    assert "Ad-hoc part ×2" in received
 
 
 @pytest.mark.asyncio
