@@ -472,8 +472,9 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
 
 # Field-type buckets for formatting change-summary values (H11).
 _QTY_FIELD_KEYS = frozenset({"quantity", "pieces", "reserved_quantity", "weight"})
-_MONEY_FIELD_KEYS = frozenset({"cost_total", "cost_price", "total", "subtotal", "tax_total",
-                               "amount", "amount_outstanding", "price", "unit_price"})
+_MONEY_FIELD_KEYS = frozenset({"cost_total", "cost_price", "total", "subtotal", "tax", "tax_total",
+                               "tax_amount", "discount_amount", "amount", "amount_outstanding",
+                               "price", "unit_price"})
 _DATE_FIELD_KEYS = frozenset({"due_date", "issue_date", "expiry_date", "date", "payment_date"})
 
 
@@ -492,6 +493,55 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
     return s[:40] + "…" if len(s) > 40 else s
 
 
+def _change_old_new(change):
+    """Unpack a fields_changed entry into (old, new). Entries are usually {"old","new"} dicts,
+    but a bare value is treated as the new value with no known old."""
+    if isinstance(change, dict):
+        return change.get("old"), change.get("new")
+    return None, change
+
+
+# Fields consumed (and thus hidden from the generic summary) when a header-discount change is
+# rendered semantically: the discount inputs, plus the totals it recomputes as a side effect.
+_DISCOUNT_CONSUMED = frozenset({"discount", "discount_amount", "discount_type", "tax", "subtotal", "total"})
+
+
+def _discount_change_summary(fields_changed: dict, currency: str | None):
+    """If this changeset reflects a header-discount edit, return a semantic summary like
+    "Discount Applied: $500.00, Total: 5,885.00 → 5,385.00" and the set of fields it consumes.
+    Otherwise return (None, empty set).
+
+    Detection keys on the user-controlled inputs (``discount`` / ``discount_type``), NOT on the
+    derived ``discount_amount`` - the latter also shifts when a line edit changes the subtotal of
+    a percentage discount, which is not itself a discount action.
+    """
+    changed = False
+    for key in ("discount", "discount_type"):
+        if key in fields_changed:
+            old, new = _change_old_new(fields_changed[key])
+            if old != new:
+                changed = True
+                break
+    if not changed:
+        return None, frozenset()
+
+    amount = None
+    if "discount_amount" in fields_changed:
+        _, amount = _change_old_new(fields_changed["discount_amount"])
+    if amount is None and "discount" in fields_changed:
+        _, amount = _change_old_new(fields_changed["discount"])
+    if float(amount or 0) > 0:
+        parts = [f"Discount Applied: {fmt_price(amount, 'discount_amount', currency)}"]
+    else:
+        parts = ["Discount Removed"]
+
+    if "total" in fields_changed:
+        old, new = _change_old_new(fields_changed["total"])
+        if old is not None and new is not None and old != new:
+            parts.append(f"Total: {fmt_price(old, 'total', currency)} → {fmt_price(new, 'total', currency)}")
+    return ", ".join(parts), _DISCOUNT_CONSUMED
+
+
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
@@ -501,10 +551,18 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
     """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
+
+    # A header (whole-document) discount change gets a semantic summary - "Discount Applied: $X"
+    # plus just the net effect on Total - instead of dumping every recomputed total (subtotal,
+    # tax, total) and a misleading "Lines edited". The consumed keys are then hidden below so
+    # they don't double-render.
+    discount_summary, consumed = _discount_change_summary(fields_changed, currency)
+
     user_fields = {k: v for k, v in fields_changed.items()
                    if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
+                   and k not in consumed
                    and k not in {"attachments", "preview_image_id"}}
-    if not user_fields:
+    if not user_fields and not discount_summary:
         return ""
 
     # Suppress raw-ID fields when the companion human-readable field is also present.
@@ -600,7 +658,10 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                     if overflow > 0:
                         summary += f" +{overflow} more"
                     complex_labels.append(summary)
-                    continue
+                # line_items diffed explicitly above: a real change produced `parts`. An empty
+                # diff means the lines were re-sent unchanged (e.g. a header-discount save), so
+                # emit nothing - never fall back to a misleading bare "Lines edited".
+                continue
             label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
             if label not in complex_labels:
                 complex_labels.append(label)
@@ -623,7 +684,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         else:
             scalar_parts.append(label)
 
-    all_parts = scalar_parts + complex_labels
+    all_parts = ([discount_summary] if discount_summary else []) + scalar_parts + complex_labels
     if not all_parts:
         return ""
     suffix = "…" if len(all_parts) > 4 else ""

@@ -6,33 +6,38 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
-from celerp.services.money import to_decimal, to_stored_float
+from celerp.services.money import round_money, to_decimal, to_stored_float
 
 
 def _recalc_list_totals(state: dict) -> dict:
-    """Recompute subtotal, discount_amount, tax_amount, total from line_items + header fields."""
-    items = state.get("line_items", [])
-    subtotal = sum(float(i.get("line_total", 0) or 0) for i in items)
-    state["subtotal"] = subtotal
+    """Recompute subtotal, discount_amount, tax_amount, total from line_items + header fields.
 
-    discount = float(state.get("discount", 0) or 0)
+    All monetary results are computed with Decimal and rounded to the list's currency precision
+    (never raw float) so totals never carry IEEE-754 tails like "346.50000000000006".
+    """
+    currency = state.get("currency")
+    items = state.get("line_items", [])
+    subtotal = round_money(sum((to_decimal(i.get("line_total", 0) or 0) for i in items), to_decimal(0)), currency)
+    state["subtotal"] = to_stored_float(subtotal)
+
+    discount = to_decimal(state.get("discount", 0) or 0)
     discount_type = state.get("discount_type", "flat")
-    discount_amount = subtotal * discount / 100 if discount_type == "percentage" else discount
-    state["discount_amount"] = discount_amount
+    discount_amount = round_money(subtotal * discount / 100 if discount_type == "percentage" else discount, currency)
+    state["discount_amount"] = to_stored_float(discount_amount)
 
     taxable = subtotal - discount_amount
     # Use per-line tax rates if present; fall back to header tax rate.
     per_line_tax = sum(
-        float(i.get("line_total", 0) or 0) * float(i.get("tax_rate", 0) or 0) / 100
-        for i in items
+        (to_decimal(i.get("line_total", 0) or 0) * to_decimal(i.get("tax_rate", 0) or 0) / 100 for i in items),
+        to_decimal(0),
     )
     if per_line_tax:
-        tax_amount = per_line_tax
+        tax_amount = round_money(per_line_tax, currency)
     else:
-        tax_rate = float(state.get("tax", 0) or 0)
-        tax_amount = taxable * tax_rate / 100
-    state["tax_amount"] = tax_amount
-    state["total"] = taxable + tax_amount
+        tax_rate = to_decimal(state.get("tax", 0) or 0)
+        tax_amount = round_money(taxable * tax_rate / 100, currency)
+    state["tax_amount"] = to_stored_float(tax_amount)
+    state["total"] = to_stored_float(round_money(taxable + tax_amount, currency))
     return state
 
 
