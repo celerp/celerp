@@ -41,9 +41,13 @@ def test_supporter_card_component():
     assert 'id="star-card-headline"' in xml
     assert 'id="star-card-body"' in xml
     assert 'id="star-card-body-2"' in xml     # smaller sub-paragraph (first-100 promise)
+    assert 'id="star-card-claim"' in xml      # claim button (hidden by JS once claimed)
     assert "white-space:pre-line" in xml      # renders the relay's "\n\n" paragraph break
-    assert "#d4af37" in xml                    # gold star (header + button)
+    assert "#d4af37" in xml                    # gold star
     assert "font-size:13px" in xml            # the smaller founding-promise text
+    # Card also reads the badge so it can switch to the relay's post-claim thank-you.
+    assert "/stars/badge" in xml
+    assert "thanks_headline" in xml and "{badge}" in xml
     # Hidden until JS hydrates it (non-neutral + not dismissed).
     assert "display:none" in xml.split('id="star-supporter-card"')[1][:90]
 
