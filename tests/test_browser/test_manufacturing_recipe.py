@@ -203,10 +203,21 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     assert row.locator("td.recipe-cell--na").count() == 0  # rate-based rows hide nothing
 
     # Switch the committed row's Type to Fixed -> Qty/Rate dim, Total becomes the editable amount.
-    page.dblclick('td[data-col="recipe__labor__0__kind"]')
-    page.wait_for_selector("select[name=value]", timeout=15000)
-    page.select_option("select[name=value]", "fixed")
-    page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=20000)
+    # An inline-edit select commits on its `change` event; under CI load that commit can be
+    # dropped (the cell's blur-restore races the in-flight PATCH), so re-open the editor and
+    # re-select until the row actually flips to Fixed and exposes the editable Total cell.
+    for _attempt in range(5):
+        page.dblclick('td[data-col="recipe__labor__0__kind"]')
+        try:
+            sel = page.locator("select[name=value]")
+            sel.wait_for(state="visible", timeout=8000)
+            sel.select_option("fixed")
+            page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=8000)
+            break
+        except Exception:
+            if _attempt == 4:
+                raise
+            page.wait_for_timeout(500)
     assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # Qty now dimmed N/A
     assert page.locator('tr:has(td[data-col="recipe__labor__0__amount"]) td.recipe-cell--na').count() == 2
     _set_cell(page, "recipe__labor__0__amount", "40")

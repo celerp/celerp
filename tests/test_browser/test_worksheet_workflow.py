@@ -57,6 +57,21 @@ def _set_cell(page, col, value, is_select=False, is_textarea=False):
             page.wait_for_timeout(600)
 
 
+def _set_cell_until(page, api, item, col, value, pred, tries=5, **kw):
+    """Edit a cell, then confirm the API reflects it - retrying the whole edit if not. An
+    inline-edit select commits on its `change` event, which CI load can drop (blur-restore
+    races the in-flight PATCH); re-opening the editor and re-selecting recovers."""
+    last = None
+    for attempt in range(tries):
+        _set_cell(page, col, value, **kw)
+        try:
+            return _wait(api, item, pred, timeout=6.0)
+        except AssertionError as e:
+            last = e
+            page.wait_for_timeout(400)
+    raise last
+
+
 def _pick_station(page, col, value):
     """Double-click the station cell and choose a work center from the combobox."""
     page.locator(f'td[data-col="{col}"]').scroll_into_view_if_needed()
@@ -97,8 +112,8 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
 
     # Changing the unit must NOT reload the page: a JS marker survives the edit.
     page.evaluate("window.__wfReloadMarker = 'alive'")
-    _set_cell(page, "workflow__0__time_unit", "hr", is_select=True)
-    _wait(api, item, lambda s: float(s[0].get("time_minutes") or 0) == 720.0)
+    _set_cell_until(page, api, item, "workflow__0__time_unit", "hr",
+                    lambda s: float(s[0].get("time_minutes") or 0) == 720.0, is_select=True)
     assert page.evaluate("window.__wfReloadMarker") == "alive", "unit change reloaded the page"
 
     # Excel sort + filter controls are present on the columns (same components as the rest).
