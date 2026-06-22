@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 Akses Web",
   "msg.accepted_formats_csv_utf8": "Format yang diterima: .csv (UTF-8)",
   "msg.agentic_record_creation": "Pembuatan catatan agenik",
-  "msg.ai_quota_exceeded": "Anda telah menggunakan semua {limit} termasuk AI kueri. Tingkatkan ke Cloud + AI untuk 100 kueri/bulan.",
+  "msg.ai_quota_exceeded": "Anda telah menggunakan semua {limit} termasuk AI kueri. Tingkatkan ke Cloud + AI untuk 200 kueri/bulan.",
   "msg.ai_subscription_required": "Langganan Cloud + AI diperlukan untuk menggunakan asisten AI.",
   "msg.api_server_not_running": "Pastikan server API berjalan sebelum membuka UI:",
   "msg.ask_anything_about_your_business_data": "Tanyakan apa pun tentang data bisnis Anda...",

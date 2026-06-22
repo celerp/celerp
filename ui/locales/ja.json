@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 ウェブアクセス",
   "msg.accepted_formats_csv_utf8": "受け入れられる形式: .csv (UTF-8)",
   "msg.agentic_record_creation": "エージェントレコードの作成",
-  "msg.ai_quota_exceeded": "{limit} に含まれる AI クエリをすべて使用しました。 100 クエリ/月の場合は Cloud + AI にアップグレードします。",
+  "msg.ai_quota_exceeded": "{limit} に含まれる AI クエリをすべて使用しました。 200 クエリ/月の場合は Cloud + AI にアップグレードします。",
   "msg.ai_subscription_required": "AI アシスタントを使用するには、Cloud + AI サブスクリプションが必要です。",
   "msg.api_server_not_running": "UI を開く前に、API サーバーが実行されていることを確認してください。",
   "msg.ask_anything_about_your_business_data": "ビジネスデータについて何でも質問してください...",

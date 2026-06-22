@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 Acceso web",
   "msg.accepted_formats_csv_utf8": "Formatos aceptados: .csv (UTF-8)",
   "msg.agentic_record_creation": "Creación de registros agentes",
-  "msg.ai_quota_exceeded": "Ha utilizado todas las consultas {limit} incluidas AI. Actualice a Cloud + AI para 100 consultas/mes.",
+  "msg.ai_quota_exceeded": "Ha utilizado todas las consultas {limit} incluidas AI. Actualice a Cloud + AI para 200 consultas/mes.",
   "msg.ai_subscription_required": "Se requiere suscripción a Cloud + AI para utilizar el asistente AI.",
   "msg.api_server_not_running": "Asegúrese de que el servidor API esté ejecutándose antes de abrir la interfaz de usuario:",
   "msg.ask_anything_about_your_business_data": "Pregunta cualquier cosa sobre los datos de tu negocio...",

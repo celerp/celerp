@@ -4015,7 +4015,7 @@ def _ai_tab() -> FT:
                 "AI Assistant",
                 "Ask your ERP questions in plain English - inventory analysis, AR summaries, "
                 "CRM insights. Connect (USD $29/mo) includes 100 free queries to try it. "
-                "AI + Connect (USD $49/mo) gives 100 queries every month.",
+                "AI + Connect (USD $49/mo) gives 200 queries every month.",
                 price="USD $29/mo",
                 anchor="cloud",
             ),
