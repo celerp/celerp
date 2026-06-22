@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 Truy cập web",
   "msg.accepted_formats_csv_utf8": "Các định dạng được chấp nhận: .csv (UTF-8)",
   "msg.agentic_record_creation": "Tạo bản ghi đại lý",
-  "msg.ai_quota_exceeded": "Bạn đã sử dụng tất cả các truy vấn {limit} được bao gồm AI. Nâng cấp lên Cloud + AI cho 100 truy vấn/tháng.",
+  "msg.ai_quota_exceeded": "Bạn đã sử dụng tất cả các truy vấn {limit} được bao gồm AI. Nâng cấp lên Cloud + AI cho 200 truy vấn/tháng.",
   "msg.ai_subscription_required": "Cần đăng ký Cloud + AI để sử dụng trợ lý AI.",
   "msg.api_server_not_running": "Đảm bảo máy chủ API đang chạy trước khi mở giao diện người dùng:",
   "msg.ask_anything_about_your_business_data": "Hỏi bất cứ điều gì về dữ liệu kinh doanh của bạn...",

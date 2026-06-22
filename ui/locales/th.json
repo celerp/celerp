@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 การเข้าถึงเว็บ",
   "msg.accepted_formats_csv_utf8": "รูปแบบที่ยอมรับ: .csv (UTF-8)",
   "msg.agentic_record_creation": "การสร้างบันทึกตัวแทน",
-  "msg.ai_quota_exceeded": "คุณได้ใช้ {limit} รวมคำค้นหา AI ทั้งหมดแล้ว อัปเกรดเป็น Cloud + AI สำหรับการสืบค้น 100 ครั้ง/เดือน",
+  "msg.ai_quota_exceeded": "คุณได้ใช้ {limit} รวมคำค้นหา AI ทั้งหมดแล้ว อัปเกรดเป็น Cloud + AI สำหรับการสืบค้น 200 ครั้ง/เดือน",
   "msg.ai_subscription_required": "ต้องสมัครสมาชิก Cloud + AI เพื่อใช้ผู้ช่วย AI",
   "msg.api_server_not_running": "ตรวจสอบให้แน่ใจว่าเซิร์ฟเวอร์ API ทำงานก่อนที่จะเปิด UI:",
   "msg.ask_anything_about_your_business_data": "ถามอะไรก็ได้เกี่ยวกับข้อมูลธุรกิจของคุณ...",

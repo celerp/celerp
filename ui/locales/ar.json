@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 الوصول إلى الويب",
   "msg.accepted_formats_csv_utf8": "التنسيقات المقبولة: ‎.csv (UTF-8)",
   "msg.agentic_record_creation": "إنشاء سجل الوكيل",
-  "msg.ai_quota_exceeded": "لقد استخدمت جميع استعلامات {limit} المضمنة AI. الترقية إلى Cloud + AI مقابل 100 استفسار/الشهر.",
+  "msg.ai_quota_exceeded": "لقد استخدمت جميع استعلامات {limit} المضمنة AI. الترقية إلى Cloud + AI مقابل 200 استفسار/الشهر.",
   "msg.ai_subscription_required": "يلزم الاشتراك في Cloud + AI لاستخدام مساعد AI.",
   "msg.api_server_not_running": "تأكد من تشغيل خادم API قبل فتح واجهة المستخدم:",
   "msg.ask_anything_about_your_business_data": "اسأل أي شيء عن بيانات عملك...",
