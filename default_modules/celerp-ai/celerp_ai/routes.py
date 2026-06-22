@@ -47,7 +47,7 @@ from celerp.ai.conversations import (
     rename_conversation,
 )
 from celerp.ai.page_count import calculate_credits, credits_for_pages, count_pages
-from celerp.ai.quota import check_ai_quota, get_quota_status, get_subscription_tier
+from celerp.ai.quota import get_quota_status, get_subscription_tier
 from celerp.ai.service import AIResponse, run_query
 from celerp.config import settings
 from celerp.db import get_session
@@ -191,8 +191,6 @@ async def ai_query(
     Cloud tier users are limited to 1 file per query.
     """
     await _enforce_cloud_file_limit(body.file_ids)
-    credits = _calculate_query_credits(body.file_ids, company_id)
-    await check_ai_quota(credits=credits)
     result: AIResponse = await run_query(
         query=body.query,
         session=session,
@@ -551,8 +549,6 @@ async def query_in_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     await _enforce_cloud_file_limit(body.file_ids)
-    credits = _calculate_query_credits(body.file_ids, company_id)
-    await check_ai_quota(credits=credits)
 
     # Build history from prior messages
     prior_msgs = await get_messages(session, conversation_id)
@@ -630,8 +626,6 @@ async def submit_batch(
     Poll GET /ai/batch/{id} for status.
     """
     await _enforce_cloud_file_limit(body.file_ids)
-    credits = _calculate_query_credits(body.file_ids, company_id)
-    await check_ai_quota(credits=credits)
 
     job = await create_batch_job(
         session, company_id, user.id, body.query, body.file_ids, credits,
