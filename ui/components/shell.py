@@ -811,16 +811,19 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
                    style="position:absolute;top:10px;right:14px;background:none;border:none;"
                          "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
-            # Header: gold star + the relay-hydrated ask.
-            H3(Span("★", style=gold), " ", Span("", id="star-card-headline"), style="margin:0 0 14px"),
+            # Header IS the link to the repo (gold star + the relay-hydrated ask).
+            H3(
+                A(Span("★ ", style=gold), Span("", id="star-card-headline"),
+                  id="star-card-star", href="#", target="_blank", rel="noopener",
+                  style="text-decoration:underline;color:inherit;cursor:pointer"),
+                style="margin:0 0 14px",
+            ),
             P("", id="star-card-body", style="white-space:pre-line;margin:0"),
             # Smaller sub-paragraph for the founding-badge promise.
             P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
             Div(
-                A(Span("★ ", style=gold), "Star on GitHub", id="star-card-star", href="#",
-                  target="_blank", rel="noopener", cls="btn btn--primary"),
-                A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),
-                style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:22px",
+                A("Claim your badge", href="/stars/claim", cls="btn btn--primary"),
+                style="margin-top:22px",
             ),
             id="star-supporter-card",
             style="display:none;position:relative;margin:16px 0;padding:28px 32px;"
