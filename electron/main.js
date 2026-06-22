@@ -13,7 +13,7 @@
 
 "use strict";
 
-const { app, BrowserWindow, shell, dialog, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, Menu, powerSaveBlocker } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
@@ -105,6 +105,27 @@ const DEFAULT_MODULES_SRC = IS_DEV
 
 let mainWindow = null;
 let isQuitting = false; // set true in before-quit so the close handler doesn't intercept Cmd+Q
+
+// C4: hold a power-save assertion (prevent idle system sleep) ONLY while the relay is actually
+// serving, so an idle Mac can't drop the connection. The relay state is owned by the Python
+// gateway client, which prints `CELERP_RELAY_STATE=<status>` on every transition; we read that
+// off the API process stdout below. `prevent-app-suspension` keeps the SYSTEM awake (the display
+// may still sleep) and is auto-released when the app exits. It does NOT override lid-close,
+// explicit sleep, or low battery - C3's auto-reconnect remains the safety net for those.
+let relaySleepBlockerId = null;
+function applyRelaySleepState(active) {
+  if (active && relaySleepBlockerId === null) {
+    relaySleepBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (!active && relaySleepBlockerId !== null) {
+    powerSaveBlocker.stop(relaySleepBlockerId);
+    relaySleepBlockerId = null;
+  }
+}
+function consumeRelayStateFromLog(text) {
+  // A chunk may carry several transitions; act on the last one only.
+  const matches = [...text.matchAll(/CELERP_RELAY_STATE=(\w+)/g)];
+  if (matches.length) applyRelaySleepState(matches[matches.length - 1][1] === "active");
+}
 let pgInstance = null;
 let apiProcess = null;
 let uiProcess = null;
@@ -332,6 +353,11 @@ function startApi(dbUrl, cfg) {
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_INSTALL_CHANNEL: "electron",
+      // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
+      // path reads the version from /health (it has no window.celerp), so pass the Electron
+      // app version through to the API; /health reports it instead of the Python package
+      // version, keeping desktop and relay in agreement.
+      CELERP_APP_VERSION: app.getVersion(),
       CELERP_API_PORT: String(apiPort),
       CELERP_UI_PORT: String(uiPort),
       CELERP_PG_BIN_DIR: pgBinDir(),
@@ -346,7 +372,11 @@ function startApi(dbUrl, cfg) {
     const logFile = path.join(LOG_DIR, "api.log");
     let stderr = "";
     apiProcess.stderr.on("data", (d) => { stderr += d.toString(); apiLog?.write(d); });
-    apiProcess.stdout.on("data", (d) => { stderr += d.toString(); apiLog?.write(d); });
+    apiProcess.stdout.on("data", (d) => {
+      const s = d.toString();
+      stderr += s; apiLog?.write(d);
+      consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
+    });
     apiProcess.on("error", reject);
     apiProcess.on("exit", (code) => {
       if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
@@ -1013,6 +1043,7 @@ app.on("activate", () => {
 
 app.on("before-quit", async () => {
   isQuitting = true;
+  applyRelaySleepState(false);  // C4: release the power-save assertion (also auto-released on exit)
   if (uiProcess) uiProcess.kill();
   if (apiProcess) apiProcess.kill();
   if (pgInstance) await pgInstance.stop();

@@ -121,11 +121,27 @@ class GatewayClient:
     def required_tos_version(self) -> str:
         return self._required_tos_version
 
+    def _set_status(self, status: str) -> None:
+        """Set the relay status and, on a *change*, emit a one-line sentinel on stdout.
+
+        The Electron host reads the spawned API process's stdout and holds a power-save
+        assertion while the relay is serving (keeps the Mac awake so an idle sleep can't drop
+        the connection - C4). Routing every status transition through here is the single
+        producer of that signal; outside Electron the line is just harmless log noise.
+        """
+        if status == self._relay_status:
+            return
+        self._relay_status = status
+        try:
+            print(f"CELERP_RELAY_STATE={status}", flush=True)
+        except Exception:
+            pass
+
     # ── Internal ───────────────────────────────────────────────────────
 
     async def _connect_and_serve(self) -> None:
         log.debug("Connecting to gateway at %s", self._url)
-        self._relay_status = "connecting"
+        self._set_status("connecting")
         # Keepalive on: a silently-dead connection (e.g. the host sleeping) raises
         # ConnectionClosed within ~ping_interval+ping_timeout, so _connect_and_serve
         # exits and run()'s backoff loop reconnects — instead of blocking forever on
@@ -161,14 +177,14 @@ class GatewayClient:
                     continue
                 await self._dispatch(msg)
         self._ws = None
-        self._relay_status = "inactive"
+        self._set_status("inactive")
 
     async def _dispatch(self, msg: dict) -> None:
         msg_type = msg.get("type", "")
         payload = msg.get("payload", {})
 
         if msg_type == "hello_ack":
-            self._relay_status = "active"
+            self._set_status("active")
             # Relay returns the canonical instance_id - store it for quota calls
             from celerp.gateway.state import set_session_token, set_instance_id
             canonical_id = payload.get("instance_id", "")
@@ -199,7 +215,7 @@ class GatewayClient:
         elif msg_type == "error":
             code = payload.get("code", "")
             if code == "tos_required":
-                self._relay_status = "tos_required"
+                self._set_status("tos_required")
                 self._required_tos_version = payload.get("required_version", "")
                 log.warning("Gateway: TOS acceptance required (version=%s)", self._required_tos_version)
             else:
