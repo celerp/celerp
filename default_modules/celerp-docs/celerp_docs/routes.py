@@ -1302,7 +1302,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.voided",
-        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason, "refund_date": payload.refund_date},
+        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason,
+              "refund_date": payload.refund_date, "amount": payment.get("amount"), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -1339,7 +1340,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                     await emit_event(
                         session, company_id=company_id, entity_id=paired_doc_id, entity_type="doc",
                         event_type="doc.payment.voided",
-                        data={"payment_index": pi, "void_reason": payload.void_reason or "Paired void"},
+                        data={"payment_index": pi, "void_reason": payload.void_reason or "Paired void",
+                              "amount": pp.get("amount"), "method": pp.get("method")},
                         actor_id=user.id, location_id=None, source="api",
                         idempotency_key=str(uuid.uuid4()), metadata_={},
                     )
@@ -1423,7 +1425,8 @@ async def delete_payment(
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason},
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+              "amount": payment.get("amount"), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )

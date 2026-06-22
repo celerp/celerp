@@ -485,11 +485,15 @@ class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
     refund_date: str | None = None  # ISO date for the reversal JE; defaults to today if absent
+    amount: float | None = None     # voided payment amount, for the history detail
+    method: str | None = None
 
 
 class DocPaymentDeleted(BaseModel):
     payment_index: int
     delete_reason: str | None = None
+    amount: float | None = None     # deleted payment amount, for the history detail
+    method: str | None = None
 
 
 class DocConverted(BaseModel):

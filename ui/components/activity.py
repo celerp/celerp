@@ -50,6 +50,8 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "doc.converted_to_bill": "Converted to bill",
     "doc.payment.received": "Payment received",
     "doc.payment.refunded": "Payment refunded",
+    "doc.payment.voided": "Payment voided",
+    "doc.payment.deleted": "Payment deleted",
     "doc.received": "Goods received",
     "doc.fulfilled": "Fulfilled",
     "doc.partially_fulfilled": "Partially fulfilled",
@@ -375,6 +377,15 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
             parts.append(f"refunded: {fmt_money(amount, currency)}")
+        return " - ".join(parts) if parts else ""
+    if event_type in ("doc.payment.voided", "doc.payment.deleted"):
+        amount = data.get("amount")
+        reason = data.get("void_reason") or data.get("delete_reason") or ""
+        parts = []
+        if amount is not None:
+            parts.append(f"amount: {fmt_money(amount, currency)}")
+        if reason:
+            parts.append(str(reason)[:80])
         return " - ".join(parts) if parts else ""
     if event_type == "doc.voided":
         reason = data.get("reason", "")
