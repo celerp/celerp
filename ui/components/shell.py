@@ -765,7 +765,7 @@ _STAR_CTA_JS = """
     if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
     el.textContent = label;
     el.href = d.url;
-    el.title = 'We appreciate your support.';
+    el.title = d.tooltip || 'We appreciate your support.';
     el.style.display = '';
   }).catch(function(){});
   fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
@@ -780,14 +780,17 @@ _STAR_CTA_JS = """
 
 
 def star_supporter_card(medium: str = "dashboard") -> FT:
-    """The GitHub-star ask: a gold-bordered, dismissable card. Hydrates the star link +
-    visibility from /stars/cta (shows only in a non-neutral mode and when not dismissed);
-    the copy is static. Rendered on the dashboard (where setup lands) and onboarding."""
+    """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
+    + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
+    shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
+    on the dashboard (where setup lands) and onboarding."""
     js = (
         "(function(){"
         "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).then(function(d){"
         "if(!d||!d.url||d.dismissed||d.mode==='neutral')return;"
         "var card=document.getElementById('star-supporter-card');if(!card)return;"
+        "var h=document.getElementById('star-card-headline');if(h)h.textContent=d.headline||'Star on GitHub';"
+        "var b=document.getElementById('star-card-body');if(b)b.textContent=d.body||'';"  # \\n\\n -> paragraph (pre-line)
         "var s=document.getElementById('star-card-star');if(s)s.href=d.url;"
         "card.style.display='';"
         "}).catch(function(){});"
@@ -803,11 +806,10 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
                    style="position:absolute;top:10px;right:14px;background:none;border:none;"
                          "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
-            H3("Star on GitHub", style="margin:0 0 14px"),
-            P("Celerp is new and open source. A GitHub star is how other teams decide we are worth trying."),
-            P("We want the first 100 people that star us to receive a badge for showing their support so "
-              "that if you interact with our celerp repo, other people will know that you were with us from "
-              "the beginning. Thank you for your support."),
+            # Header + body are filled from the relay CTA; body uses pre-line so the
+            # relay's "\\n\\n" renders as a paragraph break.
+            H3("", id="star-card-headline", style="margin:0 0 14px"),
+            P("", id="star-card-body", style="white-space:pre-line;margin:0"),
             Div(
                 A("Star on GitHub", id="star-card-star", href="#", target="_blank", rel="noopener", cls="btn btn--primary"),
                 A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),

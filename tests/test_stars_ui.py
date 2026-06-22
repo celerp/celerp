@@ -32,13 +32,15 @@ def test_supporter_card_component():
     assert "/stars/cta?medium=dashboard" in xml
     assert "/stars/claim" in xml             # claim handshake link
     assert "/stars/dismiss" in xml
-    # Dismiss is now an X button (top-right), not a "Maybe later" button.
+    # Dismiss is an X button (top-right), not a "Maybe later" button.
     assert 'id="star-card-dismiss"' in xml
     assert "Maybe later" not in xml
     assert "×" in xml
-    # The ask is the header; the explanation + founding-badge promise is the body.
-    assert "<h3" in xml and "Star on GitHub" in xml
-    assert "first 100 people that star us" in xml
+    # Header + body are hydration targets — the COPY comes from the relay (single
+    # source), so it is NOT in the static render; only the placeholders + pre-line are.
+    assert 'id="star-card-headline"' in xml
+    assert 'id="star-card-body"' in xml
+    assert "white-space:pre-line" in xml      # renders the relay's "\n\n" paragraph break
     # Hidden until JS hydrates it (non-neutral + not dismissed).
     assert "display:none" in xml.split('id="star-supporter-card"')[1][:90]
 
