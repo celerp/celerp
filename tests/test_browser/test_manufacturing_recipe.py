@@ -76,9 +76,9 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
 
     # Ghost add-row commits a real, persisted component (qty defaults to 1).
     _ghost_pick(page, raw_sku)
-    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
     _set_cell(page, "recipe__components__0__quantity", "5")
-    page.wait_for_selector("#recipe-cost-card:has-text('400')", timeout=20000)
+    page.wait_for_selector("#recipe-cost-card:has-text('400')", timeout=8000)
 
     # Materials row shows the catalog unit cost (80) and extended cost (400), both read-only,
     # and the Materials section header carries the section total (400). (Items #2 + #4.)
@@ -95,17 +95,17 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     page.fill("input[name=labor_new_hours]", "2")
     page.fill("input[name=labor_new_rate]", "50")
     page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
-    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=8000)
 
     # Overhead: same one-step add.
     page.fill("input[name=oh_new_desc]", "Polishing & box")
     page.fill("input[name=oh_new_amount]", "15")
     page.locator("tr.recipe-add-row:has(input[name=oh_new_desc]) button.recipe-add-btn").click()
-    page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=8000)
     page.screenshot(path=str(SHOTS / "02-filled.png"), full_page=True)
 
     # 5*80 materials + 100 labor + 15 overhead = 515, all persisted automatically.
-    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=20000)
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     page.screenshot(path=str(SHOTS / "03-saved.png"), full_page=True)
     assert api.get(f"/items/{item_id}").json()["recipe"]["unit_cost"] == 515.0
 
@@ -116,7 +116,7 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     # Progress survives navigation: leave the tab and come back.
     page.goto(f"{ui_server}/inventory/{item_id}?tab=details", wait_until="domcontentloaded")
     _open_tab(page, ui_server, item_id)
-    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=20000)
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     assert page.locator('td[data-col="recipe__components__0__quantity"]').inner_text().strip() == "5"
 
 
@@ -139,7 +139,7 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     box.fill("")
 
     _ghost_pick(page, "FL-GOLD")
-    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
     _set_cell(page, "recipe__components__0__quantity", "2")
     # Unit comes from the component's sell unit; there is no unit input anywhere.
     assert "gram" in page.locator(".comp-unit-cell").first.inner_text()
@@ -150,10 +150,10 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     page.select_option("select[name=labor_new_kind]", "fixed")
     page.fill("input[name=labor_new_amount]", "30")
     page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
-    page.wait_for_selector('td[data-col="recipe__labor__0__kind"]:has-text("Fixed")', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__labor__0__kind"]:has-text("Fixed")', timeout=8000)
 
     # 2 * 10 materials + 30 fixed labor = 50, persisted automatically.
-    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=20000)
+    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)
     got = api.get(f"/items/{fg}").json()["recipe"]
     assert got["unit_cost"] == 50.0
     assert got["components"][0]["unit"] == "gram"
@@ -169,7 +169,7 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1000})
     _open_tab(page, ui_server, fg)
     _ghost_pick(page, "LT-GOLD")  # a component so the item is manufacturable
-    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
 
     # The Type dropdown offers Hourly, Daily and Fixed.
     assert page.locator("select[name=labor_new_kind] option").count() == 3
@@ -196,7 +196,7 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     page.fill("input[name=labor_new_hours]", "2")
     page.fill("input[name=labor_new_rate]", "30")
     page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
-    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=8000)
     row = page.locator('tr:has(td[data-col="recipe__labor__0__rate"])')
     assert page.locator('td[data-col="recipe__labor__0__amount"]').count() == 0  # Total is computed, not editable
     assert "60" in row.inner_text()                       # 2 x 30 shown in the Total column
@@ -204,13 +204,13 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
 
     # Switch the committed row's Type to Fixed -> Qty/Rate dim, Total becomes the editable amount.
     page.dblclick('td[data-col="recipe__labor__0__kind"]')
-    page.wait_for_selector("select[name=value]", timeout=15000)
+    page.wait_for_selector("select[name=value]", timeout=5000)
     page.select_option("select[name=value]", "fixed")
-    page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=20000)
+    page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=8000)
     assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # Qty now dimmed N/A
     assert page.locator('tr:has(td[data-col="recipe__labor__0__amount"]) td.recipe-cell--na').count() == 2
     _set_cell(page, "recipe__labor__0__amount", "40")
-    page.wait_for_selector("#recipe-cost-card:has-text('140')", timeout=20000)  # 100 materials + 40 fixed
+    page.wait_for_selector("#recipe-cost-card:has-text('140')", timeout=8000)  # 100 materials + 40 fixed
     got = api.get(f"/items/{fg}").json()["recipe"]
     assert got["labor"][0]["kind"] == "fixed" and got["labor"][0]["amount"] == 40.0
 
