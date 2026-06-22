@@ -6584,6 +6584,9 @@ function celerpOpenDiscount() {{
     // case), so an accidental Apply can't silently set a flat $0.
     const _hasExisting = vEl && parseFloat(vEl.value || 0) > 0;
     celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
+    // Nothing to remove yet -> the secondary button just cancels.
+    const rmBtn = document.getElementById('disc-remove-btn');
+    if (rmBtn) rmBtn.textContent = _hasExisting ? 'Remove' : 'Cancel';
     const willOpen = !pop.classList.contains('disc-popover--open');
     pop.classList.toggle('disc-popover--open', willOpen);
     if (willOpen && input) {{ input.focus(); input.select(); }}
@@ -6610,10 +6613,13 @@ function celerpApplyDiscount() {{
     celerpCloseDiscount();
 }}
 function celerpRemoveDiscount() {{
+    // Acts as Cancel when no discount is set (pure close, no save); removes it otherwise.
     const vEl = document.getElementById('doc-discount-value');
-    if (vEl) vEl.value = '';
-    celerpUpdateTotals();
-    celerpAutoSave();
+    if (vEl && parseFloat(vEl.value || 0) > 0) {{
+        vEl.value = '';
+        celerpUpdateTotals();
+        celerpAutoSave();
+    }}
     celerpCloseDiscount();
 }}
 // Dismiss the discount popover on an outside click (not on the popover or the pencil).
@@ -7174,10 +7180,15 @@ async function celerpCsvImport(input, entityId) {{
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
         Div(*tax_rows, id="doc-tax-rows"),
         Div(Span(t("doc.total"), cls="total-label total-label--final"),
-            Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
-            (Button("✎", type="button", cls="btn-disc-edit",
-                    title="Add or edit discount", aria_label="Add or edit discount",
-                    onclick="celerpOpenDiscount()") if _can_discount else ""),
+            # The pencil sits just LEFT of the amount; the amount stays right-aligned (accounting
+            # format). Grouping them keeps the figure flush to the panel's right edge.
+            Span(
+                (Button("✎", type="button", cls="btn-disc-edit",
+                        title="Add or edit discount", aria_label="Add or edit discount",
+                        onclick="celerpOpenDiscount()") if _can_discount else ""),
+                Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
+                cls="total-final-right",
+            ),
             cls="total-row total-row--final"),
         # Conversion note: shown only when doc currency differs from company base currency
         *([Div(
@@ -7205,7 +7216,9 @@ async function celerpCsvImport(input, entityId) {{
                     cls="disc-pop-row",
                 ),
                 Div(
-                    Button("Remove", type="button", onclick="celerpRemoveDiscount()", cls="btn btn--ghost btn--sm"),
+                    # "Remove" once a discount exists, else "Cancel" (nothing to remove yet).
+                    Button("Remove" if discount > 0.005 else "Cancel", type="button", id="disc-remove-btn",
+                           onclick="celerpRemoveDiscount()", cls="btn btn--ghost btn--sm"),
                     Button("Apply", type="button", onclick="celerpApplyDiscount()", cls="btn btn--primary btn--sm"),
                     cls="disc-pop-actions",
                 ),

@@ -1620,9 +1620,12 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .total-value { font-weight: 500; color: var(--c-text); text-align: right; }
 .total-value--final { font-weight: 700; font-size: 15px; color: var(--c-accent); }
 
-/* Header-discount pencil: faint, sits after the Total amount and brightens on hover. */
+/* Total amount + its edit pencil: the pencil sits to the LEFT of the figure, which stays flush
+   right (accounting format). */
+.total-final-right { display: inline-flex; align-items: center; gap: 6px; }
+/* Header-discount pencil: faint, brightens on hover. */
 .btn-disc-edit {
-    background: none; border: none; cursor: pointer; padding: 0 0 0 6px;
+    background: none; border: none; cursor: pointer; padding: 0;
     color: var(--c-text-muted, #999); opacity: 0.55; font-size: 12px; line-height: 1;
 }
 .btn-disc-edit:hover { opacity: 1; color: var(--c-accent); }

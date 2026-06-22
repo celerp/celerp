@@ -208,6 +208,32 @@ class TestHeaderDiscount:
         assert "<dialog" not in r.text.lower(), "discount editor must be an inline popover, not a modal dialog"
 
     @pytest.mark.asyncio
+    async def test_pencil_left_of_right_aligned_total(self, ui_client):
+        # The pencil sits LEFT of the total amount (grouped in .total-final-right); the amount keeps
+        # its right-aligned accounting position.
+        doc = {**_DRAFT_DOC, "entity_id": "d:hdL", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hdL", cookies=_authed())
+        assert r.status_code == 200
+        assert "total-final-right" in r.text
+        assert r.text.index('class="btn-disc-edit"') < r.text.index('id="doc-total"'), \
+            "pencil must render before (left of) the total amount"
+
+    @pytest.mark.asyncio
+    async def test_secondary_button_is_cancel_until_discount_exists(self, ui_client):
+        no_disc = {**_DRAFT_DOC, "entity_id": "d:hdC", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=no_disc)):
+            r = await ui_client.get("/docs/d:hdC", cookies=_authed())
+        assert ">Cancel<" in r.text and ">Remove<" not in r.text, "new discount editor shows Cancel, not Remove"
+
+        with_disc = {**_DRAFT_DOC, "entity_id": "d:hdR", "doc_type": "invoice", "status": "draft",
+                     "subtotal": 100.0, "total": 90.0, "total_amount": 90.0,
+                     "discount": 10, "discount_type": "percentage", "discount_amount": 10.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=with_disc)):
+            r2 = await ui_client.get("/docs/d:hdR", cookies=_authed())
+        assert ">Remove<" in r2.text, "an existing discount shows Remove"
+
+    @pytest.mark.asyncio
     async def test_no_pencil_on_credit_note(self, ui_client):
         # A credit note is a reversal - a header discount is incoherent there, so no affordance.
         doc = {**_DRAFT_DOC, "entity_id": "d:cn", "doc_type": "credit_note", "status": "draft"}
