@@ -44,6 +44,13 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
+    # The settings test enables require_issued_before_complete on the SESSION-SHARED company; with it
+    # on, bulk Complete rejects runs whose components aren't issued (silently skipped, not a 500), so
+    # neither run completes. Disable it here so this test is order-independent and exercises the
+    # auto-issue-on-complete path. Preserve other manufacturing settings (PATCH shallow-merges).
+    _mfg = (api.get("/companies/me").json().get("settings") or {}).get("manufacturing") or {}
+    api.patch("/companies/me", json={"settings": {"manufacturing": {**_mfg, "require_issued_before_complete": False}}})
+
     # ── Seed a manufacturable product with a recipe, then build two PLANNED runs ──
     steel = api.post("/items", json={
         "sku": "WIP-STEEL", "name": "Steel bar", "quantity": 1000,
