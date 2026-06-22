@@ -756,6 +756,27 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 """
 
+_STAR_CTA_JS = """
+(function(){
+  fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
+    var el = document.getElementById('star-cta');
+    if (!el || !d || !d.url) return;
+    var label = d.cta_label || 'Star on GitHub';
+    if (d.mode === 'founding') label = 'Back us early \\u2605';
+    else if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;
+    el.textContent = label; el.href = d.url; el.style.display = '';
+  }).catch(function(){});
+  fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
+    var el = document.getElementById('supporter-badge');
+    if (!el || !d || !d.badge) return;
+    el.textContent = '\\u2605 ' + d.badge.label;
+    el.title = 'Thank you for being ' + d.badge.label;
+    el.style.display = '';
+  }).catch(function(){});
+})();
+"""
+
+
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
     from ui.config import get_user_email, get_relay_info
@@ -775,6 +796,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(_HEALTH_BANNER_JS),
         Script(_NOTIFICATION_JS),
         Script(_USER_MENU_JS),
+        Script(_STAR_CTA_JS),
     ]
     if extra_head:
         head_items.extend(extra_head)
@@ -792,6 +814,8 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),
+                        A("", id="star-cta", href="#", target="_blank", rel="noopener",
+                          cls="brand-footer-link", style="display:none;margin-left:16px"),
                         cls="brand-footer",
                     ),
                     cls="content-area",
@@ -947,6 +971,8 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             Div(
                 # Email pill = dropdown trigger
                 Div(
+                    Span("", id="supporter-badge", cls="supporter-badge", title="",
+                         style="display:none;margin-right:8px;color:#d4af37;font-size:12px"),
                     Span(user_email, cls="user-menu__email-text"),
                     cls="user-menu__trigger",
                     onclick="toggleUserMenu()",
