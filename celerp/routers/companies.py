@@ -1511,7 +1511,7 @@ async def list_modules(
     import asyncio
     import os
     from pathlib import Path
-    from celerp.modules.loader import loaded_modules, read_manifest_metadata
+    from celerp.modules.loader import is_running, loaded_modules, read_manifest_metadata
     from celerp.modules.registry import get_enabled
 
     company = await session.get(Company, company_id)
@@ -1547,7 +1547,9 @@ async def list_modules(
                     "author": manifest_source.get("author", ""),
                     "depends_on": list(manifest_source.get("depends_on") or []),
                     "enabled": pkg_name in enabled_names,
-                    "running": pkg_name in loaded_by_name,
+                    # Core-folded modules (ai/backup/connectors) are wired at app
+                    # construction, never in loaded_by_name — is_running() counts them.
+                    "running": is_running(pkg_name),
                 })
         return results
 
