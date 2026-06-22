@@ -11,8 +11,11 @@ All activity/history sections should use ``activity_table()`` for DRY rendering.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 from fasthtml.common import *
 from ui.i18n import t, get_lang
+from ui.components.table import fmt_money, fmt_rate
 
 EVENT_TYPE_LABELS: dict[str, str] = {
     "item.created": "Item added",
@@ -27,9 +30,13 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "item.pricing.set": "Price updated",
     "item.status.set": "Status changed",
     "item.split": "Item split",
+    "item.split_from": "Split from",
     "item.merged": "Items merged",
     "item.transform": "Item transformed",
+    "item.transformed_from": "Transformed from",
     "item.source_deactivated": "Merged into another item",
+    "item.fulfilled": "Sold / fulfilled",
+    "item.fulfillment_reversed": "Sale reversed",
     "item.consumed": "Consumed in production",
     "item.produced": "Produced",
     "doc.created": "Document created",
@@ -43,7 +50,13 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "doc.converted_to_bill": "Converted to bill",
     "doc.payment.received": "Payment received",
     "doc.payment.refunded": "Payment refunded",
+    "doc.payment.voided": "Payment voided",
+    "doc.payment.deleted": "Payment deleted",
     "doc.received": "Goods received",
+    "doc.fulfilled": "Fulfilled",
+    "doc.partially_fulfilled": "Partially fulfilled",
+    "doc.fulfillment_reversed": "Fulfillment reversed",
+    "doc.partially_reverted": "Partially reverted",
     "doc.line_received": "Line item received",
     "doc.line_returned": "Line item returned",
     "doc.items_returned": "Items returned",
@@ -111,6 +124,73 @@ def entity_url(entity_id: str) -> str:
     return ""
 
 
+def fmt_qty(value) -> str:
+    """Format a quantity/pieces/weight with the right decimal count: trims trailing
+    zeros and float noise (8.0 -> '8', 7.50 -> '7.5', 7.1000000001 -> '7.1')."""
+    if value is None:
+        return ""
+    try:
+        d = Decimal(str(value)).normalize()
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+    if d == d.to_integral_value():
+        d = d.quantize(Decimal(1))
+    return format(d, "f")
+
+
+def fmt_price(value, price_type: str | None = None, currency: str | None = None) -> str:
+    """Format a price/amount at the right precision: per-unit ``*_price`` fields use rate
+    precision (trailing zeros trimmed), totals/amounts use currency precision."""
+    if value is None:
+        return ""
+    if price_type and price_type.endswith("_price") and price_type != "cost_total":
+        return fmt_rate(value, currency)
+    return fmt_money(value, currency)
+
+
+def _item_brief_summary(items, limit: int = 6) -> str:
+    """'SKU ×qty, SKU ×qty' from a list of {sku/item_id, quantity} dicts — used to name the
+    items in document fulfillment/receipt/reversal activity entries. Received items carry their
+    count as ``quantity_received``; fulfilled/reversed items as ``quantity``."""
+    if not isinstance(items, list):
+        return ""
+    parts: list[str] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sku = str(it.get("sku") or "")
+        if not sku:
+            iid = str(it.get("item_id") or "")
+            sku = iid[5:] if iid.startswith("item:") else iid
+        if not sku:
+            sku = str(it.get("name") or "")
+        if not sku:
+            continue
+        qty = it.get("quantity")
+        if qty is None:
+            qty = it.get("quantity_received")
+        parts.append(f"{sku} ×{fmt_qty(qty)}" if qty is not None else sku)
+    summary = ", ".join(parts[:limit])
+    if len(parts) > limit:
+        summary += f" +{len(parts) - limit} more"
+    return summary
+
+
+def _line_item_type(li: dict) -> str:
+    """Best-effort audit label for a line item's kind. Bills/POs carry an explicit
+    ``receive_as`` (stock/expense); otherwise a line that links a catalog item (has a
+    sku/id) is treated as stock and a free-typed line as non-stock. The history renderer
+    has no catalog access, so a service catalog item on an invoice reads as 'Stock'."""
+    if not isinstance(li, dict):
+        return "Non-stock"
+    ra = li.get("receive_as")
+    if ra:
+        return str(ra).replace("_", " ").strip().capitalize()
+    if li.get("sku") or li.get("item_id") or li.get("entity_id"):
+        return "Stock"
+    return "Non-stock"
+
+
 # Event types that are system-internal and should not appear in user-facing history.
 _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
@@ -128,6 +208,17 @@ _OPERATION_NOISE_REASONS = frozenset({
     "from_split",
     "from_transform",
     "from_merge",
+    # The mother's per-field reductions during a split (qty/cost/weight/pieces). The
+    # item.split summary already shows them as one coherent before -> after entry.
+    "split_parent",
+})
+
+# Origin markers emitted on a split/transform CHILD. They ARE the child's first history
+# entry, so they must render on the child's own page; on the dashboard they de-dup against
+# the mother's summary event and are suppressed there.
+_ORIGIN_EVENT_TYPES = frozenset({
+    "item.split_from",
+    "item.transformed_from",
 })
 
 # Event types that are self-describing via their label; detail column intentionally blank.
@@ -149,6 +240,12 @@ _SELF_DESCRIBING_EVENT_TYPES = frozenset({
 })
 
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
+
+# Document totals that are computed from line_items + header fields (see _recalc_list_totals).
+# Editing an item's price or quantity recalculates these, but the user's action was the line
+# edit alone - so they are suppressed from change summaries to avoid noise like
+# "Subtotal: x → y, Total: x → y" alongside the real "ItemName: x → y".
+_DERIVED_DOC_FIELDS = frozenset({"subtotal", "total", "tax_amount", "discount_amount", "amount_outstanding"})
 
 # Human-readable labels for field keys shown in activity change summaries.
 _FIELD_LABELS: dict[str, str] = {
@@ -193,24 +290,29 @@ _ID_FIELD_COMPANIONS: dict[str, str] = {
 }
 
 
-def detail_from_entry(data: dict, event_type: str) -> str:
+def detail_from_entry(data: dict, event_type: str, currency: str | None = None) -> str:
     """Extract a short human-readable detail string from a ledger entry's data dict."""
     if not data or not isinstance(data, dict):
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed)
+        summary = _fields_changed_summary(fields_changed, currency)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
         # Fall through to event-type-specific detail - no generic "Updated" fallback.
     if event_type in ("item.quantity.adjusted", "item.quantity_adjusted"):
-        new_qty = data.get("new_qty") or data.get("quantity")
+        new_qty = data.get("new_qty")
+        if new_qty is None:
+            new_qty = data.get("quantity")
         if new_qty is not None:
-            return f"Qty → {new_qty}"
+            return f"Qty → {fmt_qty(new_qty)}"
     if event_type == "item.transferred":
-        loc = data.get("location_name") or data.get("location_id", "")
-        return f"→ {loc}" if loc else ""
+        to = data.get("to_location_name") or data.get("to_location_id") or data.get("location_name") or data.get("location_id") or ""
+        frm = data.get("from_location_name") or data.get("from_location_id") or ""
+        if frm and to:
+            return f"{frm} → {to}"
+        return f"→ {to}" if to else ""
     if event_type == "item.expired":
         reason = data.get("reason", "")
         return str(reason)[:60] if reason else ""
@@ -218,7 +320,7 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         price_type = data.get("price_type", "")
         new_price = data.get("new_price")
         label = price_type.replace("_", " ").title() if price_type else "Price"
-        return f"{label} → {new_price}" if new_price is not None else label
+        return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
         return f"→ {new_status}" if new_status else ""
@@ -288,19 +390,28 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"amount: {amount}")
+            parts.append(f"amount: {fmt_money(amount, currency)}")
         return " - ".join(parts) if parts else ""
     if event_type == "doc.payment.received":
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"amount: {amount}")
+            parts.append(f"amount: {fmt_money(amount, currency)}")
         return " - ".join(parts) if parts else ""
     if event_type == "doc.payment.refunded":
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"refunded: {amount}")
+            parts.append(f"refunded: {fmt_money(amount, currency)}")
+        return " - ".join(parts) if parts else ""
+    if event_type in ("doc.payment.voided", "doc.payment.deleted"):
+        amount = data.get("amount")
+        reason = data.get("void_reason") or data.get("delete_reason") or ""
+        parts = []
+        if amount is not None:
+            parts.append(f"amount: {fmt_money(amount, currency)}")
+        if reason:
+            parts.append(str(reason)[:80])
         return " - ".join(parts) if parts else ""
     if event_type == "doc.voided":
         reason = data.get("reason", "")
@@ -342,23 +453,57 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
     if event_type == "doc.updated":
-        return _fields_changed_summary(fields_changed)
+        return _fields_changed_summary(fields_changed, currency)
     if event_type == "doc.shared":
         return doc_ref or ""
+    if event_type == "doc.received":
+        return _item_brief_summary(data.get("received_items"))
+    if event_type in ("doc.fulfilled", "doc.partially_fulfilled"):
+        summary = _item_brief_summary(data.get("fulfilled_items"))
+        if event_type == "doc.partially_fulfilled":
+            pending = _item_brief_summary(data.get("unfulfilled_items"))
+            if summary and pending:
+                return f"{summary} (pending: {pending})"
+        return summary
+    if event_type in ("doc.fulfillment_reversed", "doc.partially_reverted"):
+        return _item_brief_summary(data.get("reversed_items"))
     return ""
 
 
-def _fields_changed_summary(fields_changed: dict) -> str:
+# Field-type buckets for formatting change-summary values (H11).
+_QTY_FIELD_KEYS = frozenset({"quantity", "pieces", "reserved_quantity", "weight"})
+_MONEY_FIELD_KEYS = frozenset({"cost_total", "cost_price", "total", "subtotal", "tax_total",
+                               "amount", "amount_outstanding", "price", "unit_price"})
+_DATE_FIELD_KEYS = frozenset({"due_date", "issue_date", "expiry_date", "date", "payment_date"})
+
+
+def _fmt_field_value(key: str, value, currency: str | None) -> str:
+    """Format a single changed-field value by its field type: integer/clean pieces & qty,
+    currency money, ISO dates as dates; anything else falls back to capped text."""
+    if value is None:
+        return "none"
+    if key in _QTY_FIELD_KEYS:
+        return fmt_qty(value)
+    if key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total"):
+        return fmt_price(value, key, currency)
+    if key in _DATE_FIELD_KEYS or key.endswith("_date"):
+        return str(value)[:10]
+    s = str(value)
+    return s[:40] + "…" if len(s) > 40 else s
+
+
+def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
-    Scalar changes: "field: old → new" (values capped at 40 chars).
+    Scalar changes: "field: old → new", each value formatted by its field type.
     Complex changes (list/dict): "Lines edited", "Contact updated", etc.
     Unknown complex: "field updated".
     """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
     user_fields = {k: v for k, v in fields_changed.items()
-                   if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
+                   if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
+                   and k not in {"attachments", "preview_image_id"}}
     if not user_fields:
         return ""
 
@@ -391,18 +536,32 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
             if k == "line_items" and isinstance(new, list):
+                def _li_key(li):
+                    return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
+                def _li_label(li):
+                    name = li.get("name") or li.get("sku") or ""
+                    qty = li.get("quantity")
+                    return f"{name} ×{fmt_qty(qty)}" if qty is not None else name
+                def _li_added_label(li):
+                    # Audit-facing: name the item TYPE, qty, and unit price at the moment it
+                    # was added so an auditor sees e.g. "Stock: Widget ×3 @ $10.00".
+                    name = li.get("name") or li.get("sku") or ""
+                    detail = f"{_line_item_type(li)}: {name}" if name else _line_item_type(li)
+                    qty = li.get("quantity")
+                    if qty is not None:
+                        detail += f" ×{fmt_qty(qty)}"
+                    price = li.get("unit_price")
+                    if price is None:
+                        price = li.get("price")
+                    if price is not None:
+                        detail += f" @ {fmt_price(price, 'unit_price', currency)}"
+                    return detail
+
                 if isinstance(old, list):
                     # True diff: old and new both present
-                    def _li_key(li):
-                        return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
-                    def _li_label(li):
-                        name = li.get("name") or li.get("sku") or ""
-                        qty = li.get("quantity")
-                        return f"{name} ×{qty}" if qty is not None else name
-
                     old_by_key = {_li_key(li): li for li in old if isinstance(li, dict)}
                     new_by_key = {_li_key(li): li for li in new if isinstance(li, dict)}
-                    added = [_li_label(li) for k2, li in new_by_key.items() if k2 not in old_by_key]
+                    added = [li for k2, li in new_by_key.items() if k2 not in old_by_key]
                     removed = [_li_label(li) for k2, li in old_by_key.items() if k2 not in new_by_key]
                     changed = []
                     for k2, new_li in new_by_key.items():
@@ -414,32 +573,27 @@ def _fields_changed_summary(fields_changed: dict) -> str:
                             new_price = new_li.get("unit_price") or new_li.get("price")
                             name = new_li.get("name") or new_li.get("sku") or ""
                             if old_qty != new_qty:
-                                changed.append(f"{name} ×{old_qty}→{new_qty}")
+                                changed.append(f"{name} ×{fmt_qty(old_qty)}→{fmt_qty(new_qty)}")
                             elif old_price != new_price:
-                                changed.append(f"{name} {old_price}→{new_price}")
+                                changed.append(
+                                    f"{name} {fmt_price(old_price, 'unit_price', currency)}"
+                                    f"→{fmt_price(new_price, 'unit_price', currency)}"
+                                )
                     parts = (
-                        [f"+{x}" for x in added[:2]]
-                        + [f"~{x}" for x in changed[:2]]
-                        + [f"-{x}" for x in removed[:2]]
+                        [f"Added {_li_added_label(li)}" for li in added[:2]]
+                        + [f"Changed {x}" for x in changed[:2]]
+                        + [f"Removed {x}" for x in removed[:2]]
                     )
                     overflow = (len(added) + len(changed) + len(removed)) - len(parts)
                 else:
-                    # No old state - show final line state with qty/price
+                    # No old state - read every line as a fresh add (type, qty, price).
                     parts = []
                     for li in new:
                         if not isinstance(li, dict):
                             continue
-                        name = li.get("name") or li.get("sku") or ""
-                        if not name:
+                        if not (li.get("name") or li.get("sku")):
                             continue
-                        qty = li.get("quantity")
-                        price = li.get("unit_price") or li.get("price")
-                        detail = name
-                        if qty is not None:
-                            detail += f" ×{qty}"
-                        if price is not None:
-                            detail += f" @ {price}"
-                        parts.append(detail)
+                        parts.append(f"Added {_li_added_label(li)}")
                     overflow = max(0, len(parts) - 3)
                 if parts:
                     summary = "; ".join(parts[:3])
@@ -461,8 +615,8 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         if old == new:
             continue
 
-        old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if not _empty(old) else "none"
-        new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if not _empty(new) else "none"
+        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else "none"
+        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else "none"
         label = _FIELD_LABELS.get(k) or k.replace("_", " ").title()
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
@@ -517,14 +671,159 @@ def _is_uuid(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.I))
 
 
+def _item_link(entity_id, label: str, anchor=None) -> FT:
+    """A linked SKU chip pointing at an item detail page, optionally anchored to a history row."""
+    url = entity_url(str(entity_id or ""))
+    if url and anchor is not None:
+        url = f"{url}#evt-{anchor}"
+    return A(label, href=url, cls="table-link") if url else Span(label)
+
+
+def _qpw_delta(d: dict, currency: str | None = None) -> str:
+    """'Qty: a → b, Pcs: c → d, Wt: e → f, Cost: g → h' from before/after fields; only
+    measures that are present are shown. Cost is currency-formatted (and absent for
+    under-manager viewers, since it is redacted server-side)."""
+    if not isinstance(d, dict):
+        return ""
+    parts: list[str] = []
+    if d.get("qty_before") is not None or d.get("qty_after") is not None:
+        parts.append(f"Qty: {fmt_qty(d.get('qty_before'))} → {fmt_qty(d.get('qty_after'))}")
+    if d.get("pieces_before") is not None or d.get("pieces_after") is not None:
+        parts.append(f"Pcs: {fmt_qty(d.get('pieces_before'))} → {fmt_qty(d.get('pieces_after'))}")
+    if d.get("weight_before") is not None or d.get("weight_after") is not None:
+        parts.append(f"Wt: {fmt_qty(d.get('weight_before'))} → {fmt_qty(d.get('weight_after'))}")
+    if d.get("cost_before") is not None or d.get("cost_after") is not None:
+        parts.append(f"Cost: {fmt_money(d.get('cost_before'), currency)} → {fmt_money(d.get('cost_after'), currency)}")
+    return ", ".join(parts)
+
+
+def _origin_detail(data: dict, with_category: bool = False) -> str:
+    """Child origin detail: '0 → received' for each measure the child actually got."""
+    parts = [f"Qty: 0 → {fmt_qty(data.get('qty'))}"]
+    if data.get("pieces") is not None:
+        parts.append(f"Pcs: 0 → {fmt_qty(data.get('pieces'))}")
+    if data.get("weight") is not None:
+        parts.append(f"Wt: 0 → {fmt_qty(data.get('weight'))}")
+    if with_category and data.get("category"):
+        parts.append(f"Cat: {data.get('category')}")
+    return ", ".join(parts)
+
+
+def _doc_link(doc_id, doc_number=None) -> FT:
+    """A linked doc-number chip from an item event's source_doc_id (+ optional doc_number).
+    Falls back to the entity_id suffix as the label when no explicit doc_number was stored."""
+    did = str(doc_id or "")
+    label = str(doc_number or "") or (did[4:] if did.startswith("doc:") else did)
+    url = entity_url(did)  # "doc:..." -> /docs/{id}
+    return A(label, href=url, cls="table-link") if (url and label) else Span(label or did)
+
+
+# Verbs for doc-tied item events, keyed by doc_type (memo = consignment).
+def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
+    memo = (doc_type or "") == "memo"
+    if reversed_:
+        return "Consignment returned" if memo else "Sale reversed"
+    return "Consigned" if memo else "Sold"
+
+
+def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
+    """For split/transform/merge events and doc-tied item events, return
+    [(event_content, detail, anchor_suffix), ...] with linked SKUs/doc-numbers in the
+    requested style. Returns None for non-lifecycle events (or legacy rows lacking the
+    enriched payload) so the caller falls back to generic rendering."""
+    etype = str(e.get("event_type") or "")
+    data = e.get("data") or {}
+    if not isinstance(data, dict):
+        return None
+
+    # Doc-tied item events: show a linkable doc number (sold/consigned/fulfilled/reversed).
+    if etype in ("item.fulfilled", "item.fulfillment_reversed"):
+        doc_id = data.get("source_doc_id")
+        if not doc_id:
+            return None
+        reversed_ = etype == "item.fulfillment_reversed"
+        content = Span(f"{_fulfil_verb(data.get('doc_type'), reversed_)} ",
+                       _doc_link(doc_id, data.get("doc_number")))
+        qty = data.get("quantity_restored") if reversed_ else data.get("quantity_fulfilled")
+        detail = f"Qty: {fmt_qty(qty)}" if qty is not None else ""
+        return [(content, detail, "")]
+    if etype == "item.status.set" and data.get("source_doc_id"):
+        status = str(data.get("new_status") or "")
+        verb = {"sold": "Sold", "memo_out": "Consigned"}.get(status, (status.replace("_", " ").title() or "Status"))
+        content = Span(f"{verb} ", _doc_link(data.get("source_doc_id"), data.get("doc_number")))
+        return [(content, "", "")]
+
+    if etype == "item.split":
+        children = data.get("children_detail") or []
+        if not children:
+            return None  # legacy row → generic fallback
+        psku = str(data.get("parent_sku") or "")
+        specs: list[tuple[FT, str, str]] = []
+        for i, c in enumerate(children):
+            content = Span(
+                f"Item Split - {psku} → ",
+                _item_link(c.get("child_id"), str(c.get("child_sku") or ""), c.get("origin_event_id")),
+            )
+            specs.append((content, _qpw_delta(c, currency), f"-{i}"))
+        return specs
+
+    if etype == "item.split_from":
+        content = Span("Split from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        return [(content, _origin_detail(data), "")]
+
+    if etype == "item.transform":
+        if "parent_sku" not in data:
+            return None  # legacy row (pre-enrichment) → generic fallback
+        psku = str(data.get("parent_sku") or "")
+        content = Span(
+            f"Item Transform - {psku} → ",
+            _item_link(data.get("child_id"), str(data.get("child_sku") or ""), data.get("child_origin_event_id")),
+        )
+        return [(content, _qpw_delta(data, currency), "")]
+
+    if etype == "item.transformed_from":
+        content = Span("Transformed from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        return [(content, _origin_detail(data, with_category=True), "")]
+
+    if etype == "item.merged":
+        srcs = data.get("source_entity_ids") or []
+        skus = data.get("source_skus") or {}
+        links: list = []
+        for j, eid in enumerate(srcs):
+            if j:
+                links.append(", ")
+            links.append(_item_link(eid, str(skus.get(eid, eid))))
+        content = Span("Merged from ", *links) if links else Span("Items merged")
+        rq = data.get("resulting_qty")
+        detail = f"Qty: {fmt_qty(rq)}" if rq is not None else ""
+        return [(content, detail, "")]
+
+    if etype == "item.source_deactivated":
+        tgt = data.get("merged_into") or ""
+        tsku = str(data.get("merged_into_sku") or tgt)
+        content = Span("Merged into ", _item_link(tgt, tsku))
+        oq = data.get("original_qty")
+        detail = f"Qty was {fmt_qty(oq)}" if oq is not None else ""
+        return [(content, detail, "")]
+
+    return None
+
+
 def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
                    section_cls: str = "section", icon: str = "",
                    empty_msg: str = "No activity yet.",
                    max_display: int | None = None,
-                   history_url: str | None = None) -> FT:
+                   history_url: str | None = None,
+                   subject_entity_id: str | None = None,
+                   currency: str | None = None,
+                   resizable: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
-    Columns: Event (linked to entity) | When (timestamp) | Details | User
+    Columns: Event (linked to entity) | When (timestamp) | User | Details
+
+    subject_entity_id: when set (an entity's own detail page), that entity's split/transform
+    origin row is shown; when None (dashboard), origin rows de-dup against the mother summary.
+    currency: ISO code used to format money amounts in the Details column.
     """
     EMPTY = "--"
 
@@ -539,54 +838,66 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
             cls=section_cls,
         )
 
-    def _row(e: dict) -> FT | None:
+    def _assemble(e: dict, content, detail: str, suffix: str, *, blank_detail: bool = False) -> FT:
+        when_cell = Td(format_timestamp(str(e.get("ts") or "")) or EMPTY)
+        actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
+        user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
+        if blank_detail:
+            detail_cell = Td("")
+        else:
+            detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
+        rid = e.get("id")
+        attrs = {"id": f"evt-{rid}{suffix}"} if rid is not None else {}
+        return Tr(Td(content), when_cell, user_cell, detail_cell, **attrs)
+
+    def _rows(e: dict) -> list[FT]:
         raw_type = str(e.get("event_type") or "")
 
         # Suppress system-internal events entirely
         if raw_type in _SYSTEM_EVENT_TYPES:
-            return None
+            return []
 
-        # Suppress mechanical side-effect events from split/transform/merge operations.
-        # The summary event (item.split / item.transform / item.merged) provides the
-        # user-facing record; individual item.created / item.pricing.set / item.status.set
-        # rows would only add noise.
         metadata = e.get("metadata_") or e.get("metadata") or {}
-        if isinstance(metadata, dict):
-            reason = metadata.get("reason", "")
+        reason = metadata.get("reason", "") if isinstance(metadata, dict) else ""
+
+        if raw_type in _ORIGIN_EVENT_TYPES:
+            # The child's own page shows its origin row; the dashboard de-dups against the
+            # mother's summary event (which already names this child).
+            on_own_page = bool(subject_entity_id) and str(e.get("entity_id") or "") == subject_entity_id
+            if not on_own_page:
+                return []
+        else:
+            # Suppress mechanical side-effect events from split/transform/merge operations.
             if reason in _OPERATION_NOISE_REASONS:
-                return None
-            # item.created with parent_id = child created by split or transform;
-            # shown via parent's item.split / item.transform event instead.
-            if raw_type == "item.created" and metadata.get("parent_id"):
-                return None
+                return []
+            # item.created with parent_id = child created by split/transform; shown via the
+            # mother's item.split/item.transform summary (and the child's origin event) instead.
+            if raw_type == "item.created" and isinstance(metadata, dict) and metadata.get("parent_id"):
+                return []
 
+        # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
+        spec = _lifecycle_rows_spec(e, currency)
+        if spec is not None:
+            return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
+
+        # Generic rendering
         display_text, url = _event_display(e)
-        event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
-
-        ts_raw = str(e.get("ts") or "")
-        ts_display = format_timestamp(ts_raw) or EMPTY
-        when_cell = Td(ts_display)
+        content = A(display_text, href=url, cls="table-link") if url else display_text
 
         data = e.get("data") or {}
-        detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
+        detail = detail_from_entry(data, raw_type, currency) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
         if not detail and isinstance(data, dict) and data.get("fields_changed"):
-            return None
+            return []
 
-        # Self-describing events: label carries all info, detail column blank
-        if not detail and raw_type in _SELF_DESCRIBING_EVENT_TYPES:
-            detail_cell = Td("")
-        else:
-            detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
-
-        actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-        user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
-
-        return Tr(event_cell, when_cell, user_cell, detail_cell)
+        blank_detail = not detail and raw_type in _SELF_DESCRIBING_EVENT_TYPES
+        return [_assemble(e, content, detail, "", blank_detail=blank_detail)]
 
     # Filter first, then slice — so max_display counts meaningful rows only
-    all_rows = [r for e in ledger if (r := _row(e)) is not None]
+    all_rows: list[FT] = []
+    for e in ledger:
+        all_rows.extend(_rows(e))
     display_rows = all_rows[:max_display] if max_display else all_rows
     threshold = max_display or len(all_rows)
 
@@ -604,13 +915,28 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
     else:
         footer = ""
 
+    table = Table(
+        Thead(Tr(
+            Th(t("th.event"), cls="col-event"),
+            Th(t("th.when"), cls="col-when"),
+            Th(t("th.user"), cls="col-user"),
+            Th(t("th.details"), cls="col-details"),
+        )),
+        Tbody(*display_rows),
+        cls="data-table activity-table",
+        **({"style": "table-layout:fixed;width:100%"} if resizable else {}),
+    )
+    # Drag-to-resize columns, reusing the shared resizer + width persistence (opt-in so the
+    # compact dashboard/contacts/doc activity widgets keep their auto layout).
+    resizer = ""
+    if resizable:
+        from ui.components.table import col_resize_script
+        resizer = col_resize_script("table.activity-table", "celerp_activity_wpct_v1")
+
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
-        Table(
-            Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.user")), Th(t("th.details")))),
-            Tbody(*display_rows),
-            cls="data-table",
-        ),
+        table,
         footer,
+        resizer,
         cls=section_cls,
     )

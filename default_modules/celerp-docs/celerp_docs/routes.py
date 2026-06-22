@@ -213,6 +213,21 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Project
     return row
 
 
+def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
+    """Brief [{item_id, sku, quantity}] for the given line entity_ids, sourced from the doc
+    lines, so fulfillment/reversal events name the items (sku x qty) for the activity feed."""
+    by_id: dict[str, dict] = {}
+    for li in line_items:
+        lid = li.get("entity_id") or li.get("item_id")
+        if lid:
+            by_id[lid] = li
+    out: list[dict] = []
+    for e in eids:
+        li = by_id.get(e, {})
+        out.append({"item_id": e, "sku": li.get("sku") or li.get("description") or "", "quantity": li.get("quantity")})
+    return out
+
+
 async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dict]:
     """Return a name-keyed unit map for the company (falls back to DEFAULT_UNITS)."""
     company = await session.get(Company, company_id)
@@ -942,7 +957,8 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
                 await emit_event(
                     session, company_id=_cid, entity_id=_eid, entity_type="item",
                     event_type="item.status.set",
-                    data={"new_status": "sold", "source_doc_id": entity_id},
+                    data={"new_status": "sold", "source_doc_id": entity_id,
+                          "doc_number": _initial_doc_state.get("doc_number") or _initial_doc_state.get("ref_id") or ""},
                     actor_id=_user_id, location_id=None, source="invoice_finalize",
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )
@@ -1286,7 +1302,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.voided",
-        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason, "refund_date": payload.refund_date},
+        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason,
+              "refund_date": payload.refund_date, "amount": payment.get("amount"), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -1323,7 +1340,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                     await emit_event(
                         session, company_id=company_id, entity_id=paired_doc_id, entity_type="doc",
                         event_type="doc.payment.voided",
-                        data={"payment_index": pi, "void_reason": payload.void_reason or "Paired void"},
+                        data={"payment_index": pi, "void_reason": payload.void_reason or "Paired void",
+                              "amount": pp.get("amount"), "method": pp.get("method")},
                         actor_id=user.id, location_id=None, source="api",
                         idempotency_key=str(uuid.uuid4()), metadata_={},
                     )
@@ -1407,7 +1425,8 @@ async def delete_payment(
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason},
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+              "amount": payment.get("amount"), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -3195,6 +3214,7 @@ async def fulfill_lines(
             event_type="item.fulfilled",
             data={
                 "source_doc_id": entity_id,
+                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
                 "quantity_fulfilled": qty,
                 "fulfilled_by": str(uid),
                 "doc_type": doc_type,
@@ -3221,11 +3241,12 @@ async def fulfill_lines(
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
             all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
 
+    fulfilled_brief = _line_item_brief(line_items, to_fulfill)
     if all_statuses and all(s in ("memo_out", "sold") for s in all_statuses):
         doc_fulfillment_status = "fulfilled"
         doc_event_type = "doc.fulfilled"
         doc_event_data: dict = {
-            "fulfilled_items": [{"item_id": e} for e in to_fulfill],
+            "fulfilled_items": fulfilled_brief,
             "fulfilled_by": str(uid),
             "fulfilled_at": now,
             "strategy": "per_line",
@@ -3234,9 +3255,13 @@ async def fulfill_lines(
     else:
         doc_fulfillment_status = "partial"
         doc_event_type = "doc.partially_fulfilled"
+        # Lines on the doc not in this fulfill batch are still pending.
+        unfulfilled_brief = _line_item_brief(
+            line_items, [li.get("entity_id") or li.get("item_id") for li in line_items
+                         if (li.get("entity_id") or li.get("item_id")) and (li.get("entity_id") or li.get("item_id")) not in fulfilled_eids])
         doc_event_data = {
-            "fulfilled_items": [{"item_id": e} for e in to_fulfill],
-            "unfulfilled_items": [],
+            "fulfilled_items": fulfilled_brief,
+            "unfulfilled_items": unfulfilled_brief,
             "fulfilled_by": str(uid),
             "fulfilled_at": now,
             "strategy": "per_line",
@@ -3331,6 +3356,7 @@ async def revert_lines(
             event_type="item.fulfillment_reversed",
             data={
                 "source_doc_id": entity_id,
+                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
                 "quantity_restored": qty,
                 "reversed_by": str(uid),
                 "reason": "per_line_revert",
@@ -3357,32 +3383,21 @@ async def revert_lines(
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
             all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
 
-    if not all_statuses or all(s == "available" for s in all_statuses):
-        doc_fulfillment_status = "unfulfilled"
-        doc_event_type = "doc.fulfillment_reversed"
-        doc_event_data = {
-            "reversed_items": [{"item_id": e} for e in to_revert],
-            "reversed_by": str(uid),
-            "reason": "per_line_revert",
-        }
-    elif any(s in ("memo_out", "sold") for s in all_statuses):
+    # A revert is logged as a revert (naming the reverted items), regardless of whether the
+    # doc lands fully unfulfilled or stays partially fulfilled. The doc status reflects what
+    # remains; the activity entry reflects the action taken.
+    reverted_brief = _line_item_brief(line_items, to_revert)
+    doc_event_data = {
+        "reversed_items": reverted_brief,
+        "reversed_by": str(uid),
+        "reason": "per_line_revert",
+    }
+    if any(s in ("memo_out", "sold") for s in all_statuses):
         doc_fulfillment_status = "partial"
-        doc_event_type = "doc.partially_fulfilled"
-        doc_event_data = {
-            "fulfilled_items": [],
-            "unfulfilled_items": [],
-            "fulfilled_by": str(uid),
-            "fulfilled_at": now,
-            "strategy": "per_line",
-        }
+        doc_event_type = "doc.partially_reverted"
     else:
         doc_fulfillment_status = "unfulfilled"
         doc_event_type = "doc.fulfillment_reversed"
-        doc_event_data = {
-            "reversed_items": [{"item_id": e} for e in to_revert],
-            "reversed_by": str(uid),
-            "reason": "per_line_revert",
-        }
 
     await emit_event(
         session,

@@ -707,6 +707,36 @@ async def test_merge_preserves_allow_splitting_true(client):
 
 
 @pytest.mark.asyncio
+async def test_merge_qty_truncated_to_unit_decimals(client):
+    """Merged qty must not carry float-summation noise beyond the sell_by unit's precision.
+    Regression: 0.1 + 0.2 summed to 0.30000000000000004 instead of 0.3 (carat = 2 dp)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "MQ-A", "name": "A", "quantity": 0.1, "sell_by": "carat"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "MQ-B", "name": "B", "quantity": 0.2, "sell_by": "carat"}, headers=h)).json()["id"]
+    merged_id = (await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
+    qty = (await client.get(f"/items/{merged_id}", headers=h)).json()["quantity"]
+    assert qty == 0.3, f"merged qty must be truncated to unit precision; got {qty!r}"
+
+
+@pytest.mark.asyncio
+async def test_merge_carries_attached_files(client):
+    """Files attached to source items must survive onto the merged item, not be dropped."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "MF-A", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "MF-B", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
+    ra = await client.post(f"/items/{a}/files", files={"file": ("a.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers=h)
+    assert ra.status_code == 200, ra.text
+    rb = await client.post(f"/items/{b}/files", files={"file": ("b.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers=h)
+    assert rb.status_code == 200, rb.text
+    merged_id = (await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
+    state = (await client.get(f"/items/{merged_id}", headers=h)).json()
+    files = state.get("files", [])
+    assert len(files) == 2, f"both source files must be merged onto the new item; got {len(files)}"
+
+
+@pytest.mark.asyncio
 async def test_merge_preserves_allow_splitting_false(client):
     """Merged item must carry allow_splitting=False when target source has it disabled.
     This is the regression case: previously the key was absent from create_data,

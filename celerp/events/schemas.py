@@ -65,6 +65,11 @@ class ItemStatusSet(BaseModel):
 
 class ItemTransferred(BaseModel):
     to_location_id: str
+    # Source location + resolved names for "from -> to" history (optional: pre-existing
+    # events and imports may lack them, and the renderer degrades gracefully).
+    from_location_id: str | None = None
+    from_location_name: str | None = None
+    to_location_name: str | None = None
 
 
 class ItemQuantityAdjusted(BaseModel):
@@ -103,9 +108,24 @@ class ItemExpired(BaseModel):
 
 
 class ItemSplit(BaseModel):
+    # Aggregate marker on the MOTHER. The projection consumes child_ids/child_skus;
+    # children_detail drives the per-child history rows (one row per child).
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
     quantities: list[float]
+    parent_sku: str | None = None
+    # One entry per child: {child_id, child_sku, origin_event_id, qty_before, qty_after,
+    # pieces_before, pieces_after, weight_before, weight_after}. Sequential mother deltas.
+    children_detail: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ItemSplitFrom(BaseModel):
+    """Origin marker on the CHILD created by a split. The child's "first entry"."""
+    parent_id: str
+    parent_sku: str
+    qty: float
+    pieces: float | None = None
+    weight: float | None = None
 
 
 class ItemTransform(BaseModel):
@@ -114,6 +134,24 @@ class ItemTransform(BaseModel):
     child_category: str
     parent_cost_total: float
     child_cost_total: float
+    parent_sku: str | None = None
+    child_origin_event_id: int | None = None
+    qty_before: float | None = None
+    qty_after: float | None = None
+    pieces_before: float | None = None
+    pieces_after: float | None = None
+    weight_before: float | None = None
+    weight_after: float | None = None
+
+
+class ItemTransformedFrom(BaseModel):
+    """Origin marker on the CHILD created by a transform. The child's "first entry"."""
+    parent_id: str
+    parent_sku: str
+    qty: float
+    category: str
+    pieces: float | None = None
+    weight: float | None = None
 
 
 class ItemMerged(BaseModel):
@@ -447,11 +485,15 @@ class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
     refund_date: str | None = None  # ISO date for the reversal JE; defaults to today if absent
+    amount: float | None = None     # voided payment amount, for the history detail
+    method: str | None = None
 
 
 class DocPaymentDeleted(BaseModel):
     payment_index: int
     delete_reason: str | None = None
+    amount: float | None = None     # deleted payment amount, for the history detail
+    method: str | None = None
 
 
 class DocConverted(BaseModel):
@@ -560,6 +602,14 @@ class DocPartiallyFulfilled(BaseModel):
 
 
 class DocFulfillmentReversed(BaseModel):
+    reversed_items: list[dict[str, Any]]
+    reversed_by: str
+    reason: str
+
+
+class DocPartiallyReverted(BaseModel):
+    """Some (not all) fulfilled lines reverted; the doc remains partially fulfilled. Distinct
+    from doc.partially_fulfilled so the activity reads as a revert, not a fulfillment."""
     reversed_items: list[dict[str, Any]]
     reversed_by: str
     reason: str
@@ -885,7 +935,9 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.split": ItemSplit,
+    "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,
+    "item.transformed_from": ItemTransformedFrom,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
     "item.patched": ItemPatched,
@@ -958,6 +1010,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "list.note_removed": ListNoteRemoved,
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
+    "doc.partially_reverted": DocPartiallyReverted,
     "doc.return_received": DocReturnReceived,
     "doc.return_undone": DocReturnUndone,
     "doc.receive_undone": DocReceiveUndone,

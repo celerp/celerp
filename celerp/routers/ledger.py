@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.activity_redaction import redact_entries_for_role, redact_event_costs
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -24,6 +25,7 @@ async def list_entries(
     limit: int = 100,
     offset: int = 0,
     company_id: str = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     q = select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc())
@@ -64,7 +66,7 @@ async def list_entries(
             )).all()
             actor_map = {str(uid): uname for uid, uname in user_rows}
 
-    return {"items": [
+    items = [
         {
             "id": r.id,
             "entity_id": r.entity_id,
@@ -77,20 +79,24 @@ async def list_entries(
             **({"actor_name": actor_map.get(str(r.actor_id), str(r.actor_id) if r.actor_id else "")} if resolve else {}),
         }
         for r in rows
-    ], "total": total}
+    ]
+    # Fail-closed cost redaction: never ship cost amounts to under-manager roles.
+    return {"items": redact_entries_for_role(items, role), "total": total}
 
 
 @router.get("/{entry_id}")
-async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id:
         raise HTTPException(status_code=404, detail="Not found")
+    from celerp.services.activity_redaction import can_see_costs
+    data = entry.data if can_see_costs(role) else redact_event_costs(entry.event_type, entry.data or {})
     return {
         "id": entry.id,
         "entity_id": entry.entity_id,
         "entity_type": entry.entity_type,
         "event_type": entry.event_type,
-        "data": entry.data,
+        "data": data,
         "metadata": entry.metadata_ or {},
         "ts": str(entry.ts),
     }

@@ -1348,6 +1348,51 @@ def setup_routes(app):
             request=request,
         )
 
+    @app.get("/inventory/{entity_id}/history")
+    async def item_history_page(request: Request, entity_id: str):
+        """Full, paginated activity history for one item (the Activity tab shows only the
+        most recent; this is the 'see all' surface). Reuses activity_table + pagination."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        per_page = 50
+        offset = (page - 1) * per_page
+        try:
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset})
+        except (APIError, Exception) as e:
+            if isinstance(e, APIError) and e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            item, company, resp = {}, {}, {"items": [], "total": 0}
+
+        currency = company.get("currency")
+        activities = resp.get("items", [])
+        total = resp.get("total", 0)
+        name = item.get("name") or item.get("sku") or entity_id
+
+        from ui.components.activity import activity_table
+        table = activity_table(activities, title="", section_cls="",
+                               subject_entity_id=entity_id, currency=currency, resizable=True)
+        pages = max(1, (total + per_page - 1) // per_page)
+        pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
+
+        return base_shell(
+            breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"),
+                         (name, f"/inventory/{entity_id}"), ("History", None)]),
+            page_header(
+                f"History: {name}",
+                A("Back to item", href=f"/inventory/{entity_id}", cls="btn btn--secondary"),
+            ),
+            Div(table, pager, cls="page-body"),
+            title="Item History - Celerp",
+            nav_active="inventory",
+            request=request,
+        )
+
     @app.get("/api/items/{entity_id}/label-templates")
     async def item_label_templates(request: Request, entity_id: str):
         """Return label template dropdown options for the print button."""
@@ -6011,7 +6056,7 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
-            _ledger_table(ledger),
+            _ledger_table(ledger, entity_id=entity_id, currency=currency),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -6181,9 +6226,11 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
     )
 
 
-def _ledger_table(ledger: list[dict]) -> FT:
+def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None) -> FT:
     from ui.components.activity import activity_table
-    return activity_table(ledger, max_display=10)
+    history_url = f"/inventory/{entity_id}/history" if entity_id else None
+    return activity_table(ledger, max_display=10, subject_entity_id=entity_id,
+                          currency=currency, history_url=history_url, resizable=True)
 
 
 # ---------------------------------------------------------------------------

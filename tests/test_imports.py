@@ -19,8 +19,11 @@ def test_event_type_values() -> None:
     assert EventType.ACC_JOURNAL_ENTRY_CREATED == "acc.journal_entry.created"
     assert EventType.SYS_COMPANY_CREATED == "sys.company.created"
     assert EventType.ITEM_WORKFLOW_SET == "item.workflow.set"
+    assert EventType.ITEM_SPLIT_FROM == "item.split_from"
+    assert EventType.ITEM_TRANSFORM == "item.transform"
+    assert EventType.ITEM_TRANSFORMED_FROM == "item.transformed_from"
     # Spot-check total count
-    assert len(EventType) == 107
+    assert len(EventType) == 110
 
 
 def test_log_level_default_is_info() -> None:

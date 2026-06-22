@@ -1017,10 +1017,35 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
     return {"updated": len(event_ids), "event_ids": event_ids}
 
 
+async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:
+    """item.transferred payload with from/to ids + resolved names for 'from -> to' history.
+
+    The source location is the item's current ``location_id`` (read before the event lands).
+    ``loc_map`` (id -> name) can be passed to avoid re-querying in a bulk loop.
+    """
+    from celerp.models.company import Location
+    if loc_map is None:
+        loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+        loc_map = {str(r.id): r.name for r in loc_rows}
+    proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    raw_from = proj.state.get("location_id") if proj else None
+    from_id = str(raw_from) if raw_from else None
+    to_id = str(to_location_id)
+    return {
+        "to_location_id": to_id,
+        "to_location_name": loc_map.get(to_id),
+        "from_location_id": from_id,
+        "from_location_name": loc_map.get(from_id) if from_id else None,
+    }
+
+
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    from celerp.models.company import Location
+    loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+    loc_map = {str(r.id): r.name for r in loc_rows}
     event_ids = []
     for entity_id in payload.entity_ids:
         entry = await emit_event(
@@ -1029,7 +1054,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
             entity_id=entity_id,
             entity_type="item",
             event_type="item.transferred",
-            data={"to_location_id": str(payload.to_location_id)},
+            data=await _build_transfer_data(session, company_id, entity_id, payload.to_location_id, loc_map),
             actor_id=user.id,
             location_id=payload.to_location_id,
             source="api",
@@ -1102,7 +1127,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.transferred",
-        data={"to_location_id": str(payload.to_location_id)},
+        data=await _build_transfer_data(session, company_id, entity_id, payload.to_location_id),
         actor_id=user.id,
         location_id=payload.to_location_id,
         source="api",
@@ -1304,6 +1329,13 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     else:
         _child_cost_totals = [None] * len(children)
 
+    # Per-child history descriptors with sequential mother deltas (one row per child).
+    children_detail: list[dict] = []
+    running_qty = parent_qty
+    running_pieces = parent_pieces
+    running_weight = parent_weight
+    running_cost = parent_cost_total
+
     for i, child in enumerate(children):
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
@@ -1336,6 +1368,52 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             idempotency_key=str(uuid.uuid4()),
             metadata_={"parent_id": entity_id},
         )
+
+        # Origin marker on the child: "Split from <mother>" — the child's first history entry.
+        ch_pieces = _to_int_pieces(child.attributes.get("pieces", 0)) if parent_pieces is not None else None
+        ch_weight = child.weight if (parent_weight is not None and child.weight is not None) else None
+        origin = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=child_eid,
+            entity_type="item",
+            event_type="item.split_from",
+            data={
+                "parent_id": entity_id,
+                "parent_sku": parent_sku or "",
+                "qty": child.quantity,
+                "pieces": ch_pieces,
+                "weight": ch_weight,
+            },
+            actor_id=user.id,
+            location_id=_parse_uuid(parent_location_id),
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"reason": "from_split"},
+        )
+
+        # Accumulate the mother's sequential delta for this child (one history row per child).
+        detail: dict = {
+            "child_id": child_eid,
+            "child_sku": child.sku,
+            "origin_event_id": origin.id,
+            "qty_before": running_qty,
+            "qty_after": round(running_qty - child.quantity, 10),
+        }
+        running_qty = detail["qty_after"]
+        if parent_pieces is not None:
+            detail["pieces_before"] = running_pieces
+            running_pieces = (running_pieces or 0) - (ch_pieces or 0)
+            detail["pieces_after"] = running_pieces
+        if parent_weight is not None:
+            detail["weight_before"] = running_weight
+            running_weight = round((running_weight or 0) - (ch_weight or 0), weight_decimals)
+            detail["weight_after"] = running_weight
+        if parent_cost_total and _child_cost_totals[i] is not None:
+            detail["cost_before"] = running_cost
+            running_cost = round(running_cost - _child_cost_totals[i], 10)
+            detail["cost_after"] = running_cost
+        children_detail.append(detail)
 
         # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
         for price_type, price_val in parent_prices.items():
@@ -1384,7 +1462,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+        metadata_={"reason": "split_parent"},
     )
 
     # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
@@ -1402,7 +1480,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "split_parent"},
         )
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
@@ -1438,7 +1516,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "split_parent"},
         )
 
     # If parent quantity is now 0, mark as archived (consumed by split)
@@ -1468,6 +1546,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "child_ids": child_eids,
             "child_skus": child_skus,
             "quantities": child_qty_list,
+            "parent_sku": parent_sku or "",
+            "children_detail": children_detail,
         },
         actor_id=user.id,
         location_id=None,
@@ -1578,6 +1658,15 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      event_type="item.created", data=child_data, actor_id=user_id,
                      location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
+    # Origin marker on the child: "Split from <mother>" — the child's first history entry.
+    origin = await emit_event(
+        session, company_id=company_id, entity_id=child_eid, entity_type="item",
+        event_type="item.split_from",
+        data={"parent_id": entity_id, "parent_sku": parent_sku or "", "qty": child_qty,
+              "pieces": ch_pieces if parent_pieces is not None else None,
+              "weight": child_weight if parent_weight is not None else None},
+        actor_id=user_id, location_id=_parse_uuid(parent.state.get("location_id")),
+        source="fulfill_split", idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
     for price_type, price_val in parent_prices.items():
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
                          event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
@@ -1594,13 +1683,13 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
                      actor_id=user_id, location_id=None, source="fulfill_split",
-                     idempotency_key=str(uuid.uuid4()), metadata_={})
+                     idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
     if child_cost_total is not None and parent_cost_total:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.pricing.set",
                          data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
                          actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={})
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
     # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
     # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
     fields_changed: dict[str, dict] = {}
@@ -1614,12 +1703,26 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
                          actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={})
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
 
     # history
+    child_detail: dict = {
+        "child_id": child_eid, "child_sku": child_sku, "origin_event_id": origin.id,
+        "qty_before": parent_qty, "qty_after": new_parent_qty,
+    }
+    if parent_pieces is not None and ch_pieces is not None:
+        child_detail["pieces_before"] = _to_int_pieces(parent_pieces)
+        child_detail["pieces_after"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+    if parent_weight is not None and child_weight is not None:
+        child_detail["weight_before"] = parent_weight
+        child_detail["weight_after"] = max(0.0, round(parent_weight - child_weight, 10))
+    if child_cost_total is not None and parent_cost_total:
+        child_detail["cost_before"] = parent_cost_total
+        child_detail["cost_after"] = max(0.0, round(parent_cost_total - child_cost_total, 10))
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
-                     data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty]},
+                     data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],
+                           "parent_sku": parent_sku or "", "children_detail": [child_detail]},
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={})
     return child_eid, child_sku
@@ -1703,6 +1806,28 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         metadata_={"parent_id": entity_id},
     )
 
+    # 1b. Origin marker on the child: "Transformed from <mother>" — the child's first history entry.
+    transform_origin = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=child_eid,
+        entity_type="item",
+        event_type="item.transformed_from",
+        data={
+            "parent_id": entity_id,
+            "parent_sku": parent.state.get("sku") or "",
+            "qty": payload.child_quantity,
+            "category": payload.child_category,
+            "pieces": payload.child_pieces,
+            "weight": payload.child_weight,
+        },
+        actor_id=user.id,
+        location_id=_parse_uuid(parent_location_id),
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "from_transform"},
+    )
+
     # 2. Copy prices
     for price_type, price_val in parent_prices.items():
         await emit_event(
@@ -1763,6 +1888,15 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             "child_category": payload.child_category,
             "parent_cost_total": parent_cost_total,
             "child_cost_total": payload.child_cost_total,
+            "parent_sku": parent.state.get("sku") or "",
+            "child_origin_event_id": transform_origin.id,
+            # Mother is consumed by the transform (archived) → after-values are 0.
+            "qty_before": parent_qty,
+            "qty_after": 0,
+            "pieces_before": _read_pieces(parent.state),
+            "pieces_after": 0 if _read_pieces(parent.state) is not None else None,
+            "weight_before": _read_float(parent.state, "weight"),
+            "weight_after": 0 if _read_float(parent.state, "weight") is not None else None,
         },
         actor_id=user.id,
         location_id=None,
@@ -1900,6 +2034,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Apply user overrides.
     resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
+    # Truncate float-summation noise to the sell unit's precision (e.g. 0.1 + 0.2 -> 0.3, not
+    # 0.30000000000000004). All sources share one sell_by (validated above).
+    _common_sell_by = next(iter(sell_units), "") or str(target_proj.state.get("sell_by") or "")
+    _qty_dp = {u["name"]: u for u in await _get_company_units(session, company_id)}.get(_common_sell_by, {}).get("decimals")
+    if _qty_dp is not None:
+        resulting_qty = round(float(resulting_qty), _qty_dp)
     resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -1945,6 +2085,46 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
         metadata_={"merged_from": payload.source_entity_ids},
     )
+
+    # Carry attached files from every source onto the merged item (dedup by id; keep one hero)
+    # so merging never drops attachments.
+    from datetime import datetime as _dt, timezone as _tz
+    _seen_files: set[str] = set()
+    _hero_used = False
+    for proj in source_projections:
+        for f in (proj.state.get("files") or []):
+            fid = f.get("id")
+            if not fid or fid in _seen_files:
+                continue
+            _seen_files.add(fid)
+            is_hero = bool(f.get("is_hero")) and not _hero_used
+            if is_hero:
+                _hero_used = True
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=new_entity_id,
+                entity_type="item",
+                event_type="item.file.attached",
+                data={
+                    "entity_id": new_entity_id,
+                    "entity_type": "item",
+                    "file_id": fid,
+                    "filename": f.get("filename", ""),
+                    "mime": f.get("mime", ""),
+                    "size": f.get("size", 0),
+                    "url": f.get("url", ""),
+                    "document_tag": f.get("document_tag"),
+                    "description": f.get("description"),
+                    "uploaded_at": f.get("uploaded_at") or _dt.now(_tz.utc).isoformat(),
+                    "is_hero": is_hero,
+                },
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={"reason": "from_merge"},
+            )
 
     # Emit pricing events for all price fields from target; emit cost_total (not cost_price) for cost.
     price_fields: dict = {}

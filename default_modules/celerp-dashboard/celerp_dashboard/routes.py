@@ -129,9 +129,9 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
 
 
 @router.get("/activity")
-async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
-    return {"activities": await _hydrate_entries(rows, company_id, session)}
+    return {"activities": await _hydrate_entries(rows, company_id, session, role)}
 
 
 @router.get("/activity/search")
@@ -142,6 +142,7 @@ async def search_activity(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=200),
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from sqlalchemy import and_, func
@@ -180,7 +181,7 @@ async def search_activity(
     )).scalars().all()
 
     return {
-        "activities": await _hydrate_entries(rows, company_id, session),
+        "activities": await _hydrate_entries(rows, company_id, session, role),
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -188,7 +189,7 @@ async def search_activity(
     }
 
 
-async def _hydrate_entries(rows, company_id: str, session) -> list[dict]:
+async def _hydrate_entries(rows, company_id: str, session, role: str | None = None) -> list[dict]:
     """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
     entity_ids = list({e.entity_id for e in rows})
     proj_rows = (await session.execute(
@@ -205,10 +206,16 @@ async def _hydrate_entries(rows, company_id: str, session) -> list[dict]:
         )).all()
         actor_map = {str(uid): uname for uid, uname in user_rows}
 
+    from celerp.services.activity_redaction import can_see_costs, redact_event_costs
+    show_costs = can_see_costs(role)
+
     activities = []
     for e in rows:
         state = proj_by_id.get(e.entity_id, {})
         name = state.get("name") or state.get("sku") or state.get("doc_number") or state.get("title") or None
+        data = e.data if isinstance(e.data, dict) else {}
+        if not show_costs:
+            data = redact_event_costs(e.event_type, data)
         activities.append({
             "ts": e.ts.isoformat() if hasattr(e.ts, "isoformat") else str(e.ts),
             "event_type": e.event_type,
@@ -216,7 +223,7 @@ async def _hydrate_entries(rows, company_id: str, session) -> list[dict]:
             "entity_type": e.entity_type,
             "name": name,
             "actor_name": actor_map.get(str(e.actor_id), str(e.actor_id) if e.actor_id else ""),
-            "data": e.data if isinstance(e.data, dict) else {},
+            "data": data,
             "metadata_": e.metadata_ if isinstance(e.metadata_, dict) else {},
         })
     return activities
