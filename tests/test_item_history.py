@@ -342,6 +342,12 @@ def test_cost_redaction_helper():
     # split children_detail cost deltas removed
     out = redact_event_costs("item.split", {"parent_sku": "M", "children_detail": [{"child_sku": "C", "qty_before": 10, "qty_after": 7, "cost_before": 100, "cost_after": 70}]})
     assert out["children_detail"][0] == {"child_sku": "C", "qty_before": 10, "qty_after": 7}
+    # doc fulfillment COGS stripped, item list kept
+    assert redact_event_costs("doc.fulfilled", {"fulfilled_items": [{"sku": "A", "quantity": 2}], "total_cogs": 1500.0, "strategy": "per_line"}) \
+        == {"fulfilled_items": [{"sku": "A", "quantity": 2}], "strategy": "per_line"}
+    # item.created/snapshot carry full item state — strip cost, keep sell price
+    assert redact_event_costs("item.created", {"sku": "A", "quantity": 3, "cost_total": 900.0, "cost_price": 300.0, "retail_price": 500.0}) \
+        == {"sku": "A", "quantity": 3, "retail_price": 500.0}
 
 
 def test_field_change_formatting():

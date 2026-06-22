@@ -76,6 +76,33 @@ async def test_full_revert_still_fulfillment_reversed(client):
     assert "doc.fulfillment_reversed" in types and "doc.partially_reverted" not in types
 
 
+@pytest.mark.asyncio
+async def test_doc_cogs_redacted_for_operator(client, session):
+    """COGS on a fulfilled doc must not ship to an under-manager role via the ledger."""
+    token = await _register(client)
+    h = _h(token)
+    a = (await client.post("/items", headers=h, json={"sku": "COGS-A", "name": "A", "quantity": 2, "sell_by": "piece", "cost_price": 7.0})).json()["id"]
+    doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
+        {"entity_id": a, "sku": "COGS-A", "name": "A", "quantity": 2, "unit_price": 10, "sell_by": "piece"}],
+    })).json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{doc}/fulfill-lines", headers=h, json={"line_entity_ids": [a]})).status_code == 200
+
+    # Manager (owner) sees COGS on the doc.fulfilled event.
+    mgr = [e for e in await _doc_events(client, h, doc) if e["event_type"] == "doc.fulfilled"][0]
+    assert "total_cogs" in mgr["data"]
+
+    # Operator must not.
+    from celerp.services.session_tracker import clear as _clear_tracker
+    await client.post("/companies/me/users", json={"email": "op@fulact.test", "name": "Op", "role": "operator", "password": "pw123"}, headers=h)
+    await _clear_tracker(session)
+    op_tok = (await client.post("/auth/login", json={"email": "op@fulact.test", "password": "pw123"})).json()["access_token"]
+    op_ful = [e for e in await _doc_events(client, _h(op_tok), doc) if e["event_type"] == "doc.fulfilled"][0]
+    assert "total_cogs" not in op_ful["data"], "COGS leaked to operator"
+    import json as _json
+    assert "total_cogs" not in _json.dumps((await _doc_events(client, _h(op_tok), doc)))
+
+
 def test_doc_fulfillment_detail_rendering():
     from ui.components.activity import detail_from_entry, event_label
     assert event_label("doc.partially_reverted") == "Partially reverted"

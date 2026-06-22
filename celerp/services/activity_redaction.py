@@ -17,6 +17,11 @@ from celerp.services.auth import ROLE_LEVELS
 # The cost fields gated at manager+ (mirrors the inventory item-visibility rule).
 COST_FIELD_KEYS = frozenset({"cost_price", "cost_total"})
 
+# Every cost-bearing key that can appear in event data (top-level or in fields_changed):
+# item cost, COGS on fulfillment, manufacturing unit cost. Sell prices (retail_price etc.)
+# are deliberately excluded — they are visible to all roles, matching item-level visibility.
+COST_DATA_KEYS = frozenset({"cost_price", "cost_total", "total_cogs", "cogs", "unit_cost"})
+
 _MANAGER_LEVEL = ROLE_LEVELS["manager"]
 
 
@@ -26,13 +31,17 @@ def can_see_costs(role: str | None) -> bool:
 
 
 def redact_event_costs(event_type: str, data: dict) -> dict:
-    """Return ``data`` with any cost amount stripped. Pure (returns a copy when it changes
-    something); rows are kept (counts/pagination stay intact) but cost numbers are removed.
+    """Return ``data`` with every cost amount stripped. Pure (returns a copy only when it
+    changes something); rows are kept (counts/pagination stay intact), only cost numbers go.
 
-    Covers every cost-bearing item event: ``item.pricing.set`` for a cost price_type,
-    ``fields_changed`` cost keys, transform parent/child cost totals, and split
-    ``children_detail`` cost deltas. Sell prices (``*_price`` other than ``cost_price``)
-    are intentionally left visible, matching item-level visibility.
+    Covers all cost-bearing event data: ``item.pricing.set`` for a cost price_type;
+    top-level cost keys (item cost on item.created/snapshot/patched, ``total_cogs`` on
+    doc fulfillment, manufacturing ``unit_cost``); ``fields_changed`` cost keys; transform
+    parent/child cost totals; and split ``children_detail`` cost deltas. Sell prices
+    (``*_price`` other than ``cost_price``) are deliberately left visible.
+
+    Read-time only — projection replay reads the raw ledger directly, so cost stays intact
+    for state rebuilds; this just keeps cost out of API responses to under-manager roles.
     """
     if not isinstance(data, dict):
         return data
@@ -43,35 +52,27 @@ def redact_event_costs(event_type: str, data: dict) -> dict:
         out["cost_redacted"] = True
         return out
 
-    out = data
-    changed = False
-
     fc = data.get("fields_changed")
-    if isinstance(fc, dict) and any(k in fc for k in COST_FIELD_KEYS):
-        out = dict(data)
-        out["fields_changed"] = {k: v for k, v in fc.items() if k not in COST_FIELD_KEYS}
-        changed = True
-
-    for k in ("parent_cost_total", "child_cost_total"):
-        if k in data:
-            if not changed:
-                out = dict(data)
-                changed = True
-            out.pop(k, None)
-
     cd = data.get("children_detail")
-    if isinstance(cd, list) and any(
-        isinstance(c, dict) and any(str(kk).startswith("cost_") for kk in c) for c in cd
-    ):
-        if not changed:
-            out = dict(data)
-            changed = True
+    needs = (
+        any(k in data for k in COST_DATA_KEYS)
+        or any(k in data for k in ("parent_cost_total", "child_cost_total"))
+        or (isinstance(fc, dict) and any(k in fc for k in COST_DATA_KEYS))
+        or (isinstance(cd, list) and any(isinstance(c, dict) and any(str(kk).startswith("cost_") for kk in c) for c in cd))
+    )
+    if not needs:
+        return data
+
+    out = {k: v for k, v in data.items()
+           if k not in COST_DATA_KEYS and k not in ("parent_cost_total", "child_cost_total")}
+    if isinstance(fc, dict):
+        out["fields_changed"] = {k: v for k, v in fc.items() if k not in COST_DATA_KEYS}
+    if isinstance(cd, list):
         out["children_detail"] = [
             {kk: vv for kk, vv in c.items() if not str(kk).startswith("cost_")}
             if isinstance(c, dict) else c
             for c in cd
         ]
-
     return out
 
 
