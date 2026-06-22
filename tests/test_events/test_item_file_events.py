@@ -58,6 +58,25 @@ class TestItemFileAttached:
         state = _file_attached(state, "f2", is_hero=False)
         assert state["preview_image_id"] == "f1"
 
+    def test_reapplying_same_file_id_does_not_duplicate(self):
+        """F9: item.file.attached is idempotent on file_id. Re-applying the same event
+        (a replay, or two call sites each emitting it - the F1 class) must leave exactly
+        one entry, not two with the same id."""
+        state = _base_state()
+        state = _file_attached(state, "f1", is_hero=True)
+        state = _file_attached(state, "f1", is_hero=True)  # same file_id again
+        ids = [f["id"] for f in state["files"]]
+        assert ids == ["f1"], f"duplicate file entry created: {ids}"
+
+    def test_reapplying_same_file_id_updates_in_place(self):
+        """A second attach of the same file_id updates the existing entry's metadata
+        rather than appending a new row."""
+        state = _base_state()
+        state = _file_attached(state, "f1", tag="product_images")
+        state = _file_attached(state, "f1", tag="certificates")
+        assert len(state["files"]) == 1
+        assert state["files"][0]["document_tag"] == "certificates"
+
     def test_pdf_file_stored_correctly(self):
         state = _base_state()
         state = apply_item_event(state, "item.file.attached", {

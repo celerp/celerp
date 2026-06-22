@@ -298,7 +298,15 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             for f in current["files"]:
                 f["is_hero"] = False
             current["preview_image_id"] = entry["id"]
-        current["files"].append(entry)
+        # F9 (idempotency): keep file_id unique in the projection. Re-applying the same
+        # item.file.attached - a replayed event, or two call sites each emitting it (the
+        # F1 class) - must not create a duplicate list entry. Update in place if the
+        # file_id is already present; otherwise append.
+        _existing = next((f for f in current["files"] if f.get("id") == entry["id"]), None)
+        if _existing is not None:
+            _existing.update(entry)
+        else:
+            current["files"].append(entry)
     elif event_type == "item.file.tagged":
         for f in current.get("files", []):
             if f.get("id") == data["file_id"]:
