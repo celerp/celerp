@@ -347,6 +347,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["fulfilled_items"] = data["fulfilled_items"]
         current["fulfilled_at"] = data.get("fulfilled_at") or ""
         current["fulfilled_by"] = data["fulfilled_by"]
+    elif event_type == "doc.partially_reverted":
+        # Some (not all) lines reverted: the doc stays partially fulfilled. Status matches
+        # doc.partially_fulfilled; the distinct type only changes how the activity reads.
+        current["fulfillment_status"] = "partial"
     elif event_type == "doc.fulfillment_reversed":
         current["fulfill_cycle"] = int(current.get("fulfill_cycle", 0)) + 1
         current.pop("fulfillment_status", None)

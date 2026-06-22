@@ -51,6 +51,10 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "doc.payment.received": "Payment received",
     "doc.payment.refunded": "Payment refunded",
     "doc.received": "Goods received",
+    "doc.fulfilled": "Fulfilled",
+    "doc.partially_fulfilled": "Partially fulfilled",
+    "doc.fulfillment_reversed": "Fulfillment reversed",
+    "doc.partially_reverted": "Partially reverted",
     "doc.line_received": "Line item received",
     "doc.line_returned": "Line item returned",
     "doc.items_returned": "Items returned",
@@ -140,6 +144,29 @@ def fmt_price(value, price_type: str | None = None, currency: str | None = None)
     if price_type and price_type.endswith("_price") and price_type != "cost_total":
         return fmt_rate(value, currency)
     return fmt_money(value, currency)
+
+
+def _item_brief_summary(items, limit: int = 6) -> str:
+    """'SKU ×qty, SKU ×qty' from a list of {sku/item_id, quantity} dicts — used to name the
+    items in document fulfillment/reversal activity entries."""
+    if not isinstance(items, list):
+        return ""
+    parts: list[str] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sku = str(it.get("sku") or "")
+        if not sku:
+            iid = str(it.get("item_id") or "")
+            sku = iid[5:] if iid.startswith("item:") else iid
+        if not sku:
+            continue
+        qty = it.get("quantity")
+        parts.append(f"{sku} ×{fmt_qty(qty)}" if qty is not None else sku)
+    summary = ", ".join(parts[:limit])
+    if len(parts) > limit:
+        summary += f" +{len(parts) - limit} more"
+    return summary
 
 
 # Event types that are system-internal and should not appear in user-facing history.
@@ -392,6 +419,15 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         return _fields_changed_summary(fields_changed, currency)
     if event_type == "doc.shared":
         return doc_ref or ""
+    if event_type in ("doc.fulfilled", "doc.partially_fulfilled"):
+        summary = _item_brief_summary(data.get("fulfilled_items"))
+        if event_type == "doc.partially_fulfilled":
+            pending = _item_brief_summary(data.get("unfulfilled_items"))
+            if summary and pending:
+                return f"{summary} (pending: {pending})"
+        return summary
+    if event_type in ("doc.fulfillment_reversed", "doc.partially_reverted"):
+        return _item_brief_summary(data.get("reversed_items"))
     return ""
 
 

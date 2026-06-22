@@ -603,6 +603,14 @@ class DocFulfillmentReversed(BaseModel):
     reason: str
 
 
+class DocPartiallyReverted(BaseModel):
+    """Some (not all) fulfilled lines reverted; the doc remains partially fulfilled. Distinct
+    from doc.partially_fulfilled so the activity reads as a revert, not a fulfillment."""
+    reversed_items: list[dict[str, Any]]
+    reversed_by: str
+    reason: str
+
+
 # -----------------
 # Manufacturing
 # -----------------
@@ -998,6 +1006,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "list.note_removed": ListNoteRemoved,
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
+    "doc.partially_reverted": DocPartiallyReverted,
     "doc.return_received": DocReturnReceived,
     "doc.return_undone": DocReturnUndone,
     "doc.receive_undone": DocReceiveUndone,
