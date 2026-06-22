@@ -72,6 +72,31 @@ def test_init_defaults(tmp_config):
     assert len(cfg["auth"]["jwt_secret"]) == 64  # secrets.token_hex(32)
 
 
+def test_init_shows_star_cta_line(tmp_config):
+    runner = CliRunner()
+    with patch(_INIT_PATCHES["test_db"], return_value=None), \
+         patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]):
+        result = runner.invoke(main, ["init"])
+    assert result.exit_code == 0, result.output
+    assert "Back us early" in result.output
+    assert "celerp.com/github" in result.output
+
+
+def test_init_omits_star_cta_line_when_disabled(tmp_config, monkeypatch):
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "star_cta_enabled", False)
+    runner = CliRunner()
+    with patch(_INIT_PATCHES["test_db"], return_value=None), \
+         patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]):
+        result = runner.invoke(main, ["init"])
+    assert result.exit_code == 0, result.output
+    assert "Back us early" not in result.output
+
+
 def test_init_custom_flags(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \

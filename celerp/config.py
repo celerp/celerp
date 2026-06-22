@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     api_workers: int = 2
     gui_workers: int = 1
 
+    # GitHub-star CTA. The relay (celerp.com) is the single source of the count,
+    # tier ladder, and copy; the install only renders the relay's resolved CTA and
+    # falls back to a static neutral link when the relay is unreachable.
+    star_cta_enabled: bool = True       # local kill switch
+    star_cta_cache_ttl_s: int = 3600    # how long to cache the relay-resolved CTA
+
 
 settings = Settings()
 
