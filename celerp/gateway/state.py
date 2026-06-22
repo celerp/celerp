@@ -93,24 +93,33 @@ def relay_session_headers() -> dict[str, str]:
     }
 
 
-SUBSCRIBE_UTM = "utm_source=app&utm_medium=inapp"
+HANDOFF_BASE = "https://celerp.com"
+
+
+def build_handoff_url(path: str, *, medium: str = "inapp", lead: str = "", extra: str = "", anchor: str = "") -> str:
+    """Single source of truth for celerp.com handoff links (subscribe, github, ...).
+
+    Keeps the format identical everywhere: an optional ``lead`` param first (e.g.
+    ``instance_id=...``, so attribution tags never bury it), then the UTM tags
+    (``utm_source=app`` + the caller's ``medium``), then any ``extra`` params, then
+    an optional ``#anchor``.
+    """
+    params = ([lead] if lead else []) + [f"utm_source=app&utm_medium={medium}"]
+    if extra:
+        params.append(extra.lstrip("?&"))
+    url = f"{HANDOFF_BASE}{path}?{'&'.join(params)}"
+    return f"{url}#{anchor}" if anchor else url
 
 
 def build_subscribe_url(instance_id: str = "", anchor: str = "", *, topup: bool = False, extra: str = "") -> str:
-    """Single source of truth for the in-app celerp.com/subscribe handoff URL.
+    """In-app celerp.com/subscribe handoff URL. Thin caller of build_handoff_url.
 
-    Keeps the format identical everywhere: instance_id first (so attribution tags never
-    bury it and the link stays easy to assert on), then UTM tags, then any caller
-    ``extra`` query params, then an optional ``#anchor``. ``topup=True`` selects the
-    /subscribe/topup variant. Callers resolve the instance id however they need (the
-    gateway id, ``ensure_instance_id()``, or a value from a payload).
+    ``topup=True`` selects the /subscribe/topup variant. Callers resolve the instance
+    id however they need (the gateway id, ``ensure_instance_id()``, or a payload value).
     """
-    base = "https://celerp.com/subscribe/topup" if topup else "https://celerp.com/subscribe"
-    params = ([f"instance_id={instance_id}"] if instance_id else []) + [SUBSCRIBE_UTM]
-    if extra:
-        params.append(extra.lstrip("?&"))
-    url = f"{base}?{'&'.join(params)}"
-    return f"{url}#{anchor}" if anchor else url
+    path = "/subscribe/topup" if topup else "/subscribe"
+    lead = f"instance_id={instance_id}" if instance_id else ""
+    return build_handoff_url(path, medium="inapp", lead=lead, extra=extra, anchor=anchor)
 
 
 def relay_subscribe_url(anchor: str = "") -> str:

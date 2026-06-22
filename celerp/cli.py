@@ -544,6 +544,15 @@ def init(db_url, api_port, ui_port, cloud_token, force):
   UI:     http://localhost:{ui_port_val}
   Modules: none — choose an industry preset in the setup wizard
 """)
+
+    from celerp.config import settings as _settings
+    from celerp.gateway.state import build_handoff_url as _handoff
+    if _settings.star_cta_enabled:
+        click.echo(
+            "New and open source - founding supporters are how other teams find us.\n"
+            f"  Back us early: {_handoff('/github', medium='cli')}\n"
+        )
+
     _start(cfg)
 
 

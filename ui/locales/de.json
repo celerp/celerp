@@ -759,7 +759,7 @@
   "msg._web_access": "🌐 Web-Zugang",
   "msg.accepted_formats_csv_utf8": "Akzeptierte Formate: .csv (UTF-8)",
   "msg.agentic_record_creation": "Autonome Datensatzerstellung",
-  "msg.ai_quota_exceeded": "Sie haben alle {limit} enthaltenen KI-Abfragen aufgebraucht. Upgraden Sie auf Cloud + KI für 100 Abfragen/Monat.",
+  "msg.ai_quota_exceeded": "Sie haben alle {limit} enthaltenen KI-Abfragen aufgebraucht. Upgraden Sie auf Cloud + KI für 200 Abfragen/Monat.",
   "msg.ai_subscription_required": "Cloud + KI-Abonnement erforderlich, um den KI-Assistenten zu nutzen.",
   "msg.api_server_not_running": "Stellen Sie sicher, dass der API-Server läuft, bevor Sie die Benutzeroberfläche öffnen:",
   "msg.ask_anything_about_your_business_data": "Stellen Sie beliebige Fragen zu Ihren Geschäftsdaten...",

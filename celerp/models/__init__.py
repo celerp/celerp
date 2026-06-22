@@ -8,3 +8,4 @@ from celerp.models.import_batch import ImportBatch  # noqa: F401 - ensure import
 from celerp.models.notification import Notification  # noqa: F401
 from celerp.models.share import DocShareToken  # noqa: F401 - ensure doc_share_tokens table registered
 from celerp.models.sync_run import SyncRun  # noqa: F401 - ensure sync_runs table registered
+from celerp.models.supporter import SupporterBadge  # noqa: F401 - ensure supporter_badges table registered

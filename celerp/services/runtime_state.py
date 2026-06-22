@@ -106,3 +106,22 @@ async def set_draining(session: AsyncSession, draining: bool) -> None:
         row.value = {**current, "draining": False, "drain_since": None}
     await session.commit()
     _drain_cache_bust()  # bust so next is_draining call reads fresh state
+
+
+# ---------------------------------------------------------------------------
+# Star-CTA dismissal (install-level: one ask for the whole install)
+# ---------------------------------------------------------------------------
+
+async def star_prompt_dismissed(session: AsyncSession) -> bool:
+    """Return True if the GitHub-star ask has been dismissed for this install."""
+    state = await get_runtime_state(session)
+    return bool(state.get("star_prompt_dismissed", False))
+
+
+async def dismiss_star_prompt(session: AsyncSession) -> None:
+    """Mark the GitHub-star ask dismissed so the onboarding/milestone cards stop."""
+    row = await _get_or_create(session)
+    current = dict(row.value) if row.value else {}
+    row.value = {**current, "star_prompt_dismissed": True}
+    await session.commit()
+    _drain_cache_bust()  # this row's cache is shared with the drain flag

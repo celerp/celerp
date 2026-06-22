@@ -1,0 +1,31 @@
+name: Founder label
+
+# Recognise verified founding supporters when they open an issue. Uses the
+# ephemeral, repo-scoped GITHUB_TOKEN (no GitHub App, no permission change to the
+# CLA app — see the stars plan §0.14) and the relay's read-only founder lookup.
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  label-founder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label founding supporters
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status="$(curl -fsS "https://relay.celerp.com/github/founder-status?login=${AUTHOR}" || echo '{}')"
+          if [ "$(echo "$status" | jq -r '.founder // false')" = "true" ]; then
+            gh label create founding-supporter --repo "$REPO" --color d4af37 \
+              --description "Verified founding supporter of Celerp" --force || true
+            gh issue edit "$ISSUE" --repo "$REPO" --add-label founding-supporter
+          fi
