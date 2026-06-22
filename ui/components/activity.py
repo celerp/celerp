@@ -176,6 +176,21 @@ def _item_brief_summary(items, limit: int = 6) -> str:
     return summary
 
 
+def _line_item_type(li: dict) -> str:
+    """Best-effort audit label for a line item's kind. Bills/POs carry an explicit
+    ``receive_as`` (stock/expense); otherwise a line that links a catalog item (has a
+    sku/id) is treated as stock and a free-typed line as non-stock. The history renderer
+    has no catalog access, so a service catalog item on an invoice reads as 'Stock'."""
+    if not isinstance(li, dict):
+        return "Non-stock"
+    ra = li.get("receive_as")
+    if ra:
+        return str(ra).replace("_", " ").strip().capitalize()
+    if li.get("sku") or li.get("item_id") or li.get("entity_id"):
+        return "Stock"
+    return "Non-stock"
+
+
 # Event types that are system-internal and should not appear in user-facing history.
 _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
@@ -521,18 +536,32 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
             if k == "line_items" and isinstance(new, list):
+                def _li_key(li):
+                    return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
+                def _li_label(li):
+                    name = li.get("name") or li.get("sku") or ""
+                    qty = li.get("quantity")
+                    return f"{name} ×{fmt_qty(qty)}" if qty is not None else name
+                def _li_added_label(li):
+                    # Audit-facing: name the item TYPE, qty, and unit price at the moment it
+                    # was added so an auditor sees e.g. "Stock: Widget ×3 @ $10.00".
+                    name = li.get("name") or li.get("sku") or ""
+                    detail = f"{_line_item_type(li)}: {name}" if name else _line_item_type(li)
+                    qty = li.get("quantity")
+                    if qty is not None:
+                        detail += f" ×{fmt_qty(qty)}"
+                    price = li.get("unit_price")
+                    if price is None:
+                        price = li.get("price")
+                    if price is not None:
+                        detail += f" @ {fmt_price(price, 'unit_price', currency)}"
+                    return detail
+
                 if isinstance(old, list):
                     # True diff: old and new both present
-                    def _li_key(li):
-                        return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
-                    def _li_label(li):
-                        name = li.get("name") or li.get("sku") or ""
-                        qty = li.get("quantity")
-                        return f"{name} ×{qty}" if qty is not None else name
-
                     old_by_key = {_li_key(li): li for li in old if isinstance(li, dict)}
                     new_by_key = {_li_key(li): li for li in new if isinstance(li, dict)}
-                    added = [_li_label(li) for k2, li in new_by_key.items() if k2 not in old_by_key]
+                    added = [li for k2, li in new_by_key.items() if k2 not in old_by_key]
                     removed = [_li_label(li) for k2, li in old_by_key.items() if k2 not in new_by_key]
                     changed = []
                     for k2, new_li in new_by_key.items():
@@ -544,32 +573,27 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                             new_price = new_li.get("unit_price") or new_li.get("price")
                             name = new_li.get("name") or new_li.get("sku") or ""
                             if old_qty != new_qty:
-                                changed.append(f"{name} ×{old_qty}→{new_qty}")
+                                changed.append(f"{name} ×{fmt_qty(old_qty)}→{fmt_qty(new_qty)}")
                             elif old_price != new_price:
-                                changed.append(f"{name} {old_price}→{new_price}")
+                                changed.append(
+                                    f"{name} {fmt_price(old_price, 'unit_price', currency)}"
+                                    f"→{fmt_price(new_price, 'unit_price', currency)}"
+                                )
                     parts = (
-                        [f"+{x}" for x in added[:2]]
-                        + [f"~{x}" for x in changed[:2]]
-                        + [f"-{x}" for x in removed[:2]]
+                        [f"Added {_li_added_label(li)}" for li in added[:2]]
+                        + [f"Changed {x}" for x in changed[:2]]
+                        + [f"Removed {x}" for x in removed[:2]]
                     )
                     overflow = (len(added) + len(changed) + len(removed)) - len(parts)
                 else:
-                    # No old state - show final line state with qty/price
+                    # No old state - read every line as a fresh add (type, qty, price).
                     parts = []
                     for li in new:
                         if not isinstance(li, dict):
                             continue
-                        name = li.get("name") or li.get("sku") or ""
-                        if not name:
+                        if not (li.get("name") or li.get("sku")):
                             continue
-                        qty = li.get("quantity")
-                        price = li.get("unit_price") or li.get("price")
-                        detail = name
-                        if qty is not None:
-                            detail += f" ×{qty}"
-                        if price is not None:
-                            detail += f" @ {price}"
-                        parts.append(detail)
+                        parts.append(f"Added {_li_added_label(li)}")
                     overflow = max(0, len(parts) - 3)
                 if parts:
                     summary = "; ".join(parts[:3])

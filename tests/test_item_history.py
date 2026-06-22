@@ -383,6 +383,33 @@ def test_derived_doc_totals_suppressed_in_summary():
     assert _fields_changed_summary({"subtotal": {"old": 20, "new": 30}, "total": {"old": 20, "new": 30}}) == ""
 
 
+def test_added_line_item_shows_type_qty_price():
+    # Auditors need to see what kind of item was added and at what value. Bills/POs carry an
+    # explicit receive_as (stock/expense); invoice lines read as Stock (linked catalog item) or
+    # Non-stock (free-typed line).
+    from ui.components.activity import _fields_changed_summary
+    # True diff: a stock item and an expense added to an existing doc.
+    fields = {"line_items": {
+        "old": [{"sku": "OLD", "name": "Existing", "quantity": 1, "unit_price": 5}],
+        "new": [
+            {"sku": "OLD", "name": "Existing", "quantity": 1, "unit_price": 5},
+            {"sku": "WIDGET", "name": "Widget", "quantity": 3, "unit_price": 10, "receive_as": "stock"},
+            {"name": "Lunch", "quantity": 1, "unit_price": 25, "receive_as": "expense"},
+        ],
+    }}
+    summary = _fields_changed_summary(fields, "USD")
+    assert "Added Stock: Widget ×3 @ $10.00" in summary
+    assert "Added Expense: Lunch ×1 @ $25.00" in summary
+    # No old state (first save on a fresh doc): every line reads as an add with its type.
+    fresh = {"line_items": {"new": [
+        {"name": "Consulting", "quantity": 2, "unit_price": 150},   # free-typed -> Non-stock
+        {"sku": "GADGET", "name": "Gadget", "quantity": 1, "unit_price": 40},  # catalog -> Stock
+    ]}}
+    fresh_summary = _fields_changed_summary(fresh, "USD")
+    assert "Added Non-stock: Consulting ×2 @ $150.00" in fresh_summary
+    assert "Added Stock: Gadget ×1 @ $40.00" in fresh_summary
+
+
 def test_received_goods_names_items_like_fulfillment():
     # Issue 2: receiving goods must name which goods were received, the same way fulfillment does.
     from ui.components.activity import detail_from_entry
