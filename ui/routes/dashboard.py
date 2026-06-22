@@ -770,6 +770,33 @@ _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"
 _CUR_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
 
 
+_CHART_EMPTY_ICONS = {
+    "line": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+             'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+             '<path d="M7 7 v32 h32" opacity="0.4"/><path d="M12 31 l8 -7 l6 4 l12 -14"/></svg>'),
+    "check": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+              'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+              '<circle cx="23" cy="23" r="16" opacity="0.4"/><path d="M15 23 l5 5 l11 -12"/></svg>'),
+    "bars": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+             'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+             '<path d="M7 7 v32 h32" opacity="0.4"/>'
+             '<rect x="13" y="25" width="5" height="10" fill="currentColor" stroke="none" opacity="0.65"/>'
+             '<rect x="22" y="19" width="5" height="16" fill="currentColor" stroke="none" opacity="0.65"/>'
+             '<rect x="31" y="29" width="5" height="6" fill="currentColor" stroke="none" opacity="0.65"/></svg>'),
+}
+
+
+def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
+    """A polished empty-state for a chart with no data yet, so a brand-new dashboard
+    reads as complete (and self-explanatory) rather than broken or blank."""
+    return Div(
+        NotStr(_CHART_EMPTY_ICONS.get(icon, _CHART_EMPTY_ICONS["line"])),
+        P(t(title_key), cls="chart-empty-title"),
+        P(t(sub_key), cls="chart-empty-sub"),
+        cls="chart-empty",
+    )
+
+
 def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
                     revenue_trend: list | None = None, currency: str | None = None) -> FT:
     import json
@@ -782,29 +809,32 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     rev_data = json.dumps([float(p.get("total", 0) or 0) for p in revenue_trend]) if rev_has_data else "[]"
     cur_sym = _CUR_SYMBOLS.get((currency or "USD").upper(), "")
 
-    if not show_charts and not rev_has_data:
-        return ""
-
     buckets = ar_aging.get("buckets", {})
-    ar_labels = json.dumps(list(buckets.keys())) if buckets else "[]"
-    ar_data = json.dumps([float(v) for v in buckets.values()]) if buckets else "[]"
+    ar_has_data = any(float(v or 0) > 0 for v in buckets.values())
+    ar_labels = json.dumps(list(buckets.keys())) if ar_has_data else "[]"
+    ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
 
     cats = valuation.get("category_counts", {})
-    cat_labels = json.dumps(list(cats.keys())) if cats else "[]"
-    cat_data = json.dumps([int(v) for v in cats.values()]) if cats else "[]"
+    cat_has_data = any(int(v or 0) > 0 for v in cats.values())
+    cat_labels = json.dumps(list(cats.keys())) if cat_has_data else "[]"
+    cat_data = json.dumps([int(v) for v in cats.values()]) if cat_has_data else "[]"
 
+    # The revenue card always shows — with an empty-state when there is no invoiced
+    # revenue yet — so the first page a customer lands on never looks broken or bare.
     revenue_card = Div(
         H3(t("page.revenue_last_6_months"), cls="chart-title"),
-        Div(Canvas(id="chart-revenue-trend"), cls="chart-line-wrap"),
+        Div(Canvas(id="chart-revenue-trend"), cls="chart-line-wrap") if rev_has_data
+        else _chart_empty("page.no_revenue_title", "page.no_revenue_sub", "line"),
         cls="chart-card chart-card--wide",
-    ) if rev_has_data else ""
+    )
 
     chart_cards = []
     if "ar_aging" in show_charts:
         chart_cards.append(
             Div(
                 H3(t("page.ar_aging"), cls="chart-title"),
-                Canvas(id="chart-ar-aging", width="300", height="300"),
+                Canvas(id="chart-ar-aging", width="300", height="300") if ar_has_data
+                else _chart_empty("page.no_receivables_title", "page.no_receivables_sub", "check"),
                 cls="chart-card",
             )
         )
@@ -812,13 +842,11 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
         chart_cards.append(
             Div(
                 H3(t("page.inventory_by_category"), cls="chart-title"),
-                Canvas(id="chart-inventory-cat", width="400", height="300"),
+                Canvas(id="chart-inventory-cat", width="400", height="300") if cat_has_data
+                else _chart_empty("page.no_inventory_title", "page.no_inventory_sub", "bars"),
                 cls="chart-card",
             )
         )
-
-    if not chart_cards and not rev_has_data:
-        return ""
 
     chart_init = f"""
     function initDashboardCharts() {{
