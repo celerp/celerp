@@ -22,7 +22,7 @@ def _steps(api, item):
     return (api.get(f"/items/{item}").json().get("workflow") or {}).get("steps") or []
 
 
-def _wait(api, item, pred, timeout=8.0):
+def _wait(api, item, pred, timeout=25.0):
     deadline = _t.time() + timeout
     while _t.time() < deadline:
         if pred(_steps(api, item)):

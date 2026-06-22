@@ -56,11 +56,16 @@ def test_doc_finalize_button(page, ui_server, api, draft_invoice_id):
 
     finalize_btn.first.click()
     # finalize persists then POSTs /action/finalize, which HX-Redirects back to the doc
-    page.wait_for_load_state("load", timeout=8000)
-    page.wait_for_timeout(300)
+    page.wait_for_load_state("load", timeout=20000)
     assert "Internal Server Error" not in page.locator("body").inner_text()
-    # the doc must no longer be a draft after issuing it
-    status = api.get(f"/docs/{doc_id}").json().get("status")
+    # The doc must leave draft once issued. CI runners are slow and contended, so poll the API
+    # for the persisted status change rather than reading once after a fixed delay (which races).
+    status = None
+    for _ in range(40):
+        status = api.get(f"/docs/{doc_id}").json().get("status")
+        if status and status != "draft":
+            break
+        page.wait_for_timeout(250)
     assert status and status != "draft", f"finalize did not move the doc off draft: {status!r}"
 
 
