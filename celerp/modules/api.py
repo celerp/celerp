@@ -93,11 +93,7 @@ async def ai_query(
             ),
         )
 
-    # Quota check (decrements from Cloud+AI subscription)
-    from celerp.ai.quota import check_ai_quota
-    await check_ai_quota()
-
-    # Run query through the AI service
+    # Run query through the AI service (the gateway meters usage as the query runs)
     from celerp.ai.service import run_query, AIResponse
     result: AIResponse = await run_query(
         query=query,

@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Gateway quota client.
+"""Gateway quota status client.
 
-Calls /quota/ai/consume on the relay to enforce per-instance AI query limits.
-If the gateway is not configured, quota checks are skipped (self-hosted installs with no
-cloud subscription run unlimited locally - the gate lives in the cloud).
+Reads AI quota status from the relay for display and tier checks. Quota is
+enforced by the gateway as a query runs; this module only reports it.
 """
 
 from __future__ import annotations
@@ -19,76 +18,13 @@ from celerp.gateway.state import (
     get_session_token,
     relay_http_url,
     relay_session_headers,
-    relay_subscribe_url,
 )
 
-# Private aliases so tests (and any internal callers) can import these from
-# this module rather than reaching into celerp.gateway.state directly.
+# Alias so tests / internal callers import this from here rather than reaching
+# into celerp.gateway.state directly.
 _relay_http_url = relay_http_url
 
-
-def _subscribe_url() -> str:
-    """Return the celerp.com subscribe URL anchored to the AI section."""
-    return relay_subscribe_url(anchor="ai")
-
 log = logging.getLogger(__name__)
-
-# Quota bypass monitoring: count consecutive relay failures
-_unconfirmed: int = 0
-_UNCONFIRMED_THRESHOLD: int = 10
-
-
-async def check_ai_quota(credits: int = 1) -> None:
-    """Consume AI quota credits from the relay.
-
-    credits: number of credits to consume (default 1 for pure text queries).
-    Raises HTTPException(402) if quota exceeded.
-    Raises nothing if gateway is not configured (local-only install).
-    """
-    if not settings.gateway_token or not get_session_token():
-        # No gateway → no quota enforcement (local install)
-        log.debug("Quota check skipped: gateway not configured.")
-        return
-
-    url = f"{relay_http_url()}/quota/ai/consume"
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.post(url, headers=relay_session_headers())
-    except Exception as exc:
-        # Network failure - allow through (don't block user on relay outage)
-        global _unconfirmed
-        _unconfirmed += 1
-        log.warning("Quota check failed (%d unconfirmed): %s. Allowing query.", _unconfirmed, exc)
-        if _unconfirmed >= _UNCONFIRMED_THRESHOLD:
-            log.error("Quota bypass threshold reached: %d consecutive failures. Check relay connectivity.", _unconfirmed)
-        return
-
-    if r.status_code == 200:
-        _unconfirmed = 0
-        return
-
-    if r.status_code == 429:
-        from fastapi import HTTPException
-        detail = r.json().get("detail", {})
-        raise HTTPException(
-            status_code=402,  # Payment Required
-            detail={
-                "code": "quota_exceeded",
-                "message": detail.get("message", "AI query quota exceeded"),
-                "used": detail.get("used", 0),
-                "limit": detail.get("limit", 0),
-                "resets_at": detail.get("resets_at", ""),
-                "upgrade_url": relay_subscribe_url(anchor="ai"),
-            },
-        )
-
-    if r.status_code == 401:
-        # Session expired — allow through (client will reconnect and retry)
-        log.warning("Quota check 401: session token expired. Allowing query.")
-        return
-
-    log.warning("Quota check unexpected status %d — allowing query.", r.status_code)
 
 
 async def get_subscription_tier() -> str | None:
