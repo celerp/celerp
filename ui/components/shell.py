@@ -790,7 +790,11 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "if(!d||!d.url||d.dismissed||d.mode==='neutral')return;"
         "var card=document.getElementById('star-supporter-card');if(!card)return;"
         "var h=document.getElementById('star-card-headline');if(h)h.textContent=d.headline||'Star on GitHub';"
-        "var b=document.getElementById('star-card-body');if(b)b.textContent=d.body||'';"  # \\n\\n -> paragraph (pre-line)
+        # Relay body is "intro\\n\\nfounding-promise"; first part is the lead, the rest
+        # (the first-100 badge promise) renders in the smaller sub-paragraph.
+        "var parts=(d.body||'').split('\\n\\n');"
+        "var b=document.getElementById('star-card-body');if(b)b.textContent=parts[0]||'';"
+        "var b2=document.getElementById('star-card-body-2');if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
         "var s=document.getElementById('star-card-star');if(s)s.href=d.url;"
         "card.style.display='';"
         "}).catch(function(){});"
@@ -800,18 +804,21 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
         "})();"
     )
+    gold = "color:#d4af37"
     return Div(
         Div(
             # Dismiss = X in the top-right corner.
             Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
                    style="position:absolute;top:10px;right:14px;background:none;border:none;"
                          "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
-            # Header + body are filled from the relay CTA; body uses pre-line so the
-            # relay's "\\n\\n" renders as a paragraph break.
-            H3("", id="star-card-headline", style="margin:0 0 14px"),
+            # Header: gold star + the relay-hydrated ask.
+            H3(Span("★", style=gold), " ", Span("", id="star-card-headline"), style="margin:0 0 14px"),
             P("", id="star-card-body", style="white-space:pre-line;margin:0"),
+            # Smaller sub-paragraph for the founding-badge promise.
+            P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
             Div(
-                A("Star on GitHub", id="star-card-star", href="#", target="_blank", rel="noopener", cls="btn btn--primary"),
+                A(Span("★ ", style=gold), "Star on GitHub", id="star-card-star", href="#",
+                  target="_blank", rel="noopener", cls="btn btn--primary"),
                 A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),
                 style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:22px",
             ),

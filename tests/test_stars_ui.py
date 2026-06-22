@@ -40,7 +40,10 @@ def test_supporter_card_component():
     # source), so it is NOT in the static render; only the placeholders + pre-line are.
     assert 'id="star-card-headline"' in xml
     assert 'id="star-card-body"' in xml
+    assert 'id="star-card-body-2"' in xml     # smaller sub-paragraph (first-100 promise)
     assert "white-space:pre-line" in xml      # renders the relay's "\n\n" paragraph break
+    assert "#d4af37" in xml                    # gold star (header + button)
+    assert "font-size:13px" in xml            # the smaller founding-promise text
     # Hidden until JS hydrates it (non-neutral + not dismissed).
     assert "display:none" in xml.split('id="star-supporter-card"')[1][:90]
 
