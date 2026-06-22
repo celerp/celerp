@@ -114,6 +114,17 @@ jobs:
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 3 --group ${{ matrix.group }}
 
+      # On failure, upload the Playwright traces + screenshots so CI-only browser flakes
+      # (which never reproduce locally) can be diagnosed: `playwright show-trace <name>.trace.zip`.
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures-shard-${{ matrix.group }}
+          path: /tmp/playwright_failures
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Aggregator: the single required status check. Branch protection should require "Test"
   # (this job), which passes only when every unit AND browser shard passed.
   test:

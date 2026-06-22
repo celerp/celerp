@@ -211,12 +211,30 @@ def browser_context(playwright, ui_server, seeded_user):
 
 
 @pytest.fixture
-def page(browser_context):
+def page(browser_context, request):
     """Fresh page per test. On teardown, clear per-origin localStorage/sessionStorage so client
     state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - this is what made
-    the suite order- and shard-sensitive (e.g. the inventory attribute funnel)."""
+    the suite order- and shard-sensitive (e.g. the inventory attribute funnel).
+
+    A Playwright trace is recorded and, on failure, saved to /tmp/playwright_failures so CI-only
+    browser flakes (which never reproduce locally) can be diagnosed from the uploaded artifact -
+    the trace carries the DOM snapshots, network log and console for every step."""
     p = browser_context.new_page()
+    browser_context.tracing.start(snapshots=True, screenshots=True, sources=True)
     yield p
+    if getattr(request.node, "_failed", False):
+        import pathlib
+        fail_dir = pathlib.Path("/tmp/playwright_failures")
+        fail_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            browser_context.tracing.stop(path=str(fail_dir / f"{request.node.name}.trace.zip"))
+        except Exception:
+            pass
+    else:
+        try:
+            browser_context.tracing.stop()
+        except Exception:
+            pass
     try:
         p.evaluate("try{localStorage.clear();sessionStorage.clear();}catch(e){}")
     except Exception:
@@ -249,6 +267,7 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     if rep.when == "call" and rep.failed:
+        item._failed = True  # signals the page fixture to save its Playwright trace
         page = item.funcargs.get("page") or item.funcargs.get("unauthed_page")
         if page and not page.is_closed():
             import pathlib
