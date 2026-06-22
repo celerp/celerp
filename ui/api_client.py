@@ -610,10 +610,28 @@ async def get_doc_summary(token: str, doc_type: str = "") -> dict:
         return _raise(await c.get("/docs/summary", params=params)).json()
 
 
+async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
+    """Build a fields_changed payload from a flat field->value dict, capturing the entity's
+    CURRENT values as ``old`` (one GET) so history shows from -> to, not none -> to. A caller
+    may pre-pass a ``{"old","new"}`` dict for any field to supply its own old value; only the
+    bare-value fields trigger the lookup, and a failed lookup degrades to ``old: None``."""
+    bare = [k for k, v in data.items() if not (isinstance(v, dict) and "new" in v)]
+    current: dict = {}
+    if bare:
+        try:
+            current = (await c.get(get_path)).json()
+        except Exception:
+            current = {}
+    return {
+        k: (v if isinstance(v, dict) and "new" in v else {"old": current.get(k), "new": v})
+        for k, v in data.items()
+    }
+
+
 async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
-    fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
     async with _api_client(token) as c:
+        fields_changed = await _wrap_fields_changed(c, f"/docs/{entity_id}", data)
         return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
@@ -749,8 +767,8 @@ async def get_contact(token: str, contact_id: str) -> dict:
 
 async def patch_contact(token: str, contact_id: str, data: dict) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
-    fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
     async with _api_client(token) as c:
+        fields_changed = await _wrap_fields_changed(c, f"/crm/contacts/{contact_id}", data)
         return _raise(await c.patch(f"/crm/contacts/{contact_id}", json={"fields_changed": fields_changed})).json()
 
 
@@ -1243,8 +1261,8 @@ async def create_list(token: str, data: dict) -> dict:
 
 
 async def patch_list(token: str, entity_id: str, data: dict) -> dict:
-    fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
     async with _api_client(token) as c:
+        fields_changed = await _wrap_fields_changed(c, f"/lists/{entity_id}", data)
         return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 

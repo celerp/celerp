@@ -363,6 +363,40 @@ def test_field_change_formatting():
         == "Due date: 2026-01-01 → 2026-02-01"
 
 
+@pytest.mark.asyncio
+async def test_patch_captures_old_value():
+    # Issue 2: contact/doc/list field edits must record the real prior value as `old`
+    # (history showed none -> new because old was hardcoded None).
+    from ui.api_client import _wrap_fields_changed
+
+    class _Resp:
+        def __init__(self, d):
+            self._d = d
+
+        def json(self):
+            return self._d
+
+    class _C:
+        def __init__(self, d):
+            self._d = d
+
+        async def get(self, path):
+            return _Resp(self._d)
+
+    c = _C({"name": "Old Name", "credit_limit": 100})
+    # bare value -> old captured from the current entity
+    assert await _wrap_fields_changed(c, "/x", {"name": "New Name"}) == {"name": {"old": "Old Name", "new": "New Name"}}
+    # a caller that already passes {old,new} is respected
+    assert await _wrap_fields_changed(c, "/x", {"name": {"old": "A", "new": "B"}}) == {"name": {"old": "A", "new": "B"}}
+
+    class _Fail:
+        async def get(self, path):
+            raise RuntimeError("boom")
+
+    # a failed lookup degrades gracefully to old None
+    assert await _wrap_fields_changed(_Fail(), "/x", {"name": "New"}) == {"name": {"old": None, "new": "New"}}
+
+
 def test_fmt_qty_trims_decimals():
     assert fmt_qty(8.0) == "8"
     assert fmt_qty(7.50) == "7.5"
