@@ -224,6 +224,44 @@ class TestModulesAPIEndpoints:
         assert m["label"] == "Manufacturing"
 
     @pytest.mark.asyncio
+    async def test_core_folded_modules_report_running(self, client):
+        """REGRESSION: core-folded modules (ai/backup/connectors) are wired directly
+        into the app at construction, NOT via the pluggable loader, so they never
+        appear in loaded_modules(). list_modules must still report them running=True —
+        otherwise the setup /activating page waits forever and shows "Some modules
+        failed to start" (the AI/Cloud-Backup-spin-forever bug)."""
+        from celerp.modules.loader import _CORE_FOLDED
+
+        token = await _register(client)
+        default_modules = Path(__file__).parent.parent.parent / "default_modules"
+        with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200
+        by_name = {m["name"]: m for m in r.json()}
+
+        # Every folded module present on disk must be reported running.
+        on_disk_folded = [n for n in _CORE_FOLDED if (default_modules / n).is_dir()]
+        assert "celerp-ai" in on_disk_folded and "celerp-backup" in on_disk_folded, \
+            "AI + Backup must be on disk for this regression test to be meaningful"
+        for name in on_disk_folded:
+            assert name in by_name, f"folded module {name} missing from /me/modules"
+            assert by_name[name]["running"] is True, (
+                f"folded module {name} reported running=False — the activating page "
+                "would spin forever waiting for it"
+            )
+
+    @pytest.mark.asyncio
+    async def test_is_running_counts_folded_modules(self):
+        """Unit guard for the single source of truth used by the activating page."""
+        from celerp.modules.loader import is_core_folded, is_running
+
+        assert is_core_folded("celerp-ai") and is_core_folded("celerp-backup")
+        assert not is_core_folded("celerp-verticals")
+        # Folded modules are running even with an empty pluggable-loader registry.
+        assert is_running("celerp-ai") is True
+        assert is_running("celerp-verticals") is False
+
+    @pytest.mark.asyncio
     async def test_subscriptions_outer_manifest_is_literal(self):
         """Outer celerp-subscriptions/__init__.py must define PLUGIN_MANIFEST as a dict literal.
 
