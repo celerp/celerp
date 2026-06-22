@@ -36,6 +36,46 @@ def reset_session_token():
     gw_state.set_session_token(original)
 
 
+# ── C4: relay-state sentinel on stdout (consumed by the Electron host) ─────────
+
+def test_set_status_emits_sentinel_on_change(client, capsys):
+    """_set_status prints one CELERP_RELAY_STATE line per transition and updates status."""
+    client._set_status("active")
+    out = capsys.readouterr().out
+    assert "CELERP_RELAY_STATE=active" in out
+    assert client.relay_status == "active"
+
+
+def test_set_status_is_idempotent_no_repeat_emit(client, capsys):
+    """Re-setting the same status emits nothing (Electron must not flap the blocker)."""
+    client._set_status("active")
+    capsys.readouterr()  # drain the first emit
+    client._set_status("active")
+    assert capsys.readouterr().out == ""
+    assert client.relay_status == "active"
+
+
+def test_set_status_emits_each_distinct_transition(client, capsys):
+    """Distinct transitions each emit their own sentinel, in order."""
+    for s in ("connecting", "active", "inactive"):
+        client._set_status(s)
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("CELERP_RELAY_STATE=")]
+    assert lines == [
+        "CELERP_RELAY_STATE=connecting",
+        "CELERP_RELAY_STATE=active",
+        "CELERP_RELAY_STATE=inactive",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hello_ack_emits_active_sentinel(client, capsys):
+    """The real active transition (hello_ack dispatch) emits the active sentinel - the signal
+    Electron holds the power-save assertion on (C4)."""
+    await client._dispatch({"type": "hello_ack", "payload": {"instance_id": "test-instance-id"}})
+    assert "CELERP_RELAY_STATE=active" in capsys.readouterr().out
+    assert client.relay_status == "active"
+
+
 # ── hello_ack ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

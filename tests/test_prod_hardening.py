@@ -24,6 +24,20 @@ async def test_health_returns_200(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_version_prefers_app_version_env(monkeypatch) -> None:
+    """C2: /health reports the desktop app version (CELERP_APP_VERSION, set by Electron)
+    when present, else the Python package version - so the cloud-relay / PC-browser path
+    (which reads /health) shows the same version as the desktop, not the pip version."""
+    from celerp.routers import health as health_mod
+
+    monkeypatch.setenv("CELERP_APP_VERSION", "9.9.9-desktop")
+    assert (await health_mod.health())["version"] == "9.9.9-desktop"
+
+    monkeypatch.delenv("CELERP_APP_VERSION", raising=False)
+    assert (await health_mod.health())["version"] == health_mod.__version__
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_on_login(client: AsyncClient) -> None:
     # /auth/login is gated by celerp.routers.auth.limiter ("10/minute") - NOT app.state.limiter, so
     # the old version re-enabled the wrong limiter and never actually exercised the limit. Enable the

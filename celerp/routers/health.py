@@ -18,9 +18,15 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
+    # C2: the version must read the same everywhere - desktop, cloud relay, and pip.
+    # The desktop app (Electron) is the authoritative source of the user-facing version,
+    # so it passes its app version to the spawned API via CELERP_APP_VERSION; /health
+    # reports that when present, else the Python package version (pip installs / dev).
+    # This is the version the relay/PC-browser path reads (it has no window.celerp), so it
+    # no longer disagrees with the desktop.
     return {
         "status": "ok",
-        "version": __version__,
+        "version": os.environ.get("CELERP_APP_VERSION") or __version__,
         "install_channel": os.environ.get("CELERP_INSTALL_CHANNEL", "pypi"),
     }
 
