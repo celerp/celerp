@@ -770,7 +770,12 @@ def editable_cell(
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
-    blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    # On blur, restore (cancel) the edit - UNLESS the user already escaped, or a select already
+    # committed via its `change` event. Without the `_committed` guard the blur-restore GET races
+    # the in-flight change PATCH and, under load, can overwrite the saved value with the stale
+    # display (the edit silently drops). Selects set `_committed` in their onchange below.
+    blur_restore_js = f"if(!this._escaping&&!this._committed){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    commit_mark_js = "this._committed=true;"
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
@@ -808,6 +813,7 @@ def editable_cell(
                 cls=f"cell-input cell-input--{cell_type}",
                 autofocus=True,
                 onkeydown=escape_js,
+                onchange=commit_mark_js,
                 onblur=blur_restore_js,
             )
     elif cell_type in ("money", "weight", "rate"):
@@ -848,6 +854,7 @@ def editable_cell(
             cls="cell-input cell-input--select",
             autofocus=True,
             onkeydown=escape_js,
+            onchange=commit_mark_js,
             onblur=blur_restore_js,
         )
     else:
