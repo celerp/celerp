@@ -974,13 +974,15 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
     header_parts.append(H3(title, cls="section-title"))
 
     footer_text = f"Showing last {len(display_rows)} events"
-    if len(all_rows) >= threshold:
+    if len(all_rows) < threshold:
+        footer = ""
+    elif history_url:
         footer = P(
-            A(footer_text, href=history_url, cls="table-link") if history_url else footer_text,
+            footer_text + " - ", A("See All", href=history_url, cls="table-link"),
             cls="table-footer-note",
         )
     else:
-        footer = ""
+        footer = P(footer_text, cls="table-footer-note")
 
     table = Table(
         Thead(Tr(
