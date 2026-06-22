@@ -30,9 +30,15 @@ def test_supporter_card_component():
     xml = to_xml(star_supporter_card("dashboard"))
     assert 'id="star-supporter-card"' in xml
     assert "/stars/cta?medium=dashboard" in xml
-    assert "/stars/claim" in xml           # claim handshake link
-    assert 'id="star-card-dismiss"' in xml  # "Maybe later"
+    assert "/stars/claim" in xml             # claim handshake link
     assert "/stars/dismiss" in xml
+    # Dismiss is now an X button (top-right), not a "Maybe later" button.
+    assert 'id="star-card-dismiss"' in xml
+    assert "Maybe later" not in xml
+    assert "×" in xml
+    # The ask is the header; the explanation + founding-badge promise is the body.
+    assert "<h3" in xml and "Star on GitHub" in xml
+    assert "first 100 people that star us" in xml
     # Hidden until JS hydrates it (non-neutral + not dismissed).
     assert "display:none" in xml.split('id="star-supporter-card"')[1][:90]
 
