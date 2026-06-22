@@ -138,7 +138,7 @@ async def test_run_query_with_files_returns_pending_bills(session, company):
         '"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}]}]}\n```'
     )
 
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["active_contacts_list"]):
+    with patch("celerp.ai.service._select_tools", return_value=["active_contacts_list"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
             result = await run_query("process this receipt", session, company.id, file_ids=[fid])
 
@@ -154,7 +154,7 @@ async def test_run_query_command_extraction_failure(session, company):
     from celerp.ai.service import run_query
 
     llm_answer = "Bills:\n```json\n{invalid json}\n```"
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
             result = await run_query("process receipts", session, company.id)
     assert result.error is None
@@ -172,7 +172,7 @@ async def test_run_query_with_history(session, company):
         return "OK"
 
     history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", side_effect=mock_llm):
             await run_query("followup", session, company.id, history=history)
     assert captured["history"] == history
@@ -395,7 +395,7 @@ def test_batch_load_file_wrong_company(tmp_path):
             load_file(fid, co_id)
 
 
-# ── llm.py: history + exhausted retries ──────────────────────────────────────
+# ── llm.py: history injection through the gateway ────────────────────────────
 
 @pytest.mark.asyncio
 async def test_call_llm_with_history():
@@ -408,39 +408,20 @@ async def test_call_llm_with_history():
         captured["messages"] = json["messages"]
         resp = MagicMock()
         resp.status_code = 200
-        resp.json.return_value = {"choices": [{"message": {"content": "result"}}]}
+        resp.json.return_value = {"answer": "result"}
         return resp
 
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}):
-        with patch("httpx.AsyncClient.post", side_effect=mock_post):
-            result = await call_llm(
-                "test-model", "system prompt", "user question",
-                history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
-            )
+    with patch("celerp.ai.llm.relay_session_headers", return_value={"X-Session-Token": "s", "X-Instance-ID": "i"}):
+        with patch("celerp.ai.llm.relay_http_url", return_value="https://relay"):
+            with patch("httpx.AsyncClient.post", side_effect=mock_post):
+                result = await call_llm(
+                    "test-model", "system prompt", "user question",
+                    history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
+                )
 
     assert result == "result"
-    msgs = captured["messages"]
-    roles = [m["role"] for m in msgs]
+    roles = [m["role"] for m in captured["messages"]]
     assert roles == ["system", "user", "assistant", "user"]
-
-
-@pytest.mark.asyncio
-async def test_call_llm_exhausted_retries():
-    """All retries fail with 429 - raises RuntimeError."""
-    from celerp.ai.llm import call_llm
-
-    async def mock_post(url, json=None, **kw):
-        resp = MagicMock()
-        resp.status_code = 429
-        resp.text = "rate limited"
-        resp.headers = {}
-        return resp
-
-    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}):
-        with patch("httpx.AsyncClient.post", side_effect=mock_post):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(RuntimeError, match="rate limit exceeded"):
-                    await call_llm("test-model", "sys", "user")
 
 
 # ── page_count.py: PDF 0 pages ──────────────────────────────────────────────
@@ -460,29 +441,7 @@ def test_count_pages_pdf_zero_pages():
             count_pages(b"fake pdf", "application/pdf")
 
 
-# ── quota.py: _build_upgrade_url + get_quota_status + unconfirmed ───────────
-
-def test_subscribe_url_with_instance_id():
-    from celerp.ai.quota import _subscribe_url
-    # Patch the LIVE paths: the module-level `settings` import can go stale after
-    # another test reloads celerp.config, and `_instance_id` (set on gateway
-    # connect) overrides settings.gateway_instance_id — patch both at their real
-    # location so this test is immune to that cross-test state.
-    with patch("celerp.gateway.state._instance_id", ""), \
-         patch("celerp.config.settings.gateway_instance_id", "inst-123"):
-        url = _subscribe_url()
-    assert "instance_id=inst-123" in url
-    assert url.endswith("#ai")
-
-
-def test_subscribe_url_without_instance_id():
-    from celerp.ai.quota import _subscribe_url
-    with patch("celerp.gateway.state._instance_id", ""), \
-         patch("celerp.config.settings.gateway_instance_id", ""):
-        url = _subscribe_url()
-    assert "instance_id" not in url
-    assert url.endswith("#ai")
-
+# ── quota.py: get_quota_status ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_get_quota_status_no_gateway():
@@ -500,22 +459,6 @@ async def test_get_quota_status_no_instance_id():
             with patch.object(settings, "gateway_instance_id", ""):
                 result = await get_quota_status()
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_quota_unconfirmed_counter():
-    """Consecutive relay failures increment _unconfirmed counter."""
-    import celerp.ai.quota as quota_mod
-    quota_mod._unconfirmed = 0  # Reset
-    with patch.object(settings, "gateway_token", "tok"):
-        with patch.object(settings, "gateway_instance_id", "inst"):
-            with patch("celerp.ai.quota.get_session_token", return_value="sess"):
-                with patch("httpx.AsyncClient.post", side_effect=ConnectionError("fail")):
-                    await quota_mod.check_ai_quota()
-                    assert quota_mod._unconfirmed == 1
-                    await quota_mod.check_ai_quota()
-                    assert quota_mod._unconfirmed == 2
-    quota_mod._unconfirmed = 0  # Cleanup
 
 
 # ── tools.py: active_contacts_list, active_items_list, pending_pos ───────────

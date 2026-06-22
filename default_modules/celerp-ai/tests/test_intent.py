@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -54,38 +53,24 @@ async def test_no_files_always_comprehension():
 
 
 @pytest.mark.asyncio
-async def test_keyword_hit_skips_llm():
-    # Should return ROUTING without calling LLM
-    with patch("celerp.ai.intent.call_llm", new_callable=AsyncMock) as mock:
-        result = await classify_intent("file this invoice", has_files=True)
-    assert result == Intent.ROUTING
-    mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_llm_fallback_routing():
-    with patch("celerp.ai.intent.call_llm", new_callable=AsyncMock, return_value="ROUTING"):
-        result = await classify_intent("put the receipt somewhere safe", has_files=True)
+async def test_keyword_hit_returns_routing():
+    result = await classify_intent("file this invoice", has_files=True)
     assert result == Intent.ROUTING
 
 
 @pytest.mark.asyncio
-async def test_llm_fallback_comprehension():
-    with patch("celerp.ai.intent.call_llm", new_callable=AsyncMock, return_value="COMPREHENSION"):
-        result = await classify_intent("what does this contract say about termination?", has_files=True)
+async def test_ambiguous_defaults_to_comprehension():
+    result = await classify_intent("put the receipt somewhere safe", has_files=True)
     assert result == Intent.COMPREHENSION
 
 
 @pytest.mark.asyncio
-async def test_llm_fallback_error_defaults_comprehension():
-    with patch("celerp.ai.intent.call_llm", new_callable=AsyncMock, side_effect=RuntimeError("timeout")):
-        result = await classify_intent("do something with this file", has_files=True)
+async def test_question_defaults_to_comprehension():
+    result = await classify_intent("what does this contract say about termination?", has_files=True)
     assert result == Intent.COMPREHENSION
 
 
 @pytest.mark.asyncio
-async def test_routing_zero_credits():
-    """Routing intent queries should consume 0 credits (tested at service level,
-    but we verify the intent value here)."""
+async def test_routing_keyword_with_files():
     result = await classify_intent("save this to contacts", has_files=True)
     assert result == Intent.ROUTING
