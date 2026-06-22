@@ -38,9 +38,23 @@ def test_outbound_docs_use_invoice_line_layout(page, ui_server, api, doc_type):
     assert page.locator("table.doc-lines .desc-measures").count() >= 1, (
         f"{doc_type}: description cell has no inline .desc-measures"
     )
-    # the unit is merged into the quantity cell, so there is no standalone UNIT column
+    # the unit is merged into the quantity cell, so there is no standalone UNIT column -
+    # in the HEADER *or* the body rows. A stray body col-unit cell shifts every following
+    # column right by one (tax lands under the Total header). Guard both.
     assert page.locator("table.doc-lines thead th.col-unit").count() == 0, (
         f"{doc_type}: a standalone UNIT column is present (unit should merge into qty)"
+    )
+    assert page.locator("table.doc-lines tbody td.col-unit").count() == 0, (
+        f"{doc_type}: body rows have a stray col-unit cell (columns will shift right)"
+    )
+    # Every body row must have exactly as many cells as the header has columns, so each
+    # cell sits under its own header (no shift).
+    header_cols = page.locator("table.doc-lines thead th").count()
+    body_cells = page.eval_on_selector_all(
+        "table.doc-lines tbody tr",
+        "rows => rows.map(r => r.querySelectorAll(':scope > td').length)")
+    assert all(n == header_cols for n in body_cells), (
+        f"{doc_type}: row/column count mismatch - header={header_cols}, rows={body_cells}"
     )
     assert page.locator("table.doc-lines .qty-unit-wrap").count() >= 1, (
         f"{doc_type}: quantity cell is missing the merged .qty-unit-wrap"
@@ -124,7 +138,8 @@ def test_doc_lines_resize_persists_as_percent(page, ui_server, api):
     page.mouse.move(box["x"] + 120, cy, steps=6)
     page.mouse.up()
 
-    stored = page.evaluate("localStorage.getItem('celerp_dline_wpct_invoice')")
+    # Widths persist under the versioned, doc-type-namespaced key (see col_resize_script call).
+    stored = page.evaluate("localStorage.getItem('celerp_dline_wpct_invoice_v2')")
     assert stored, "resize did not persist any widths"
     import json
     vals = json.loads(stored)

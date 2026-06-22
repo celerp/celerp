@@ -104,16 +104,12 @@ document.addEventListener('keydown', function(e) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
   }
 });
-/* Revert select-based edit cells on blur (click-away without changing) */
-document.addEventListener('focusout', function(e) {
-  var el = e.target;
-  if (el && el.tagName === 'SELECT' && el.closest('.cell--editing')) {
-    /* Small delay to let change event fire first if value changed */
-    setTimeout(function() {
-      if (el.closest('.cell--editing')) { window.location.reload(); }
-    }, 300);
-  }
-});
+/* Select-based edit cells revert on blur via their own onblur handler (blur_restore_js in
+   ui/components/table.py), which restores the cell inline. A previous global fallback here
+   reloaded the whole page 300ms after a select blurred if the cell was still in edit mode - but
+   under load the change->PATCH->swap commit takes longer than 300ms, so that timer fired
+   mid-commit and reloaded the page, dropping the just-made edit (and any other unsaved state).
+   The per-cell handler is sufficient, so no global reload is needed. */
 function toggleRowMenu(id) {
   var menu = document.getElementById('menu-' + id);
   if (!menu) return;

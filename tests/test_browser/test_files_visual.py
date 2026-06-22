@@ -13,9 +13,6 @@ pytestmark = pytest.mark.browser
 SCREENSHOT_DIR = "/tmp/files_screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-_API_BASE = "http://127.0.0.1:18000"
-_UI_BASE = "http://127.0.0.1:18080"
-
 
 def ss(page: Page, name: str):
     path = f"{SCREENSHOT_DIR}/{name}.png"
@@ -23,7 +20,9 @@ def ss(page: Page, name: str):
     print(f"\n  SCREENSHOT: {path}")
 
 
-def test_contact_files_section(page: Page, seeded_user: dict):
+def test_contact_files_section(page: Page, seeded_user: dict, api_server, ui_server):
+    # Use the per-worker server URLs (fixtures), not hardcoded ports, so the suite can shard.
+    _API_BASE, _UI_BASE = api_server, ui_server
     token = seeded_user["access_token"]
     hdrs = {"Authorization": f"Bearer {token}"}
 
@@ -58,7 +57,8 @@ def test_contact_files_section(page: Page, seeded_user: dict):
     print(f"  Table headers: {headers}")
 
 
-def test_doc_files_accordion(page: Page, seeded_user: dict):
+def test_doc_files_accordion(page: Page, seeded_user: dict, api_server, ui_server):
+    _API_BASE, _UI_BASE = api_server, ui_server
     token = seeded_user["access_token"]
     hdrs = {"Authorization": f"Bearer {token}"}
 

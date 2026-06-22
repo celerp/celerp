@@ -190,6 +190,204 @@ class TestCelerpCollectLinesFunction:
         )
 
 
+# ── 4c. Invoice-level (header) discount ──────────────────────────────────────
+
+class TestHeaderDiscount:
+    """The whole-document discount: a pencil by the Total opens a %/$ popover; the discount reduces
+    the taxable base and tax scales by the same ratio so rows/discount/total reconcile."""
+
+    @pytest.mark.asyncio
+    async def test_pencil_and_popover_on_draft_invoice(self, ui_client):
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd", cookies=_authed())
+        assert r.status_code == 200
+        assert 'class="btn-disc-edit"' in r.text, "discount pencil missing on a draft invoice"
+        assert 'id="discount-popover"' in r.text, "discount popover missing"
+        assert 'id="doc-discount-value"' in r.text, "discount state input missing"
+        assert "<dialog" not in r.text.lower(), "discount editor must be an inline popover, not a modal dialog"
+
+    @pytest.mark.asyncio
+    async def test_pencil_left_of_total_label(self, ui_client):
+        # The pencil sits LEFT of the "Total:" label (grouped in .total-final-left); the amount keeps
+        # its right-aligned accounting position.
+        doc = {**_DRAFT_DOC, "entity_id": "d:hdL", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hdL", cookies=_authed())
+        assert r.status_code == 200
+        assert "total-final-left" in r.text
+        # pencil -> Total label -> amount, in that order.
+        assert (r.text.index('class="btn-disc-edit"')
+                < r.text.index("total-label--final")
+                < r.text.index('id="doc-total"')), "pencil must render left of the Total label"
+
+    @pytest.mark.asyncio
+    async def test_secondary_button_is_cancel_until_discount_exists(self, ui_client):
+        no_disc = {**_DRAFT_DOC, "entity_id": "d:hdC", "doc_type": "invoice", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=no_disc)):
+            r = await ui_client.get("/docs/d:hdC", cookies=_authed())
+        assert ">Cancel<" in r.text and ">Remove<" not in r.text, "new discount editor shows Cancel, not Remove"
+
+        with_disc = {**_DRAFT_DOC, "entity_id": "d:hdR", "doc_type": "invoice", "status": "draft",
+                     "subtotal": 100.0, "total": 90.0, "total_amount": 90.0,
+                     "discount": 10, "discount_type": "percentage", "discount_amount": 10.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=with_disc)):
+            r2 = await ui_client.get("/docs/d:hdR", cookies=_authed())
+        assert ">Remove<" in r2.text, "an existing discount shows Remove"
+
+    @pytest.mark.asyncio
+    async def test_no_pencil_on_credit_note(self, ui_client):
+        # A credit note is a reversal - a header discount is incoherent there, so no affordance.
+        doc = {**_DRAFT_DOC, "entity_id": "d:cn", "doc_type": "credit_note", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:cn", cookies=_authed())
+        assert r.status_code == 200
+        # The pencil button + popover markup are gated; only the JS handler mentions the class name.
+        assert 'class="btn-disc-edit"' not in r.text, "credit note should not show the discount pencil"
+        assert 'id="discount-popover"' not in r.text, "credit note should not render the discount popover"
+
+    @pytest.mark.asyncio
+    async def test_pencil_on_supplier_bill(self, ui_client):
+        doc = {**_DRAFT_DOC, "entity_id": "d:bill", "doc_type": "bill", "status": "draft"}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:bill", cookies=_authed())
+        assert r.status_code == 200
+        assert 'class="btn-disc-edit"' in r.text, "supplier bill should offer a header discount"
+        assert 'id="discount-popover"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_percentage_discount_scales_tax_and_total(self, ui_client):
+        # subtotal 1000, 5% line tax; a 10% header discount -> taxable 900, tax 45 (was 50), total 945.
+        line = {"description": "Widget", "quantity": 10, "unit_price": 100.0,
+                "discount_pct": 0, "line_total": 1000.0, "tax_rate": 5}
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd2", "doc_type": "invoice", "status": "final",
+               "line_items": [line], "subtotal": 1000.0, "tax": 45.0, "total": 945.0,
+               "total_amount": 945.0, "discount": 10, "discount_type": "percentage",
+               "discount_amount": 100.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd2", cookies=_authed())
+        assert r.status_code == 200
+        assert "Discount (10%)" in r.text, "discount row should name the percentage"
+        assert "-$100.00" in r.text, "discount amount row"
+        assert "$45.00" in r.text, "tax must scale to the discounted base (50 -> 45)"
+        assert "$945.00" in r.text, "total must be taxable + scaled tax"
+
+    @pytest.mark.asyncio
+    async def test_flat_discount_row_no_percent_label(self, ui_client):
+        line = {"description": "Widget", "quantity": 10, "unit_price": 100.0,
+                "discount_pct": 0, "line_total": 1000.0, "tax_rate": 0}
+        doc = {**_DRAFT_DOC, "entity_id": "d:hd3", "doc_type": "invoice", "status": "final",
+               "line_items": [line], "subtotal": 1000.0, "tax": 0.0, "total": 850.0,
+               "total_amount": 850.0, "discount": 150, "discount_type": "flat",
+               "discount_amount": 150.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/d:hd3", cookies=_authed())
+        assert r.status_code == 200
+        assert "-$150.00" in r.text
+        assert "Discount (" not in r.text, "a flat discount must not show a percentage"
+        assert "$850.00" in r.text, "total = subtotal - flat discount (no tax)"
+
+    def test_print_view_shows_discount(self):
+        """The printable invoice shows the header discount between Subtotal and Total."""
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _doc_print_view
+        doc = {"doc_type": "invoice", "subtotal": 1000.0, "tax_total": 45.0, "total": 945.0,
+               "discount": 10, "discount_type": "percentage", "discount_amount": 100.0,
+               "line_items": [{"name": "Widget", "quantity": 10, "unit_price": 100.0, "line_total": 1000.0}]}
+        html = to_xml(_doc_print_view(doc))
+        assert "Discount (10%)" in html
+        assert "-$100.00" in html
+
+
+# ── 4b. Unit-price precision: no rounding-into-discount ──────────────────────
+
+def _doc_with(lines, **over):
+    """A draft invoice detail doc carrying the given line items (sums computed from them)."""
+    sub = round(sum(float(li["line_total"]) for li in lines), 2)
+    d = {**_DRAFT_DOC, "entity_id": "d:hp", "doc_number": "INV-HP-001",
+         "line_items": lines, "subtotal": sub, "total": sub, "total_amount": sub}
+    d.update(over)
+    return d
+
+
+# qty * unit_price = 38.6 * 15.285 = 590.001 -> line_total 590.00 at currency precision.
+# Rounding the unit price to 2 dp (15.29) would make 38.6*15.29 = 590.19 - a gap the doc used
+# to surface as a phantom "discount". The unit price must keep its real 3 decimals.
+_HIPREC_LINE = {"description": "Gold", "quantity": 38.6, "unit_price": 15.285,
+                "discount_pct": 0, "line_total": 590.0}
+
+
+class TestUnitPricePrecision:
+
+    @pytest.mark.asyncio
+    async def test_back_calc_uses_precision_helper_not_toFixed(self, draft_html):
+        """celerpLineTotalInput must derive the unit price via _celerpUnitFromTotal (keeps real
+        precision), never .toFixed(2) which truncated it to 2 dp and created the discount gap."""
+        assert "function _celerpUnitFromTotal" in draft_html
+        body = _extract_function(draft_html, "celerpLineTotalInput")
+        assert "_celerpUnitFromTotal(" in body, "must use the precision helper to back-calc unit price"
+        assert "toFixed(2)" not in body, "must not truncate the back-calculated unit price to 2 dp"
+
+    @pytest.mark.asyncio
+    async def test_unit_from_total_searches_currency_to_rate_decimals(self, draft_html):
+        """The helper searches from currency precision up to rate precision for a unit price that
+        reconciles (round(unit*qty) == target) - mirroring the backend money.unit_price_from_total."""
+        body = _extract_function(draft_html, "_celerpUnitFromTotal")
+        assert "_CELERP_CDP" in body and "_CELERP_RDP" in body
+
+    @pytest.mark.asyncio
+    async def test_draft_hiprec_unit_price_keeps_decimals(self, ui_client):
+        """A draft line's editable unit-price input shows the stored 3-decimal price, not 2 dp."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE]))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert "15.285" in r.text
+
+    @pytest.mark.asyncio
+    async def test_finalized_hiprec_unit_price_full_precision(self, ui_client):
+        """The finalized read-only view renders the unit price via fmt_rate (real decimals),
+        never rounded to 2 dp."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE], status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert "15.285" in r.text, "finalized view must show the real unit-price decimals"
+        assert "15.29" not in r.text, "unit price must not be rounded up to 2 dp"
+        assert 'id="doc-line-discount"' not in r.text, "no phantom discount on a non-discounted line"
+
+    @pytest.mark.asyncio
+    async def test_no_phantom_discount_from_rounding_residue(self, ui_client):
+        """Multiple high-precision lines (no discount_pct) must NOT produce a discount row from
+        accumulated rounding residue. Old formula (sum(qty*price) - subtotal) showed a phantom
+        $0.01: 3 x (1 * 10.333) = 30.999 vs stored subtotal 30.99. Rendered finalized so the
+        only `doc-line-discount` would be a real server-side row (the editable JS, which also
+        names that id, is not emitted on a finalized doc)."""
+        lines = [{"description": f"Item {i}", "quantity": 1, "unit_price": 10.333,
+                  "discount_pct": 0, "line_total": 10.33} for i in range(3)]
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with(lines, status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="doc-line-discount"' not in r.text, "rounding residue must not appear as a discount"
+
+    @pytest.mark.asyncio
+    async def test_real_line_discount_still_shown(self, ui_client):
+        """A genuine line-level discount_pct still renders a discount row (10% of 100 = 10).
+        Finalized so the id reflects a real server row, not the editable JS template."""
+        line = {"description": "Widget", "quantity": 10, "unit_price": 10.0,
+                "discount_pct": 10, "line_total": 90.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([line], status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="doc-line-discount"' in r.text, "a real line discount must still be shown"
+
+    def test_print_view_unit_price_full_precision(self):
+        """The printable view renders the unit price via fmt_rate (real decimals)."""
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _doc_print_view
+        html = to_xml(_doc_print_view(_doc_with([_HIPREC_LINE])))
+        assert "15.285" in html
+        assert "15.29" not in html
+
+
 # ── 4. API integration: explicit line_total is preserved ─────────────────────
 
 class TestLinesTotalAPIPreservation:

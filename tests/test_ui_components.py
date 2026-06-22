@@ -23,7 +23,7 @@ def _render(ft) -> str:
 
 def test_upgrade_banner_contains_feature_name():
     html = _render(upgrade_banner("Cloud Relay", "Get a public URL."))
-    assert "Cloud Relay requires Celerp Cloud" in html
+    assert "Cloud Relay requires Celerp Connect" in html
 
 
 def test_upgrade_banner_contains_description():
@@ -61,7 +61,7 @@ def test_cloud_gate_not_connected_returns_banner():
         feature="Cloud Relay",
         description="desc",
     ))
-    assert "Cloud Relay requires Celerp Cloud" in html
+    assert "Cloud Relay requires Celerp Connect" in html
 
 
 def test_cloud_gate_connected_returns_content():
@@ -74,7 +74,7 @@ def test_cloud_gate_connected_returns_content():
         content=content,
     ))
     assert "Real UI content" in html
-    assert "requires Celerp Cloud" not in html
+    assert "requires Celerp Connect" not in html
 
 
 def test_cloud_gate_connected_no_content_returns_empty_div():
@@ -85,4 +85,4 @@ def test_cloud_gate_connected_no_content_returns_empty_div():
         content=None,
     ))
     # Returns empty Div — no banner, no error
-    assert "requires Celerp Cloud" not in html
+    assert "requires Celerp Connect" not in html

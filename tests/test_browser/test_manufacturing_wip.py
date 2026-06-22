@@ -27,8 +27,11 @@ pytestmark = pytest.mark.browser
 SHOTS = Path("context/reviews/manufacturing")
 
 
-def _poll(api, predicate, tries: int = 40, delay: float = 0.25) -> bool:
-    """Poll the backend run list until `predicate(items)` is true."""
+def _poll(api, predicate, tries: int = 80, delay: float = 0.25) -> bool:
+    """Poll the backend run list until `predicate(items)` is true. The default window (20s) is
+    generous on purpose: in the full suite the shared event store is large, so a bulk Complete
+    (issue components -> receive output -> close run, each recomputing projections) settles more
+    slowly than it does in isolation."""
     for _ in range(tries):
         items = api.get("/manufacturing").json()["items"]
         if predicate(items):
@@ -40,6 +43,13 @@ def _poll(api, predicate, tries: int = 40, delay: float = 0.25) -> bool:
 def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
+
+    # The settings test enables require_issued_before_complete on the SESSION-SHARED company; with it
+    # on, bulk Complete rejects runs whose components aren't issued (silently skipped, not a 500), so
+    # neither run completes. Disable it here so this test is order-independent and exercises the
+    # auto-issue-on-complete path. Preserve other manufacturing settings (PATCH shallow-merges).
+    _mfg = (api.get("/companies/me").json().get("settings") or {}).get("manufacturing") or {}
+    api.patch("/companies/me", json={"settings": {"manufacturing": {**_mfg, "require_issued_before_complete": False}}})
 
     # ── Seed a manufacturable product with a recipe, then build two PLANNED runs ──
     steel = api.post("/items", json={
@@ -109,9 +119,22 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     stock_before = float(api.get(f"/items/{widget}").json().get("quantity", 0))
     page.on("dialog", lambda d: d.accept())
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
-    for rid in (run_a, run_b):
-        page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{rid}']) .bulk-select").first.check()
-    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    # Tick both runs and confirm "2 selected" actually registered before dispatching Complete. The
+    # bulk Start above swaps the table via HTMX; under a large suite that swap settles late and can
+    # re-render the rows (clearing the ticks) right after we set them. Retry until both register, so
+    # Complete never dispatches with a single stale run (which silently completed only one).
+    def _both_selected() -> bool:
+        for rid in (run_a, run_b):
+            page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{rid}']) .bulk-select").first.check()
+        return (page.locator(".bulk-count").inner_text() or "").strip() == "2 selected"
+
+    selected = False
+    for _ in range(10):
+        if _both_selected():
+            selected = True
+            break
+        page.wait_for_timeout(300)
+    assert selected, "could not register both runs as selected before Complete (table kept re-rendering)"
     page.locator(".bulk-action-select").select_option(value="complete")
 
     assert _poll(api, lambda items: all(

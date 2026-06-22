@@ -27,7 +27,10 @@ pytestmark = pytest.mark.browser
 # refactor (it's now the universal weight/weight_unit item field), so use
 # 'clarity' as the representative gemstone category field instead.
 _GEMSTONE_FIELD_LABELS = ["Stone Type", "Clarity", "Origin"]
-_GEMSTONE_CATEGORY = "Colored Stone"
+# Category keys are canonical slugs (commit 478a895): items, schema keys and the ?category= URL
+# param all use the slug; only the category tab renders the human display label.
+_GEMSTONE_CATEGORY = "colored_stone"
+_GEMSTONE_CATEGORY_LABEL = "Colored Stone"
 
 
 @pytest.fixture(scope="module")
@@ -70,8 +73,8 @@ def test_category_tab_appears(page, gemstone_items):
     page.goto("/inventory")
     page.wait_for_selector(".category-tabs", timeout=5000)
     tab_text = page.inner_text(".category-tabs")
-    assert _GEMSTONE_CATEGORY in tab_text, (
-        f"Expected '{_GEMSTONE_CATEGORY}' tab but got tabs: {tab_text!r}"
+    assert _GEMSTONE_CATEGORY_LABEL in tab_text, (
+        f"Expected '{_GEMSTONE_CATEGORY_LABEL}' tab but got tabs: {tab_text!r}"
     )
 
 
@@ -80,9 +83,9 @@ def test_column_manager_shows_gemstone_field_labels_when_category_active(page, g
     page.goto("/inventory")
     page.wait_for_selector(".category-tabs", timeout=5000)
 
-    # Click the Colored Stone tab
-    tab = page.locator(".category-tab", has_text=_GEMSTONE_CATEGORY).first
-    assert tab.count() > 0, f"No tab found for '{_GEMSTONE_CATEGORY}'"
+    # Click the Colored Stone tab (rendered with its display label)
+    tab = page.locator(".category-tab", has_text=_GEMSTONE_CATEGORY_LABEL).first
+    assert tab.count() > 0, f"No tab found for '{_GEMSTONE_CATEGORY_LABEL}'"
     tab.click()
     page.wait_for_url("**/inventory**category**", timeout=5000)
 
@@ -151,7 +154,7 @@ def test_cat_schemas_key_matches_item_category(api, gemstone_items):
     Direct API audit: cat_schemas keys must match item category values for seeded items.
     Ignores pre-existing categories that have no schema (they're fine - generic items).
     """
-    # Get category schemas (keys should be display_names like 'Colored Stone')
+    # Get category schemas (keys are canonical slugs like 'colored_stone')
     r = api.get("/companies/me/category-schemas")
     assert r.status_code == 200
     cat_schemas = r.json()

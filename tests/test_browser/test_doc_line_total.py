@@ -66,6 +66,38 @@ def test_editing_one_line_total_does_not_change_another(page, ui_server, total_d
     page.screenshot(path=str(SHOTS / "invoice-line-totals.png"), full_page=True)
 
 
+def test_line_total_back_calc_keeps_unit_price_precision(page, ui_server, api):
+    """Typing a line total derives the unit price at its real precision (not truncated to 2 dp),
+    so qty*price reconciles to the entered total and no phantom discount appears.
+
+    590 / 38.6 = 15.2849... -> the unit price must store 15.285 (3 dp), because 15.28 would give
+    38.6*15.28 = 589.81 and 15.29 -> 590.19, either of which leaves a gap read as a discount."""
+    r = api.post("/docs", json={
+        "doc_type": "invoice", "status": "draft",
+        "line_items": [{"name": "Gold", "quantity": 38.6, "unit_price": 1.0, "line_total": 38.6}],
+        "total": 38.6,
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("table.doc-lines tbody tr input.line-total", timeout=8000)
+    row = page.locator("table.doc-lines tbody tr").nth(0)
+
+    total = row.locator("input.line-total")
+    total.fill("590")
+    total.dispatch_event("input")
+
+    price_str = row.locator("[data-name='unit_price']").input_value()
+    pv = float(price_str)
+    # Real precision kept (not 15.28 / 15.29), and it reconciles to the entered total.
+    assert pv == pytest.approx(15.285, abs=1e-6), f"unit price truncated/rounded: {price_str!r}"
+    assert round(pv * 38.6, 2) == 590.00, f"unit price {price_str} does not reconcile to 590.00"
+
+    # The live totals show no phantom discount row (qty*price reconciles to the total).
+    assert page.locator("#doc-line-discount").count() == 0, "a phantom discount row was inserted"
+
+
 def test_editing_unit_price_rederives_that_rows_total(page, ui_server, total_doc_id):
     """A typed total is an override; editing that row's unit price drops the override and recomputes."""
     page.goto(f"{ui_server}/docs/{total_doc_id}", wait_until="domcontentloaded")

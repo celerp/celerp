@@ -15,7 +15,8 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address, col_resize_script
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script
+from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -154,6 +155,11 @@ _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
 # merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
 # memo = "Consignment Out", list = "Lists".
 _INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
+# Doc types that may carry a header-level (whole-document) discount. Sales concessions
+# (invoice/quotation/memo) and supplier order-level discounts (bill/PO/consignment_in). Excludes
+# credit notes (reversals) and receipts (payment records), where a header discount is incoherent.
+_HEADER_DISCOUNT_DOC_TYPES: frozenset[str] = frozenset(
+    {"invoice", "quotation", "memo", "bill", "purchase_order", "consignment_in"})
 # Internal demand docs that carry no money: hide price / discount / tax / total columns and the
 # financial totals panel. A production order is invoice-to-self demand, not a sale.
 _NO_MONEY_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
@@ -695,7 +701,7 @@ def _doc_print_view(doc: dict) -> FT:
             Td(sku, cls="mono"),
             Td(Div(*_desc_parts)),
             Td(qty_label(li), cls="r"),
-            Td(_money(price), cls="r"),
+            Td(fmt_rate(price, currency), cls="r"),
             *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
             Td(_money(line_total), cls="r"),
         ))
@@ -712,6 +718,15 @@ def _doc_print_view(doc: dict) -> FT:
     notes_text = doc.get("notes") or doc.get("terms") or ""
 
     totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
+    # Header (whole-document) discount, when set. grand_total/total already reflects it.
+    _disc_amt = float(doc.get("discount_amount") or 0)
+    _disc_raw = float(doc.get("discount") or 0)
+    _disc_type = doc.get("discount_type") or "flat"
+    if not _disc_amt and _disc_raw:
+        _disc_amt = subtotal * _disc_raw / 100 if _disc_type == "percentage" else _disc_raw
+    if _disc_amt > 0.005:
+        _dlabel = f"Discount ({_disc_raw:g}%)" if _disc_type == "percentage" and _disc_raw else "Discount"
+        totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
     if float(tax_total or 0):
         totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
     totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
@@ -2572,6 +2587,12 @@ celerpUpdateBulkAlloc();
             "tax": tax,
             "total": total,
         }
+        # Invoice-level (header) discount: persist the value + type + computed amount so the
+        # discounted tax/total above reconcile. Always sent (0 clears it) so removing a discount sticks.
+        if "discount" in body:
+            patch_data["discount"] = float(body.get("discount") or 0)
+            patch_data["discount_type"] = body.get("discount_type") or "flat"
+            patch_data["discount_amount"] = float(body.get("discount_amount") or 0)
         try:
             await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
@@ -5641,8 +5662,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cells.append(Td(_qty_input, cls="col-qty"))
                 elif doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                     # Quantity and its (read-only) unit share one cell; only the number edits.
+                    # Invoice layout has NO standalone unit column (the header skips it and the
+                    # empty-row builder emits only col-qty), so we must not add a col-unit cell
+                    # here - an extra cell shifts every column right (tax lands under Total).
                     cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
-                    cells.append(Td(_unit_span, cls="col-unit"))
                 else:
                     cells.append(Td(_qty_input, cls="col-qty"))
                     cells.append(Td(_unit_span, cls="col-unit"))
@@ -5917,6 +5940,26 @@ const _CELERP_EID = {repr(entity_id)};
 const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
+/* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
+const _CELERP_CDP = {currency_dp(currency)};
+const _CELERP_RDP = {rate_dp(currency)};
+/* Derive a unit price from a target line amount at the FEWEST decimals that still reconciles
+   (round(unit * qty) === target). Mirrors the backend money.unit_price_from_total so the stored
+   unit price keeps its real precision instead of being truncated to 2 dp (which made qty*price
+   drift from the line total and surfaced the gap as a phantom discount). */
+function _celerpUnitFromTotal(total, qty) {{
+    if (!qty) return 0;
+    const tf = Math.pow(10, _CELERP_CDP);
+    const target = Math.round(total * tf) / tf;
+    const exact = total / qty;
+    for (let d = _CELERP_CDP; d <= _CELERP_RDP; d++) {{
+        const f = Math.pow(10, d);
+        const cand = Math.round(exact * f) / f;
+        if (Math.abs(Math.round(cand * qty * tf) / tf - target) < 1e-9) return cand;
+    }}
+    const hf = Math.pow(10, _CELERP_RDP);
+    return Math.round(exact * hf) / hf;
+}}
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
 const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
@@ -6244,7 +6287,9 @@ function celerpLineTotalInput(input) {{
     const factor = qty * (1 - discPct / 100);
     if (factor === 0) {{ celerpUpdateTotals(); return; }}
     const unitPriceEl = row.querySelector('[data-name="unit_price"]');
-    if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
+    // Keep the unit price at its real precision so qty*price reconciles to the entered total
+    // (no truncation to 2 dp, which would leave a residue read as a discount).
+    if (unitPriceEl) unitPriceEl.value = _celerpUnitFromTotal(tot, factor);
     celerpUpdateTotals();
 }}
 function celerpFieldEdited(input) {{
@@ -6448,13 +6493,18 @@ function celerpUpdateTotals() {{
     }}
     const subEl = document.getElementById('doc-subtotal');
     if (subEl) subEl.textContent = _fmt(sub);
+    // Header (whole-document) discount: reduce the taxable base and scale every tax line by the same
+    // ratio, so the rows/discount/total always reconcile and a discount survives line edits.
+    const _hd = _celerpHeaderDiscount(sub);          // amount / taxable / ratio
+    _celerpRenderHeaderDiscount(_hd.amount);
     // Update per-code tax rows
     const taxContainer = document.getElementById('doc-tax-rows');
     if (taxContainer) {{
         taxContainer.innerHTML = '';
         let totalTax = 0;
         Object.entries(taxByCode).forEach(([key, t]) => {{
-            totalTax += t.amount;
+            const amt = t.amount * _hd.ratio;
+            totalTax += amt;
             const row = document.createElement('div');
             row.className = 'total-row';
             if (t.isCustom) {{
@@ -6466,21 +6516,119 @@ function celerpUpdateTotals() {{
                 lbl.addEventListener('dblclick', () => _celerpEditTaxLabel(key, t.rate, lbl));
                 const val = document.createElement('span');
                 val.className = 'total-value';
-                val.textContent = _fmt(t.amount);
+                val.textContent = _fmt(amt);
                 row.appendChild(lbl);
                 row.appendChild(val);
             }} else {{
-                row.innerHTML = '<span class="total-label">' + t.label + ':</span><span class="total-value">' + _fmt(t.amount) + '</span>';
+                row.innerHTML = '<span class="total-label">' + t.label + ':</span><span class="total-value">' + _fmt(amt) + '</span>';
             }}
             taxContainer.appendChild(row);
         }});
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(sub + totalTax);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax);
     }} else {{
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(sub);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable);
     }}
 }}
+// Header-discount helpers. State lives in hidden inputs (#doc-discount-value/#doc-discount-type),
+// seeded from the doc and edited via the pencil popover next to the Total.
+function _celerpHeaderDiscount(sub) {{
+    const vEl = document.getElementById('doc-discount-value');
+    const tEl = document.getElementById('doc-discount-type');
+    let v = vEl ? parseFloat(vEl.value || 0) : 0;
+    if (isNaN(v) || v < 0) v = 0;
+    const type = tEl ? tEl.value : 'flat';
+    let amount = v > 0 ? (type === 'percentage' ? sub * v / 100 : Math.min(v, sub)) : 0;
+    if (amount < 0) amount = 0;
+    const taxable = sub - amount;
+    const ratio = (sub > 0 && amount > 0.005) ? taxable / sub : 1;
+    return {{amount, taxable, ratio, value: v, type}};
+}}
+function _celerpRenderHeaderDiscount(amount) {{
+    const tEl = document.getElementById('doc-discount-type');
+    const vEl = document.getElementById('doc-discount-value');
+    let row = document.getElementById('doc-header-discount-row');
+    if (amount > 0.005) {{
+        const _cur2 = {repr(currency)};
+        function _f(n) {{ try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur2}}).format(n); }} catch(e) {{ return _cur2 + ' ' + n.toFixed(2); }} }}
+        const v = vEl ? parseFloat(vEl.value || 0) : 0;
+        const isPct = tEl && tEl.value === 'percentage';
+        const label = 'Discount' + (isPct && v ? ' (' + (+v) + '%)' : '');
+        if (!row) {{
+            row = document.createElement('div');
+            row.className = 'total-row';
+            row.id = 'doc-header-discount-row';
+            const tax = document.getElementById('doc-tax-rows');
+            if (tax && tax.parentNode) tax.parentNode.insertBefore(row, tax);
+        }}
+        row.innerHTML = '<span class="total-label">' + label + ':</span>'
+            + '<span class="total-value" id="doc-header-discount">-' + _f(amount) + '</span>';
+    }} else if (row) {{
+        row.remove();
+    }}
+}}
+function celerpCloseDiscount() {{
+    const pop = document.getElementById('discount-popover');
+    if (pop) pop.classList.remove('disc-popover--open');
+}}
+function celerpOpenDiscount() {{
+    const pop = document.getElementById('discount-popover');
+    if (!pop) return;
+    // Seed the popover from current state and reflect the active type on the toggle.
+    const vEl = document.getElementById('doc-discount-value');
+    const tEl = document.getElementById('doc-discount-type');
+    const input = document.getElementById('disc-pop-value');
+    if (input && vEl) input.value = vEl.value || '';
+    // Editing an existing discount keeps its type; a brand-new discount defaults to % (the common
+    // case), so an accidental Apply can't silently set a flat $0.
+    const _hasExisting = vEl && parseFloat(vEl.value || 0) > 0;
+    celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
+    // Nothing to remove yet -> the secondary button just cancels.
+    const rmBtn = document.getElementById('disc-remove-btn');
+    if (rmBtn) rmBtn.textContent = _hasExisting ? 'Remove' : 'Cancel';
+    const willOpen = !pop.classList.contains('disc-popover--open');
+    pop.classList.toggle('disc-popover--open', willOpen);
+    if (willOpen && input) {{ input.focus(); input.select(); }}
+}}
+function celerpDiscType(type) {{
+    const tEl = document.getElementById('doc-discount-type');
+    if (tEl) tEl.value = type;
+    const pct = document.getElementById('disc-type-pct');
+    const flat = document.getElementById('disc-type-flat');
+    if (pct) pct.classList.toggle('disc-type-btn--on', type === 'percentage');
+    if (flat) flat.classList.toggle('disc-type-btn--on', type !== 'percentage');
+}}
+function celerpApplyDiscount() {{
+    const input = document.getElementById('disc-pop-value');
+    const tEl = document.getElementById('doc-discount-type');
+    const vEl = document.getElementById('doc-discount-value');
+    let v = input ? parseFloat(input.value || 0) : 0;
+    if (isNaN(v) || v < 0) v = 0;
+    if (vEl) vEl.value = v ? String(v) : '';
+    // type already set on the hidden input by celerpDiscType
+    if (tEl && !tEl.value) tEl.value = 'flat';
+    celerpUpdateTotals();
+    celerpAutoSave();
+    celerpCloseDiscount();
+}}
+function celerpRemoveDiscount() {{
+    // Acts as Cancel when no discount is set (pure close, no save); removes it otherwise.
+    const vEl = document.getElementById('doc-discount-value');
+    if (vEl && parseFloat(vEl.value || 0) > 0) {{
+        vEl.value = '';
+        celerpUpdateTotals();
+        celerpAutoSave();
+    }}
+    celerpCloseDiscount();
+}}
+// Dismiss the discount popover on an outside click (not on the popover or the pencil).
+document.addEventListener('click', function(e) {{
+    const pop = document.getElementById('discount-popover');
+    if (!pop || !pop.classList.contains('disc-popover--open')) return;
+    if (pop.contains(e.target) || (e.target.closest && e.target.closest('.btn-disc-edit'))) return;
+    pop.classList.remove('disc-popover--open');
+}});
 function _celerpCollectLines() {{
     const lines = [];
     document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
@@ -6527,11 +6675,17 @@ async function _celerpPersist() {{
     const lines = _celerpCollectLines();
     if (!lines.length) return;
     const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
-    const tax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
+    const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
+    // Apply the header discount to the taxable base; tax scales by the same ratio (see
+    // _celerpHeaderDiscount). subtotal stays gross; discount_amount + the reduced tax/total persist.
+    const hd = _celerpHeaderDiscount(subtotal);
+    const tax = grossTax * hd.ratio;
+    const total = hd.taxable + tax;
     const statusEl = document.getElementById('save-status');
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{line_items: lines, subtotal, tax, total: subtotal + tax}})
+        body: JSON.stringify({{line_items: lines, subtotal, tax, total,
+            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount}})
     }});
     if (resp.ok) {{
         statusEl.textContent = '✓';
@@ -6780,7 +6934,7 @@ async function celerpCsvImport(input, entityId) {{
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
                 Td(qty_label(li), cls="col-qty"),
-                Td(format_value(li.get("unit_price"), "money"), cls="cell--number col-unit-price"),
+                Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(li.get("tax_rate")), cls="col-tax"),
             ])
@@ -6907,21 +7061,46 @@ async function celerpCsvImport(input, entityId) {{
         )
 
     # --- Totals ---
-    # Compute gross (pre-discount) and net (post-discount) subtotals
+    # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is
+    # rounded to currency precision (the same boundary the stored line_total uses) so a unit price
+    # carrying more than currency-precision decimals (e.g. 15.285) never leaves a sub-cent residue
+    # that surfaces as a phantom "discount".
     def _li_gross(li: dict) -> float:
-        return float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
+        return to_stored_float(round_money(
+            to_decimal(li.get("quantity", 0) or 0) * to_decimal(li.get("unit_price", 0) or 0), currency))
 
-    def _li_discounted(li: dict) -> float:
-        gross = _li_gross(li)
+    def _li_net(li: dict) -> float:
+        # The stored line_total is the source of truth for the discounted amount; fall back to a
+        # rounded qty*price*(1-disc) only when it is absent.
+        lt = li.get("line_total")
+        if lt not in (None, ""):
+            return float(lt or 0)
         dpct = float(li.get("discount_pct") or 0)
-        return gross * (1 - dpct / 100) if dpct else gross
+        g = _li_gross(li)
+        return to_stored_float(round_money(to_decimal(g) * to_decimal(1 - dpct / 100), currency)) if dpct else g
 
-    gross_subtotal = sum(_li_gross(li) for li in line_items) if line_items else 0.0
-    subtotal = float(subtotal_value or 0) or sum(_li_discounted(li) for li in line_items)
-    line_discount = gross_subtotal - subtotal  # total discount from line-level discount_pct
+    subtotal = float(subtotal_value or 0) or sum(_li_net(li) for li in line_items)
+    # A discount only exists where a line actually carries a discount_pct. Summing per discounted
+    # line (never gross_subtotal - subtotal) keeps rounding residue on plain lines out of the figure.
+    line_discount = sum(_li_gross(li) - _li_net(li) for li in line_items if float(li.get("discount_pct") or 0))
+    gross_subtotal = subtotal + line_discount
     tax_amount = float(tax_value or 0)
     total_amount = float(total_value or 0) or (subtotal + tax_amount)
-    discount = float(discount_value or 0)
+    # Header (whole-document) discount: reduce the taxable base, then scale every tax line by the
+    # same ratio. A uniform discount lowers each line's taxable amount proportionally, so scaling by
+    # (taxable / subtotal) keeps any tax mix consistent without re-deriving per-line taxes.
+    discount_raw = float(doc.get("discount") or 0)
+    discount_type = doc.get("discount_type") or "flat"
+    if discount_type == "percentage":
+        # Always recompute a % discount from the CURRENT subtotal so it stays correct no matter how
+        # the lines changed (add / remove / edit / per-line discount), even if a stored
+        # discount_amount went stale. A flat discount is a fixed amount (capped at the subtotal).
+        discount = subtotal * discount_raw / 100
+    else:
+        discount = float(discount_value or 0) or discount_raw
+    discount = min(discount, subtotal) if discount > 0 else 0.0
+    taxable = subtotal - discount
+    _disc_ratio = (taxable / subtotal) if (subtotal > 0 and discount > 0.005) else 1.0
 
     # Build per-code tax rows: prefer `taxes` list on line items, fall back to tax_rate
     doc_taxes = doc.get("doc_taxes") or []
@@ -6937,7 +7116,7 @@ async function celerpCsvImport(input, entityId) {{
             code_totals[code]["amount"] += amt
     elif line_items:
         for li in line_items:
-            li_total = _li_discounted(li)
+            li_total = _li_net(li)
             li_taxes = li.get("taxes") or []
             if li_taxes:
                 for item in li_taxes:
@@ -6960,6 +7139,11 @@ async function celerpCsvImport(input, entityId) {{
                         code_totals[key] = {"label": label, "amount": 0.0}
                     code_totals[key]["amount"] += amt
 
+    # Scale each tax line to the discounted base so the rows, discount and total reconcile.
+    if _disc_ratio != 1.0:
+        for v in code_totals.values():
+            v["amount"] = to_stored_float(round_money(to_decimal(v["amount"]) * to_decimal(_disc_ratio), currency))
+
     tax_rows = [
         Div(Span(f"{v['label']}:", cls="total-label"),
             Span(fmt_money(v["amount"], currency), cls="total-value"),
@@ -6967,9 +7151,22 @@ async function celerpCsvImport(input, entityId) {{
         for v in code_totals.values()
     ]
 
-    if not tax_amount and code_totals:
+    if discount > 0.005:
+        tax_amount = (sum(v["amount"] for v in code_totals.values()) if code_totals
+                      else to_stored_float(round_money(to_decimal(tax_amount) * to_decimal(_disc_ratio), currency)))
+        total_amount = taxable + tax_amount
+    elif not tax_amount and code_totals:
         tax_amount = sum(v["amount"] for v in code_totals.values())
         total_amount = subtotal - discount + tax_amount
+
+    # Header-discount affordance: a faint pencil by the Total opens a small editor. Only on a draft
+    # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
+    # a discount is set (so it stays visible on a finalized doc too).
+    _can_discount = is_draft and doc_type in _HEADER_DISCOUNT_DOC_TYPES and not pol["no_money"]
+    # doc.discount carries its trailing colon ("Discount:"); for the % variant build from the
+    # colon-less label.discount and re-add the colon after the percentage.
+    _disc_label = (f"{t('label.discount')} ({discount_raw:g}%):"
+                   if discount_type == "percentage" and discount_raw else t("doc.discount"))
 
     total_panel = Div(
         Div(Span(t("doc.subtotal"), cls="total-label"),
@@ -6978,10 +7175,20 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"-{fmt_money(line_discount, currency)}", id="doc-line-discount", cls="total-value"), cls="total-row") if line_discount > 0.005 else "",
         Div(Span("Net Subtotal:" if line_discount > 0.005 else "Subtotal:", cls="total-label"),
             Span(fmt_money(subtotal, currency), id="doc-subtotal", cls="total-value"), cls="total-row"),
-        Div(Span(t("doc.discount"), cls="total-label"),
-            Span(fmt_money(discount, currency), cls="total-value"), cls="total-row") if discount else "",
+        Div(Span(_disc_label, cls="total-label"),
+            Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
+            id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
         Div(*tax_rows, id="doc-tax-rows"),
-        Div(Span(t("doc.total"), cls="total-label total-label--final"),
+        Div(
+            # The pencil sits just LEFT of the "Total:" label; the amount stays flush-right
+            # (accounting format).
+            Span(
+                (Button("✎", type="button", cls="btn-disc-edit",
+                        title="Add or edit discount", aria_label="Add or edit discount",
+                        onclick="celerpOpenDiscount()") if _can_discount else ""),
+                Span(t("doc.total"), cls="total-label total-label--final"),
+                cls="total-final-left",
+            ),
             Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             cls="total-row total-row--final"),
         # Conversion note: shown only when doc currency differs from company base currency
@@ -6989,6 +7196,36 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"≈ {fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency)} at {doc.get('conversion_rate')} {company_currency}/{currency}", cls="total-label total-label--conversion"),
             cls="total-row total-row--conversion",
         )] if currency != company_currency and doc.get("conversion_rate") else []),
+        # Header-discount state (read by celerpUpdateTotals) + the inline editor popover. An anchored
+        # popover (not a dialog) keeps the doc detail free of blocking modals.
+        *([
+            Input(type="hidden", id="doc-discount-value", value=(f"{discount_raw:g}" if discount_raw else "")),
+            Input(type="hidden", id="doc-discount-type", value=discount_type),
+            Div(
+                Div(
+                    Input(type="number", step="any", min="0", id="disc-pop-value",
+                          value=(f"{discount_raw:g}" if discount_raw else ""), placeholder="0",
+                          cls="form-input disc-pop-input",
+                          onkeydown="if(event.key==='Enter'){event.preventDefault();celerpApplyDiscount();}else if(event.key==='Escape'){celerpCloseDiscount();}"),
+                    Div(
+                        Button("%", type="button", id="disc-type-pct",
+                               onclick="celerpDiscType('percentage')", cls="btn btn--sm disc-type-btn"),
+                        Button(currency_symbol(currency), type="button", id="disc-type-flat",
+                               onclick="celerpDiscType('flat')", cls="btn btn--sm disc-type-btn"),
+                        cls="disc-toggle",
+                    ),
+                    cls="disc-pop-row",
+                ),
+                Div(
+                    # "Remove" once a discount exists, else "Cancel" (nothing to remove yet).
+                    Button("Remove" if discount > 0.005 else "Cancel", type="button", id="disc-remove-btn",
+                           onclick="celerpRemoveDiscount()", cls="btn btn--ghost btn--sm"),
+                    Button("Apply", type="button", onclick="celerpApplyDiscount()", cls="btn btn--primary btn--sm"),
+                    cls="disc-pop-actions",
+                ),
+                id="discount-popover", cls="disc-popover",
+            ),
+        ] if _can_discount else []),
         cls="total-panel",
     )
     # No-money types (production_order, transfer, audit) carry no totals panel.

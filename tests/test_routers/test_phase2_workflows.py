@@ -56,14 +56,6 @@ async def test_manufacturing_flow_and_dashboard(client):
     kpis = (await client.get("/dashboard/kpis", headers=_auth(token))).json()
     assert "manufacturing" in kpis
 
-
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-@pytest.mark.asyncio
-async def test_scanning_and_bom_endpoints(client):
-    token = await _register(client)
-    assert (await client.post("/companies/me/boms", headers=_auth(token), json={"bom_id": "bom:1", "name": "B", "inputs": [], "outputs": []})).status_code == 200
-    boms = (await client.get("/companies/me/boms", headers=_auth(token))).json()["items"]
-    assert len(boms) == 1
-
-    scan = await client.post("/scanning/scan", headers=_auth(token), json={"code": "X-1"})
-    assert scan.status_code == 200
+# (Removed test_scanning_and_bom_endpoints: both /scanning/scan and /companies/me/boms were retired
+# - scanning is disabled and BOMs migrated to item recipes. Their removal is asserted by
+# test_phase8_module_config.py and default_modules/celerp-manufacturing/tests/test_bom_removed.py.)

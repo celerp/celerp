@@ -8,6 +8,7 @@ Website: [www.celerp.com](https://www.celerp.com)
 
 Celerp is simple to use, flexible, customizable, and designed to transition your business into the AI age with no technical knowledge needed to setup your whole office. We want to put businesses back in charge of their data.
 
+[![Downloads](https://static.pepy.tech/badge/celerp)](https://pepy.tech/project/celerp)
 [![Tests](https://github.com/celerp/celerp/actions/workflows/ci.yml/badge.svg)](https://github.com/celerp/celerp/actions)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
 

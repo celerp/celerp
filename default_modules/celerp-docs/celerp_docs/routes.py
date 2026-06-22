@@ -815,10 +815,21 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                     detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
                 )
 
+    # Money fields are stored at currency precision. The client computes subtotal/tax/total as
+    # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
+    # here - the single chokepoint for every doc edit - so the ledger and history never record
+    # values like "346.50000000000006".
+    _currency = row.state.get("currency")
+    _MONEY_FIELDS = {"subtotal", "tax", "total", "discount_amount"}
+    def _round_field(field: str, value):
+        if field in _MONEY_FIELDS and value is not None:
+            return to_stored_float(round_money(value, _currency))
+        return value
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": {
-            k: {"old": (change.get("old") if change.get("old") is not None else row.state.get(k)), "new": change.get("new")}
+            k: {"old": _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k)),
+                "new": _round_field(k, change.get("new"))}
             for k, change in payload.fields_changed.items()
         }, "idempotency_key": payload.idempotency_key},
         actor_id=user.id, location_id=None, source="api",

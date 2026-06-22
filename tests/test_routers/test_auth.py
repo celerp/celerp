@@ -436,7 +436,12 @@ def test_401_redirect_expired():
 # ── session-watch SSE endpoint ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="SSE stream test requires shared test engine in SessionLocal; integration test only")
+@pytest.mark.skip(reason="SSE streaming integration test: the /auth/session-watch generator uses its "
+                         "own SessionLocal (not the DI-overridden test session) and asserts an "
+                         "'evicted' event arrives within a 5s live stream. Reviving needs patching "
+                         "celerp.routers.auth.AsyncSessionLocal to the test session AND is timing-"
+                         "sensitive, so it is kept out of the (gating) suite to avoid flakiness. "
+                         "Run manually as an integration check.")
 async def test_session_watch_yields_evicted_on_invalidation(client, session):
     """session-watch SSE stream emits 'evicted' event when nonce rotates."""
     from celerp.services.session_tracker import clear as _clear_tracker, invalidate_sessions as _invalidate
