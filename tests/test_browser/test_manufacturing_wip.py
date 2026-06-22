@@ -112,9 +112,22 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     stock_before = float(api.get(f"/items/{widget}").json().get("quantity", 0))
     page.on("dialog", lambda d: d.accept())
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
-    for rid in (run_a, run_b):
-        page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{rid}']) .bulk-select").first.check()
-    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    # Tick both runs and confirm "2 selected" actually registered before dispatching Complete. The
+    # bulk Start above swaps the table via HTMX; under a large suite that swap settles late and can
+    # re-render the rows (clearing the ticks) right after we set them. Retry until both register, so
+    # Complete never dispatches with a single stale run (which silently completed only one).
+    def _both_selected() -> bool:
+        for rid in (run_a, run_b):
+            page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{rid}']) .bulk-select").first.check()
+        return (page.locator(".bulk-count").inner_text() or "").strip() == "2 selected"
+
+    selected = False
+    for _ in range(10):
+        if _both_selected():
+            selected = True
+            break
+        page.wait_for_timeout(300)
+    assert selected, "could not register both runs as selected before Complete (table kept re-rendering)"
     page.locator(".bulk-action-select").select_option(value="complete")
 
     assert _poll(api, lambda items: all(
