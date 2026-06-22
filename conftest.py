@@ -8,6 +8,17 @@ import os
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+# Point config.toml at a per-worker temp file. Otherwise every xdist worker
+# shares ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes
+# on the cloud-relay endpoints — concurrent access across workers (and leakage
+# of one test's instance_id/token into the next) made those tests flaky.
+import tempfile as _tempfile
+_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+os.environ.setdefault(
+    "CELERP_CONFIG",
+    os.path.join(_tempfile.gettempdir(), f"celerp-test-config-{_worker}.toml"),
+)
+
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
 # run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
@@ -407,6 +418,37 @@ def _reset_gateway_state():
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
+
+
+# Process-global settings fields that the cloud-activation endpoints mutate
+# in place (gateway_token etc. via _apply_gateway_token_api, instance_id via
+# ensure_instance_id). Snapshot+restore so a test that activates/claims/applies
+# a token cannot leak the values into a later test on the same xdist worker.
+_CLOUD_SETTINGS_FIELDS = (
+    "gateway_token", "gateway_instance_id", "gateway_http_url",
+    "celerp_public_url", "backup_encryption_key", "backup_enabled",
+    "cookie_secure",
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_cloud_settings():
+    """Restore the mutable cloud/backup `settings` fields around each test.
+
+    The cloud-relay endpoints write straight onto the process-global
+    `celerp.config.settings` object (e.g. _apply_gateway_token_api sets
+    gateway_token / celerp_public_url and auto-generates backup_encryption_key;
+    ensure_instance_id sets gateway_instance_id). Nothing else reset these, so a
+    successful activate/claim/apply-token test leaked a non-empty gateway_token
+    into later tests on the same worker — order-dependent flakiness that
+    surfaced as cloud-claim timeouts in one shard and passed on rerun. This is
+    the settings-side counterpart to _reset_gateway_state above.
+    """
+    from celerp.config import settings as _s
+    snapshot = {f: getattr(_s, f) for f in _CLOUD_SETTINGS_FIELDS}
+    yield
+    for f, v in snapshot.items():
+        setattr(_s, f, v)
 
 
 @pytest.fixture(autouse=True)
