@@ -60,18 +60,76 @@ jobs:
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
+  browser:
+    name: Browser shard ${{ matrix.group }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run browser tests (shard ${{ matrix.group }}/3)
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          # Each xdist worker gets its own database AND its own server ports (see
+          # tests/test_browser/conftest.py), so -n parallelism is safe.
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
+        # 3 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
+        # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
+        # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
+        run: >
+          timeout 600 pytest tests/test_browser -m browser -o addopts=""
+          --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
+          --splits 3 --group ${{ matrix.group }}
+
   # Aggregator: the single required status check. Branch protection should require "Test"
-  # (this job), which passes only when every shard passed.
+  # (this job), which passes only when every unit AND browser shard passed.
   test:
     name: Test
-    needs: shard
+    needs: [shard, browser]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify all shards passed
         run: |
           if [ "${{ needs.shard.result }}" != "success" ]; then
-            echo "One or more test shards failed (result: ${{ needs.shard.result }})"
+            echo "One or more unit-test shards failed (result: ${{ needs.shard.result }})"
             exit 1
           fi
-          echo "All test shards passed."
+          if [ "${{ needs.browser.result }}" != "success" ]; then
+            echo "One or more browser-test shards failed (result: ${{ needs.browser.result }})"
+            exit 1
+          fi
+          echo "All unit and browser test shards passed."

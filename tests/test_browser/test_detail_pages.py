@@ -88,24 +88,6 @@ def test_manufacturing_order_detail_loads(page, ui_server, api):
     _assert_no_crash(page, f"/manufacturing/{order_id}")
 
 
-# ── SUB-03: BOM detail ────────────────────────────────────────────────────────
-
-def test_bom_detail_loads(page, ui_server, api):
-    """SUB-03: Create BOM via API → navigate to /manufacturing/boms/{id} → no crash."""
-    r = api.post("/manufacturing/boms", json={
-        "name": "Detail Test BOM",
-        "output_qty": 1.0,
-        "components": [],
-    })
-    if r.status_code not in {200, 201}:
-        pytest.skip(f"POST /manufacturing/boms failed: {r.status_code} {r.text}")
-
-    # BOM create returns {"event_id": ..., "bom_id": "bom:uuid"}
-    bom_id = r.json().get("bom_id", r.json().get("id", ""))
-    if not bom_id:
-        pytest.skip(f"No bom_id in response: {r.json()}")
-
-    resp = page.goto(f"{ui_server}/manufacturing/boms/{bom_id}", wait_until="domcontentloaded")
-    assert resp.status != 500, f"/manufacturing/boms/{bom_id} returned HTTP 500"
-    assert "/login" not in page.url, "Redirected to login on BOM detail"
-    _assert_no_crash(page, f"/manufacturing/boms/{bom_id}")
+# (Removed test_bom_detail_loads: the BOM entity was retired in favour of item-level recipes, so
+# POST /manufacturing/boms 405s and /manufacturing/boms/{id} no longer exists. The endpoint's
+# removal is asserted by default_modules/celerp-manufacturing/tests/test_bom_removed.py.)

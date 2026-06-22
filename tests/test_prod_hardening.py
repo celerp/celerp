@@ -24,20 +24,25 @@ async def test_health_returns_200(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(True, reason="Rate limit test contaminates subsequent auth tests; run manually with isolated process")
 async def test_rate_limit_on_login(client: AsyncClient) -> None:
-    # Re-enable limiter for this test (disabled globally by conftest autouse fixture)
-    app.state.limiter.enabled = True
+    # /auth/login is gated by celerp.routers.auth.limiter ("10/minute") - NOT app.state.limiter, so
+    # the old version re-enabled the wrong limiter and never actually exercised the limit. Enable the
+    # real one with fresh storage; 12 rapid attempts from one client must cross the limit. Isolation:
+    # the autouse _disable_rate_limits fixture resets the storage + disables both limiters on teardown,
+    # and xdist workers are separate processes, so this can't leak into other auth tests.
+    from celerp.routers.auth import limiter as auth_limiter
+    auth_limiter.enabled = True
+    auth_limiter._storage.reset()
     try:
         last = None
         for _ in range(12):
             last = await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})
         assert last is not None
-        assert last.status_code in {401, 429}
-        if last.status_code == 429:
-            assert last.json() == {"detail": "Rate limit exceeded"}
+        assert last.status_code == 429
+        assert last.json() == {"detail": "Rate limit exceeded"}
     finally:
-        app.state.limiter.enabled = False
+        auth_limiter.enabled = False
+        auth_limiter._storage.reset()
 
 
 @pytest.mark.asyncio

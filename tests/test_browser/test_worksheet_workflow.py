@@ -65,7 +65,7 @@ def _pick_station(page, col, value):
     box.wait_for(state="visible", timeout=4000)
     box.click()
     box.fill(value)
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    page.wait_for_selector(".combobox-list.open", timeout=8000)
     page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
 
 
@@ -105,7 +105,7 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     page.wait_for_selector('#workflow-section th[data-sort="3"]', timeout=8000)        # Time sortable
     page.wait_for_selector('#workflow-section .colfilter[data-col="1"]', timeout=8000)  # Station funnel
     page.locator('#workflow-section .colfilter[data-col="1"]').click()                # opens the filter popup
-    page.wait_for_selector(".colfilter-pop", timeout=3000)
+    page.wait_for_selector(".colfilter-pop", timeout=8000)
     page.keyboard.press("Escape")
 
     # Second step, then drag-reorder it above the first.

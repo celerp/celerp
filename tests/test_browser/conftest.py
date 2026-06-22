@@ -30,8 +30,13 @@ _ALL_MODULES = (
 )
 os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
 
-_API_PORT = 18000
-_UI_PORT = 18080
+# Per-xdist-worker ports so the browser suite can SHARD with `-n` (each worker boots its own API +
+# UI servers and browser against its own worker database — see the root conftest's per-worker DB).
+# gw0 -> +0, gw1 -> +1, ...; "" / "master" (no xdist) -> +0. API and UI ranges never overlap.
+_worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+_offset = int(_worker[2:]) if _worker[2:].isdigit() else 0
+_API_PORT = 18000 + _offset
+_UI_PORT = 18100 + _offset
 _API_BASE = f"http://127.0.0.1:{_API_PORT}"
 _UI_BASE = f"http://127.0.0.1:{_UI_PORT}"
 
@@ -207,9 +212,15 @@ def browser_context(playwright, ui_server, seeded_user):
 
 @pytest.fixture
 def page(browser_context):
-    """Fresh page per test. Closes after test."""
+    """Fresh page per test. On teardown, clear per-origin localStorage/sessionStorage so client
+    state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - this is what made
+    the suite order- and shard-sensitive (e.g. the inventory attribute funnel)."""
     p = browser_context.new_page()
     yield p
+    try:
+        p.evaluate("try{localStorage.clear();sessionStorage.clear();}catch(e){}")
+    except Exception:
+        pass
     if not p.is_closed():
         p.close()
 
