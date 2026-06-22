@@ -761,10 +761,12 @@ _STAR_CTA_JS = """
   fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('star-cta');
     if (!el || !d || !d.url) return;
-    var label = d.cta_label || 'Star on GitHub';
-    if (d.mode === 'founding') label = 'Back us early \\u2605';
-    else if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;
-    el.textContent = label; el.href = d.url; el.style.display = '';
+    var label = '\\u2605 Star on GitHub';
+    if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
+    el.textContent = label;
+    el.href = d.url;
+    el.title = d.tooltip || 'We appreciate your support.';
+    el.style.display = '';
   }).catch(function(){});
   fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('supporter-badge');
@@ -775,6 +777,50 @@ _STAR_CTA_JS = """
   }).catch(function(){});
 })();
 """
+
+
+def star_supporter_card(medium: str = "dashboard") -> FT:
+    """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
+    + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
+    shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
+    on the dashboard (where setup lands) and onboarding."""
+    js = (
+        "(function(){"
+        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).then(function(d){"
+        "if(!d||!d.url||d.dismissed||d.mode==='neutral')return;"
+        "var card=document.getElementById('star-supporter-card');if(!card)return;"
+        "var h=document.getElementById('star-card-headline');if(h)h.textContent=d.headline||'Star on GitHub';"
+        "var b=document.getElementById('star-card-body');if(b)b.textContent=d.body||'';"  # \\n\\n -> paragraph (pre-line)
+        "var s=document.getElementById('star-card-star');if(s)s.href=d.url;"
+        "card.style.display='';"
+        "}).catch(function(){});"
+        "var dz=document.getElementById('star-card-dismiss');"
+        "if(dz)dz.addEventListener('click',function(){"
+        "fetch('/stars/dismiss',{method:'POST'}).then(function(){"
+        "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
+        "})();"
+    )
+    return Div(
+        Div(
+            # Dismiss = X in the top-right corner.
+            Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
+                   style="position:absolute;top:10px;right:14px;background:none;border:none;"
+                         "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
+            # Header + body are filled from the relay CTA; body uses pre-line so the
+            # relay's "\\n\\n" renders as a paragraph break.
+            H3("", id="star-card-headline", style="margin:0 0 14px"),
+            P("", id="star-card-body", style="white-space:pre-line;margin:0"),
+            Div(
+                A("Star on GitHub", id="star-card-star", href="#", target="_blank", rel="noopener", cls="btn btn--primary"),
+                A("Claim your badge", href="/stars/claim", cls="btn btn--secondary"),
+                style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:22px",
+            ),
+            id="star-supporter-card",
+            style="display:none;position:relative;margin:16px 0;padding:28px 32px;"
+                  "border:1px solid #d4af37;border-radius:10px;text-align:center",
+        ),
+        Script(js),
+    )
 
 
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
@@ -815,7 +861,8 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),
                         A("", id="star-cta", href="#", target="_blank", rel="noopener",
-                          cls="brand-footer-link", style="display:none;margin-left:16px"),
+                          cls="brand-footer-link",
+                          style="display:none;margin-left:16px;color:#d4af37;font-weight:600"),
                         cls="brand-footer",
                     ),
                     cls="content-area",

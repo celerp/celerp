@@ -9,7 +9,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, star_supporter_card
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
@@ -608,6 +608,9 @@ def setup_routes(app):
             values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
+            # Founding-supporter ask shown where setup actually lands (admin only;
+            # hidden in neutral/dismissed). Self-hides once dismissed install-wide.
+            *([star_supporter_card("dashboard")] if _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"] else []),
             _kpi_grid(cfg, values, role=role),
             _secondary_kpi_grid(cfg, values, role=role),
             _charts_section(cfg, valuation, ar_aging,
