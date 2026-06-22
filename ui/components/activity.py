@@ -525,13 +525,19 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     if not changed:
         return None, frozenset()
 
-    amount = None
-    if "discount_amount" in fields_changed:
-        _, amount = _change_old_new(fields_changed["discount_amount"])
-    if amount is None and "discount" in fields_changed:
-        _, amount = _change_old_new(fields_changed["discount"])
-    if float(amount or 0) > 0:
-        parts = [f"Discount Applied: {fmt_price(amount, 'discount_amount', currency)}"]
+    amt_old = amt_new = None
+    for key in ("discount_amount", "discount"):
+        if key in fields_changed:
+            amt_old, amt_new = _change_old_new(fields_changed[key])
+            break
+    if float(amt_new or 0) > 0:
+        new_str = fmt_price(amt_new, "discount_amount", currency)
+        # When an existing discount is changed, show "old → new" like every other field;
+        # a brand-new discount (no prior amount) just shows the applied figure.
+        if amt_old is not None and float(amt_old) > 0 and amt_old != amt_new:
+            parts = [f"Discount Applied: {fmt_price(amt_old, 'discount_amount', currency)} → {new_str}"]
+        else:
+            parts = [f"Discount Applied: {new_str}"]
     else:
         parts = ["Discount Removed"]
 

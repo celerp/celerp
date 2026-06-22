@@ -129,6 +129,26 @@ class TestDiscountHistorySummary:
         assert "Tax" not in summary
         assert "Lines edited" not in summary
 
+    def test_changing_an_existing_discount_shows_old_to_new(self):
+        # Updating 275 -> 550 must show the prior amount too, matching every other field.
+        summary = _fields_changed_summary({
+            "discount": {"old": 275, "new": 550},
+            "discount_type": {"old": "flat", "new": "flat"},
+            "discount_amount": {"old": 275.0, "new": 550.0},
+            "tax": {"old": 367.06, "new": 346.5},
+            "total": {"old": 5590.75, "new": 5296.50},
+        }, "USD")
+        assert summary == "Discount Applied: $275.00 → $550.00, Total: $5,590.75 → $5,296.50"
+
+    def test_first_discount_application_omits_zero_from_value(self):
+        # A brand-new discount (no prior amount) reads as a single figure, not "$0.00 -> $X".
+        summary = _fields_changed_summary({
+            "discount": {"old": 0, "new": 275},
+            "discount_amount": {"old": 0.0, "new": 275.0},
+            "total": {"old": 5885.0, "new": 5590.75},
+        }, "USD")
+        assert summary == "Discount Applied: $275.00, Total: $5,885.00 → $5,590.75"
+
     def test_discount_removed(self):
         summary = _fields_changed_summary({
             "discount": {"old": 500, "new": 0},
