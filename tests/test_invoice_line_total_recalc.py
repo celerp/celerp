@@ -190,6 +190,95 @@ class TestCelerpCollectLinesFunction:
         )
 
 
+# ── 4b. Unit-price precision: no rounding-into-discount ──────────────────────
+
+def _doc_with(lines, **over):
+    """A draft invoice detail doc carrying the given line items (sums computed from them)."""
+    sub = round(sum(float(li["line_total"]) for li in lines), 2)
+    d = {**_DRAFT_DOC, "entity_id": "d:hp", "doc_number": "INV-HP-001",
+         "line_items": lines, "subtotal": sub, "total": sub, "total_amount": sub}
+    d.update(over)
+    return d
+
+
+# qty * unit_price = 38.6 * 15.285 = 590.001 -> line_total 590.00 at currency precision.
+# Rounding the unit price to 2 dp (15.29) would make 38.6*15.29 = 590.19 - a gap the doc used
+# to surface as a phantom "discount". The unit price must keep its real 3 decimals.
+_HIPREC_LINE = {"description": "Gold", "quantity": 38.6, "unit_price": 15.285,
+                "discount_pct": 0, "line_total": 590.0}
+
+
+class TestUnitPricePrecision:
+
+    @pytest.mark.asyncio
+    async def test_back_calc_uses_precision_helper_not_toFixed(self, draft_html):
+        """celerpLineTotalInput must derive the unit price via _celerpUnitFromTotal (keeps real
+        precision), never .toFixed(2) which truncated it to 2 dp and created the discount gap."""
+        assert "function _celerpUnitFromTotal" in draft_html
+        body = _extract_function(draft_html, "celerpLineTotalInput")
+        assert "_celerpUnitFromTotal(" in body, "must use the precision helper to back-calc unit price"
+        assert "toFixed(2)" not in body, "must not truncate the back-calculated unit price to 2 dp"
+
+    @pytest.mark.asyncio
+    async def test_unit_from_total_searches_currency_to_rate_decimals(self, draft_html):
+        """The helper searches from currency precision up to rate precision for a unit price that
+        reconciles (round(unit*qty) == target) - mirroring the backend money.unit_price_from_total."""
+        body = _extract_function(draft_html, "_celerpUnitFromTotal")
+        assert "_CELERP_CDP" in body and "_CELERP_RDP" in body
+
+    @pytest.mark.asyncio
+    async def test_draft_hiprec_unit_price_keeps_decimals(self, ui_client):
+        """A draft line's editable unit-price input shows the stored 3-decimal price, not 2 dp."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE]))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert "15.285" in r.text
+
+    @pytest.mark.asyncio
+    async def test_finalized_hiprec_unit_price_full_precision(self, ui_client):
+        """The finalized read-only view renders the unit price via fmt_rate (real decimals),
+        never rounded to 2 dp."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([_HIPREC_LINE], status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert "15.285" in r.text, "finalized view must show the real unit-price decimals"
+        assert "15.29" not in r.text, "unit price must not be rounded up to 2 dp"
+        assert 'id="doc-line-discount"' not in r.text, "no phantom discount on a non-discounted line"
+
+    @pytest.mark.asyncio
+    async def test_no_phantom_discount_from_rounding_residue(self, ui_client):
+        """Multiple high-precision lines (no discount_pct) must NOT produce a discount row from
+        accumulated rounding residue. Old formula (sum(qty*price) - subtotal) showed a phantom
+        $0.01: 3 x (1 * 10.333) = 30.999 vs stored subtotal 30.99. Rendered finalized so the
+        only `doc-line-discount` would be a real server-side row (the editable JS, which also
+        names that id, is not emitted on a finalized doc)."""
+        lines = [{"description": f"Item {i}", "quantity": 1, "unit_price": 10.333,
+                  "discount_pct": 0, "line_total": 10.33} for i in range(3)]
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with(lines, status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="doc-line-discount"' not in r.text, "rounding residue must not appear as a discount"
+
+    @pytest.mark.asyncio
+    async def test_real_line_discount_still_shown(self, ui_client):
+        """A genuine line-level discount_pct still renders a discount row (10% of 100 = 10).
+        Finalized so the id reflects a real server row, not the editable JS template."""
+        line = {"description": "Widget", "quantity": 10, "unit_price": 10.0,
+                "discount_pct": 10, "line_total": 90.0}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_doc_with([line], status="final"))):
+            r = await ui_client.get("/docs/d:hp", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="doc-line-discount"' in r.text, "a real line discount must still be shown"
+
+    def test_print_view_unit_price_full_precision(self):
+        """The printable view renders the unit price via fmt_rate (real decimals)."""
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _doc_print_view
+        html = to_xml(_doc_print_view(_doc_with([_HIPREC_LINE])))
+        assert "15.285" in html
+        assert "15.29" not in html
+
+
 # ── 4. API integration: explicit line_total is preserved ─────────────────────
 
 class TestLinesTotalAPIPreservation:

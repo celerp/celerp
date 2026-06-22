@@ -15,7 +15,8 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address, col_resize_script
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script
+from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -695,7 +696,7 @@ def _doc_print_view(doc: dict) -> FT:
             Td(sku, cls="mono"),
             Td(Div(*_desc_parts)),
             Td(qty_label(li), cls="r"),
-            Td(_money(price), cls="r"),
+            Td(fmt_rate(price, currency), cls="r"),
             *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
             Td(_money(line_total), cls="r"),
         ))
@@ -5641,8 +5642,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cells.append(Td(_qty_input, cls="col-qty"))
                 elif doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                     # Quantity and its (read-only) unit share one cell; only the number edits.
+                    # Invoice layout has NO standalone unit column (the header skips it and the
+                    # empty-row builder emits only col-qty), so we must not add a col-unit cell
+                    # here - an extra cell shifts every column right (tax lands under Total).
                     cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
-                    cells.append(Td(_unit_span, cls="col-unit"))
                 else:
                     cells.append(Td(_qty_input, cls="col-qty"))
                     cells.append(Td(_unit_span, cls="col-unit"))
@@ -5917,6 +5920,26 @@ const _CELERP_EID = {repr(entity_id)};
 const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
+/* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
+const _CELERP_CDP = {currency_dp(currency)};
+const _CELERP_RDP = {rate_dp(currency)};
+/* Derive a unit price from a target line amount at the FEWEST decimals that still reconciles
+   (round(unit * qty) === target). Mirrors the backend money.unit_price_from_total so the stored
+   unit price keeps its real precision instead of being truncated to 2 dp (which made qty*price
+   drift from the line total and surfaced the gap as a phantom discount). */
+function _celerpUnitFromTotal(total, qty) {{
+    if (!qty) return 0;
+    const tf = Math.pow(10, _CELERP_CDP);
+    const target = Math.round(total * tf) / tf;
+    const exact = total / qty;
+    for (let d = _CELERP_CDP; d <= _CELERP_RDP; d++) {{
+        const f = Math.pow(10, d);
+        const cand = Math.round(exact * f) / f;
+        if (Math.abs(Math.round(cand * qty * tf) / tf - target) < 1e-9) return cand;
+    }}
+    const hf = Math.pow(10, _CELERP_RDP);
+    return Math.round(exact * hf) / hf;
+}}
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
 const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
@@ -6244,7 +6267,9 @@ function celerpLineTotalInput(input) {{
     const factor = qty * (1 - discPct / 100);
     if (factor === 0) {{ celerpUpdateTotals(); return; }}
     const unitPriceEl = row.querySelector('[data-name="unit_price"]');
-    if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
+    // Keep the unit price at its real precision so qty*price reconciles to the entered total
+    // (no truncation to 2 dp, which would leave a residue read as a discount).
+    if (unitPriceEl) unitPriceEl.value = _celerpUnitFromTotal(tot, factor);
     celerpUpdateTotals();
 }}
 function celerpFieldEdited(input) {{
@@ -6780,7 +6805,7 @@ async function celerpCsvImport(input, entityId) {{
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
                 Td(qty_label(li), cls="col-qty"),
-                Td(format_value(li.get("unit_price"), "money"), cls="cell--number col-unit-price"),
+                Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(li.get("tax_rate")), cls="col-tax"),
             ])
@@ -6907,18 +6932,29 @@ async function celerpCsvImport(input, entityId) {{
         )
 
     # --- Totals ---
-    # Compute gross (pre-discount) and net (post-discount) subtotals
+    # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is
+    # rounded to currency precision (the same boundary the stored line_total uses) so a unit price
+    # carrying more than currency-precision decimals (e.g. 15.285) never leaves a sub-cent residue
+    # that surfaces as a phantom "discount".
     def _li_gross(li: dict) -> float:
-        return float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
+        return to_stored_float(round_money(
+            to_decimal(li.get("quantity", 0) or 0) * to_decimal(li.get("unit_price", 0) or 0), currency))
 
-    def _li_discounted(li: dict) -> float:
-        gross = _li_gross(li)
+    def _li_net(li: dict) -> float:
+        # The stored line_total is the source of truth for the discounted amount; fall back to a
+        # rounded qty*price*(1-disc) only when it is absent.
+        lt = li.get("line_total")
+        if lt not in (None, ""):
+            return float(lt or 0)
         dpct = float(li.get("discount_pct") or 0)
-        return gross * (1 - dpct / 100) if dpct else gross
+        g = _li_gross(li)
+        return to_stored_float(round_money(to_decimal(g) * to_decimal(1 - dpct / 100), currency)) if dpct else g
 
-    gross_subtotal = sum(_li_gross(li) for li in line_items) if line_items else 0.0
-    subtotal = float(subtotal_value or 0) or sum(_li_discounted(li) for li in line_items)
-    line_discount = gross_subtotal - subtotal  # total discount from line-level discount_pct
+    subtotal = float(subtotal_value or 0) or sum(_li_net(li) for li in line_items)
+    # A discount only exists where a line actually carries a discount_pct. Summing per discounted
+    # line (never gross_subtotal - subtotal) keeps rounding residue on plain lines out of the figure.
+    line_discount = sum(_li_gross(li) - _li_net(li) for li in line_items if float(li.get("discount_pct") or 0))
+    gross_subtotal = subtotal + line_discount
     tax_amount = float(tax_value or 0)
     total_amount = float(total_value or 0) or (subtotal + tax_amount)
     discount = float(discount_value or 0)
@@ -6937,7 +6973,7 @@ async function celerpCsvImport(input, entityId) {{
             code_totals[code]["amount"] += amt
     elif line_items:
         for li in line_items:
-            li_total = _li_discounted(li)
+            li_total = _li_net(li)
             li_taxes = li.get("taxes") or []
             if li_taxes:
                 for item in li_taxes:
