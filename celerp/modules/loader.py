@@ -170,6 +170,24 @@ def loaded_modules() -> list[dict]:
     return list(_loaded)
 
 
+def is_core_folded(pkg_name: str) -> bool:
+    """True if a module is a proprietary cloud component folded into core (ai/backup/
+    connectors). These are wired directly into the app at construction, so they never
+    appear in ``loaded_modules()`` — yet they ARE running whenever the app is up."""
+    return pkg_name in _CORE_FOLDED
+
+
+def is_running(pkg_name: str) -> bool:
+    """Single source of truth for "is this module active in the process".
+
+    A module is running if the pluggable loader loaded it OR it is a core-folded
+    module (wired directly at app construction). Used by /companies/me/modules and
+    the setup activating page so folded modules are never reported as failed to
+    start — that bug made ai/backup spin forever on the activating screen.
+    """
+    return any(m["name"] == pkg_name for m in _loaded) or is_core_folded(pkg_name)
+
+
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
