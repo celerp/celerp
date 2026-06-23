@@ -1560,24 +1560,39 @@ def setup_routes(app):
             return Div(P(str(e.detail), cls="error-banner"), id="bulk-attach-result")
 
         report = result.get("report", [])
+        n_matched = result.get("matched", 0)
+        n_unmatched = result.get("unmatched", 0)
+        n_errors = len(result.get("errors", []))
 
         def _row(r: dict) -> FT:
             status = r.get("status", "")
             cls = {"ok": "status-ok", "unmatched": "status-warn", "error": "status-error"}.get(status, "")
             hero_icon = "⭐" if r.get("is_hero") else ""
+            # data-status lets the client-side filter (celerpBulkFilter) show/hide rows.
             return Tr(
                 Td(r.get("sku", "")),
                 Td(r.get("file", "")),
                 Td(Span(status, cls=f"badge badge--{cls}") if cls else Span(status)),
                 Td(r.get("tag", "") or r.get("detail", "")),
                 Td(hero_icon, style="text-align:center;"),
+                data_status=status or "unknown",
+            )
+
+        def _filter_btn(label: str, value: str, flash_cls: str, active: bool = False) -> FT:
+            return Button(
+                label,
+                type="button",
+                cls=f"flash {flash_cls} bulk-filter-btn{' is-active' if active else ''}",
+                data_filter=value,
+                onclick=f"celerpBulkFilter('{value}', this)",
             )
 
         return Div(
             Div(
-                Span(f"✓ {result.get('matched', 0)} matched", cls="flash flash--success"),
-                Span(f"⚠ {result.get('unmatched', 0)} unmatched", cls="flash flash--warning") if result.get("unmatched") else "",
-                Span(f"✕ {len(result.get('errors', []))} errors", cls="flash flash--error") if result.get("errors") else "",
+                _filter_btn(f"All {len(report)}", "all", "flash--muted", active=True),
+                _filter_btn(f"✓ {n_matched} matched", "ok", "flash--success"),
+                _filter_btn(f"⚠ {n_unmatched} unmatched", "unmatched", "flash--warning") if n_unmatched else "",
+                _filter_btn(f"✕ {n_errors} errors", "error", "flash--error") if n_errors else "",
                 cls="bulk-result-summary",
             ),
             Table(
@@ -4139,6 +4154,22 @@ def _import_history_tab(batches: list[dict]) -> FT:
 def _bulk_attach_tab() -> FT:
     """Bulk Attachments tab - upload a ZIP of files named by SKU."""
     return Div(
+        # Client-side filter for the result report: the summary pills (rendered by the
+        # /settings/bulk-attach response) call this to show only matched/unmatched/error rows.
+        Style(
+            ".bulk-filter-btn{cursor:pointer;border:none;}"
+            ".bulk-filter-btn.is-active{outline:2px solid currentColor;outline-offset:1px;}"
+        ),
+        Script(
+            "function celerpBulkFilter(status, btn){"
+            "var root=document.getElementById('bulk-attach-result');if(!root)return;"
+            "var rows=root.querySelectorAll('tbody tr');"
+            "for(var i=0;i<rows.length;i++){var s=rows[i].getAttribute('data-status');"
+            "rows[i].style.display=(status==='all'||s===status)?'':'none';}"
+            "var btns=root.querySelectorAll('.bulk-filter-btn');"
+            "for(var j=0;j<btns.length;j++){btns[j].classList.remove('is-active');}"
+            "if(btn){btn.classList.add('is-active');}}"
+        ),
         H3(t("page.bulk_attach_images_documents"), cls="section-title"),
         Div(
             H4(t("page.file_naming_convention")),
