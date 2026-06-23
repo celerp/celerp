@@ -900,6 +900,7 @@ class EntityFileTagged(BaseModel):
     entity_type: str
     file_id: str
     document_tag: str
+    filename: str | None = None  # captured at emit for the activity log
 
 
 class EntityFileDescriptionUpdated(BaseModel):
@@ -907,18 +908,21 @@ class EntityFileDescriptionUpdated(BaseModel):
     entity_type: str
     file_id: str
     description: str
+    filename: str | None = None  # captured at emit for the activity log
 
 
 class EntityFileDeleted(BaseModel):
     entity_id: str
     entity_type: str
     file_id: str
+    filename: str | None = None  # captured at emit so the log keeps the name post-delete
 
 
 class EntityFileHeroSet(BaseModel):
     entity_id: str
     entity_type: str  # always "item"
     file_id: str  # the file to mark as hero (must be an image MIME)
+    filename: str | None = None  # captured at emit for the activity log
 
 
 EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {

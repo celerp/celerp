@@ -75,12 +75,58 @@ EVENT_TYPE_LABELS: dict[str, str] = {
 }
 
 
+# File events (item.file.*, doc.file_*, crm.contact.file_*) share one label set and one
+# renderer across all entity types, keyed by the operation suffix (attached/tagged/...).
+_FILE_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs"}
+_FILE_OP_LABELS = {
+    "attached": "File attached",
+    "tagged": "File tagged",
+    "deleted": "File removed",
+    "description_updated": "File description updated",
+    "hero_set": "Hero image set",
+}
+
+
+def _is_file_event(event_type: str) -> bool:
+    """True for any entity's file event (item.file.*, doc.file_*, crm.contact.file_*)."""
+    return ".file." in event_type or ".file_" in event_type
+
+
+def _file_op(event_type: str) -> str:
+    """The operation of a file event (attached/tagged/deleted/...), entity-agnostic."""
+    return event_type.split("file")[-1].lstrip("._")
+
+
+def _title_case(event_type: str) -> str:
+    return event_type.replace(".", " ").replace("_", " ").title()
+
+
 def event_label(event_type: str) -> str:
     """Human label for a ledger event_type string."""
-    return EVENT_TYPE_LABELS.get(
-        event_type,
-        event_type.replace(".", " ").replace("_", " ").title(),
-    )
+    if _is_file_event(event_type):
+        return _FILE_OP_LABELS.get(_file_op(event_type), _title_case(event_type))
+    return EVENT_TYPE_LABELS.get(event_type, _title_case(event_type))
+
+
+def _file_event_detail(e: dict, data: dict, event_type: str):
+    """Detail cell for file events (item/contact/doc): the filename linked to the
+    file's download URL — except deletions, where the file is gone (name only).
+    Old events that predate the captured filename fall back to a short file id."""
+    op = _file_op(event_type)
+    file_id = str(data.get("file_id") or "")
+    entity_id = str(e.get("entity_id") or "")
+    filename = data.get("filename") or (file_id[:8] if file_id else "file")
+    seg = _FILE_ENTITY_SEG.get(str(data.get("entity_type") or ""))
+    if op == "deleted" or not (seg and file_id and entity_id):
+        name_ft = filename
+    else:
+        name_ft = A(filename, href=f"/{seg}/{entity_id}/files/{file_id}/download", cls="table-link")
+    suffix = ""
+    if op == "tagged" and data.get("document_tag"):
+        suffix = f" → {data['document_tag']}"
+    elif op == "description_updated" and data.get("description"):
+        suffix = f": {data['description']}"
+    return Span(name_ft, suffix) if suffix else name_ft
 
 
 def relative_time(ts: str) -> str:
@@ -952,6 +998,9 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         content = A(display_text, href=url, cls="table-link") if url else display_text
 
         data = e.get("data") or {}
+        # File events (any entity): filename linked to the file (name only once deleted).
+        if _is_file_event(raw_type) and isinstance(data, dict):
+            return [_assemble(e, content, _file_event_detail(e, data, raw_type), "")]
         detail = detail_from_entry(data, raw_type, currency) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
