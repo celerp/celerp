@@ -756,6 +756,100 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 """
 
+_STAR_CTA_JS = """
+(function(){
+  fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
+    var el = document.getElementById('star-cta');
+    if (!el || !d || !d.url) return;
+    var label = '\\u2605 Star on GitHub';
+    if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
+    el.textContent = label;
+    el.href = d.url;
+    el.title = d.tooltip || 'We appreciate your support.';
+    el.style.display = '';
+  }).catch(function(){});
+  fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
+    var el = document.getElementById('supporter-badge');
+    if (!el || !d || !d.badge) return;
+    el.textContent = '\\u2605';            // just the gold star
+    el.title = d.badge.label;              // tooltip: e.g. "Founding Supporter #1"
+    el.style.display = '';
+  }).catch(function(){});
+})();
+"""
+
+
+def star_supporter_card(medium: str = "dashboard") -> FT:
+    """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
+    + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
+    shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
+    on the dashboard (where setup lands) and onboarding."""
+    # Fetch the CTA copy + the user's badge together. If they've already claimed, show
+    # the relay's thank-you copy ({badge} -> their label); otherwise show the ask. All
+    # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
+    js = (
+        "(function(){"
+        "Promise.all(["
+        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).catch(function(){return null}),"
+        "fetch('/stars/badge').then(function(r){return r.json()}).catch(function(){return null})"
+        "]).then(function(res){"
+        "var d=res[0],bd=res[1];"
+        "if(!d||d.dismissed||d.mode==='neutral')return;"
+        "var card=document.getElementById('star-supporter-card');if(!card)return;"
+        "var h=document.getElementById('star-card-headline');"
+        "var b=document.getElementById('star-card-body');"
+        "var b2=document.getElementById('star-card-body-2');"
+        "var claim=document.getElementById('star-card-claim');"
+        "var link=document.getElementById('star-card-star');"
+        "if(link&&d.url)link.href=d.url;"
+        "if(bd&&bd.badge){"  # claimed -> thank-you
+        "if(h)h.textContent=d.thanks_headline||'Thank you for your support!';"
+        "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
+        "if(b2)b2.style.display='none';"
+        "if(claim)claim.style.display='none';"
+        "}else{"  # not claimed -> the ask
+        "if(h)h.textContent=d.headline||'Star on GitHub';"
+        "var parts=(d.body||'').split('\\n\\n');"
+        "if(b)b.textContent=parts[0]||'';"
+        "if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
+        "}"
+        "card.style.display='';"
+        "}).catch(function(){});"
+        "var dz=document.getElementById('star-card-dismiss');"
+        "if(dz)dz.addEventListener('click',function(){"
+        "fetch('/stars/dismiss',{method:'POST'}).then(function(){"
+        "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
+        "})();"
+    )
+    gold = "color:#d4af37"
+    return Div(
+        Div(
+            # Dismiss = X in the top-right corner.
+            Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
+                   style="position:absolute;top:10px;right:14px;background:none;border:none;"
+                         "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
+            # Header IS the link to the repo (gold star + the relay-hydrated ask).
+            H3(
+                A(Span("★ ", style=gold), Span("", id="star-card-headline"),
+                  id="star-card-star", href="#", target="_blank", rel="noopener",
+                  style="text-decoration:underline;color:inherit;cursor:pointer"),
+                style="margin:0 0 14px",
+            ),
+            P("", id="star-card-body", style="white-space:pre-line;margin:0"),
+            # Smaller sub-paragraph for the founding-badge promise.
+            P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
+            Div(
+                A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                style="margin-top:22px",
+            ),
+            id="star-supporter-card",
+            style="display:none;position:relative;margin:16px 0;padding:28px 32px;"
+                  "border:1px solid #d4af37;border-radius:10px;text-align:center",
+        ),
+        Script(js),
+    )
+
+
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
     from ui.config import get_user_email, get_relay_info
@@ -775,6 +869,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(_HEALTH_BANNER_JS),
         Script(_NOTIFICATION_JS),
         Script(_USER_MENU_JS),
+        Script(_STAR_CTA_JS),
     ]
     if extra_head:
         head_items.extend(extra_head)
@@ -792,6 +887,9 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),
+                        A("", id="star-cta", href="#", target="_blank", rel="noopener",
+                          cls="brand-footer-link",
+                          style="display:none;margin-left:16px;color:#d4af37;font-weight:600"),
                         cls="brand-footer",
                     ),
                     cls="content-area",
@@ -947,6 +1045,8 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             Div(
                 # Email pill = dropdown trigger
                 Div(
+                    Span("", id="supporter-badge", cls="supporter-badge", title="",
+                         style="display:none;margin-right:8px;color:#d4af37;font-size:12px"),
                     Span(user_email, cls="user-menu__email-text"),
                     cls="user-menu__trigger",
                     onclick="toggleUserMenu()",

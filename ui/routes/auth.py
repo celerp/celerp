@@ -22,7 +22,7 @@ from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
-from ui.components.shell import auth_shell, flash
+from ui.components.shell import auth_shell, flash, star_supporter_card
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
@@ -654,6 +654,7 @@ def _onboarding_view() -> FT:
             A(t("btn.go_to_dashboard"), href="/dashboard", cls="btn btn--secondary"),
             cls="mt-lg text-center",
         ),
+        star_supporter_card("onboarding"),
         cls="onboarding-card",
     )
 
