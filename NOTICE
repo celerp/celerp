@@ -1,41 +1,27 @@
-NOTICE - Celerp Multi-License Distribution
+NOTICE - Celerp
 
-This repository and packaged application contain components under different
-licenses. LICENSING.md is the authoritative map; each component is governed by
-the applicable LICENSE file and, where present, the SPDX header in each file.
+Celerp is distributed under multiple licenses. This NOTICE is an attribution and
+packaging summary; it is not the operative license grant.
 
-First-party components:
+  - The full first-party license map is in LICENSING.md, which is authoritative.
+    Where a source file carries an SPDX-License-Identifier header, that header
+    governs that file.
+  - Some official Celerp components are governed by the Celerp Official
+    Components License (SPDX: LicenseRef-Proprietary); see
+    legal/OFFICIAL-COMPONENTS.md.
+  - The source-available engine and the celerp-admin module are under the
+    Business Source License 1.1 (SPDX: BUSL-1.1); see LICENSE.
+  - The default business modules are under the MIT License; see the LICENSE file
+    in each module subdirectory.
 
-  celerp/                 Business Source License 1.1 (SPDX: BUSL-1.1)
-                          See: LICENSE
-                          Except the proprietary subtrees below.
-
-  celerp/gateway/, celerp/session_gate.py, celerp/ai/, celerp/cloud/
-  celerp/output/          (official document/PDF + public share renderers)
-  ui/                     Celerp Proprietary
-                          See: legal/OFFICIAL-COMPONENTS.md
-
-  default_modules/celerp-admin/
-                          Business Source License 1.1 (SPDX: BUSL-1.1)
-                          See: LICENSE
-
-  default_modules/celerp-ai/, celerp-backup/, celerp-connectors/
-                          Celerp Proprietary
-                          See: legal/OFFICIAL-COMPONENTS.md
-
-  default_modules/celerp-accounting, -contacts, -dashboard, -docs, -inventory,
-  -labels, -manufacturing, -reports, -subscriptions, -verticals
-                          MIT License
-                          See the LICENSE file in each module subdirectory.
-
-The "Powered by Celerp" attribution mark is produced and required by the
-proprietary components (the official UI and document/PDF rendering layer) and
+Attribution: the "Powered by Celerp" mark in user-visible output is produced and
+required by the official components (the UI and document/PDF rendering layer) and
 the Cloud Services agreement; it is not imposed by the MIT modules.
 
-Trademarks ("Celerp" and the Celerp logo) are not licensed by any code
-license; see legal/TRADEMARK.md.
+Trademarks ("Celerp" and the Celerp logo) are not licensed by any code license;
+see legal/TRADEMARK.md.
 
-Third-party components included in packaged desktop builds are governed by
-their own license files; see licenses/.
+Third-party components included in packaged desktop builds are governed by their
+own license files; see licenses/.
 
 For commercial, OEM, or white-label inquiries: https://celerp.com

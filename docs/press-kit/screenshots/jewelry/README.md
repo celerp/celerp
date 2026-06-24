@@ -57,7 +57,7 @@ Full set of Celerp screens captured for **Aurelia Atelier** (fictional demo data
 ## Usage & copyright
 
 These screenshots depict the **Celerp application UI**, which is proprietary
-(see `legal/OFFICIAL-COMPONENTS.md`; the UI layer is *not* covered by the BSL core or MIT module licenses).
+(see `/legal/OFFICIAL-COMPONENTS.md`; the UI layer is *not* covered by the BSL core or MIT module licenses).
 
 - Screenshots (c) 2026 Noah Severs. All rights reserved. Provided to document and promote Celerp;
   you may use them unmodified in articles, reviews, and listings about Celerp with attribution to
@@ -67,4 +67,4 @@ These screenshots depict the **Celerp application UI**, which is proprietary
 - Company and brand names shown (Lumera Skincare, Meridian Coffee Roasters, Aurelia Atelier,
   Northbound Apparel) are fictional demo data.
 
-For use of the Celerp name and logo, see `legal/TRADEMARK.md`.
+For use of the Celerp name and logo, see `/legal/TRADEMARK.md`.

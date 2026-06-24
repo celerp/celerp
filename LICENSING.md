@@ -7,11 +7,11 @@ operative statement for that file; this map governs by path otherwise.
 | Path | License | Text |
 |---|---|---|
 | `celerp/` (engine/kernel) | Business Source License 1.1 | `LICENSE` |
-| `celerp/gateway/`, `celerp/session_gate.py`, `celerp/ai/`, `celerp/cloud/` | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
-| `celerp/output/` (official document/PDF + public share renderers) | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
-| `ui/` (application UI layer) | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
+| `celerp/gateway/`, `celerp/session_gate.py`, `celerp/ai/`, `celerp/cloud/` | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
+| `celerp/output/` (official document/PDF + public share renderers) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
+| `ui/` (application UI layer) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-admin/` | Business Source License 1.1 | `LICENSE` |
-| `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
+| `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-accounting/` | MIT | module `LICENSE` |
 | `default_modules/celerp-contacts/` | MIT | module `LICENSE` |
 | `default_modules/celerp-dashboard/` | MIT | module `LICENSE` |

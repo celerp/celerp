@@ -10,11 +10,15 @@ Parameters
 Licensor:             Noah Severs
 Licensed Work:        Celerp
                       The Licensed Work is (c) 2026 Noah Severs
-Additional Use Grant: You may make production use of the Licensed Work, including
-                      deploying it for your own business operations, provided that
-                      you may not offer the Licensed Work as a hosted service to
-                      third parties (SaaS/PaaS) without a separate commercial
-                      agreement with the Licensor.
+Additional Use Grant: You may use the Licensed Work in production to operate
+                      Celerp for your own internal business purposes, including
+                      self-hosted use by your company and its affiliates. This
+                      Additional Use Grant does not include offering the Licensed
+                      Work, modified versions of the Licensed Work, or a
+                      substantially similar competing product as a hosted service,
+                      SaaS service, managed service, OEM product, or white-label
+                      product to third parties without a commercial agreement with
+                      Licensor.
 
 Change Date:          2029-01-01
 
