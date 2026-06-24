@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+
 """add supporter_badges
 
 Revision ID: b1c2d3e4f5a6

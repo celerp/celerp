@@ -803,7 +803,7 @@
   "msg.notifications": "Notificaciones",
   "msg.onboarding_skip": "O omita por ahora y comience con un espacio de trabajo vacío:",
   "msg.onboarding_subtitle": "Celerp está vacío. Importe su inventario, clientes o facturas para comenzar.",
-  "msg.powered_by": "Desarrollado por Celerp · Software empresarial de código abierto para transformaciones AI",
+  "msg.powered_by": "Desarrollado por Celerp · Software empresarial autoalojado para transformaciones AI",
   "msg.preferences_hint": "Los valores predeterminados se aplican cuando el usuario no establece ningún filtro de fecha o tamaño de página.",
   "msg.recommended": "Recomendado",
   "msg.relay_connected": "Conectado al relay",

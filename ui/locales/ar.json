@@ -803,7 +803,7 @@
   "msg.notifications": "إشعارات",
   "msg.onboarding_skip": "أو قم بالتخطي الآن وابدأ بمساحة عمل فارغة:",
   "msg.onboarding_subtitle": "Celerp فارغ. قم باستيراد مخزونك أو عملائك أو فواتيرك للبدء.",
-  "msg.powered_by": "مدعوم من Celerp · برنامج أعمال مفتوح المصدر لتحويلات AI",
+  "msg.powered_by": "مدعوم من Celerp · برنامج أعمال ذاتي الاستضافة لتحويلات AI",
   "msg.preferences_hint": "يتم تطبيق الإعدادات الافتراضية عندما لا يقوم المستخدم بتعيين مرشح التاريخ أو حجم الصفحة.",
   "msg.recommended": "مُستَحسَن",
   "msg.relay_connected": "متصل بالمرحّل",
