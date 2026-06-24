@@ -95,10 +95,14 @@ def setup_routes(app):
                 "Thank you", f"You are recognised as <strong>{label}</strong>."))
 
         # No cred yet: ask the API for the relay verify-start URL, return here after.
+        # Carry the public-listing opt-in choice (set by the claim card's checkbox).
         return_url = str(request.base_url).rstrip("/") + "/stars/claim"
+        params = {"return_url": return_url}
+        if request.query_params.get("opt_in"):
+            params["opt_in"] = "1"
         async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
             try:
-                r = await c.get("/stars/badge/verify-url", params={"return_url": return_url},
+                r = await c.get("/stars/badge/verify-url", params=params,
                                 headers={"Authorization": f"Bearer {token}"})
                 url = r.json().get("url")
             except Exception:

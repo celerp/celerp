@@ -839,7 +839,16 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             # Smaller sub-paragraph for the founding-badge promise.
             P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
             Div(
-                A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                # Public listing is opt-in (default off, per the relay's privacy model). One
+                # quiet checkbox; the claim link carries the choice to the verify flow.
+                Label(
+                    Input(type="checkbox", id="star-card-optin",
+                          style="margin-right:6px;vertical-align:middle"),
+                    "List me publicly on the Celerp founders wall (optional)",
+                    style="display:block;margin-bottom:14px;font-size:12px;color:#555;cursor:pointer",
+                ),
+                A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary",
+                  onclick="this.href='/stars/claim'+(document.getElementById('star-card-optin').checked?'?opt_in=1':'')"),
                 style="margin-top:22px",
             ),
             id="star-supporter-card",

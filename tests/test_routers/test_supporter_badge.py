@@ -96,5 +96,18 @@ async def test_verify_url_includes_instance_and_return(client):
 
 
 @pytest.mark.asyncio
+async def test_verify_url_carries_opt_in(client):
+    token = await _register(client, "optin")
+    base = {"return_url": "http://localhost:8080/stars/claim"}
+    # Default: public listing off (opt_in=0 carried through to the relay verify flow).
+    d = (await client.get("/stars/badge/verify-url", headers=_h(token), params=base)).json()["url"]
+    assert "opt_in=0" in d
+    # Explicit opt-in passes through as opt_in=1.
+    o = (await client.get("/stars/badge/verify-url", headers=_h(token),
+                          params={**base, "opt_in": 1})).json()["url"]
+    assert "opt_in=1" in o
+
+
+@pytest.mark.asyncio
 async def test_badge_requires_auth(client):
     assert (await client.get("/stars/badge")).status_code == 401
