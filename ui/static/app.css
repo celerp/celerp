@@ -167,8 +167,8 @@ a:hover { text-decoration: underline; }
   height: 100vh;
   overflow-y: auto;
 }
-.sidebar-logo-wrap { padding: 0; border-bottom: 1px solid var(--c-border); }
-.sidebar-logo { width: 100%; object-fit: contain; }
+.sidebar-logo-wrap { padding: 0; border-bottom: 1px solid var(--c-border); text-align: center; }
+.sidebar-logo { width: 67%; object-fit: contain; }
 .nav-link {
   display: block;
   padding: 9px 16px;
