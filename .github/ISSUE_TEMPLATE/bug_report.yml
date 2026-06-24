@@ -37,6 +37,14 @@ body:
         - Other
     validations:
       required: true
+  - type: input
+    id: page
+    attributes:
+      label: Page / URL where it happened
+      description: The Celerp page you were on (e.g. `/inventory`). Pre-filled when you open this from inside the app.
+      placeholder: "e.g. /inventory"
+    validations:
+      required: false
   - type: textarea
     id: repro
     attributes:
