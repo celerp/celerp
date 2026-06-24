@@ -127,8 +127,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for environment variables, troubleshootin
 
 Issues and PRs welcome. The module system makes it straightforward to add new business domains without touching the kernel.
 
-If Celerp is useful to you, a ⭐ on GitHub genuinely helps. Early supporters who star and verify can claim a founding-supporter badge - see the [Founders wall](https://relay.celerp.com/github/founders).
-
 ---
 
 ## License

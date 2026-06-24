@@ -67,8 +67,11 @@ async def get_badge(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The current user's supporter badge, or null."""
-    return {"badge": _badge.to_dict(await _badge.get(session, user.id))}
+    """The current user's supporter badge (or null) + the public founders wall URL."""
+    return {
+        "badge": _badge.to_dict(await _badge.get(session, user.id)),
+        "wall_url": f"{relay_http_url()}/github/founders",
+    }
 
 
 @router.post("/badge")

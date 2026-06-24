@@ -56,6 +56,15 @@ async def test_get_badge_null_when_none(client):
 
 
 @pytest.mark.asyncio
+async def test_get_badge_includes_wall_url(client):
+    """The badge GET carries the public founders-wall URL so the in-app card can
+    link to it once claimed."""
+    token = await _register(client, "wall")
+    data = (await client.get("/stars/badge", headers=_h(token))).json()
+    assert data["wall_url"].endswith("/github/founders")
+
+
+@pytest.mark.asyncio
 async def test_claim_invalid_cred(client):
     token = await _register(client, "bad")
     r = await client.post("/stars/badge", headers=_h(token), json={"cred": "garbage"})
