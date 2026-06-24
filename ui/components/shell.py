@@ -923,9 +923,11 @@ _BUG_REPORT_URL: str | None = None
 def _bug_report_url() -> str:
     """GitHub 'new issue' link that opens the bug_report.yml issue form with the
     Celerp version and host OS pre-filled (the two fields users most often leave out).
+    The current page is appended to the form's `page` field client-side on click (see
+    the menu link's onclick), since the path is only known in the browser.
 
     Built once per process - version and OS don't change at runtime. Uses the form's
-    field-prefill query params, so the form's own labels (bug, triage) still apply for
+    field-prefill query params, so the form's own label (bug) still applies for
     every reporter (unlike inline body prefill, which would suppress the template).
     """
     global _BUG_REPORT_URL
@@ -1072,6 +1074,17 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     A(
                         "🐞 " + t("nav.report_bug", lang, default="Report a bug"),
                         href=_bug_report_url(),
+                        target="_blank",
+                        rel="noopener",
+                        cls="user-menu__item",
+                        # Append the current page to the bug form's `page` field at click time
+                        # (server-side URL is cached/page-agnostic; the path is only known client-side).
+                        onclick="this.href=this.dataset.base+'&page='+encodeURIComponent(location.pathname+location.search)",
+                        **{"data-base": _bug_report_url()},
+                    ),
+                    A(
+                        "💡 " + t("nav.suggest_feature", lang, default="Suggest a feature"),
+                        href="https://github.com/celerp/celerp/discussions/new?category=ideas",
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
