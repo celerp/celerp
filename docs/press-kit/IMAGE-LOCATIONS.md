@@ -66,8 +66,13 @@ picks them up immediately:
 
 ## Social preview (highest-leverage image)
 Set the repo's social-preview card (GitHub → Settings → General → Social preview) to
-`manufacturing-worksheet.png`. This is the image shown when the repo is shared on
-Twitter/LinkedIn/Slack and in Google results. It must be set in the GitHub UI (not via git).
+`artwork/celerp-social-preview.png` - the dedicated branded card (logo + tagline + URLs). This is the
+image shown when the repo is shared on Twitter/LinkedIn/Slack and in Google results. It must be set in
+the GitHub UI (not via git).
+
+Format constraints: GitHub accepts **PNG/JPG/GIF only (not WebP)**, max **1 MB**, recommended
+**1280×640** (2:1). The committed card is 1280×640 PNG, ~740 KB. Keep new exports under 1 MB or GitHub
+rejects the upload.
 
 ## Demo data backup
 The full demo instance backup (~48 MB) is intentionally **not** in the git tree (it would bloat every
