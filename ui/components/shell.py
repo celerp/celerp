@@ -578,8 +578,8 @@ document.addEventListener('DOMContentLoaded', function() {
   loadNotifications();
 
   // Opportunistic badge refresh: in-page htmx actions nudge notifications so the
-  // badge doesn't lag while the user stays on one page (the relay can't push -
-  // see M1). The floor caps this at ~1 fetch/min regardless of activity and we
+  // badge doesn't lag while the user stays on one page (the relay can't push)
+  // The floor caps this at ~1 fetch/min regardless of activity and we
   // skip hidden tabs, so it adds strictly less load than the per-navigation
   // fetch and never becomes a poll. loadNotifications is a plain fetch, so this
   // listener can't re-trigger itself.
