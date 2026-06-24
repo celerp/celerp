@@ -497,6 +497,9 @@ document.addEventListener('DOMContentLoaded', function() {
   var list = document.getElementById('notif-list');
   if (!badge || !panel) return;
 
+  var NOTIF_FLOOR_MS = 60000;   // cap opportunistic refreshes to ~1/min
+  var lastNotifFetch = 0;
+
   function updateBadge(count) {
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : count;
@@ -507,6 +510,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function loadNotifications() {
+    lastNotifFetch = Date.now();
     fetch('/notifications')
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -572,6 +576,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Initial load
   loadNotifications();
+
+  // Opportunistic badge refresh: in-page htmx actions nudge notifications so the
+  // badge doesn't lag while the user stays on one page (the relay can't push)
+  // The floor caps this at ~1 fetch/min regardless of activity and we
+  // skip hidden tabs, so it adds strictly less load than the per-navigation
+  // fetch and never becomes a poll. loadNotifications is a plain fetch, so this
+  // listener can't re-trigger itself.
+  document.addEventListener('htmx:afterSettle', function() {
+    if (document.visibilityState === 'hidden') return;
+    if (Date.now() - lastNotifFetch < NOTIF_FLOOR_MS) return;
+    loadNotifications();
+  });
 
   // Request browser notification permission
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
