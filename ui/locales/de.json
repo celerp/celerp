@@ -803,7 +803,7 @@
   "msg.notifications": "Benachrichtigungen",
   "msg.onboarding_skip": "Oder jetzt überspringen und mit einem leeren Arbeitsbereich beginnen:",
   "msg.onboarding_subtitle": "Celerp ist leer. Importieren Sie Ihr Lager, Kunden oder Rechnungen, um zu beginnen.",
-  "msg.powered_by": "Bereitgestellt von Celerp · Open-Source-Unternehmenssoftware für KI-Transformationen",
+  "msg.powered_by": "Bereitgestellt von Celerp · Selbst gehostete Unternehmenssoftware für KI-Transformationen",
   "msg.preferences_hint": "Standards werden angewendet, wenn kein Datumsfilter oder keine Seitengröße vom Benutzer festgelegt wurde.",
   "msg.recommended": "Empfohlen",
   "msg.relay_connected": "Mit Relay verbunden",

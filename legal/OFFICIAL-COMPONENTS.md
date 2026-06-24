@@ -1,4 +1,4 @@
-# Celerp Proprietary License
+# Celerp Official Components License
 
 Copyright (c) 2026 Noah Severs. All rights reserved.
 
@@ -59,7 +59,7 @@ agreement, and is not imposed by, or dependent on, any separately MIT-licensed m
 
 All rights not expressly granted in this license are reserved by the Licensor. No rights are granted by
 implication, estoppel, or otherwise. This license does not grant you any rights in the Licensor's
-trademarks; see `TRADEMARK.md`.
+trademarks; see `legal/TRADEMARK.md`.
 
 ## 5. Cloud Services
 

@@ -803,7 +803,7 @@
   "msg.notifications": "通知",
   "msg.onboarding_skip": "または、ここではスキップして、空のワークスペースから始めます。",
   "msg.onboarding_subtitle": "Celerp は空です。まず、在庫、顧客、または請求書をインポートします。",
-  "msg.powered_by": "Celerp を搭載 · AI 変換用のオープンソース ビジネス ソフトウェア",
+  "msg.powered_by": "Celerp を搭載 · AI 変換用のセルフホスト型ビジネスソフトウェア",
   "msg.preferences_hint": "ユーザーが日付フィルターまたはページ サイズを設定していない場合に適用されるデフォルト。",
   "msg.recommended": "推奨",
   "msg.relay_connected": "リレーに接続済み",

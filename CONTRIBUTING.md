@@ -14,7 +14,7 @@ follows:
   commercial terms). Open an issue before substantial work and we will arrange signing.
 - **Third-party modules you do not submit upstream** (e.g. your own marketplace modules) need no CLA - a
   Developer Certificate of Origin sign-off (`git commit -s`) is sufficient for those. The MIT modules are
-  the recommended starting point: fork one, rename it (see `TRADEMARK.md`), and license your derivative
+  the recommended starting point: fork one, rename it (see `legal/TRADEMARK.md`), and license your derivative
   however you wish.
 
 **How CLA acceptance works.** Contributions to official Celerp repositories require CLA acceptance before
@@ -23,7 +23,7 @@ pull request, post the exact acceptance phrase from your authenticated GitHub ac
 acceptance is recorded against the current `CLA.md` version. The bot blocks merge until acceptance is
 recorded.
 
-Trademarks are not licensed by any code license; see `TRADEMARK.md`.
+Trademarks are not licensed by any code license; see `legal/TRADEMARK.md`.
 
 ## Environment variables
 

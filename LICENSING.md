@@ -7,11 +7,11 @@ operative statement for that file; this map governs by path otherwise.
 | Path | License | Text |
 |---|---|---|
 | `celerp/` (engine/kernel) | Business Source License 1.1 | `LICENSE` |
-| `celerp/gateway/`, `celerp/session_gate.py`, `celerp/ai/`, `celerp/cloud/` | Celerp Proprietary | `LICENSE-PROPRIETARY.md` |
-| `celerp/output/` (official document/PDF + public share renderers) | Celerp Proprietary | `LICENSE-PROPRIETARY.md` |
-| `ui/` (application UI layer) | Celerp Proprietary | `LICENSE-PROPRIETARY.md` |
+| `celerp/gateway/`, `celerp/session_gate.py`, `celerp/ai/`, `celerp/cloud/` | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
+| `celerp/output/` (official document/PDF + public share renderers) | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
+| `ui/` (application UI layer) | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-admin/` | Business Source License 1.1 | `LICENSE` |
-| `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Proprietary | `LICENSE-PROPRIETARY.md` |
+| `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Proprietary | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-accounting/` | MIT | module `LICENSE` |
 | `default_modules/celerp-contacts/` | MIT | module `LICENSE` |
 | `default_modules/celerp-dashboard/` | MIT | module `LICENSE` |
@@ -32,8 +32,8 @@ Notes:
   the license of the engine it requires, and using the engine remains governed by `LICENSE`.
 - **Attribution:** the "Powered by Celerp" mark is produced and required by the proprietary components
   (the official UI and document/PDF rendering layer) and the Cloud Services agreement. It is NOT imposed
-  by the MIT modules - MIT cannot carry that restriction. See `LICENSE-PROPRIETARY.md`.
-- Trademarks are not licensed by any of the above; see `TRADEMARK.md`.
+  by the MIT modules - MIT cannot carry that restriction. See `legal/OFFICIAL-COMPONENTS.md`.
+- Trademarks are not licensed by any of the above; see `legal/TRADEMARK.md`.
 - Third-party dependencies retain their own licenses.
 
 Copyright (c) 2026 Noah Severs.

@@ -13,7 +13,7 @@ First-party components:
   celerp/gateway/, celerp/session_gate.py, celerp/ai/, celerp/cloud/
   celerp/output/          (official document/PDF + public share renderers)
   ui/                     Celerp Proprietary
-                          See: LICENSE-PROPRIETARY.md
+                          See: legal/OFFICIAL-COMPONENTS.md
 
   default_modules/celerp-admin/
                           Business Source License 1.1 (SPDX: BUSL-1.1)
@@ -21,7 +21,7 @@ First-party components:
 
   default_modules/celerp-ai/, celerp-backup/, celerp-connectors/
                           Celerp Proprietary
-                          See: LICENSE-PROPRIETARY.md
+                          See: legal/OFFICIAL-COMPONENTS.md
 
   default_modules/celerp-accounting, -contacts, -dashboard, -docs, -inventory,
   -labels, -manufacturing, -reports, -subscriptions, -verticals
@@ -33,7 +33,7 @@ proprietary components (the official UI and document/PDF rendering layer) and
 the Cloud Services agreement; it is not imposed by the MIT modules.
 
 Trademarks ("Celerp" and the Celerp logo) are not licensed by any code
-license; see TRADEMARK.md.
+license; see legal/TRADEMARK.md.
 
 Third-party components included in packaged desktop builds are governed by
 their own license files; see licenses/.
