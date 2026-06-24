@@ -3955,14 +3955,14 @@ async def tag_doc_file(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    _get_doc_file(row.state.get("files", []), file_id)
+    f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="doc",
         event_type="doc.file_tagged",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "document_tag": document_tag},
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "document_tag": document_tag, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -3984,14 +3984,14 @@ async def update_doc_file_description(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    _get_doc_file(row.state.get("files", []), file_id)
+    f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="doc",
         event_type="doc.file_description_updated",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "description": description},
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "description": description, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4012,14 +4012,14 @@ async def delete_doc_file(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    _get_doc_file(row.state.get("files", []), file_id)
+    f = _get_doc_file(row.state.get("files", []), file_id)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="doc",
         event_type="doc.file_deleted",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id},
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",

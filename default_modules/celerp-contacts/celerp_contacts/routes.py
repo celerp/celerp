@@ -299,14 +299,14 @@ async def tag_contact_file(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
-    _get_contact_file(row.state.get("files", []), file_id)
+    f = _get_contact_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=contact_id,
         entity_type="contact",
         event_type="crm.contact.file_tagged",
-        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "document_tag": document_tag},
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "document_tag": document_tag, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -330,14 +330,14 @@ async def update_contact_file_description(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
-    _get_contact_file(row.state.get("files", []), file_id)
+    f = _get_contact_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=contact_id,
         entity_type="contact",
         event_type="crm.contact.file_description_updated",
-        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "description": description},
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "description": description, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -391,7 +391,7 @@ async def delete_contact_file(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
-    _get_contact_file(row.state.get("files", []), file_id)
+    f = _get_contact_file(row.state.get("files", []), file_id)
 
     entry = await emit_event(
         session,
@@ -399,7 +399,7 @@ async def delete_contact_file(
         entity_id=contact_id,
         entity_type="contact",
         event_type="crm.contact.file_deleted",
-        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id},
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",

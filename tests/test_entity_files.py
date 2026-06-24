@@ -179,6 +179,59 @@ async def test_doc_file_upload(client):
     assert any(f.get("id") == fid for f in files), f"File {fid} not in {files}"
 
 
+async def _ledger_by_type(client, h: dict, entity_id: str) -> dict:
+    r = await client.get("/ledger", params={"entity_id": entity_id, "limit": 200}, headers=h)
+    assert r.status_code == 200, r.text
+    out: dict[str, list[dict]] = {}
+    for e in r.json()["items"]:
+        out.setdefault(e["event_type"], []).append(e)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_contact_file_events_capture_filename(client):
+    """M6: contact file events keep the filename in the activity log (incl. delete)."""
+    h = await _headers(client)
+    cid = (await client.post("/crm/contacts", json={"name": "Eve"}, headers=h)).json()["id"]
+    fid = (await client.post(f"/crm/contacts/{cid}/files",
+                             files={"file": ("evidence.pdf", _SMALL_PDF, "application/pdf")},
+                             headers=h)).json()["id"]
+    assert (await client.post(f"/crm/contacts/{cid}/files/{fid}/tag",
+                              data={"document_tag": "contracts"}, headers=h)).status_code == 200
+    assert (await client.patch(f"/crm/contacts/{cid}/files/{fid}/description",
+                               data={"description": "signed"}, headers=h)).status_code == 200
+    assert (await client.delete(f"/crm/contacts/{cid}/files/{fid}", headers=h)).status_code == 200
+
+    by_type = await _ledger_by_type(client, h, cid)
+    fname = by_type["crm.contact.file_attached"][0]["data"].get("filename")
+    assert fname, "attached event must carry the filename"
+    for et in ("crm.contact.file_tagged", "crm.contact.file_description_updated", "crm.contact.file_deleted"):
+        assert et in by_type, f"missing event {et}"
+        assert by_type[et][0]["data"].get("filename") == fname, f"{et} did not capture the filename"
+
+
+@pytest.mark.asyncio
+async def test_doc_file_events_capture_filename(client):
+    """M6: doc file events keep the filename in the activity log (incl. delete)."""
+    h = await _headers(client)
+    doc_id = await _create_draft_doc(client, h)
+    fid = (await client.post(f"/docs/{doc_id}/files",
+                             files={"file": ("scan.pdf", _SMALL_PDF, "application/pdf")},
+                             headers=h)).json()["id"]
+    assert (await client.patch(f"/docs/{doc_id}/files/{fid}/tag",
+                               data={"document_tag": "scans"}, headers=h)).status_code == 200
+    assert (await client.patch(f"/docs/{doc_id}/files/{fid}/description",
+                               data={"description": "page 1"}, headers=h)).status_code == 200
+    assert (await client.delete(f"/docs/{doc_id}/files/{fid}", headers=h)).status_code == 200
+
+    by_type = await _ledger_by_type(client, h, doc_id)
+    fname = by_type["doc.file_attached"][0]["data"].get("filename")
+    assert fname, "attached event must carry the filename"
+    for et in ("doc.file_tagged", "doc.file_description_updated", "doc.file_deleted"):
+        assert et in by_type, f"missing event {et}"
+        assert by_type[et][0]["data"].get("filename") == fname, f"{et} did not capture the filename"
+
+
 @pytest.mark.asyncio
 async def test_doc_file_delete(client):
     h = await _headers(client)
