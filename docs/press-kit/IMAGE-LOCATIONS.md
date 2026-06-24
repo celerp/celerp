@@ -48,6 +48,16 @@ Screen names per folder: `dashboard`, `inventory`, `manufacturing-worksheet`, `w
 `balance-sheet`, `audit-log`, `permissions`, `rest-api` (all `.webp`). The four folders add ~2.4 MB
 to the tree.
 
+## Artwork (hand-illustrated brand graphics)
+
+Creative brand art (not screenshots) lives under **`docs/press-kit/artwork/`** — for blog posts,
+social, and launch coverage. WebP (q90, ≤1600 px), ~280–450 KB each (~0.7 MB total).
+
+| Purpose | File | jsDelivr URL |
+|---|---|---|
+| Celerp vs. legacy ERPs | `celerp-vs-erps.webp` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/artwork/celerp-vs-erps.webp |
+| Celerp vs. SaaS | `celerp-vs-saas.webp` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/artwork/celerp-vs-saas.webp |
+
 ## Keeping the CDN fresh after a regen
 jsDelivr caches `@main` aggressively. After pushing regenerated images, purge each so the website
 picks them up immediately:
@@ -56,8 +66,13 @@ picks them up immediately:
 
 ## Social preview (highest-leverage image)
 Set the repo's social-preview card (GitHub → Settings → General → Social preview) to
-`manufacturing-worksheet.png`. This is the image shown when the repo is shared on
-Twitter/LinkedIn/Slack and in Google results. It must be set in the GitHub UI (not via git).
+`artwork/celerp-social-preview.png` - the dedicated branded card (logo + tagline + URLs). This is the
+image shown when the repo is shared on Twitter/LinkedIn/Slack and in Google results. It must be set in
+the GitHub UI (not via git).
+
+Format constraints: GitHub accepts **PNG/JPG/GIF only (not WebP)**, max **1 MB**, recommended
+**1280×640** (2:1). The committed card is 1280×640 PNG, ~740 KB. Keep new exports under 1 MB or GitHub
+rejects the upload.
 
 ## Demo data backup
 The full demo instance backup (~48 MB) is intentionally **not** in the git tree (it would bloat every
