@@ -909,7 +909,7 @@ def _bug_report_url() -> str:
     Celerp version and host OS pre-filled (the two fields users most often leave out).
 
     Built once per process - version and OS don't change at runtime. Uses the form's
-    field-prefill query params, so the form's own labels (bug, triage) still apply for
+    field-prefill query params, so the form's own label (bug) still applies for
     every reporter (unlike inline body prefill, which would suppress the template).
     """
     global _BUG_REPORT_URL
@@ -1056,6 +1056,13 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     A(
                         "🐞 " + t("nav.report_bug", lang, default="Report a bug"),
                         href=_bug_report_url(),
+                        target="_blank",
+                        rel="noopener",
+                        cls="user-menu__item",
+                    ),
+                    A(
+                        "💡 " + t("nav.suggest_feature", lang, default="Suggest a feature"),
+                        href="https://github.com/celerp/celerp/discussions/new?category=ideas",
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
