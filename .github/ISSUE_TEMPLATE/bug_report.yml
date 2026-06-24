@@ -1,13 +1,14 @@
 name: Bug Report
 description: Report a bug to help us improve Celerp
 title: "Bug: "
-labels: [bug, triage]
+labels: [bug]
 body:
   - type: markdown
     attributes:
       value: >
-        **Have a question or feature request?** Please use
-        [Discussions](https://github.com/celerp/celerp/discussions) instead.
+        This template is for **bugs**. Have a **feature idea** or a **question**? Please use
+        [Discussions](https://github.com/celerp/celerp/discussions) - ideas go in the
+        **Ideas** category.
   - type: input
     id: version
     attributes:
