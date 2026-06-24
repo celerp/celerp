@@ -48,6 +48,16 @@ Screen names per folder: `dashboard`, `inventory`, `manufacturing-worksheet`, `w
 `balance-sheet`, `audit-log`, `permissions`, `rest-api` (all `.webp`). The four folders add ~2.4 MB
 to the tree.
 
+## Artwork (hand-illustrated brand graphics)
+
+Creative brand art (not screenshots) lives under **`docs/press-kit/artwork/`** — for blog posts,
+social, and launch coverage. WebP (q90, ≤1600 px), ~280–450 KB each (~0.7 MB total).
+
+| Purpose | File | jsDelivr URL |
+|---|---|---|
+| Celerp vs. legacy ERPs | `celerp-vs-erps.webp` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/artwork/celerp-vs-erps.webp |
+| Celerp vs. SaaS | `celerp-vs-saas.webp` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/artwork/celerp-vs-saas.webp |
+
 ## Keeping the CDN fresh after a regen
 jsDelivr caches `@main` aggressively. After pushing regenerated images, purge each so the website
 picks them up immediately:
