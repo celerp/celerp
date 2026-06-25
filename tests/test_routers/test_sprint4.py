@@ -33,7 +33,15 @@ def _h(token: str) -> dict:
 
 
 async def _create_invoice(client, token: str, **kw) -> str:
-    data = {"doc_type": "invoice", **kw}
+    # Default to a single line (amount = total) so the doc can be finalized/sent - a
+    # zero-line doc can no longer be issued. Callers testing blank docs pass line_items=[].
+    total = kw.get("total", 100)
+    data = {
+        "doc_type": "invoice",
+        "line_items": [{"description": "Item", "quantity": 1, "unit_price": total, "line_total": total}],
+        "total": total,
+        **kw,
+    }
     r = await client.post("/docs", headers=_h(token), json=data)
     assert r.status_code == 200
     return r.json()["id"]
@@ -58,7 +66,7 @@ async def test_create_blank_invoice_via_api(client):
 async def test_blank_invoice_is_retrievable(client):
     """A blank invoice has draft status and no line items."""
     token = await _register(client)
-    eid = await _create_invoice(client, token, status="draft")
+    eid = await _create_invoice(client, token, status="draft", line_items=[])
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert doc["status"] == "draft"
     assert doc.get("line_items", []) == []
