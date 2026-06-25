@@ -5938,6 +5938,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Script(f"""
 const _CELERP_EID = {repr(entity_id)};
 const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
+// Did this document render with any line items? Drives whether emptying the table
+// persists (deleting the last line must stick) vs. a blank never-used doc (skip).
+let _celerpHadLines = {'true' if line_items else 'false'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
@@ -6378,6 +6381,7 @@ function _celerpEditTaxLabel(key, rate, labelEl) {{
     input.select();
 }}
 function celerpAddLine() {{
+    _celerpHadLines = true;  // once a line exists, emptying the table later must persist
     const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
     const row = tpl.querySelector('tr') || tpl.children[0];
     if (row) {{
@@ -6673,7 +6677,9 @@ function _celerpCollectLines() {{
 }}
 async function _celerpPersist() {{
     const lines = _celerpCollectLines();
-    if (!lines.length) return;
+    // Persist even when empty if the doc had lines - deleting the last line must stick.
+    // Skip only a blank doc that never had any lines (avoids a spurious empty save).
+    if (!lines.length && !_celerpHadLines) return;
     const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
     const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
     // Apply the header discount to the taxable base; tax scales by the same ratio (see
