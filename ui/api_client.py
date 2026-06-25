@@ -2042,18 +2042,50 @@ async def trigger_backup(token: str, backup_type: str = "database") -> None:
         _raise(await c.post("/backup/trigger", params={"type": backup_type}))
 
 
-async def export_backup(token: str) -> tuple[bytes, str, str]:
-    """GET /backup/export — fetch full local backup archive from the API process.
+async def export_backup(token: str):
+    """GET /backup/export, streamed. Returns (chunk_iterator, headers).
 
-    Returns (content_bytes, content_type, content_disposition).
+    The backup archive can be many GB (DB dump + attachments), so we never buffer it in
+    memory: the caller pipes the iterator straight into a StreamingResponse, and the httpx
+    client + response stay open until the iterator is exhausted. The server builds the
+    archive (pg_dump + bundling) before the first byte, so the read timeout is generous;
+    once bytes flow, each chunk just needs to arrive within it. We forward Content-Length
+    so the browser shows a real download progress bar.
     """
-    async with _api_client(token) as c:
-        r = _raise(await c.get("/backup/export"))
-        return (
-            r.content,
-            r.headers.get("content-type", "application/octet-stream"),
-            r.headers.get("content-disposition", "attachment; filename=backup.celerp-backup"),
-        )
+    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
+    try:
+        resp = await client.send(client.build_request("GET", "/backup/export"), stream=True)
+    except httpx.TimeoutException as exc:
+        await client.aclose()
+        raise APIError(504, "Backup timed out — the archive took too long to build.") from exc
+    except httpx.ConnectError as exc:
+        await client.aclose()
+        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+    if resp.status_code >= 400:
+        body = await resp.aread()
+        await resp.aclose()
+        await client.aclose()
+        try:
+            import json as _json
+            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
+        except Exception:
+            detail = body.decode("utf-8", "replace")
+        raise APIError(resp.status_code, detail)
+    headers = {
+        k: resp.headers[k]
+        for k in ("content-length", "content-disposition", "content-type")
+        if k in resp.headers
+    }
+
+    async def _iter():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return _iter(), headers
 
 
 async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, str]:

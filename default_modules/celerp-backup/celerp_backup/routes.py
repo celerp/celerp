@@ -22,6 +22,7 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from celerp.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -191,7 +192,10 @@ async def export_local() -> FileResponse:
         path = await export_full()
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip")
+    # export_full writes a temp archive (delete=False); remove it once the response is
+    # sent so multi-GB exports don't pile up in the temp dir.
+    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
+                        background=BackgroundTask(path.unlink, missing_ok=True))
 
 
 @router.get("/export/{backup_id}")
@@ -202,7 +206,8 @@ async def export_cloud(backup_id: str) -> FileResponse:
         path = await export_from_cloud(backup_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip")
+    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
+                        background=BackgroundTask(path.unlink, missing_ok=True))
 
 
 @router.post("/import")

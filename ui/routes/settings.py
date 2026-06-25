@@ -2456,23 +2456,28 @@ def setup_routes(app):
 
     @app.get("/backup/export")
     async def backup_export(request: Request):
-        """Download full local backup archive (.celerp-backup)."""
+        """Stream the full local backup archive (.celerp-backup) to the browser.
+
+        Streamed (not buffered) so a multi-GB backup never sits in UI memory and isn't
+        bound by the short default timeout; forwarding Content-Length gives the browser a
+        native download progress bar."""
         import ui.api_client as _api
+        from starlette.responses import StreamingResponse
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            content, content_type, content_disp = await _api.export_backup(token)
+            stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
             from fasthtml.common import Div, to_xml
             return Response(
                 content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
                 media_type="text/html",
             )
-        return Response(
-            content=content,
-            media_type=content_type,
-            headers={"Content-Disposition": content_disp},
+        return StreamingResponse(
+            stream,
+            media_type=headers.get("content-type", "application/octet-stream"),
+            headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
     @app.get("/backup/export/{backup_id}")

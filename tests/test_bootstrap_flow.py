@@ -159,7 +159,7 @@ def test_force_init_as_root_wipes_db_and_regenerates_secret(tmp_config, written_
          patch(_PATCHES["post_grants"]), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch(_PATCHES["start"]):
-        result = runner.invoke(main, ["init", "--force"])
+        result = runner.invoke(main, ["init", "--force", "--yes"])
 
     assert result.exit_code == 0, result.output
     mock_stop.assert_called_once()
@@ -185,7 +185,7 @@ def test_force_init_non_root_also_drops_db(tmp_config, written_cfg):
          patch(_PATCHES["post_grants"]), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch(_PATCHES["start"]):
-        result = runner.invoke(main, ["init", "--force"])
+        result = runner.invoke(main, ["init", "--force", "--yes"])
 
     assert result.exit_code == 0, result.output
     mock_prov.assert_called_once()
@@ -201,7 +201,7 @@ def test_force_init_provision_failure_exits(tmp_config, written_cfg):
     runner = CliRunner()
     with patch(_PATCHES["stop"]), \
          patch("celerp.cli._provision_db", side_effect=RuntimeError("pg down")):
-        result = runner.invoke(main, ["init", "--force"])
+        result = runner.invoke(main, ["init", "--force", "--yes"])
 
     assert result.exit_code != 0
     assert "DB wipe failed" in result.output
