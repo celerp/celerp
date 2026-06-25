@@ -594,6 +594,59 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
+def _line_effective_tax(li: dict) -> tuple[float, float]:
+    """(rate_percent, tax_amount) for a line. Reads the legacy per-line ``tax_rate`` or the
+    structured ``taxes`` list (summed rates); amount is ``line_total × rate / 100`` — the same
+    per-line formula list totals are recomputed with (see doc_projections._recalc_list_totals)."""
+    try:
+        rate = float(li.get("tax_rate") or 0)
+        if not rate and isinstance(li.get("taxes"), list):
+            rate = sum(float(tx.get("rate") or 0) for tx in li["taxes"] if isinstance(tx, dict))
+        line_total = float(li.get("line_total") or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    return rate, line_total * rate / 100
+
+
+def _line_tax_change_summary(fields_changed: dict, currency: str | None):
+    """Per-item tax-rate changes from a line_items diff, e.g.
+    'DEMO-AUTO-007 Tax 0% → 7% (0.00 → 503.44)'.
+
+    Returns (parts, consumed). When any per-line tax change is shown we consume the
+    document-level ``tax`` scalar so the history doesn't also dump a bare, item-less
+    "Tax: 0.00 → 503.44" for the same change.
+    """
+    change = fields_changed.get("line_items")
+    if not isinstance(change, dict):
+        return [], frozenset()
+    old, new = change.get("old"), change.get("new")
+    if not isinstance(old, list) or not isinstance(new, list):
+        return [], frozenset()
+
+    def _key(li):
+        return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
+
+    old_by = {_key(li): li for li in old if isinstance(li, dict)}
+    parts: list[str] = []
+    for li in new:
+        if not isinstance(li, dict):
+            continue
+        prev = old_by.get(_key(li))
+        if prev is None:  # added lines are reported by the line_items add/remove diff
+            continue
+        o_rate, o_amt = _line_effective_tax(prev)
+        n_rate, n_amt = _line_effective_tax(li)
+        if o_rate == n_rate:
+            continue
+        name = li.get("sku") or li.get("name") or ""
+        label = f"{name} " if name else ""
+        parts.append(
+            f"{label}Tax {o_rate:g}% → {n_rate:g}% "
+            f"({fmt_price(o_amt, 'tax', currency)} → {fmt_price(n_amt, 'tax', currency)})"
+        )
+    return parts, (frozenset({"tax"}) if parts else frozenset())
+
+
 def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
@@ -610,11 +663,16 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
     # they don't double-render.
     discount_summary, consumed = _discount_change_summary(fields_changed, currency)
 
+    # Per-item tax-rate changes render explicitly (which item, the % and the amount); doing so
+    # consumes the document-level `tax` scalar so the same change isn't also dumped item-less.
+    tax_parts, tax_consumed = _line_tax_change_summary(fields_changed, currency)
+    consumed = consumed | tax_consumed
+
     user_fields = {k: v for k, v in fields_changed.items()
                    if k not in _SYSTEM_FIELDS and k not in _DERIVED_DOC_FIELDS
                    and k not in consumed
                    and k not in {"attachments", "preview_image_id"}}
-    if not user_fields and not discount_summary:
+    if not user_fields and not discount_summary and not tax_parts:
         return ""
 
     # Suppress raw-ID fields when the companion human-readable field is also present.
@@ -736,7 +794,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         else:
             scalar_parts.append(label)
 
-    all_parts = ([discount_summary] if discount_summary else []) + scalar_parts + complex_labels
+    all_parts = ([discount_summary] if discount_summary else []) + tax_parts + scalar_parts + complex_labels
     if not all_parts:
         return ""
     suffix = "…" if len(all_parts) > 4 else ""

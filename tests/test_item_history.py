@@ -383,6 +383,47 @@ def test_derived_doc_totals_suppressed_in_summary():
     assert _fields_changed_summary({"subtotal": {"old": 20, "new": 30}, "total": {"old": 20, "new": 30}}) == ""
 
 
+def test_per_item_tax_change_shows_pct_and_amount():
+    """#156: a per-item tax-rate change names the item, the % change, and the amount -
+    not a bare, item-less document-level 'Tax: 0.00 → 503.44'."""
+    from ui.components.activity import _fields_changed_summary
+    fields = {
+        "line_items": {
+            "old": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
+                     "unit_price": 7192, "line_total": 7192, "tax_rate": 0}],
+            "new": [{"sku": "DEMO-AUTO-007", "name": "Widget", "quantity": 1,
+                     "unit_price": 7192, "line_total": 7192, "tax_rate": 7}],
+        },
+        # the document-level scalar that today renders as a bare, item-less amount
+        "tax": {"old": 0.0, "new": 503.44},
+        "tax_amount": {"old": 0.0, "new": 503.44},
+    }
+    summary = _fields_changed_summary(fields, "USD")
+    assert "DEMO-AUTO-007 Tax 0% → 7%" in summary  # 7192 × 7% = 503.44
+    assert "503.44" in summary
+    # the bare, item-less document-level tax scalar is suppressed (no "Tax: 0.00 → 503.44")
+    assert "Tax: " not in summary
+
+
+def test_per_item_tax_change_reads_structured_taxes():
+    """Effective rate is read from the structured taxes list (summed), not only legacy tax_rate."""
+    from ui.components.activity import _fields_changed_summary
+    fields = {"line_items": {
+        "old": [{"sku": "A", "name": "A", "line_total": 1000, "taxes": []}],
+        "new": [{"sku": "A", "name": "A", "line_total": 1000,
+                 "taxes": [{"code": "VAT", "rate": 10.0}]}],
+    }}
+    summary = _fields_changed_summary(fields, "USD")
+    assert "A Tax 0% → 10%" in summary
+    assert "100.00" in summary  # 1000 × 10%
+
+
+def test_doc_tax_scalar_kept_when_no_per_item_change():
+    """With no per-line tax change, a document-level tax field still renders unchanged."""
+    from ui.components.activity import _fields_changed_summary
+    assert _fields_changed_summary({"tax": {"old": 0, "new": 50}}, "USD") == "Tax: $0.00 → $50.00"
+
+
 def test_added_line_item_shows_type_qty_price():
     # Auditors need to see what kind of item was added and at what value. Bills/POs carry an
     # explicit receive_as (stock/expense); invoice lines read as Stock (linked catalog item) or
