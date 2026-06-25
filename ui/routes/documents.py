@@ -323,6 +323,27 @@ def _action_error(msg: str, target_id: str = "action-error"):
     )
 
 
+def _compact_pages(page: int, total_pages: int) -> list[int | None]:
+    """Page numbers to show in a compact pager: first, current +/- 1, last, with `None`
+    marking an ellipsis gap. Drives the doc-history pager so the real page count (and the
+    last page) is reachable up front (#154)."""
+    out: list[int | None] = []
+    if page > 2:
+        out.append(1)
+    if page > 3:
+        out.append(None)
+    if page > 1:
+        out.append(page - 1)
+    out.append(page)
+    if page < total_pages:
+        out.append(page + 1)
+    if page < total_pages - 2:
+        out.append(None)
+    if page < total_pages - 1:
+        out.append(total_pages)
+    return out
+
+
 def _render_receive_return_section(doc: dict):
     """Receive Returns button - shown on credit notes when celerp-inventory is installed.
 
@@ -3343,12 +3364,12 @@ celerpUpdateBulkAlloc();
             per_page = _DEFAULT_PER_PAGE
         offset = (page - 1) * per_page
         try:
-            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page + 1, "offset": offset, "resolve": "true"})
-            items = resp.get("items", []) if isinstance(resp, dict) else []
+            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
+            entries = resp.get("items", []) if isinstance(resp, dict) else []
+            total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
-            items = []
-        has_next = len(items) > per_page
-        entries = items[:per_page]
+            entries, total = [], 0
+        total_pages = max(1, (total + per_page - 1) // per_page)
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
         EMPTY = "--"
         def _row(e: dict):
@@ -3370,19 +3391,12 @@ celerpUpdateBulkAlloc();
                 hx_target=f"#doc-history-{safe_id}",
                 hx_swap="outerHTML",
             )
-        # Build compact page number list: always show first, last, current ±1,
-        # with ellipsis gaps. We don't know total pages without a count query,
-        # so show prev/current/next when known.
-        page_btns = []
-        if page > 2:
-            page_btns.append(_page_btn(1))
-        if page > 3:
-            page_btns.append(Span("…", cls="text-muted"))
-        if page > 1:
-            page_btns.append(_page_btn(page - 1))
-        page_btns.append(_page_btn(page, active=True))
-        if has_next:
-            page_btns.append(_page_btn(page + 1))
+        # Compact page list from the real total: first … current±1 … last, so the full
+        # page count shows up front and the last page is directly reachable (#154).
+        page_btns = [
+            Span("…", cls="text-muted") if p is None else _page_btn(p, active=(p == page))
+            for p in _compact_pages(page, total_pages)
+        ]
         per_page_select = Select(
             *[Option(str(n), value=str(n), selected=(per_page == n)) for n in (10, 20, 50, 100)],
             cls="per-page-select",
