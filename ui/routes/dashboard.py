@@ -608,7 +608,7 @@ def setup_routes(app):
             values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
-            # Founding-supporter ask shown where setup actually lands (admin only;
+            # Stargazer/supporter ask shown where setup actually lands (admin only;
             # hidden in neutral/dismissed). Self-hides once dismissed install-wide.
             *([star_supporter_card("dashboard")] if _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"] else []),
             _kpi_grid(cfg, values, role=role),

@@ -33,11 +33,13 @@ def _claims(cred: str) -> dict:
 
 
 def label_for(tier: str, ordinal: int) -> str:
+    # "Stargazer" (GitHub's word for someone who starred the repo) - precise and never
+    # misreadable as a company founder. The top cohort carries its ordinal in parens.
     if tier == "founding":
-        return f"Founding Supporter #{ordinal}"
+        return f"First Stargazers (#{ordinal})"
     if tier == "early":
-        return "Early Supporter"
-    return "Supporter"
+        return "Early Stargazer"
+    return "Stargazer"
 
 
 async def claim(session: AsyncSession, user_id: uuid.UUID, cred: str) -> SupporterBadge:

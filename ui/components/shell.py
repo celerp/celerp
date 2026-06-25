@@ -788,7 +788,7 @@ _STAR_CTA_JS = """
     var el = document.getElementById('supporter-badge');
     if (!el || !d || !d.badge) return;
     el.textContent = '\\u2605';            // just the gold star
-    el.title = d.badge.label;              // tooltip: e.g. "Founding Supporter #1"
+    el.title = d.badge.label;              // tooltip: e.g. "First Stargazers (#1)"
     el.style.display = '';
   }).catch(function(){});
 })();
