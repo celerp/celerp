@@ -42,6 +42,9 @@ def test_supporter_card_component():
     assert 'id="star-card-body"' in xml
     assert 'id="star-card-body-2"' in xml     # smaller sub-paragraph (first-100 promise)
     assert 'id="star-card-claim"' in xml      # claim button (hidden by JS once claimed)
+    # Claiming a badge is the public listing - there is no separate opt-in checkbox.
+    assert "star-card-optin" not in xml
+    assert "List me publicly" not in xml
     # The founders-wall link is rendered hidden; JS reveals it (with the relay-derived
     # href) only in the post-claim thank-you state.
     assert 'id="star-card-wall"' in xml

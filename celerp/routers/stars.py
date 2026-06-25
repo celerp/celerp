@@ -51,14 +51,14 @@ async def dismiss(
 
 
 @router.get("/badge/verify-url")
-async def badge_verify_url(return_url: str, opt_in: int = 0, _user=Depends(get_current_user)) -> dict:
+async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> dict:
     """The relay verify-start URL to open in the browser. ``return_url`` is where the
-    relay redirects back with the credential (the install's own page). ``opt_in`` carries
-    the founder's choice to be listed publicly through to the relay verify flow."""
+    relay redirects back with the credential (the install's own page). Claiming a badge
+    lists the founder on the public wall - there is no separate opt-in."""
     from urllib.parse import urlencode
 
     iid = ensure_instance_id()
-    q = urlencode({"instance_id": iid, "return_url": return_url, "opt_in": int(bool(opt_in))})
+    q = urlencode({"instance_id": iid, "return_url": return_url})
     return {"url": f"{relay_http_url()}/github/verify/start?{q}"}
 
 
