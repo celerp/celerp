@@ -42,7 +42,7 @@ async def test_claim_then_get(client):
     assert r.status_code == 200
     badge = r.json()["badge"]
     assert badge["tier"] == "founding" and badge["ordinal"] == 8
-    assert badge["label"] == "Founding Supporter #8"
+    assert badge["label"] == "First Stargazers (#8)"
     assert badge["github_login"] == "alice"
 
     g = await client.get("/stars/badge", headers=_h(token))

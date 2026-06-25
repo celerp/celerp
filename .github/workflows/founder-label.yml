@@ -1,10 +1,11 @@
-name: Founder recognition
+name: Stargazer recognition
 
-# Recognise verified, public-opt-in founding/early supporters wherever they engage:
-# issues, pull requests, and discussions. One gold label per thread - no comments
-# (discrete-but-meaningful, mirrors the in-app gold star). Uses the ephemeral,
-# repo-scoped GITHUB_TOKEN (no GitHub App, no CLA-app change - stars plan §0.8/0.14)
-# and the relay's read-only founder-status lookup.
+# Recognise a verified stargazer wherever they engage - issues, pull requests, and
+# discussions - with one small star label per thread (no comment), gold / silver /
+# bronze by tier. The names are the :star: / :star2: / :sparkles: shortcodes, which
+# GitHub renders as ⭐ / 🌟 / ✨ in the chip; the meaning rides in the label description,
+# shown on hover. Uses the ephemeral repo-scoped GITHUB_TOKEN (no GitHub App, no CLA-app
+# change - stars plan §0.8/0.14) and the relay's read-only founder-status lookup.
 #
 # pull_request_target runs in BASE context (has the token): we ONLY read the author
 # login + apply a label. We never check out or execute PR code.
@@ -23,10 +24,10 @@ permissions:
   discussions: write
 
 jobs:
-  recognise-founder:
+  recognise-stargazer:
     runs-on: ubuntu-latest
     steps:
-      - name: Label founders (issues / PRs / discussions)
+      - name: Label stargazers (issues / PRs / discussions)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -49,20 +50,24 @@ jobs:
           esac
           [ -n "$AUTHOR" ] || { echo "no author on event; skipping."; exit 0; }
 
-          # 2. One read-only founder-status lookup (relay is authoritative; opted-in only).
+          # 2. One read-only founder-status lookup (relay is authoritative).
           status="$(curl -fsS "https://relay.celerp.com/github/founder-status?login=${AUTHOR}" || echo '{}')"
           if [ "$(echo "$status" | jq -r '.founder // false')" != "true" ]; then
-            echo "$AUTHOR is not a public founder; nothing to do."
+            echo "$AUTHOR is not a verified stargazer; nothing to do."
             exit 0
           fi
+
           tier="$(echo "$status" | jq -r '.tier // "supporter"')"
 
-          # 3. One tier -> label map.
-          if [ "$tier" = "founding" ]; then
-            LABEL="founding-supporter"; COLOR="d4af37"; DESC="Verified founding supporter of Celerp"
-          else
-            LABEL="supporter";          COLOR="c9b458"; DESC="Verified Celerp supporter"
-          fi
+          # 3. Tier -> a gold / silver / bronze star (rendered from the :star: shortcode
+          #    family). The star IS the mark; its meaning rides in the description, shown
+          #    on hover. Copy uses "Stargazer" (GitHub's word for someone who starred the
+          #    repo) - precise, and never misreadable as a company founder.
+          case "$tier" in
+            founding) LABEL=":star:";     COLOR="d4af37"; DESC="First Stargazers" ;;
+            early)    LABEL=":star2:";    COLOR="c0c0c0"; DESC="Early Stargazer" ;;
+            *)        LABEL=":sparkles:"; COLOR="cd7f32"; DESC="Stargazer" ;;
+          esac
           gh label create "$LABEL" --repo "$REPO" --color "$COLOR" --description "$DESC" --force || true
 
           # 4. Apply. Issues/PRs share the REST issues-labels endpoint; discussions are
@@ -78,4 +83,4 @@ jobs:
               -f query='mutation($id:ID!,$lbl:ID!){addLabelsToLabelable(input:{labelableId:$id,labelIds:[$lbl]}){clientMutationId}}' \
               -F id="$TARGET" -F lbl="$label_id"
           fi
-          echo "Recognised founder $AUTHOR ($tier) on $KIND -> $LABEL"
+          echo "Recognised stargazer $AUTHOR ($tier) on $KIND -> $LABEL"
