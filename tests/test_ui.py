@@ -13789,6 +13789,34 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
     assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill
 
 
+@pytest.mark.asyncio
+async def test_backup_export_streams_with_progress_headers(ui_client):
+    """#158: the backup download streams through (not buffered) and forwards Content-Length
+    + Content-Disposition, so a multi-GB archive doesn't sit in memory and the browser shows
+    a real download progress bar."""
+    chunks = [b"PK\x03\x04", b"x" * 2048, b"tail"]
+    total = sum(len(c) for c in chunks)
+
+    async def _fake_stream():
+        for ch in chunks:
+            yield ch
+
+    async def _fake_export(token):
+        return _fake_stream(), {
+            "content-length": str(total),
+            "content-disposition": "attachment; filename=backup.celerp-backup",
+            "content-type": "application/gzip",
+        }
+
+    with patch("ui.api_client.export_backup", _fake_export):
+        r = await ui_client.get("/backup/export", cookies=_authed())
+    assert r.status_code == 200
+    assert r.content == b"".join(chunks)              # streamed through intact
+    assert r.headers["content-length"] == str(total)  # browser progress bar
+    assert r.headers["content-disposition"] == "attachment; filename=backup.celerp-backup"
+    assert r.headers["content-type"].startswith("application/gzip")
+
+
 def test_compact_pages_shows_full_count_and_last():
     """#154: the doc-history pager must surface the real page count and a reachable last
     page, not just current ±1. (None marks an ellipsis gap.)"""
