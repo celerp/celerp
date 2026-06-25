@@ -430,8 +430,9 @@ def main() -> None:
 @click.option("--api-port", default=None, type=int, help="API server port (default 8000).")
 @click.option("--ui-port", default=None, type=int, help="UI server port (default 8080).")
 @click.option("--cloud-token", default=None, help="Celerp Cloud token (optional).")
-@click.option("--force", is_flag=True, help="Overwrite existing config.")
-def init(db_url, api_port, ui_port, cloud_token, force):
+@click.option("--force", is_flag=True, help="Reconfigure: WIPES the database and all attached files.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the --force wipe confirmation (non-interactive use).")
+def init(db_url, api_port, ui_port, cloud_token, force, assume_yes):
     """Initialize Celerp: write config and run database migrations."""
     config_path = _config_path()
 
@@ -441,6 +442,21 @@ def init(db_url, api_port, ui_port, cloud_token, force):
         return
 
     if force:
+        # --force is destructive: it drops the database AND removes attached files.
+        # init can run under sudo, so warn (with full paths) and confirm before wiping.
+        from celerp.config import settings
+        _purge_dirs = [
+            settings.data_dir / "static" / "attachments",
+            settings.data_dir / "ai_uploads",
+        ]
+        click.echo("⚠  `init --force` permanently WIPES this instance:")
+        click.echo(f"     - database: {db_url or _DEFAULT_DB_URL}")
+        for _d in _purge_dirs:
+            click.echo(f"     - files:    {_d.resolve()}")
+        click.echo("   Make sure you have a backup.")
+        if not assume_yes and not click.confirm("Continue?", default=False):
+            click.echo("Aborted.")
+            return
         _stop_servers()
 
     enabled_modules: list[str] = []
@@ -469,6 +485,13 @@ def init(db_url, api_port, ui_port, cloud_token, force):
             )
             sys.exit(1)
         click.echo("  ✓ Database ready (fresh)")
+        # Wipe attached files too, so a forced re-init is a truly fresh instance and no
+        # orphaned files remain. Recreated automatically on next boot.
+        import shutil
+        for _d in _purge_dirs:
+            if _d.exists():
+                shutil.rmtree(_d, ignore_errors=True)
+                click.echo(f"  ✓ Removed {_d.resolve()}")
     else:
         # Test DB connection — auto-provision if running as root
         click.echo("Connecting to database...")

@@ -136,7 +136,7 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
          patch("celerp.cli._stop_servers") as mock_stop, \
          patch("celerp.cli._provision_db"), \
          patch("celerp.cli._needs_ownership_fix", return_value=False):
-        result = runner.invoke(main, ["init", "--force"])
+        result = runner.invoke(main, ["init", "--force", "--yes"])
     assert result.exit_code == 0, result.output
     assert "✓ Celerp initialized" in result.output
     mock_stop.assert_called_once()
@@ -348,3 +348,47 @@ def test_start_exits_without_sentinel(tmp_path):
 
     assert exc.value.code == 1
     assert len([c for c in spawn_calls if _is_api_cmd(c)]) == 1, "No respawn without sentinel"
+
+
+# ── celerp init --force purges files (#160) ──────────────────────────────────
+
+def _seed_data_dir(tmp_path, monkeypatch):
+    """Point settings.data_dir at a temp dir seeded with attachment + ai_upload files."""
+    from celerp.config import settings
+    data_dir = tmp_path / "data"
+    att = data_dir / "static" / "attachments"
+    att.mkdir(parents=True)
+    (att / "img.png").write_bytes(b"x")
+    ai = data_dir / "ai_uploads"
+    ai.mkdir(parents=True)
+    (ai / "doc.pdf").write_bytes(b"y")
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    return att, ai
+
+
+def test_init_force_yes_wipes_db_and_files(tmp_config, tmp_path, monkeypatch):
+    """--force --yes wipes the DB and removes attachment + ai_uploads dirs (no prompt)."""
+    att, ai = _seed_data_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    with patch("celerp.cli._provision_db") as prov, \
+         patch("celerp.cli._stop_servers"), \
+         patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]):
+        result = runner.invoke(main, ["init", "--force", "--yes"])
+    assert result.exit_code == 0, result.output
+    prov.assert_called_once()           # DB wiped
+    assert not att.exists() and not ai.exists()   # files removed
+
+
+def test_init_force_aborts_on_no_keeps_everything(tmp_config, tmp_path, monkeypatch):
+    """Without --yes, answering No to the wipe warning aborts: DB and files untouched."""
+    att, ai = _seed_data_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    with patch("celerp.cli._provision_db") as prov, \
+         patch("celerp.cli._stop_servers") as stop:
+        result = runner.invoke(main, ["init", "--force"], input="n\n")
+    assert "Aborted" in result.output
+    prov.assert_not_called()            # DB not wiped
+    stop.assert_not_called()
+    assert att.exists() and ai.exists() # files kept
