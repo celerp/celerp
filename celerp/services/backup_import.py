@@ -194,11 +194,11 @@ async def _safety_backup(label: str):
     Module-level helper so tests can stub it cleanly.
     """
     from celerp.config import settings
-    from celerp.services.backup import run_backup
+    from celerp.services.backup import BackupResult
     if not settings.backup_encryption_key:
-        from celerp.services.backup import BackupResult
         return BackupResult(ok=True, size_bytes=0)
-    return await run_backup(label=label)
+    from celerp.services.backup_repo import run_snapshot
+    return await run_snapshot(label=label)
 
 
 async def _read_modules_from_restored_db() -> list[str]:

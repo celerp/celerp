@@ -131,22 +131,19 @@ async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
     from celerp.config import settings
     from celerp.services import backup_scheduler
+    from celerp.services.backup_state import is_active
     db = backup_scheduler.last_db_result()
-    fl = backup_scheduler.last_file_result()
     next_db = backup_scheduler.next_db_run_utc()
-    next_fl = backup_scheduler.next_file_run_utc()
     running = bool(backup_scheduler._db_task and not backup_scheduler._db_task.done())
     return {
         "running": running,
+        "active": is_active(),
         "gateway_token_set": bool(settings.gateway_token),
         "enc_ok": bool(settings.backup_encryption_key),
         "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
                "last_run": db.last_run.isoformat() if db.last_run else None},
-        "file": {"ok": fl.ok, "error": fl.error, "size_bytes": fl.size_bytes,
-                 "last_run": fl.last_run.isoformat() if fl.last_run else None},
         "next_db_utc": next_db.isoformat() if next_db else None,
-        "next_file_utc": next_fl.isoformat() if next_fl else None,
     }
 
 

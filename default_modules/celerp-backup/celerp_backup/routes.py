@@ -28,7 +28,7 @@ from celerp.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
+from celerp.gateway.state import get_session_token
 from celerp.services.auth import get_current_user
 from celerp.services.backup import BackupResult
 from ui.i18n import t
@@ -106,36 +106,29 @@ def _backup_table(items: list[dict]):
 # ---------------------------------------------------------------------------
 
 @router.post("/trigger")
-async def trigger_backup(type: str = "database"):
-    """Run a backup (database or files). Returns flash + HX-Trigger to refresh list."""
-    from celerp.services import backup_scheduler
-    if type == "database":
-        from celerp.services.backup import run_backup
-        result: BackupResult = await run_backup(label="manual")
-        backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
-    elif type == "files":
-        from celerp.services.backup_files import run_file_backup
-        result = await run_file_backup(label="manual")
-        backup_scheduler.record_file_result(result.ok, result.error, result.size_bytes or 0)
-    else:
-        raise HTTPException(status_code=400, detail="type must be 'database' or 'files'")
+async def trigger_backup():
+    """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
+    from celerp.services import backup_repo, backup_scheduler
+    result: BackupResult = await backup_repo.run_snapshot(label="manual")
+    backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
         raise HTTPException(status_code=422, detail=result.error or "Unknown error")
 
-    resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)})")
+    resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
     return resp
 
 
 @router.get("/list")
-async def list_backups(request: Request, backup_type: str | None = None):
-    """Proxy relay GET /backup/ with optional type filter.
+async def list_backups(request: Request):
+    """List cloud snapshots.
 
-    Returns rendered HTML table on HTMX requests, else JSON.
-    Returns empty-state when relay is not connected.
+    Returns a rendered HTML table on HTMX requests, else JSON. Returns the
+    empty-state when the relay is not connected.
     """
     from celerp.gateway.state import get_session_token
+    from celerp.services import backup_repo
 
     if not get_session_token():
         if request.headers.get("HX-Request"):
@@ -146,17 +139,8 @@ async def list_backups(request: Request, backup_type: str | None = None):
             )
         return {"items": []}
 
-    params = {"backup_type": backup_type} if backup_type else {}
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"{relay_http_url()}/backup/",
-                headers=relay_session_headers(),
-                params=params,
-            )
-        if r.status_code != 200:
-            raise HTTPException(status_code=r.status_code, detail=r.text[:200])
-        data = r.json()
+        data = await backup_repo.list_snapshots()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -176,9 +160,9 @@ async def list_backups(request: Request, backup_type: str | None = None):
 
 @router.post("/restore/{backup_id}")
 async def restore_backup(backup_id: str):
-    """Restore a cloud backup. Creates safety backup first."""
-    from celerp.services.backup import run_restore
-    result = await run_restore(backup_id)
+    """Restore a cloud snapshot (database + files) via the canonical importer."""
+    from celerp.services import backup_repo
+    result = await backup_repo.restore_snapshot(backup_id)
     if not result.ok:
         return _flash(f"Restore failed: {result.error or 'Unknown error'}", "error")
     return _flash(t("settings.database_restored_restart_the_application_to_apply"))
@@ -200,10 +184,10 @@ async def export_local() -> FileResponse:
 
 @router.get("/export/{backup_id}")
 async def export_cloud(backup_id: str) -> FileResponse:
-    """Export a cloud backup as .celerp-backup download."""
-    from celerp.services.backup_export import export_from_cloud
+    """Download a cloud snapshot, rebuilt as a .celerp-backup archive."""
+    from celerp.services.backup_repo import reassemble_snapshot
     try:
-        path = await export_from_cloud(backup_id)
+        path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",

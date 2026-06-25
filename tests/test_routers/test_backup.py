@@ -7,7 +7,7 @@ Covers:
   - Router registration: /backup/* routes are present on the app (regression for
     ImportError-silenced path bug — routes must be registered at startup, not
     conditionally on sys.path state)
-  - POST /backup/trigger: database + files success/failure + invalid type
+  - POST /backup/trigger: snapshot success/failure
   - GET  /backup/list: no session (empty state), relay success (HTML + JSON), relay error
   - POST /backup/restore: success + failure
 """
@@ -69,49 +69,30 @@ def reset_backup_settings():
 # ── POST /backup/trigger ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_trigger_db_success(auth_client, monkeypatch):
+async def test_trigger_success(auth_client, monkeypatch):
     from celerp.services.backup import BackupResult
     monkeypatch.setattr(
-        "celerp.services.backup.run_backup",
+        "celerp.services.backup_repo.run_snapshot",
         lambda **kw: _async_return(BackupResult(ok=True, size_bytes=1024)),
     )
-    r = await auth_client.post("/backup/trigger?type=database")
+    r = await auth_client.post("/backup/trigger")
     assert r.status_code == 200
     assert "Backup complete" in r.text
     assert r.headers.get("HX-Trigger") == "backupDone"
 
 
 @pytest.mark.asyncio
-async def test_trigger_db_failure(auth_client, monkeypatch):
+async def test_trigger_failure(auth_client, monkeypatch):
     from celerp.services.backup import BackupResult
     monkeypatch.setattr(
-        "celerp.services.backup.run_backup",
+        "celerp.services.backup_repo.run_snapshot",
         lambda **kw: _async_return(BackupResult(ok=False, size_bytes=0, error="pg_dump not found")),
     )
-    r = await auth_client.post("/backup/trigger?type=database")
+    r = await auth_client.post("/backup/trigger")
     assert r.status_code == 422, f"Expected 422 so UI can show real error. Got {r.status_code}: {r.text[:100]}"
     assert "pg_dump" in r.json()["detail"]
     # No HX-Trigger on failure
     assert "HX-Trigger" not in r.headers
-
-
-@pytest.mark.asyncio
-async def test_trigger_files_success(auth_client, monkeypatch):
-    from celerp.services.backup import BackupResult
-    monkeypatch.setattr(
-        "celerp.services.backup_files.run_file_backup",
-        lambda **kw: _async_return(BackupResult(ok=True, size_bytes=2048)),
-    )
-    r = await auth_client.post("/backup/trigger?type=files")
-    assert r.status_code == 200
-    assert "Backup complete" in r.text
-    assert r.headers.get("HX-Trigger") == "backupDone"
-
-
-@pytest.mark.asyncio
-async def test_trigger_invalid_type(auth_client):
-    r = await auth_client.post("/backup/trigger?type=invalid")
-    assert r.status_code == 400
 
 
 # ── GET /backup/list ──────────────────────────────────────────────────────────
@@ -149,7 +130,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
     ]
 
     with respx.mock:
-        respx.get("https://relay.test.com/backup/").mock(
+        respx.get("https://relay.test.com/repo/snapshots").mock(
             return_value=_httpx.Response(200, json={"items": items})
         )
         r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
@@ -170,7 +151,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     with respx.mock:
-        respx.get("https://relay.test.com/backup/").mock(
+        respx.get("https://relay.test.com/repo/snapshots").mock(
             return_value=_httpx.Response(200, json={"items": []})
         )
         r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
@@ -190,7 +171,7 @@ async def test_list_json(auth_client, monkeypatch):
 
     items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
     with respx.mock:
-        respx.get("https://relay.test.com/backup/").mock(
+        respx.get("https://relay.test.com/repo/snapshots").mock(
             return_value=_httpx.Response(200, json={"items": items})
         )
         r = await auth_client.get("/backup/list")
@@ -201,7 +182,7 @@ async def test_list_json(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_relay_error(auth_client, monkeypatch):
-    """Relay non-200 response raises 502."""
+    """Relay non-200 response surfaces as 502 (the client raises, route wraps)."""
     import httpx as _httpx
     import respx
 
@@ -209,12 +190,12 @@ async def test_list_relay_error(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     with respx.mock:
-        respx.get("https://relay.test.com/backup/").mock(
+        respx.get("https://relay.test.com/repo/snapshots").mock(
             return_value=_httpx.Response(503, text="Service Unavailable")
         )
         r = await auth_client.get("/backup/list")
 
-    assert r.status_code == 503
+    assert r.status_code == 502
 
 
 # ── POST /backup/restore ──────────────────────────────────────────────────────
@@ -223,7 +204,7 @@ async def test_list_relay_error(auth_client, monkeypatch):
 async def test_restore_success(auth_client, monkeypatch):
     from celerp.services.backup import BackupResult
     monkeypatch.setattr(
-        "celerp.services.backup.run_restore",
+        "celerp.services.backup_repo.restore_snapshot",
         lambda bid: _async_return(BackupResult(ok=True, size_bytes=5000)),
     )
     r = await auth_client.post("/backup/restore/bkp-123")
@@ -236,7 +217,7 @@ async def test_restore_success(auth_client, monkeypatch):
 async def test_restore_failure(auth_client, monkeypatch):
     from celerp.services.backup import BackupResult
     monkeypatch.setattr(
-        "celerp.services.backup.run_restore",
+        "celerp.services.backup_repo.restore_snapshot",
         lambda bid: _async_return(BackupResult(ok=False, size_bytes=0, error="Decrypt failed")),
     )
     r = await auth_client.post("/backup/restore/bkp-bad")
@@ -444,14 +425,14 @@ async def test_export_local_returns_422_when_pg_dump_fails(auth_client, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_export_cloud_returns_422_when_pg_dump_fails(auth_client, monkeypatch):
-    """Same regression for /backup/export/{id} (cloud download)."""
-    def fake_export_from_cloud(bid):
+async def test_export_cloud_returns_422_when_reassembly_fails(auth_client, monkeypatch):
+    """Same regression for /backup/export/{id} (cloud snapshot download)."""
+    def fake_reassemble(bid):
         raise RuntimeError("pg_dump not found in PATH")
 
     monkeypatch.setattr(
-        "celerp.services.backup_export.export_from_cloud",
-        fake_export_from_cloud,
+        "celerp.services.backup_repo.reassemble_snapshot",
+        fake_reassemble,
     )
     r = await auth_client.get("/backup/export/abc-123")
     assert r.status_code == 422

@@ -1,14 +1,15 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Backup scheduler - daily DB + weekly file backups as asyncio background tasks.
+"""Backup scheduler - one daily cloud snapshot (database + files) as an asyncio
+background task.
 
 Usage:
     from celerp.services import backup_scheduler
     backup_scheduler.start()   # called in main.py lifespan
     backup_scheduler.stop()    # called on shutdown
 
-Last-run status is exposed via last_db_result / last_file_result for the UI.
+Last-run status is exposed via last_db_result for the UI.
 """
 
 from __future__ import annotations
@@ -21,12 +22,11 @@ from datetime import datetime, timedelta, timezone
 log = logging.getLogger(__name__)
 
 _db_task: asyncio.Task | None = None
-_file_task: asyncio.Task | None = None
 
 
 @dataclass
 class SchedulerStatus:
-    """Snapshot of a scheduler task's last result."""
+    """Snapshot of the scheduler's last result."""
     last_run: datetime | None = None
     ok: bool | None = None
     error: str | None = None
@@ -34,27 +34,16 @@ class SchedulerStatus:
 
 
 _last_db = SchedulerStatus()
-_last_file = SchedulerStatus()
 
 
 def last_db_result() -> SchedulerStatus:
     return _last_db
 
 
-def last_file_result() -> SchedulerStatus:
-    return _last_file
-
-
 def record_db_result(ok: bool, error: str | None = None, size_bytes: int = 0) -> None:
-    """Update last DB backup status (called by manual triggers and scheduler)."""
+    """Update last snapshot status (called by manual triggers and the scheduler)."""
     global _last_db
     _last_db = SchedulerStatus(last_run=datetime.now(timezone.utc), ok=ok, error=error, size_bytes=size_bytes)
-
-
-def record_file_result(ok: bool, error: str | None = None, size_bytes: int = 0) -> None:
-    """Update last file backup status (called by manual triggers and scheduler)."""
-    global _last_file
-    _last_file = SchedulerStatus(last_run=datetime.now(timezone.utc), ok=ok, error=error, size_bytes=size_bytes)
 
 
 def _seconds_until(target_hour: int, target_minute: int = 0) -> float:
@@ -66,20 +55,8 @@ def _seconds_until(target_hour: int, target_minute: int = 0) -> float:
     return (target - now).total_seconds()
 
 
-def _seconds_until_weekday(weekday: int, hour: int) -> float:
-    """Seconds until next occurrence of weekday (0=Mon) at hour UTC."""
-    now = datetime.now(timezone.utc)
-    days_ahead = weekday - now.weekday()
-    if days_ahead < 0 or (days_ahead == 0 and now.hour >= hour):
-        days_ahead += 7
-    target = (now + timedelta(days=days_ahead)).replace(
-        hour=hour, minute=0, second=0, microsecond=0,
-    )
-    return (target - now).total_seconds()
-
-
 def next_db_run_utc() -> datetime | None:
-    """Return the next scheduled DB backup time (UTC), or None if not running."""
+    """Return the next scheduled snapshot time (UTC), or None if not running."""
     if _db_task is None or _db_task.done():
         return None
     from celerp.config import settings
@@ -87,85 +64,44 @@ def next_db_run_utc() -> datetime | None:
     return datetime.now(timezone.utc) + timedelta(seconds=secs)
 
 
-def next_file_run_utc() -> datetime | None:
-    """Return the next scheduled file backup time (UTC), or None if not running."""
-    if _file_task is None or _file_task.done():
-        return None
-    from celerp.config import settings
-    secs = _seconds_until_weekday(6, settings.backup_hour + 1)
-    return datetime.now(timezone.utc) + timedelta(seconds=secs)
-
-
 async def _db_backup_loop() -> None:
-    """Daily DB backup at configured hour."""
+    """Daily cloud snapshot at the configured hour, with a 1-hour retry on failure."""
     from celerp.config import settings
     while True:
         wait = _seconds_until(settings.backup_hour)
-        log.debug("Next DB backup in %.0f seconds", wait)
+        log.debug("Next snapshot in %.0f seconds", wait)
         await asyncio.sleep(wait)
 
-        from celerp.services.backup import run_backup
-        result = await run_backup(label="daily")
+        from celerp.services.backup_repo import run_snapshot
+        result = await run_snapshot(label="daily")
         record_db_result(result.ok, result.error, result.size_bytes or 0)
         if result.ok:
-            log.info("Daily DB backup succeeded (%d bytes)", result.size_bytes)
+            log.info("Daily snapshot succeeded (%d bytes uploaded)", result.size_bytes)
         elif result.error and "Relay not connected" in result.error:
-            log.info("Daily DB backup skipped: %s", result.error)
+            log.info("Daily snapshot skipped: %s", result.error)
         else:
-            log.error("Daily DB backup failed: %s - retrying in 1 hour", result.error)
+            log.error("Daily snapshot failed: %s - retrying in 1 hour", result.error)
             await asyncio.sleep(3600)
-            result = await run_backup(label="daily-retry")
+            result = await run_snapshot(label="daily-retry")
             record_db_result(result.ok, result.error, result.size_bytes or 0)
             if result.ok:
-                log.info("Daily DB backup retry succeeded (%d bytes)", result.size_bytes)
+                log.info("Daily snapshot retry succeeded (%d bytes uploaded)", result.size_bytes)
             else:
-                log.error("Daily DB backup retry also failed: %s", result.error)
-
-
-async def _file_backup_loop() -> None:
-    """Weekly file backup on Sunday at backup_hour + 1."""
-    from celerp.config import settings
-    while True:
-        wait = _seconds_until_weekday(6, settings.backup_hour + 1)  # Sunday
-        log.debug("Next file backup in %.0f seconds", wait)
-        await asyncio.sleep(wait)
-
-        from celerp.services.backup_files import run_file_backup
-        result = await run_file_backup(label="weekly")
-        record_file_result(result.ok, result.error, result.size_bytes or 0)
-        if result.ok:
-            log.info("Weekly file backup succeeded (%d bytes)", result.size_bytes)
-        elif result.error and "Relay not connected" in result.error:
-            log.info("Weekly file backup skipped: %s", result.error)
-        else:
-            log.error("Weekly file backup failed: %s - retrying in 1 hour", result.error)
-            await asyncio.sleep(3600)
-            result = await run_file_backup(label="weekly-retry")
-            record_file_result(result.ok, result.error, result.size_bytes or 0)
-            if result.ok:
-                log.info("Weekly file backup retry succeeded (%d bytes)", result.size_bytes)
-            else:
-                log.error("Weekly file backup retry also failed: %s", result.error)
+                log.error("Daily snapshot retry also failed: %s", result.error)
 
 
 def start() -> None:
-    """Start backup scheduler tasks. Idempotent."""
-    global _db_task, _file_task
+    """Start the backup scheduler task. Idempotent."""
+    global _db_task
     if _db_task is None or _db_task.done():
         _db_task = asyncio.create_task(_db_backup_loop())
-        log.debug("DB backup scheduler started")
-    if _file_task is None or _file_task.done():
-        _file_task = asyncio.create_task(_file_backup_loop())
-        log.debug("File backup scheduler started")
+        log.debug("Backup scheduler started")
 
 
 def stop() -> None:
-    """Stop backup scheduler tasks."""
-    global _db_task, _file_task
+    """Stop the backup scheduler task."""
+    global _db_task
     if _db_task and not _db_task.done():
         _db_task.cancel()
-    if _file_task and not _file_task.done():
-        _file_task.cancel()
     _db_task = None
-    _file_task = None
     log.debug("Backup scheduler stopped")

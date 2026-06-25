@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Export full backup as .celerp-backup (unencrypted tar.gz).
+"""Export a full local backup as .celerp-backup (unencrypted tar.gz).
 
-Two sources:
-  - export_full(): local pg_dump + attachments + meta.json
-  - export_from_cloud(backup_id): download encrypted → decrypt → repackage
+``export_full()`` bundles a local pg_dump + attachments + meta.json. Cloud snapshots
+are rebuilt into the same format by ``backup_repo.reassemble_snapshot``.
 """
 
 from __future__ import annotations
@@ -135,25 +134,3 @@ async def export_full() -> Path:
         [settings.data_dir / "static" / "attachments", settings.data_dir / "ai_uploads"],
         meta,
     )
-
-
-async def export_from_cloud(backup_id: str) -> Path:
-    """Download encrypted backup from relay, decrypt, repackage as .celerp-backup.
-
-    The decrypted blob is itself a complete .celerp-backup (built by
-    export_full when the cloud backup was first uploaded), so it already
-    carries the original meta.json with enabled_modules. We pass it through
-    unchanged — the import side reads meta.json directly.
-    """
-    from celerp.config import settings
-    from celerp.services.backup import _parse_key, decrypt, download_from_relay
-
-    key = _parse_key(settings.backup_encryption_key)
-    encrypted = await download_from_relay(backup_id)
-    decrypted = decrypt(encrypted, key)
-
-    # Write decrypted blob as .celerp-backup
-    tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
-    tmp.write(decrypted)
-    tmp.close()
-    return Path(tmp.name)

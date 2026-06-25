@@ -450,9 +450,7 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
         ),
         Table(
             Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(_last_run(backup_data["db"]))),
-            Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(_last_run(backup_data["file"]))),
             Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(backup_data["next_db_utc"]))),
-            Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(backup_data["next_file_utc"]))),
             cls="detail-table",
         ),
     )

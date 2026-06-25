@@ -2373,18 +2373,33 @@ def setup_routes(app):
             media_type="text/html",
         )
 
+    @app.get("/backup/active")
+    async def backup_active(request: Request):
+        """Lightweight poll for the global 'backup in progress' banner (#161).
+
+        Returns {"active": bool} — true while a snapshot is building (writes paused)."""
+        from starlette.responses import JSONResponse
+        import ui.api_client as _api
+        token = _token(request)
+        if not token:
+            return JSONResponse({"active": False})
+        try:
+            status = await _api.get_backup_status(token)
+            return JSONResponse({"active": bool(status.get("active"))})
+        except Exception:
+            return JSONResponse({"active": False})
+
     @app.get("/backup/list")
     async def backup_list(request: Request):
-        """HTMX fragment: list cloud backups for a given type."""
+        """HTMX fragment: list cloud snapshots (database + files)."""
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
-        backup_type = request.query_params.get("backup_type")
         try:
-            data = await _api.list_backups(token, backup_type=backup_type)
+            data = await _api.list_backups(token)
         except _api.APIError as exc:
             # Any error (including relay 401) renders as a fragment — never redirect.
             msg = exc.detail if exc.detail and exc.status_code != 401 else t("settings.cloud_not_connected", lang)
@@ -2413,15 +2428,19 @@ def setup_routes(app):
             rows.append(Tr(
                 Td(_fmt(item.get("created_at")), cls="cell"),
                 Td(mb, cls="cell cell--number"),
-                Td(item.get("backup_type", "-"), cls="cell"),
                 Td(
                     A(t("btn.export"), href=f"/backup/export/{bid}",
                       cls="btn btn--xs btn--secondary"),
+                    Button(t("btn.restore"),
+                        hx_post=f"/backup/restore/{bid}",
+                        hx_confirm="This restores the database AND files, replacing current data. Continue?",
+                        hx_target="#backup-flash", hx_swap="outerHTML",
+                        cls="btn btn--xs btn--outline btn--danger ml-sm"),
                     cls="cell",
                 ),
             ))
         table = Table(
-            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.type")), Th(t("th.actions")))),
+            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.actions")))),
             Tbody(*rows),
             cls="data-table",
         )
@@ -2429,16 +2448,15 @@ def setup_routes(app):
 
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
-        """Trigger an immediate backup (database or files)."""
+        """Trigger an immediate cloud snapshot (database + files)."""
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
-        backup_type = request.query_params.get("type", "database")
         try:
-            await _api.trigger_backup(token, backup_type=backup_type)
+            await _api.trigger_backup(token)
         except _api.APIError as exc:
             # 422 = backup ran but failed (pg_dump error, relay error, etc.) — show real message
             # Other codes = cloud not connected or auth failure
@@ -2446,7 +2464,7 @@ def setup_routes(app):
             return _backup_error(msg, lang, flash_id="backup-flash")
         except Exception:
             return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
-        msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)
+        msg = t("settings.backup_triggered", lang)
         resp = Response(
             content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
             media_type="text/html",
@@ -2482,23 +2500,27 @@ def setup_routes(app):
 
     @app.get("/backup/export/{backup_id}")
     async def backup_export_cloud(request: Request, backup_id: str):
-        """Download a specific cloud backup by ID."""
+        """Stream a cloud snapshot (rebuilt as .celerp-backup) to the browser.
+
+        Streamed (not buffered) so a multi-GB snapshot never sits in UI memory; the
+        browser's native download manager shows progress via the forwarded Content-Length."""
         import ui.api_client as _api
+        from starlette.responses import StreamingResponse
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            content, content_type, content_disp = await _api.export_cloud_backup(token, backup_id)
+            stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
             from fasthtml.common import Div, to_xml
             return Response(
                 content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
                 media_type="text/html",
             )
-        return Response(
-            content=content,
-            media_type=content_type,
-            headers={"Content-Disposition": content_disp},
+        return StreamingResponse(
+            stream,
+            media_type=headers.get("content-type", "application/octet-stream"),
+            headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
     @app.post("/backup/import")
@@ -2520,10 +2542,22 @@ def setup_routes(app):
                 content=to_xml(Div(t("msg.no_file_selected", lang), cls="flash flash--error", id="backup-flash")),
                 media_type="text/html",
             )
-        file_bytes = await file_field.read()
+        # Stream the upload to a temp file so a multi-GB archive never sits in UI memory,
+        # then forward it to the API as a streamed multipart file handle.
+        import asyncio
+        import shutil
+        import tempfile
+        from pathlib import Path as _Path
+        tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
-                r = await c.post("/backup/import", files={"file": (file_field.filename, file_bytes, file_field.content_type or "application/octet-stream")})
+            await asyncio.to_thread(shutil.copyfileobj, file_field.file, tmp)
+            tmp.close()
+            try:
+                async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
+                    with open(tmp.name, "rb") as fh:
+                        r = await c.post("/backup/import", files={"file": (file_field.filename, fh, file_field.content_type or "application/octet-stream")})
+            finally:
+                _Path(tmp.name).unlink(missing_ok=True)
             if r.status_code >= 400:
                 detail = r.json().get("detail", r.text[:200]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
                 return Response(
@@ -3868,10 +3902,8 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     # reading stale module-level state in the UI process.
     _bd = backup_data or {}
     _db = _bd.get("db") or {}
-    _fl = _bd.get("file") or {}
     scheduler_running = _bd.get("running", False)
     next_db_iso: str | None = _bd.get("next_db_utc")
-    next_fl_iso: str | None = _bd.get("next_file_utc")
 
     def _time_until(iso: str | None) -> str:
         if iso is None:
@@ -3891,42 +3923,20 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             else Span(t("settings.stopped"), cls="badge badge--inactive"),
         )),
         Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db_iso))),
-        Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl_iso))),
     ]
 
-    # Last DB result
+    # Last snapshot result
     db_ok = _db.get("ok")
     if db_ok is not None:
         if db_ok:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span("OK", cls="badge badge--active"),
-                Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB", cls="settings-hint"),
+                Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB uploaded", cls="settings-hint"),
             )))
         else:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span(t("settings.failed"), cls="badge badge--error"),
                 Span(f" - {_db.get('error', '')}", cls="settings-hint"),
-            )))
-
-    # Last file result
-    fl_ok = _fl.get("ok")
-    if fl_ok is not None:
-        if fl_ok:
-            fl_bytes = _fl.get("size_bytes") or 0
-            if fl_bytes == 0:
-                status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
-                    Span("OK", cls="badge badge--active"),
-                    Span(" - no changes", cls="settings-hint"),
-                )))
-            else:
-                status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
-                    Span("OK", cls="badge badge--active"),
-                    Span(f" - {fl_bytes / 1024**2:.1f} MB", cls="settings-hint"),
-                )))
-        else:
-            status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
-                Span(t("settings.failed"), cls="badge badge--error"),
-                Span(f" - {_fl.get('error', '')}", cls="settings-hint"),
             )))
 
     status_section = Div(
@@ -3962,25 +3972,12 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
 
     # ── Backup history (HTMX lazy-loaded from relay) ──────────────────
     history_section = Div(
+        H4(t("page.cloud_backups"), cls="settings-section-title"),
         Div(
-            H4(t("page.database_backups"), cls="settings-section-title"),
-            Div(
-                id="backup-db-list",
-                hx_get="/backup/list?backup_type=database",
-                hx_trigger="load, backupDone from:body",
-                hx_swap="innerHTML",
-            ),
-            cls="mt-md",
-        ),
-        Div(
-            H4(t("page.file_backups"), cls="settings-section-title"),
-            Div(
-                id="backup-file-list",
-                hx_get="/backup/list?backup_type=files",
-                hx_trigger="load, backupDone from:body",
-                hx_swap="innerHTML",
-            ),
-            cls="mt-lg",
+            id="backup-db-list",
+            hx_get="/backup/list",
+            hx_trigger="load, backupDone from:body",
+            hx_swap="innerHTML",
         ),
         cls="mt-lg",
     )
@@ -3999,9 +3996,10 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         H4(t("page.how_cloud_backup_works"), cls="settings-section-title"),
         P(t("settings.celerp_runs"),
             Code("pg_dump"),
-            " locally, encrypts the output with AES-256-GCM using your key "
-            "(we never see it), then uploads the encrypted blob to DigitalOcean Spaces. "
-            "DB backups run daily, file backups weekly. Oldest are auto-pruned per your plan. "
+            " locally and content-addresses every file, encrypts each piece with AES-256-GCM "
+            "using your key (we never see it), then uploads only what changed to DigitalOcean "
+            "Spaces. A daily snapshot captures the database and all files together; unchanged "
+            "files are never re-uploaded. Oldest snapshots are auto-pruned per your plan. "
             "After cancellation, backups remain accessible for 30 days.",
             cls="settings-hint",
         ),

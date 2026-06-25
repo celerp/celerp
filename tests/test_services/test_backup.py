@@ -7,10 +7,8 @@ Covers:
   - _parse_key: valid key, bad base64, wrong length
   - encrypt / decrypt round-trip
   - dump_database: success, pg_dump not found, exit code failure, timeout
-  - upload_to_relay: success + failure
-  - run_backup: all error paths + happy path
   - restore_database: success + failure
-  - run_restore: happy path + safety backup failure
+  - _find_pg_tool resolution order
 """
 
 from __future__ import annotations
@@ -24,20 +22,14 @@ from pathlib import Path
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
-import respx
-import httpx
 
-from celerp.config import settings
 from celerp.gateway.state import relay_http_url
 from celerp.services.backup import (
-    BackupResult,
     _parse_key,
     decrypt,
     dump_database,
     encrypt,
     restore_database,
-    run_backup,
-    upload_to_relay,
 )
 
 
@@ -155,40 +147,6 @@ def test_relay_base_url_from_http_url():
         _cfg.settings.gateway_http_url = orig
 
 
-# ── upload_to_relay ───────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_upload_to_relay_success(monkeypatch):
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
-    import celerp.gateway.state as gs
-    gs.set_session_token("test-token")
-
-    respx.post("https://relay.test.com/backup/upload").mock(
-        return_value=httpx.Response(200, json={"id": "abc", "size_bytes": 100})
-    )
-    result = await upload_to_relay(b"data", backup_type="database", label="test")
-    assert result["id"] == "abc"
-    gs.set_session_token("")
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_upload_to_relay_failure(monkeypatch):
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
-    import celerp.gateway.state as gs
-    gs.set_session_token("test-token")
-
-    respx.post("https://relay.test.com/backup/upload").mock(
-        return_value=httpx.Response(413, text="Quota exceeded")
-    )
-    with pytest.raises(RuntimeError, match="HTTP 413"):
-        await upload_to_relay(b"data")
-    gs.set_session_token("")
-
-
 # ── restore_database ──────────────────────────────────────────────────────────
 
 def test_restore_database_success(monkeypatch):
@@ -215,65 +173,6 @@ def test_restore_database_error(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="pg_restore failed"):
         restore_database(b"dump_data", "postgresql+asyncpg://u:p@localhost/db")
-
-
-# ── run_backup ────────────────────────────────────────────────────────────────
-
-@pytest.fixture(autouse=True)
-def reset_backup_settings():
-    orig_key = settings.backup_encryption_key
-    yield
-    settings.backup_encryption_key = orig_key
-
-
-@pytest.mark.asyncio
-async def test_run_backup_no_key():
-    settings.backup_encryption_key = ""
-    result = await run_backup()
-    assert not result.ok
-    assert "BACKUP_ENCRYPTION_KEY" in result.error
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_run_backup_happy_path(monkeypatch):
-    _, b64 = _make_key()
-    settings.backup_encryption_key = b64
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
-    import celerp.gateway.state as gs
-    gs.set_session_token("test-token")
-
-    monkeypatch.setattr(
-        "celerp.services.backup.dump_database",
-        lambda url: b"FAKE_PG_DUMP",
-    )
-    respx.post("https://relay.test.com/backup/upload").mock(
-        return_value=httpx.Response(200, json={"id": "abc", "size_bytes": 100})
-    )
-
-    result = await run_backup()
-    assert result.ok
-    assert result.size_bytes > 0
-    assert result.error is None
-    gs.set_session_token("")
-
-
-@pytest.mark.asyncio
-async def test_run_backup_dump_failure(monkeypatch):
-    _, b64 = _make_key()
-    settings.backup_encryption_key = b64
-
-    monkeypatch.setattr(
-        "celerp.services.backup.dump_database",
-        lambda url: (_ for _ in ()).throw(RuntimeError("pg_dump not found in PATH")),
-    )
-    import celerp.gateway.state as gs
-    gs.set_session_token("test-token")
-
-    result = await run_backup()
-    assert not result.ok
-    assert "pg_dump" in result.error
 
 
 # ── Mac PATH resolution (regression: backup 500 on Mac Electron) ─────────────

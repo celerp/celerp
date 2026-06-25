@@ -12947,15 +12947,14 @@ class TestBackupRoutes:
         test_token = make_test_token(role="owner")
         captured = {}
 
-        async def fake_list_backups(token: str, backup_type: str | None = None):
+        async def fake_list_backups(token: str):
             captured["token"] = token
-            captured["backup_type"] = backup_type
             return {"items": []}
 
         with patch.object(_api, "list_backups", fake_list_backups):
             async with ui_client as c:
                 r = await c.get(
-                    "/backup/list?backup_type=database",
+                    "/backup/list",
                     headers={"HX-Request": "true"},
                     cookies={"celerp_token": test_token},
                 )
@@ -12966,9 +12965,6 @@ class TestBackupRoutes:
             f"Captured: {captured}. This means the route is NOT following "
             f"the standard _token(request) -> api_client pattern."
         )
-        assert captured.get("backup_type") == "database", (
-            f"backup_type not passed through. Captured: {captured}"
-        )
 
     @pytest.mark.asyncio
     async def test_backup_trigger_uses_api_client_not_raw_proxy(self, ui_client):
@@ -12977,9 +12973,8 @@ class TestBackupRoutes:
         test_token = make_test_token(role="owner")
         captured = {}
 
-        async def fake_trigger(token: str, backup_type: str = "database"):
+        async def fake_trigger(token: str):
             captured["token"] = token
-            captured["backup_type"] = backup_type
             return {"ok": True}
 
         with patch.object(_api, "trigger_backup", fake_trigger):
@@ -13005,7 +13000,7 @@ class TestBackupRoutes:
         import ui.api_client as _api
         test_token = make_test_token(role="owner")
 
-        async def fake_trigger_timeout(token: str, backup_type: str = "database"):
+        async def fake_trigger_timeout(token: str):
             raise httpx.TimeoutException("timed out", request=None)
 
         with patch.object(_api, "trigger_backup", fake_trigger_timeout):
@@ -13029,7 +13024,7 @@ class TestBackupRoutes:
         import ui.api_client as _api
         test_token = make_test_token(role="owner")
 
-        async def fake_trigger_ok(token: str, backup_type: str = "database"):
+        async def fake_trigger_ok(token: str):
             return None  # trigger_backup returns None on success
 
         with patch.object(_api, "trigger_backup", fake_trigger_ok):
@@ -13055,7 +13050,7 @@ class TestBackupRoutes:
         import ui.api_client as _api
         test_token = make_test_token(role="owner")
 
-        async def fake_trigger_fail(token: str, backup_type: str = "database"):
+        async def fake_trigger_fail(token: str):
             raise _api.APIError(422, "pg_dump not found in PATH")
 
         with patch.object(_api, "trigger_backup", fake_trigger_fail):

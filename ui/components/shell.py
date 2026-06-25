@@ -426,6 +426,32 @@ _HEALTH_BANNER_HTML = Div(
     style="display:none;align-items:center;justify-content:space-between;padding:0.5rem 1rem;font-weight:500;",
 )
 
+_BACKUP_BANNER_JS = """
+(function() {
+  function poll() {
+    fetch('/backup/active')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var b = document.getElementById('backup-progress-banner');
+        if (!b) return;
+        b.style.display = d.active ? 'flex' : 'none';
+      })
+      .catch(function() {});
+  }
+  document.addEventListener('DOMContentLoaded', function() {
+    poll();
+    setInterval(poll, 8000);
+  });
+})();
+"""
+
+_BACKUP_BANNER_HTML = Div(
+    Span("Backup in progress: editing paused. You can still view your data."),
+    id="backup-progress-banner",
+    cls="sys-health-banner",
+    style="display:none;align-items:center;justify-content:center;padding:0.5rem 1rem;font-weight:500;background-color:#2563eb;color:#fff;",
+)
+
 _GLOBAL_UI_ERROR_HTML = Div(
     "",
     id="global-ui-error",
@@ -893,6 +919,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(src="/static/htmx.min.js"),
         Script(_CLIENT_JS),
         Script(_HEALTH_BANNER_JS),
+        Script(_BACKUP_BANNER_JS),
         Script(_NOTIFICATION_JS),
         Script(_USER_MENU_JS),
         Script(_STAR_CTA_JS),
@@ -907,6 +934,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                 Div(
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
+                    _BACKUP_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
