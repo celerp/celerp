@@ -551,3 +551,49 @@ jobs:
             exit 1
           fi
           echo "Published $TAG as latest."
+
+  # ── Alert on a failed release build ──────────────────────────────────────────
+  # When any platform (or prepare/publish) fails on a v* tag, the release is left as
+  # a draft and `latest` keeps serving the previous version - correct, but SILENT.
+  # GitHub's default failure email only reaches whoever pushed the tag, if their
+  # personal notification settings allow it. Open (or comment on) a tracking issue
+  # so a stuck/failed release is loud and team-visible regardless of those settings.
+  # This is the only signal that e.g. macOS notarization broke (Apple agreement
+  # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
+  notify-release-failure:
+    needs: [prepare-release, setup-matrix, build, publish-release]
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the release-failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          gh label create release-failure --repo "$REPO" --color B60205 --force \
+            --description "A release build failed; the release is stuck as a draft" || true
+          cat > /tmp/release_failure.md <<EOF
+          The build for **$TAG** failed, so the release was left as a **draft and not published**.
+
+          \`releases/latest\` still serves the previous complete release (no 404 window), but **$TAG will not ship on any platform until the build is fixed and the tag is re-pushed**.
+
+          - Failed run: $RUN_URL
+          - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
+
+          Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
+          EOF
+          TITLE="Release build failed: $TAG"
+          EXISTING=$(gh issue list --repo "$REPO" --state open --label release-failure \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body "Another failed run: $RUN_URL"
+            echo "Commented on existing issue #$EXISTING"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" \
+              --label release-failure --body-file /tmp/release_failure.md
+          fi
