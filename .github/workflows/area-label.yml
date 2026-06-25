@@ -1,0 +1,81 @@
+# Maps the "Area" dropdown answer from the issue/discussion forms to an `area:` label.
+#
+# A form dropdown is only text in the body — it is not a label by itself. This turns that
+# answer into a real, searchable label so issues AND discussions are categorized by area
+# (Projects v2 can't hold discussions, so the label is the portable source of truth; the
+# Project's Area field is then derived from it via a Project workflow). Labelling is done
+# via GraphQL `addLabelsToLabelable`, which works uniformly for issues and discussions.
+name: Area label
+
+on:
+  issues:
+    types: [opened, edited]
+  discussion:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  discussions: write
+  contents: read
+
+jobs:
+  area-label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const AREA_MAP = {
+              "Inventory": "area: inventory",
+              "Invoicing / documents": "area: invoicing",
+              "Purchasing": "area: purchasing",
+              "Manufacturing": "area: manufacturing",
+              "Accounting": "area: accounting",
+              "Contacts / CRM": "area: crm",
+              "Reporting": "area: reporting",
+              "Connectors / integrations / API": "area: connectors",
+              "Setup / admin / permissions": "area: setup",
+              "Other / not sure": "area: other",
+            };
+
+            const obj = context.payload.issue || context.payload.discussion;
+            if (!obj) { core.info("No issue/discussion in payload"); return; }
+
+            // Issue/discussion forms render each field as a heading line ("### Area")
+            // followed by the answer on the next non-empty line.
+            const lines = (obj.body || "").split(/\r?\n/);
+            let answer = null;
+            for (let i = 0; i < lines.length; i++) {
+              if (/^#{1,6}\s*Area\s*$/.test(lines[i].trim())) {
+                for (let j = i + 1; j < lines.length; j++) {
+                  if (lines[j].trim()) { answer = lines[j].trim(); break; }
+                }
+                break;
+              }
+            }
+            if (!answer) { core.info("No Area answer found"); return; }
+
+            const labelName = AREA_MAP[answer];
+            if (!labelName) { core.info(`No mapping for area "${answer}"`); return; }
+
+            // Already applied? (labels are on the REST-shaped payload for issues; for
+            // discussions we just attempt the add — it is idempotent.)
+            const existing = (obj.labels || []).map(l => (l.name || l));
+            if (existing.includes(labelName)) { core.info(`${labelName} already set`); return; }
+
+            const { repository } = await github.graphql(
+              `query($owner:String!,$name:String!,$label:String!){
+                 repository(owner:$owner,name:$name){ label(name:$label){ id } }
+               }`,
+              { owner: context.repo.owner, name: context.repo.repo, label: labelName }
+            );
+            const labelId = repository.label && repository.label.id;
+            if (!labelId) { core.warning(`Label "${labelName}" does not exist — create it first`); return; }
+
+            await github.graphql(
+              `mutation($labelable:ID!,$labels:[ID!]!){
+                 addLabelsToLabelable(input:{labelableId:$labelable, labelIds:$labels}){ clientMutationId }
+               }`,
+              { labelable: obj.node_id, labels: [labelId] }
+            );
+            core.info(`Applied ${labelName} to ${obj.html_url || obj.node_id}`);

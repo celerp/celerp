@@ -37,6 +37,24 @@ body:
         - Other
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Celerp does this touch? (Applied as an `area:` label for triage.)
+      options:
+        - Inventory
+        - Invoicing / documents
+        - Purchasing
+        - Manufacturing
+        - Accounting
+        - Contacts / CRM
+        - Reporting
+        - Connectors / integrations / API
+        - Setup / admin / permissions
+        - Other / not sure
+    validations:
+      required: false
   - type: input
     id: page
     attributes:
