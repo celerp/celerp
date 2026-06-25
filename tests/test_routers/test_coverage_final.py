@@ -132,7 +132,7 @@ async def test_reports_ap_aging_all_buckets(client):
         r = await client.post("/docs", headers=_h(tok), json={
             "doc_type": "purchase_order",
             "contact_id": supplier_id,
-            "line_items": [],
+            "line_items": [{"description": "Item", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
             "subtotal": 100.0,
             "tax": 0,
             "total": 100.0,

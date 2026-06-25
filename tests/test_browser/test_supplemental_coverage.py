@@ -181,7 +181,7 @@ def test_doc_payment_recording(page, ui_server, api):
     r = api.post("/docs", json={
         "doc_type": "invoice",
         "contact_name": f"Pay Test Co {_unique('PAY')}",
-        "lines": [{"description": "Service", "quantity": 1, "unit_price": 100.0}],
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0}],
     })
     assert r.status_code in {200, 201}, f"POST /docs failed: {r.text}"
     doc_id = r.json().get("id", "")

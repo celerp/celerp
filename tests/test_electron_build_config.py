@@ -362,7 +362,10 @@ def test_build_yml_delete_checks_http_status():
     yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
     clear_idx = yml.find("Clear existing release assets")
     assert clear_idx != -1, "Asset-clearing step not found in build.yml"
-    step_block = yml[clear_idx: clear_idx + 1500]
+    # Scan to the end of this step (the next `- name:` or EOF) rather than a fixed-size
+    # window - the delete loop sits near the end of the step and a short slice misses it.
+    next_step = yml.find("\n      - name:", clear_idx + 1)
+    step_block = yml[clear_idx: next_step if next_step != -1 else len(yml)]
     assert "%{http_code}" in step_block, (
         "build.yml DELETE step does not capture HTTP status code. "
         "Use curl -w '%{http_code}' and fail on >= 500."

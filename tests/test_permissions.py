@@ -280,7 +280,8 @@ class TestManagerRequiredDocOps:
     async def _create_draft_doc(self, client, headers: dict) -> str:
         r = await client.post(
             "/docs",
-            json={"doc_type": "invoice", "contact_name": "Client", "line_items": []},
+            json={"doc_type": "invoice", "contact_name": "Client",
+                  "line_items": [{"description": "Item", "quantity": 1, "unit_price": 100, "line_total": 100}]},
             headers=headers,
         )
         assert r.status_code == 200, r.text

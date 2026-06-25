@@ -34,8 +34,12 @@ def _h(tok: str) -> dict:
 
 
 async def _doc(client, tok, **kw) -> str:
-    defaults = {"doc_type": "invoice", "contact_id": "c1", "line_items": [], "subtotal": 10, "tax": 0, "total": 10}
-    r = await client.post("/docs", headers=_h(tok), json={**defaults, **kw})
+    merged = {"doc_type": "invoice", "contact_id": "c1", "subtotal": 10, "tax": 0, "total": 10, **kw}
+    # Default a single line (amount = subtotal) so the doc can be finalized; callers
+    # that need an empty/custom set pass line_items explicitly.
+    merged.setdefault("line_items", [{"description": "Item", "quantity": 1,
+                                      "unit_price": merged["subtotal"], "line_total": merged["subtotal"]}])
+    r = await client.post("/docs", headers=_h(tok), json=merged)
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

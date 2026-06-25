@@ -52,6 +52,7 @@ async def _invoice(client, tok, contact_id: str) -> str:
         "doc_type": "invoice",
         "contact_id": contact_id,
         "contact_name": "Test",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
         "total": 100,
         "issue_date": "2026-01-01",
         "due_date": "2026-02-01",

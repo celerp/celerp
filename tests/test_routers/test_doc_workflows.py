@@ -1113,17 +1113,19 @@ async def test_receive_return_fails_loudly_when_no_data_resolvable(client, sessi
     token = await _register(client)
     h = _h(token)
 
-    # Unlinked CN (no original_doc_id), no inventory, no invoice fallback
+    # Unlinked CN (no original_doc_id), no inventory, no invoice fallback. It carries an
+    # unrelated free-text line (so it can be finalized) that does NOT match the SKU we
+    # later try to return - leaving nothing to resolve GHOST-SKU from.
     cn = await client.post("/docs", headers=h, json={
         "doc_type": "credit_note",
-        "line_items": [],  # no line items - nothing to resolve from
-        "subtotal": 0, "tax": 0, "total": 0,
+        "line_items": [{"sku": "UNRELATED-SKU", "description": "Adjustment", "quantity": 1, "unit_price": 10}],
+        "subtotal": 10, "tax": 0, "total": 10,
     })
     assert cn.status_code == 200
     cn_id = cn.json()["id"]
-    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+    assert (await client.post(f"/docs/{cn_id}/finalize", headers=h)).status_code == 200
 
-    # SKU has no sold record and no line item on the CN - must fail loudly
+    # SKU has no sold record and no matching line item on the CN - must fail loudly
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "GHOST-SKU", "quantity": 1}]})
     assert r.status_code == 422, r.text
     assert "name" in r.json()["detail"] or "sell_by" in r.json()["detail"]

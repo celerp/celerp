@@ -47,7 +47,14 @@ jobs:
             echo "No existing release for $TAG - nothing to clear"
             exit 0
           fi
-          echo "Release $RELEASE_ID found for $TAG - clearing assets"
+          echo "Release $RELEASE_ID found for $TAG - reverting to draft + clearing assets"
+          # Take the existing release out of "latest" while we rebuild (retag), so
+          # /releases/latest/download/* keeps serving the previous complete release
+          # instead of 404-ing on a half-uploaded asset. publish-release re-publishes
+          # it once every platform succeeds.
+          curl -s -X PATCH -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
+            -d '{"draft":true}' >/dev/null
           ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
             | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
@@ -504,3 +511,89 @@ jobs:
             electron/dist/Celerp.AppImage
           draft: false
           prerelease: true
+
+  # ── Publish the release (tag builds only) ────────────────────────────────
+  # Platform builds upload their assets to a DRAFT release (electron-builder
+  # publish releaseType=draft). Only once EVERY platform job has succeeded do we
+  # flip the release to published + latest - atomically, with all assets present.
+  # If any platform fails (e.g. macOS notarization), this job is skipped, the
+  # release stays a draft, and /releases/latest keeps serving the previous
+  # complete release: no 404 window during a build, and no partial release.
+  publish-release:
+    needs: [build]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release as latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # The release is still a draft; get-release-by-tag only returns published
+          # releases, so list releases (drafts included for an authed token) and
+          # match on tag_name.
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
+            | python3 -c "import sys,json; tag='$TAG'; print(next((r['id'] for r in json.load(sys.stdin) if r['tag_name']==tag), ''))" 2>/dev/null || true)
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: no release found for tag $TAG to publish" >&2
+            exit 1
+          fi
+          echo "Publishing release $RELEASE_ID ($TAG) as latest"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
+            -d '{"draft":false,"make_latest":"true"}')
+          if [ "$STATUS" -ge 300 ]; then
+            echo "ERROR: publish PATCH returned HTTP $STATUS" >&2
+            exit 1
+          fi
+          echo "Published $TAG as latest."
+
+  # ── Alert on a failed release build ──────────────────────────────────────────
+  # When any platform (or prepare/publish) fails on a v* tag, the release is left as
+  # a draft and `latest` keeps serving the previous version - correct, but SILENT.
+  # GitHub's default failure email only reaches whoever pushed the tag, if their
+  # personal notification settings allow it. Open (or comment on) a tracking issue
+  # so a stuck/failed release is loud and team-visible regardless of those settings.
+  # This is the only signal that e.g. macOS notarization broke (Apple agreement
+  # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
+  notify-release-failure:
+    needs: [prepare-release, setup-matrix, build, publish-release]
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the release-failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          gh label create release-failure --repo "$REPO" --color B60205 --force \
+            --description "A release build failed; the release is stuck as a draft" || true
+          cat > /tmp/release_failure.md <<EOF
+          The build for **$TAG** failed, so the release was left as a **draft and not published**.
+
+          \`releases/latest\` still serves the previous complete release (no 404 window), but **$TAG will not ship on any platform until the build is fixed and the tag is re-pushed**.
+
+          - Failed run: $RUN_URL
+          - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
+
+          Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
+          EOF
+          TITLE="Release build failed: $TAG"
+          EXISTING=$(gh issue list --repo "$REPO" --state open --label release-failure \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body "Another failed run: $RUN_URL"
+            echo "Commented on existing issue #$EXISTING"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" \
+              --label release-failure --body-file /tmp/release_failure.md
+          fi

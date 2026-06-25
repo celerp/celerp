@@ -182,7 +182,7 @@
       "provider": "github",
       "owner": "celerp",
       "repo": "celerp",
-      "releaseType": "release"
+      "releaseType": "draft"
     }
   },
   "jest": {

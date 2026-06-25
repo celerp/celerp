@@ -28,6 +28,8 @@ def _h(token: str) -> dict:
 async def _create_invoice(client, token, *, total=1000, tax=70, status="draft") -> str:
     r = await client.post("/docs", headers=_h(token), json={
         "doc_type": "invoice", "contact_name": "Test",
+        "line_items": [{"description": "Item", "quantity": 1,
+                        "unit_price": total - tax, "line_total": total - tax}],
         "subtotal": total - tax, "tax": tax, "total": total, "status": status,
     })
     assert r.status_code == 200
