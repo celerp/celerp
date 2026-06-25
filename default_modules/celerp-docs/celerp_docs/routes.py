@@ -825,13 +825,20 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         if field in _MONEY_FIELDS and value is not None:
             return to_stored_float(round_money(value, _currency))
         return value
+    # Keep only fields that actually changed (old != new). A re-select/blur that resets a
+    # field to its current value must emit no event - otherwise it records an empty
+    # `doc.updated` that renders as a ghost activity row (#155).
+    effective = {}
+    for k, change in payload.fields_changed.items():
+        old = _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k))
+        new = _round_field(k, change.get("new"))
+        if old != new:
+            effective[k] = {"old": old, "new": new}
+    if not effective:
+        return {"event_id": None}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": {
-            k: {"old": _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k)),
-                "new": _round_field(k, change.get("new"))}
-            for k, change in payload.fields_changed.items()
-        }, "idempotency_key": payload.idempotency_key},
+        data={"fields_changed": effective, "idempotency_key": payload.idempotency_key},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
