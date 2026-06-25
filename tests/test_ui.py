@@ -13080,7 +13080,14 @@ class TestBackupRoutes:
 
         async def fake_export(token: str):
             captured["token"] = token
-            return (b"fakedata", "application/octet-stream", "attachment; filename=backup.celerp-backup")
+
+            async def _stream():
+                yield b"fakedata"
+
+            return _stream(), {
+                "content-type": "application/octet-stream",
+                "content-disposition": "attachment; filename=backup.celerp-backup",
+            }
 
         with patch.object(_api, "export_backup", fake_export):
             async with ui_client as c:
