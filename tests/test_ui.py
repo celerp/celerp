@@ -13787,3 +13787,17 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
     assert 'data-filter="ok"' in html
     assert 'data-filter="unmatched"' in html
     assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill
+
+
+def test_compact_pages_shows_full_count_and_last():
+    """#154: the doc-history pager must surface the real page count and a reachable last
+    page, not just current ±1. (None marks an ellipsis gap.)"""
+    from ui.routes.documents import _compact_pages
+    assert _compact_pages(1, 1) == [1]
+    assert _compact_pages(1, 2) == [1, 2]
+    assert _compact_pages(1, 3) == [1, 2, 3]            # all pages visible up front
+    assert _compact_pages(2, 3) == [1, 2, 3]
+    assert _compact_pages(1, 10) == [1, 2, None, 10]    # last page reachable from page 1
+    assert _compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
+    assert _compact_pages(9, 10) == [1, None, 8, 9, 10]
+    assert _compact_pages(10, 10) == [1, None, 9, 10]

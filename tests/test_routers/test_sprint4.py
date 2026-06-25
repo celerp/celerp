@@ -117,6 +117,27 @@ async def test_patch_doc_line_items(client):
 
 
 @pytest.mark.asyncio
+async def test_patch_noop_emits_no_event(client):
+    """A no-op edit (new == current value) must not emit doc.updated - otherwise it
+    records an empty 'ghost' activity row (#155)."""
+    token = await _register(client)
+    eid = await _create_invoice(client, token)
+    # A real change emits an event.
+    r1 = await client.patch(f"/docs/{eid}", headers=_h(token),
+                            json={"fields_changed": {"customer_note": {"old": None, "new": "hello"}}})
+    assert r1.status_code == 200 and r1.json()["event_id"] is not None
+    # Re-setting the field to its current value (client omits old; server resolves it from
+    # state) changes nothing -> no event.
+    r2 = await client.patch(f"/docs/{eid}", headers=_h(token),
+                            json={"fields_changed": {"customer_note": {"old": None, "new": "hello"}}})
+    assert r2.status_code == 200 and r2.json()["event_id"] is None
+    # An actual change after that still emits.
+    r3 = await client.patch(f"/docs/{eid}", headers=_h(token),
+                            json={"fields_changed": {"customer_note": {"old": "hello", "new": "world"}}})
+    assert r3.status_code == 200 and r3.json()["event_id"] is not None
+
+
+@pytest.mark.asyncio
 async def test_patch_doc_updates_totals(client):
     """Patching subtotal/tax/total stores them in projection."""
     token = await _register(client)
