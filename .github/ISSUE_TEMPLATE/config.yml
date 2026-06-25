@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Feature request / idea
+    url: https://github.com/celerp/celerp/discussions/new?category=ideas
+    about: Share and vote on feature ideas in Discussions - this keeps Issues for bugs and committed work.
+  - name: Questions & support
+    url: https://github.com/celerp/celerp/discussions/new?category=q-a
+    about: Ask a question or get help.

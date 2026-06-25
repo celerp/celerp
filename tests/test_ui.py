@@ -13754,3 +13754,36 @@ async def test_item_files_section_applies_tag_filter(ui_client):
     body = r.text
     assert "gia-report" in body, "the certificates file should be shown"
     assert "front-photo" not in body, "the product_images file must be filtered out"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_result_has_status_filters(ui_client):
+    """M5: the bulk-attach result tags each row with data-status and renders
+    All/Matched/Unmatched/Errors filter pills wired to celerpBulkFilter()."""
+    fake_result = {
+        "matched": 1,
+        "unmatched": 1,
+        "errors": [],
+        "report": [
+            {"sku": "SKU-OK", "file": "SKU-OK.jpg", "status": "ok", "tag": "", "is_hero": True},
+            {"sku": "NOPE", "file": "NOPE.jpg", "status": "unmatched"},
+        ],
+    }
+    with patch("ui.api_client.bulk_attach", new=AsyncMock(return_value=fake_result)):
+        r = await ui_client.post(
+            "/settings/bulk-attach",
+            cookies=_authed(),
+            files={"file": ("archive.zip", b"PK\x03\x04stub", "application/zip")},
+        )
+    assert r.status_code == 200, r.text
+    html = r.text
+    # Each row carries its status for the client-side filter.
+    assert 'data-status="ok"' in html
+    assert 'data-status="unmatched"' in html
+    # Filter pills are present, wired to the toggle, and only for statuses that occur.
+    assert "bulk-filter-btn" in html
+    assert "celerpBulkFilter" in html
+    assert 'data-filter="all"' in html
+    assert 'data-filter="ok"' in html
+    assert 'data-filter="unmatched"' in html
+    assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill

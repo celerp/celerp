@@ -497,6 +497,9 @@ document.addEventListener('DOMContentLoaded', function() {
   var list = document.getElementById('notif-list');
   if (!badge || !panel) return;
 
+  var NOTIF_FLOOR_MS = 60000;   // cap opportunistic refreshes to ~1/min
+  var lastNotifFetch = 0;
+
   function updateBadge(count) {
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : count;
@@ -507,6 +510,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function loadNotifications() {
+    lastNotifFetch = Date.now();
     fetch('/notifications')
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -572,6 +576,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Initial load
   loadNotifications();
+
+  // Opportunistic badge refresh: in-page htmx actions nudge notifications so the
+  // badge doesn't lag while the user stays on one page (the relay can't push)
+  // The floor caps this at ~1 fetch/min regardless of activity and we
+  // skip hidden tabs, so it adds strictly less load than the per-navigation
+  // fetch and never becomes a poll. loadNotifications is a plain fetch, so this
+  // listener can't re-trigger itself.
+  document.addEventListener('htmx:afterSettle', function() {
+    if (document.visibilityState === 'hidden') return;
+    if (Date.now() - lastNotifFetch < NOTIF_FLOOR_MS) return;
+    loadNotifications();
+  });
 
   // Request browser notification permission
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -924,9 +940,11 @@ _BUG_REPORT_URL: str | None = None
 def _bug_report_url() -> str:
     """GitHub 'new issue' link that opens the bug_report.yml issue form with the
     Celerp version and host OS pre-filled (the two fields users most often leave out).
+    The current page is appended to the form's `page` field client-side on click (see
+    the menu link's onclick), since the path is only known in the browser.
 
     Built once per process - version and OS don't change at runtime. Uses the form's
-    field-prefill query params, so the form's own labels (bug, triage) still apply for
+    field-prefill query params, so the form's own label (bug) still applies for
     every reporter (unlike inline body prefill, which would suppress the template).
     """
     global _BUG_REPORT_URL
@@ -1073,6 +1091,17 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     A(
                         "🐞 " + t("nav.report_bug", lang, default="Report a bug"),
                         href=_bug_report_url(),
+                        target="_blank",
+                        rel="noopener",
+                        cls="user-menu__item",
+                        # Append the current page to the bug form's `page` field at click time
+                        # (server-side URL is cached/page-agnostic; the path is only known client-side).
+                        onclick="this.href=this.dataset.base+'&page='+encodeURIComponent(location.pathname+location.search)",
+                        **{"data-base": _bug_report_url()},
+                    ),
+                    A(
+                        "💡 " + t("nav.suggest_feature", lang, default="Suggest a feature"),
+                        href="https://github.com/celerp/celerp/discussions/new?category=ideas",
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",

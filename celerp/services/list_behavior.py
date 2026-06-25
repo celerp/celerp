@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: BUSL-1.1
 """Single source of truth for list-type behaviour — the Open-Closed seam for lists.
 
 Every list type (quotation, transfer, audit, and shipping later) shares ONE lifecycle:

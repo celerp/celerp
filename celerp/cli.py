@@ -422,7 +422,7 @@ def _run_migrations(db_url: str) -> None:
 
 @click.group()
 def main() -> None:
-    """Celerp ERP — open-source, self-hosted."""
+    """Celerp ERP — self-hosted business management."""
 
 
 @main.command()
@@ -549,7 +549,7 @@ def init(db_url, api_port, ui_port, cloud_token, force):
     from celerp.gateway.state import build_handoff_url as _handoff
     if _settings.star_cta_enabled:
         click.echo(
-            "New and open source - founding supporters are how other teams find us.\n"
+            "New and independent - founding supporters are how other teams find us.\n"
             f"  Back us early: {_handoff('/github', medium='cli')}\n"
         )
 

@@ -1,0 +1,78 @@
+title: "Idea: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for helping shape Celerp! Please skim
+        [existing ideas](https://github.com/celerp/celerp/discussions/categories/ideas) first, and
+        👍 the ones you'd like to see - upvotes help us prioritize.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case or pain point. What are you trying to do, and where does Celerp get in the way today?
+      placeholder: "When I ..., I have to ... because ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like Celerp to do. Rough is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: so_that
+    attributes:
+      label: So that…
+      description: The outcome this unlocks - the real benefit. Finish the sentence so we understand the "why".
+      placeholder: "...so that I can ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Celerp does this touch?
+      options:
+        - Inventory
+        - Invoicing / documents
+        - Purchasing
+        - Manufacturing
+        - Accounting
+        - Contacts / CRM
+        - Reporting
+        - Connectors / integrations / API
+        - Setup / admin / permissions
+        - Other / not sure
+    validations:
+      required: false
+  - type: input
+    id: page
+    attributes:
+      label: Related page or link
+      description: If this adds to or changes a specific Celerp page, paste its URL or path (e.g. `/inventory`). A link to a mockup or example elsewhere works too. Optional.
+      placeholder: "e.g. /inventory"
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways you've tried to solve this, or workarounds you use today.
+    validations:
+      required: false
+  - type: textarea
+    id: anything_else
+    attributes:
+      label: Anything else?
+      description: Mockups, examples from other tools, or any extra context.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for the idea! If Celerp is useful to you, a ⭐ on
+        [GitHub](https://github.com/celerp/celerp) genuinely helps others find it - and early
+        supporters can claim a founding-supporter badge.

@@ -1,8 +1,10 @@
 include README.md
 include LICENSE
 include NOTICE
+include LICENSING.md
+include legal/OFFICIAL-COMPONENTS.md
+include legal/TRADEMARK.md
 include alembic.ini
-include ui/LICENSE
 include default_modules/celerp-manufacturing/LICENSE
 include default_modules/celerp-labels/LICENSE
 

@@ -24,13 +24,14 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.commands import parse_bill_commands
 from celerp.ai.files import load_file_for_llm, upload_dir
 from celerp.ai.llm import call_llm
 from celerp.ai.memory import get_memory
-from celerp.ai.models import CLASSIFY, select_model
+from celerp.ai.models import select_model
 from celerp.ai.tools import TOOLS, execute_tool
 
 log = logging.getLogger(__name__)
@@ -101,36 +102,39 @@ If a vendor isn't found in the active contacts list, provide the best guess name
 the system will create a draft contact automatically."""
 
 
-# -- Tool selection via LLM -------------------------------------------------
+# -- Tool selection (heuristic, no model call) ------------------------------
 
-async def _select_tools(query: str, has_files: bool = False) -> list[str]:
-    """Pick up to 4 tools most relevant to the query using the CLASSIFY model."""
+# Query keywords → the ERP tools whose data is worth fetching. Keeping this
+# local means a user query costs exactly one metered model call.
+_TOOL_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "low_stock_items": ("stock", "restock", "reorder", "out of", "inventory level", "running low"),
+    "outstanding_invoices": ("invoice", "unpaid", "owe", "owed", "outstanding", "receivable", "overdue"),
+    "top_items_by_value": ("inventory value", "valuable", "worth", "most stock", "tied up"),
+    "active_deals_summary": ("deal", "pipeline", "crm", "opportunit", "lead", "prospect"),
+    "dormant_contacts": ("dormant", "inactive", "lost customer", "haven't heard", "gone quiet"),
+    "top_sellers": ("best sell", "top sell", "bestseller", "popular", "selling well", "moves fast"),
+    "pending_pos": ("purchase order", "pending po", "incoming", "supplier order", "on order"),
+    "active_contacts_list": ("contact", "customer", "vendor", "supplier", "client"),
+    "active_items_list": ("item", "product", "sku", "catalog"),
+}
+
+
+def _select_tools(query: str, has_files: bool = False) -> list[str]:
+    """Pick up to 4 relevant ERP tools by keyword. No model call."""
     selected: list[str] = []
     if has_files:
         selected.extend(["active_contacts_list", "active_items_list"])
 
-    tool_block = "\n".join(f"- {t.name}: {t.description}" for t in TOOLS.values())
-    prompt = (
-        f"Tools:\n{tool_block}\n\n"
-        f"Query: {query}\n\n"
-        "Return a JSON list of 0-4 tool names most relevant to answering this query. "
-        "Example: [\"dashboard_kpis\", \"low_stock_items\"]"
-    )
-    try:
-        raw = await call_llm(CLASSIFY, "You select ERP tools.", prompt, max_tokens=128)
-        match = re.search(r"\[.*?\]", raw, re.DOTALL)
-        if not match:
-            raise ValueError("No JSON array in response")
-        names = json.loads(match.group())
-        for name in names:
-            if name in TOOLS and name not in selected:
-                selected.append(name)
-        return selected[:4]
-    except Exception as exc:
-        log.warning("LLM tool selection failed, using fallback: %s", exc)
-        if "dashboard_kpis" not in selected:
-            selected.append("dashboard_kpis")
-        return selected[:4]
+    lowered = query.lower()
+    for tool, keywords in _TOOL_KEYWORDS.items():
+        if tool in selected:
+            continue
+        if any(kw in lowered for kw in keywords):
+            selected.append(tool)
+
+    if not selected:
+        selected.append("dashboard_kpis")
+    return selected[:4]
 
 
 
@@ -154,7 +158,7 @@ async def run_query(
     t0 = time.monotonic()
     file_count = len(file_ids) if file_ids else 0
     model = select_model(query, file_count=file_count, is_batch=file_count > 1)
-    tools_to_call = await _select_tools(query, has_files=bool(file_ids))
+    tools_to_call = _select_tools(query, has_files=bool(file_ids))
     tool_data: dict[str, Any] = {}
 
     # Fetch ERP data via tools
@@ -236,6 +240,9 @@ async def run_query(
         )
         _log_query(company_id, user_id, model, called, file_count, t0, result)
         return result
+    except HTTPException:
+        # Quota (402) and similar gateway signals surface to the router as-is.
+        raise
     except Exception as exc:
         log.error("AI query failed: %s", exc)
         result = AIResponse(

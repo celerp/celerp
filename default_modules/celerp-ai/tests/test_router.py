@@ -250,14 +250,13 @@ async def test_ai_tier_multi_file_allowed(auth_client):
 
     with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="ai")):
         with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
-            with patch("celerp_ai.routes.check_ai_quota", AsyncMock()):
-                with patch("celerp_ai.routes._load_file_http") as mock_load:
-                    mock_load.return_value = (b"fake image data", {"content_type": "image/jpeg", "filename": "test.jpg", "company_id": company_id_placeholder})
-                    r = await c.post(
-                        "/ai/query",
-                        json={"query": "process these", "file_ids": file_ids},
-                        headers=headers,
-                    )
+            with patch("celerp_ai.routes._load_file_http") as mock_load:
+                mock_load.return_value = (b"fake image data", {"content_type": "image/jpeg", "filename": "test.jpg", "company_id": company_id_placeholder})
+                r = await c.post(
+                    "/ai/query",
+                    json={"query": "process these", "file_ids": file_ids},
+                    headers=headers,
+                )
     assert r.status_code == 200
 
 

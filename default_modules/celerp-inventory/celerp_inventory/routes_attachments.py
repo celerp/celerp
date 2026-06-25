@@ -430,14 +430,14 @@ async def tag_item_file(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
-    _get_item_file(row.state.get("files", []), file_id)
+    f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.file.tagged",
-        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "document_tag": document_tag},
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "document_tag": document_tag, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -461,14 +461,14 @@ async def update_item_file_description(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
-    _get_item_file(row.state.get("files", []), file_id)
+    f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.file.description_updated",
-        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "description": description},
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "description": description, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -501,7 +501,7 @@ async def set_item_file_hero(
         entity_id=entity_id,
         entity_type="item",
         event_type="item.file.hero_set",
-        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id},
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "filename": target.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -523,14 +523,14 @@ async def delete_item_file(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
-    _get_item_file(row.state.get("files", []), file_id)
+    f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.file.deleted",
-        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id},
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",

@@ -58,10 +58,25 @@ the files via the CDN: `https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/pres
 - **[Cosmetics & skincare](cosmetics/)** - Lumera Skincare: 13 screens
 - **[Jewelry](jewelry/)** - Aurelia Atelier: 13 screens
 
+## Artwork
+
+Hand-illustrated brand graphics (not screenshots) - for blog posts, social, and launch coverage.
+Read them via the CDN: `https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/artwork/<name>.webp`
+
+### Celerp vs. legacy ERPs
+
+![Celerp, the celery mascot, squares off against the legacy ERP giants](artwork/celerp-vs-erps.webp)
+
+### Celerp vs. SaaS
+
+![Celerp, the celery mascot, topples the SaaS giant](artwork/celerp-vs-saas.webp)
+
+Usage and copyright for this artwork are the same as the screenshots below.
+
 ## Usage & copyright
 
 These screenshots depict the **Celerp application UI**, which is proprietary
-(see `LICENSE-PROPRIETARY.md`; the UI layer is *not* covered by the BSL core or MIT module licenses).
+(see `/legal/OFFICIAL-COMPONENTS.md`; the UI layer is *not* covered by the BSL core or MIT module licenses).
 
 - Screenshots (c) 2026 Noah Severs. All rights reserved. Provided to document and promote Celerp;
   you may use them unmodified in articles, reviews, and listings about Celerp with attribution to
@@ -70,5 +85,9 @@ These screenshots depict the **Celerp application UI**, which is proprietary
   needs no attribution.
 - Company and brand names shown (Lumera Skincare, Meridian Coffee Roasters, Aurelia Atelier,
   Northbound Apparel) are fictional demo data.
+- The brand artwork (`artwork/`) is (c) 2026 Noah Severs, all rights reserved, and is provided on the
+  same terms. Third-party product names shown in it (e.g. SAP, NetSuite, Zoho, Xero, Navision,
+  QuickBooks) are trademarks of their respective owners; they appear as parody/commentary and do not
+  imply affiliation or endorsement.
 
-For use of the Celerp name and logo, see `TRADEMARK.md`.
+For use of the Celerp name and logo, see `/legal/TRADEMARK.md`.

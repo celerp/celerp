@@ -73,64 +73,42 @@ def test_sanitize_error_generic():
     assert len(msg) > 0
 
 
-# -- _select_tools (async, LLM-driven) -------------------------------------
+# -- _select_tools (heuristic, no model call) ------------------------------
 
-@pytest.mark.asyncio
-async def test_select_tools_llm_picks_tools():
-    """LLM returns relevant tool names."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value='["low_stock_items"]'):
-        tools = await _select_tools("show me low stock items")
+def test_select_tools_keyword_stock():
+    tools = _select_tools("show me low stock items")
     assert "low_stock_items" in tools
 
 
-@pytest.mark.asyncio
-async def test_select_tools_llm_multiple():
-    """LLM can return multiple tools (up to 4)."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value='["outstanding_invoices", "low_stock_items", "dashboard_kpis"]'):
-        tools = await _select_tools("compare invoices and stock")
-    assert len(tools) == 3
+def test_select_tools_multiple_keywords():
+    tools = _select_tools("compare unpaid invoices and stock")
+    assert "outstanding_invoices" in tools
+    assert "low_stock_items" in tools
 
 
-@pytest.mark.asyncio
-async def test_select_tools_llm_failure_fallback():
-    """On LLM failure, falls back to dashboard_kpis."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, side_effect=RuntimeError("network error")):
-        tools = await _select_tools("anything")
-    assert "dashboard_kpis" in tools
+def test_select_tools_no_keyword_falls_back():
+    tools = _select_tools("good morning")
+    assert tools == ["dashboard_kpis"]
 
 
-@pytest.mark.asyncio
-async def test_select_tools_files_always_get_contacts_items():
-    """File queries always include contacts and items."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value='["dashboard_kpis"]'):
-        tools = await _select_tools("process these receipts", has_files=True)
+def test_select_tools_files_always_get_contacts_items():
+    tools = _select_tools("process these receipts", has_files=True)
     assert "active_contacts_list" in tools
     assert "active_items_list" in tools
 
 
-@pytest.mark.asyncio
-async def test_select_tools_validates_names():
-    """Invalid tool names from LLM are filtered out."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value='["fake_tool", "low_stock_items"]'):
-        tools = await _select_tools("inventory check")
-    assert "low_stock_items" in tools
-    assert "fake_tool" not in tools
-
-
-@pytest.mark.asyncio
-async def test_select_tools_max_four():
-    """Cap at 4 tools even if LLM returns more."""
-    with patch("celerp.ai.service.call_llm", new_callable=AsyncMock,
-               return_value='["dashboard_kpis", "low_stock_items", "outstanding_invoices", "top_items_by_value", "active_deals_summary"]'):
-        tools = await _select_tools("everything")
-    assert len(tools) <= 4
+def test_select_tools_max_four():
+    tools = _select_tools(
+        "low stock, unpaid invoices, deal pipeline, suppliers, dormant customers, valuable inventory"
+    )
+    assert len(tools) == 4
 
 
 # -- run_query --------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_run_query_happy_path(session, company):
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value="You have 3 items."):
             result = await run_query("how many items", session, company.id)
 
@@ -141,7 +119,7 @@ async def test_run_query_happy_path(session, company):
 
 @pytest.mark.asyncio
 async def test_run_query_complex_model(session, company):
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value="Here's my analysis."):
             result = await run_query("analyse cash flow trends", session, company.id)
 
@@ -160,7 +138,7 @@ async def test_run_query_with_memory(session, company):
         captured_args["user_text"] = user_text
         return "Answer with memory."
 
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", side_effect=mock_call_llm):
             result = await run_query("give me a business overview", session, company.id)
 
@@ -170,7 +148,7 @@ async def test_run_query_with_memory(session, company):
 
 @pytest.mark.asyncio
 async def test_run_query_api_error_captured(session, company):
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, side_effect=RuntimeError("timeout")):
             result = await run_query("how many items", session, company.id)
 
@@ -181,7 +159,7 @@ async def test_run_query_api_error_captured(session, company):
 
 @pytest.mark.asyncio
 async def test_run_query_tool_failure_graceful(session, company):
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["low_stock_items"]):
+    with patch("celerp.ai.service._select_tools", return_value=["low_stock_items"]):
         with patch("celerp.ai.service.execute_tool", new_callable=AsyncMock, side_effect=Exception("DB error")):
             with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value="Could not fetch data."):
                 result = await run_query("low stock items", session, company.id)
@@ -197,7 +175,7 @@ async def test_run_query_timeout(session, company):
         await asyncio.sleep(100)
         return "never"
 
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", side_effect=slow_llm):
             # Override the timeout to something very short for testing
             with patch("celerp.ai.service.asyncio.wait_for", side_effect=asyncio.TimeoutError):
@@ -216,7 +194,7 @@ async def test_run_query_pending_bills(session, company):
         '"total": 100.0, "source_file_id": "f1", '
         '"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}]}]}\n```'
     )
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
             result = await run_query("process receipt", session, company.id)
 
@@ -232,7 +210,7 @@ async def test_run_query_pending_bills(session, company):
 async def test_run_query_invalid_bill_json(session, company):
     """Invalid JSON in code block doesn't crash, pending_bills is None."""
     llm_answer = "Bills:\n```json\n{invalid json}\n```"
-    with patch("celerp.ai.service._select_tools", new_callable=AsyncMock, return_value=["dashboard_kpis"]):
+    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
         with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
             result = await run_query("process receipts", session, company.id)
     assert result.error is None

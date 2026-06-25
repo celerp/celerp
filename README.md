@@ -142,5 +142,5 @@ Celerp is open-core:
 - **A proprietary application + cloud layer** (official UI, document/PDF output, and the cloud/AI
   services) that powers the hosted experience.
 
-See [LICENSING.md](LICENSING.md) for the full map and [TRADEMARK.md](TRADEMARK.md) for use of the Celerp
+See [LICENSING.md](LICENSING.md) for the full map and [TRADEMARK.md](legal/TRADEMARK.md) for use of the Celerp
 name. One restriction: don't resell Celerp itself as a competing product.

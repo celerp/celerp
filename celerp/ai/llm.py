@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""OpenRouter LLM client - single entry point for all model calls.
+"""LLM client - single entry point for all model calls.
 
-Uses the OpenAI-compatible chat completions API at openrouter.ai.
-Supports text-only and multimodal (image/PDF) messages.
-Handles retry with exponential backoff on 429s.
+Calls are served through the cloud gateway, which selects the model and meters
+usage. Supports text-only and multimodal (image/PDF) messages.
 Concurrency-limited via a module-level semaphore.
 """
 
@@ -14,23 +13,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
 
 import httpx
 
+from celerp.gateway.state import relay_http_url, relay_session_headers
+
 log = logging.getLogger(__name__)
 
-_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-_MAX_RETRIES = 3
 _MAX_CONCURRENT = int(os.getenv("AI_MAX_CONCURRENT", "3"))
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-
-
-def _api_key() -> str:
-    key = os.getenv("OPENROUTER_API_KEY", "")
-    if not key:
-        raise RuntimeError("OPENROUTER_API_KEY is not configured.")
-    return key
 
 
 def _build_user_content(
@@ -61,18 +52,17 @@ async def call_llm(
     files: list[dict] | None = None,
     max_tokens: int = 2048,
     history: list[dict[str, str]] | None = None,
-    timeout: float = 45.0,
+    timeout: float = 60.0,
 ) -> str:
-    """Call OpenRouter and return the assistant's text response.
+    """Run a completion through the gateway and return the assistant's text.
 
     Args:
-        history: Optional prior conversation messages [{"role": "user"|"assistant", "content": "..."}].
-                 Inserted between system and the current user message.
+        model: advisory only — the gateway selects the served model.
+        history: Optional prior conversation messages [{"role": ..., "content": ...}].
 
-    Raises RuntimeError on permanent failures (missing key, non-retryable errors,
-    exhausted retries). Retries on 429 with exponential backoff + jitter.
+    Raises HTTPException(402) when the plan's quota is exhausted.
+    Raises RuntimeError on other failures (no session, gateway error).
     """
-    api_key = _api_key()
     user_content = _build_user_content(user_text, files)
 
     messages: list[dict] = [{"role": "system", "content": system}]
@@ -80,47 +70,41 @@ async def call_llm(
         messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    payload = {
-        "model": model,
-        "max_tokens": max_tokens,
+    file_count = len(files) if files else 0
+    body = {
         "messages": messages,
+        "hints": {
+            "query": user_text[:500],
+            "file_count": file_count,
+            "is_batch": file_count > 1,
+        },
+        "max_tokens": max_tokens,
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://celerp.com",
-        "X-Title": "Celerp AI",
-    }
+
+    headers = relay_session_headers()
+    if not headers.get("X-Session-Token"):
+        raise RuntimeError("The AI service is not available - no active cloud session.")
+
+    url = f"{relay_http_url()}/ai/complete"
 
     async with _semaphore:
-        for attempt in range(_MAX_RETRIES + 1):
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(_BASE_URL, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
 
-            if resp.status_code == 200:
-                body = resp.json()
-                choices = body.get("choices", [])
-                if not choices:
-                    raise RuntimeError("LLM returned empty choices.")
-                return choices[0]["message"]["content"]
+    if resp.status_code == 200:
+        return resp.json().get("answer", "")
 
-            if resp.status_code == 429:
-                if attempt >= _MAX_RETRIES:
-                    raise RuntimeError(
-                        f"LLM rate limit exceeded after {_MAX_RETRIES} retries."
-                    )
-                retry_after = float(resp.headers.get("retry-after", 2 ** attempt))
-                jitter = random.uniform(0, 0.5)
-                wait = retry_after + jitter
-                log.warning(
-                    "LLM rate limited (attempt %d/%d). Waiting %.1fs.",
-                    attempt + 1, _MAX_RETRIES, wait,
-                )
-                await asyncio.sleep(wait)
-                continue
+    if resp.status_code == 402:
+        from fastapi import HTTPException
+        try:
+            detail = resp.json().get("detail", {})
+        except Exception:
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {"code": "quota_exceeded", "message": str(detail)}
+        raise HTTPException(status_code=402, detail=detail)
 
-            raise RuntimeError(
-                f"LLM API error {resp.status_code}: {resp.text[:400]}"
-            )
+    if resp.status_code in (429, 503):
+        raise RuntimeError("The AI service is temporarily busy.")
 
-    raise RuntimeError("call_llm: exhausted retry loop unexpectedly")
+    raise RuntimeError(f"LLM gateway error {resp.status_code}")
