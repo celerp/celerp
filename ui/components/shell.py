@@ -815,19 +815,22 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "var h=document.getElementById('star-card-headline');"
         "var b=document.getElementById('star-card-body');"
         "var b2=document.getElementById('star-card-body-2');"
-        "var claim=document.getElementById('star-card-claim');"
+        "var actions=document.getElementById('star-card-actions');"
+        "var wall=document.getElementById('star-card-wall');"
         "var link=document.getElementById('star-card-star');"
         "if(link&&d.url)link.href=d.url;"
-        "if(bd&&bd.badge){"  # claimed -> thank-you
+        "if(bd&&bd.badge){"  # claimed -> thank-you (offer the wall, drop the ask)
         "if(h)h.textContent=d.thanks_headline||'Thank you for your support!';"
         "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
         "if(b2)b2.style.display='none';"
-        "if(claim)claim.style.display='none';"
+        "if(actions)actions.style.display='none';"
+        "if(wall&&bd.wall_url){wall.href=bd.wall_url;wall.style.display='inline-block';}"
         "}else{"  # not claimed -> the ask
         "if(h)h.textContent=d.headline||'Star on GitHub';"
         "var parts=(d.body||'').split('\\n\\n');"
         "if(b)b.textContent=parts[0]||'';"
         "if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
+        "if(wall)wall.style.display='none';"
         "}"
         "card.style.display='';"
         "}).catch(function(){});"
@@ -854,10 +857,17 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             P("", id="star-card-body", style="white-space:pre-line;margin:0"),
             # Smaller sub-paragraph for the founding-badge promise.
             P("", id="star-card-body-2", style="white-space:pre-line;margin:12px 0 0;font-size:13px;color:#555"),
+            # Claiming a badge lists the founder on the public wall (that is what the
+            # badge is). Hidden once claimed; the wall link below takes its place.
             Div(
                 A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                id="star-card-actions",
                 style="margin-top:22px",
             ),
+            # Shown only once claimed: a quiet link to the public founders wall.
+            A(Span("★ ", style=gold), "See the founders wall",
+              id="star-card-wall", href="#", target="_blank", rel="noopener",
+              style="display:none;margin-top:18px;font-size:13px;text-decoration:underline;color:inherit"),
             id="star-supporter-card",
             style="display:none;position:relative;margin:16px 0;padding:28px 32px;"
                   "border:1px solid #d4af37;border-radius:10px;text-align:center",

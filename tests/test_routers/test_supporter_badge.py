@@ -56,6 +56,15 @@ async def test_get_badge_null_when_none(client):
 
 
 @pytest.mark.asyncio
+async def test_get_badge_includes_wall_url(client):
+    """The badge GET carries the public founders-wall URL so the in-app card can
+    link to it once claimed."""
+    token = await _register(client, "wall")
+    data = (await client.get("/stars/badge", headers=_h(token))).json()
+    assert data["wall_url"].endswith("/github/founders")
+
+
+@pytest.mark.asyncio
 async def test_claim_invalid_cred(client):
     token = await _register(client, "bad")
     r = await client.post("/stars/badge", headers=_h(token), json={"cred": "garbage"})
@@ -93,6 +102,8 @@ async def test_verify_url_includes_instance_and_return(client):
     assert "/github/verify/start?" in url
     assert "instance_id=" in url
     assert "return_url=http" in url and "stars" in url
+    # Claiming a badge is the public listing - no separate opt-in is threaded through.
+    assert "opt_in" not in url
 
 
 @pytest.mark.asyncio

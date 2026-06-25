@@ -53,7 +53,8 @@ async def dismiss(
 @router.get("/badge/verify-url")
 async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> dict:
     """The relay verify-start URL to open in the browser. ``return_url`` is where the
-    relay redirects back with the credential (the install's own page)."""
+    relay redirects back with the credential (the install's own page). Claiming a badge
+    lists the founder on the public wall - there is no separate opt-in."""
     from urllib.parse import urlencode
 
     iid = ensure_instance_id()
@@ -66,8 +67,11 @@ async def get_badge(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The current user's supporter badge, or null."""
-    return {"badge": _badge.to_dict(await _badge.get(session, user.id))}
+    """The current user's supporter badge (or null) + the public founders wall URL."""
+    return {
+        "badge": _badge.to_dict(await _badge.get(session, user.id)),
+        "wall_url": f"{relay_http_url()}/github/founders",
+    }
 
 
 @router.post("/badge")
