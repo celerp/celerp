@@ -13,8 +13,7 @@ from ui.i18n import t, get_lang
 
 
 _TOOLTIPS = {
-    "db": "Upload an encrypted copy of your database to the cloud. Does not include files or attachments.",
-    "files": "Upload encrypted copies of your attachments and uploaded files to the cloud. Does not include the database.",
+    "snapshot": "Upload an encrypted, deduplicated snapshot of your database and files to the cloud. Only changed files are uploaded.",
     "download": "Download a complete backup archive (database + all files) to your computer. Not encrypted - store it securely.",
     "import": "Restore from a previously downloaded .celerp-backup archive. This will overwrite your current data.",
 }
@@ -27,25 +26,16 @@ def cloud_backup_buttons(
     flash_target_id: str = "backup-flash",
     cls: str = "flex-row gap-sm flex-wrap mt-lg",
 ) -> Div:
-    """Cloud backup trigger buttons only (Backup Database Now / Backup Files Now)."""
+    """Cloud snapshot trigger button (database + files in one deduplicated snapshot)."""
     return Div(
-        Button(t("btn.backup_database_now"),
-            hx_post="/backup/trigger?type=database",
+        Button(t("btn.backup_now"),
+            hx_post="/backup/trigger",
             hx_target=f"#{flash_target_id}",
             hx_swap="outerHTML",
             hx_disabled_elt="this",
             cls="btn btn--primary",
             disabled=not (enc_ok and gw_ok),
-            title=_TOOLTIPS["db"],
-        ),
-        Button(t("btn.backup_files_now"),
-            hx_post="/backup/trigger?type=files",
-            hx_target=f"#{flash_target_id}",
-            hx_swap="outerHTML",
-            hx_disabled_elt="this",
-            cls="btn btn--secondary",
-            disabled=not (enc_ok and gw_ok),
-            title=_TOOLTIPS["files"],
+            title=_TOOLTIPS["snapshot"],
         ),
         cls=cls,
     )

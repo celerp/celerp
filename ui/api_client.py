@@ -2024,37 +2024,38 @@ async def get_backup_status(token: str) -> dict:
         return _raise(await c.get("/settings/backup-status")).json()
 
 
-async def list_backups(token: str, backup_type: str | None = None) -> dict:
-    """GET /backup/list — list cloud backups (proxied to relay by API)."""
-    params = {"backup_type": backup_type} if backup_type else {}
+async def list_backups(token: str) -> dict:
+    """GET /backup/list — list cloud snapshots (proxied to the relay by the API)."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/backup/list", params=params)).json()
+        return _raise(await c.get("/backup/list")).json()
 
 
-async def trigger_backup(token: str, backup_type: str = "database") -> None:
-    """POST /backup/trigger — trigger an immediate backup on the API process.
+async def trigger_backup(token: str) -> None:
+    """POST /backup/trigger — trigger an immediate cloud snapshot on the API process.
 
-    Backup (pg_dump + relay upload) can take well over 10 s; use a generous
+    A snapshot (pg_dump + dedup upload) can take well over 10 s; use a generous
     timeout so the UI handler gets a real success/error rather than a timeout
     exception that it can't distinguish from a connection failure.
     """
     async with _api_client(token, timeout=120.0) as c:
-        _raise(await c.post("/backup/trigger", params={"type": backup_type}))
+        _raise(await c.post("/backup/trigger"))
 
 
-async def export_backup(token: str):
-    """GET /backup/export, streamed. Returns (chunk_iterator, headers).
+async def export_backup(token: str, backup_id: str | None = None):
+    """GET /backup/export[/{backup_id}], streamed. Returns (chunk_iterator, headers).
 
-    The backup archive can be many GB (DB dump + attachments), so we never buffer it in
-    memory: the caller pipes the iterator straight into a StreamingResponse, and the httpx
-    client + response stay open until the iterator is exhausted. The server builds the
-    archive (pg_dump + bundling) before the first byte, so the read timeout is generous;
-    once bytes flow, each chunk just needs to arrive within it. We forward Content-Length
-    so the browser shows a real download progress bar.
+    With no ``backup_id`` this streams a fresh local export; with one it streams a cloud
+    snapshot the server reassembles on the fly. Either archive can be many GB (DB dump +
+    attachments), so we never buffer it in memory: the caller pipes the iterator straight
+    into a StreamingResponse, and the httpx client + response stay open until the iterator
+    is exhausted. The server builds the archive before the first byte, so the read timeout
+    is generous; once bytes flow, each chunk just needs to arrive within it. We forward
+    Content-Length so the browser shows a real download progress bar.
     """
+    url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
     client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
     try:
-        resp = await client.send(client.build_request("GET", "/backup/export"), stream=True)
+        resp = await client.send(client.build_request("GET", url), stream=True)
     except httpx.TimeoutException as exc:
         await client.aclose()
         raise APIError(504, "Backup timed out — the archive took too long to build.") from exc
@@ -2087,19 +2088,6 @@ async def export_backup(token: str):
 
     return _iter(), headers
 
-
-async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, str]:
-    """GET /backup/export/{backup_id} — download a specific cloud backup.
-
-    Returns (content_bytes, content_type, content_disposition).
-    """
-    async with _api_client(token, timeout=120.0) as c:
-        r = _raise(await c.get(f"/backup/export/{backup_id}"))
-        return (
-            r.content,
-            r.headers.get("content-type", "application/octet-stream"),
-            r.headers.get("content-disposition", f"attachment; filename={backup_id}.celerp-backup"),
-        )
 
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""

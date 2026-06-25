@@ -49,6 +49,12 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
 
 
 async def emit_event(session, **kwargs) -> LedgerEntry:
+    # A backup represents a clean point in time: while one is building, pause writes
+    # (reads, which never emit, are unaffected) so nothing changes mid-backup.
+    from celerp.services.backup_state import is_active as _backup_active
+    if _backup_active():
+        raise HTTPException(status_code=503, detail="Backup in progress, try again shortly.")
+
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:
         raise ValueError(f"Unknown event_type: {kwargs['event_type']}")

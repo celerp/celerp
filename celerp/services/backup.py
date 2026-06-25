@@ -1,30 +1,26 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Cloud backup service — pg_dump → AES-256-GCM encrypt → upload to relay.
+"""Backup primitives — pg_dump/pg_restore and AES-256-GCM encrypt/decrypt.
 
 Encryption:
   - Key: 32-byte random, base64-encoded, stored in config.toml [cloud] section
   - Nonce: 12-byte random, prepended to ciphertext
   - Wire format: nonce (12 bytes) + ciphertext (variable) + tag (16 bytes, appended by GCM)
 
-Upload:
-  - Encrypted blob is uploaded to the relay REST API via POST /backup/upload
-  - Auth: X-Session-Token + X-Instance-ID headers (from live gateway session)
+These primitives are shared by the local export/import path and the content-addressed
+cloud snapshot client (``backup_repo``).
 """
 
 from __future__ import annotations
 
 import base64
-import io
-import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 
 _NONCE_BYTES = 12
 
@@ -173,49 +169,6 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-async def upload_to_relay(
-    blob: bytes,
-    backup_type: str = "database",
-    label: str | None = None,
-) -> dict:
-    """Upload encrypted blob to relay REST API. Returns response dict."""
-    import httpx
-    url = f"{relay_http_url()}/backup/upload"
-    params: dict[str, str] = {"backup_type": backup_type}
-    if label:
-        params["label"] = label
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            url,
-            headers=relay_session_headers(),
-            params=params,
-            files={"file": ("backup.bin", io.BytesIO(blob), "application/octet-stream")},
-        )
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Relay upload failed with HTTP {response.status_code}: {response.text[:200]}"
-        )
-    return response.json()
-
-
-async def download_from_relay(backup_id: str) -> bytes:
-    """Download encrypted backup blob from relay via presigned URL."""
-    import httpx
-    url = f"{relay_http_url()}/backup/{backup_id}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, headers=relay_session_headers())
-    if response.status_code != 200:
-        raise RuntimeError(f"Failed to get download URL: HTTP {response.status_code}")
-
-    presigned_url = response.json()["url"]
-    async with httpx.AsyncClient(timeout=120) as client:
-        dl = await client.get(presigned_url)
-    if dl.status_code != 200:
-        raise RuntimeError(f"Download failed: HTTP {dl.status_code}")
-    return dl.content
-
-
 def restore_database(dump_bytes: bytes, database_url: str) -> None:
     """Run pg_restore from dump bytes into database_url.
 
@@ -239,47 +192,3 @@ def restore_database(dump_bytes: bytes, database_url: str) -> None:
         # pg_restore returns non-zero for warnings too; only raise on real errors
         if "ERROR" in stderr.upper():
             raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")
-
-
-async def run_backup(label: str | None = None) -> BackupResult:
-    """Orchestrate a full DB backup: dump → encrypt → upload to relay.
-
-    Returns BackupResult. Never raises — errors are captured in result.error.
-    """
-    if not settings.backup_encryption_key:
-        return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
-
-    if not get_session_token():
-        return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
-
-    try:
-        key = _parse_key(settings.backup_encryption_key)
-        dump = dump_database(settings.database_url)
-        blob = encrypt(dump, key)
-        await upload_to_relay(blob, backup_type="database", label=label)
-        return BackupResult(ok=True, size_bytes=len(blob))
-    except Exception as exc:
-        return BackupResult(ok=False, size_bytes=0, error=str(exc))
-
-
-async def run_restore(backup_id: str) -> BackupResult:
-    """Download, decrypt, and restore a database backup.
-
-    Creates a safety backup first. Returns BackupResult.
-    """
-    if not settings.backup_encryption_key:
-        return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
-
-    try:
-        # Safety backup first
-        safety = await run_backup(label="pre-restore-safety")
-        if not safety.ok:
-            return BackupResult(ok=False, size_bytes=0, error=f"Safety backup failed: {safety.error}")
-
-        key = _parse_key(settings.backup_encryption_key)
-        encrypted = await download_from_relay(backup_id)
-        dump = decrypt(encrypted, key)
-        restore_database(dump, settings.database_url)
-        return BackupResult(ok=True, size_bytes=len(dump))
-    except Exception as exc:
-        return BackupResult(ok=False, size_bytes=0, error=str(exc))
