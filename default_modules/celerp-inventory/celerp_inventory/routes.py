@@ -1911,10 +1911,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
 
 
-# Sentinel stored on a merged item when sources disagree on a dropdown (select) field — merging
-# must never sum or create a new option for those.
-_MERGE_MIXED_VALUE = "mixed"
-
 
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -1986,13 +1982,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     earliest_expiry = expiry_dates[0] if expiry_dates else None
 
     # Resolve attributes: collect all keys across sources.
-    def _is_numeric(val: str) -> bool:
-        try:
-            float(val)
-            return True
-        except (TypeError, ValueError):
-            return False
-
     # Expiry-related attributes are handled separately (earliest wins); exclude from conflict resolution.
     _EXPIRY_ATTR_KEYS = frozenset({"expiry_date", "warranty_exp", "expires_at"})
 
@@ -2001,15 +1990,19 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         all_attr_keys.update((p.state.get("attributes") or {}).keys())
     all_attr_keys -= _EXPIRY_ATTR_KEYS
 
-    # Dropdown (select) fields for the merged category: a merge must NEVER sum these or invent a
-    # new option. Same value across sources → that value; any disagreement → the "mixed" sentinel.
-    from celerp.services.field_schema import get_effective_field_schema
+    # Classify the merged category's fields by their SCHEMA type, not by the shape of their values.
+    # A merge must NEVER sum a field or invent a value. Only genuinely numeric-typed fields
+    # (number/money/rate) drop to no-value; every other conflicting field collapses to the "Mixed"
+    # system value. Keying off the value shape (as before) misclassified custom attributes whose
+    # values merely look numeric (free fields, or selects with numeric options) and silently dropped
+    # them instead of showing "Mixed".
+    from celerp.services.field_schema import get_effective_field_schema, MIXED_VALUE
     _merge_category = (next(iter(categories), "") or "").strip() or None
     _schema = await get_effective_field_schema(session, company_id, category=_merge_category)
-    _dropdown_keys = {f["key"] for f in _schema if f.get("type") == "select"}
+    _dropdown_keys = {f["key"] for f in _schema if f.get("type") in ("select", "status")}
+    _numeric_keys = {f["key"] for f in _schema if f.get("type") in ("number", "money", "rate")}
 
     resolved_attrs: dict = {}
-    unresolved_conflicts: list[str] = []
     for key in all_attr_keys:
         # Collect raw attribute values (preserve original type for numeric fields)
         raw_values = [(p.state.get("attributes") or {}).get(key) for p in source_projections if key in (p.state.get("attributes") or {})]
@@ -2020,24 +2013,21 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             resolved_attrs[key] = raw_values[0]
         elif key in _dropdown_keys:
             # Dropdown field: never sum and never invent an option — differing sources collapse
-            # to the system "mixed" sentinel (issue: merge must not create new dropdown values).
-            resolved_attrs[key] = _MERGE_MIXED_VALUE
-        elif all(_is_numeric(v) for v in unique_str_vals):
-            # Numeric conflict — summing invents a meaningless value (size 1 + 2 ≠ 3; 18K + 14K ≠ 32K).
-            # The correct value is unknowable, so the merged item carries NO value for it.
+            # to the system "Mixed" value (issue: merge must not create new dropdown values).
+            resolved_attrs[key] = MIXED_VALUE
+        elif key in _numeric_keys:
+            # Numeric-typed field — summing invents a meaningless value (size 1 + 2 ≠ 3; 18K + 14K ≠ 32K),
+            # and a numeric cell cannot render the "Mixed" label. The correct value is unknowable, so
+            # the merged item carries NO value for it.
             continue  # omit the key → no value
         else:
-            # String conflict — require user resolution.
+            # Any other conflicting field (custom/free attribute, text, etc.) collapses to the "Mixed"
+            # system value so the conflict stays visible instead of silently vanishing. An explicit
+            # user override via resolved_attributes still wins.
             if payload.resolved_attributes and key in payload.resolved_attributes:
                 resolved_attrs[key] = str(payload.resolved_attributes[key])
             else:
-                unresolved_conflicts.append(key)
-
-    if unresolved_conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Attribute conflicts require resolution via resolved_attributes: {sorted(unresolved_conflicts)}.",
-        )
+                resolved_attrs[key] = MIXED_VALUE
 
     # Apply user overrides.
     resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty

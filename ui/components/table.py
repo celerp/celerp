@@ -7,6 +7,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, get_lang
+from celerp.services.field_schema import MIXED_VALUE
 
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
@@ -736,28 +737,24 @@ def purchase_display_cell(
     )
 
 
-# "mixed" is a reserved SYSTEM value for select fields — e.g. a merge of items whose select
-# attribute differed. It is never stored in a field's configured options, but a select holding it
-# must still render (as "Mixed") and count as a real value, instead of matching no option and
-# showing empty. These helpers make that work without polluting the admin-configured option list.
-MIXED_SELECT_VALUE = "mixed"
-_MIXED_SELECT_LABEL = "Mixed"
-
-
+# MIXED_VALUE ("Mixed") is the reserved SYSTEM value for a field whose sources disagreed — e.g. a
+# merge of items whose dropdown or custom attribute differed. It is never part of a field's configured
+# options, but a select holding it must still render and count as a real value instead of matching no
+# option and showing empty. These helpers make that work without polluting the configured option list.
 def _is_mixed(value) -> bool:
-    return str(value or "").strip().lower() == MIXED_SELECT_VALUE
+    return str(value or "").strip().casefold() == MIXED_VALUE.casefold()
 
 
 def _options_with_mixed(options: list, value) -> list:
-    """Append a ('mixed', 'Mixed') option when the cell value is the reserved 'mixed' sentinel and
-    the field's options don't already include it — so a merged select renders as Mixed, not empty."""
+    """Append a ('Mixed', 'Mixed') option when the cell value is the reserved 'Mixed' sentinel and the
+    field's options don't already include it — so a merged select renders as Mixed, not empty."""
     if not _is_mixed(value):
         return options
     def _opt_val(o):
         return o[0] if isinstance(o, tuple) else o
-    if any(str(_opt_val(o)).strip().lower() == MIXED_SELECT_VALUE for o in options):
+    if any(_is_mixed(_opt_val(o)) for o in options):
         return options
-    return list(options) + [(MIXED_SELECT_VALUE, _MIXED_SELECT_LABEL)]
+    return list(options) + [(MIXED_VALUE, MIXED_VALUE)]
 
 
 def editable_cell(
@@ -950,9 +947,10 @@ def display_cell(
               ``/api/items/{entity_id}/field/{field}/edit`` pattern.
     label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name."""
     display_value = label_map.get(value, value) if label_map and value is not None else value
-    # Show the reserved 'mixed' select sentinel as "Mixed" (not the raw lowercase value or empty).
-    if cell_type in ("select", "status") and _is_mixed(value):
-        display_value = _MIXED_SELECT_LABEL
+    # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
+    # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
+    if _is_mixed(value):
+        display_value = MIXED_VALUE
     inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
     _safe_id = entity_id.replace(":", "-")

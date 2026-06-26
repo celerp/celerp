@@ -2478,14 +2478,16 @@ async def test_recipe_backed_cost_reads_at_standard_not_lot_total(client):
 @pytest.mark.asyncio
 async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
     """Merging must never sum or invent a value for dropdown (select) fields. Identical values
-    carry forward; any disagreement collapses to the system 'mixed'. Regression: numeric-option
+    carry forward; any disagreement collapses to the system 'Mixed'. Regression: numeric-option
     dropdowns were summed into invalid new values (e.g. size 1 + size 2 -> 3)."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    # Category with a string dropdown (grade) and a NUMERIC-option dropdown (size).
+    # Category with a string dropdown (grade), a NUMERIC-option dropdown (size), and a genuine
+    # numeric-TYPED field (weight_ct). 'carats' is left undefined -> a free/custom attribute.
     r = await client.patch("/companies/me", headers=h, json={"settings": {"category_schemas": {"DD": [
         {"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B", "C"], "editable": True, "required": False},
         {"key": "size", "label": "Size", "type": "select", "options": ["1", "2", "3"], "editable": True, "required": False},
+        {"key": "weight_ct", "label": "Weight (ct)", "type": "number", "editable": True, "required": False},
     ]}}})
     assert r.status_code == 200, r.text
 
@@ -2498,26 +2500,29 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
         assert rr.status_code == 200, rr.text
         return rr.json()["id"]
 
-    # Differing dropdowns -> "mixed"; numeric dropdown must NOT sum.
-    a = await _mk("DD-A", {"grade": "A", "size": "1", "carats": "5"})
-    b = await _mk("DD-B", {"grade": "B", "size": "2", "carats": "3"})
+    # Differing dropdowns -> "Mixed"; numeric dropdown must NOT sum.
+    a = await _mk("DD-A", {"grade": "A", "size": "1", "weight_ct": "5", "carats": "5"})
+    b = await _mk("DD-B", {"grade": "B", "size": "2", "weight_ct": "3", "carats": "3"})
     rm = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert rm.status_code == 200, rm.text
     merged = (await client.get(f"/items/{rm.json()['id']}", headers=h)).json()
-    assert _attr(merged, "grade") == "mixed"
-    assert _attr(merged, "size") == "mixed", f"numeric dropdown was summed/invented: {_attr(merged, 'size')!r}"
-    # A conflicting non-dropdown numeric attribute (carats) gets NO value — never summed.
-    assert _attr(merged, "carats") in (None, ""), f"numeric attr was summed/kept: {_attr(merged, 'carats')!r}"
+    assert _attr(merged, "grade") == "Mixed"
+    assert _attr(merged, "size") == "Mixed", f"numeric dropdown was summed/invented: {_attr(merged, 'size')!r}"
+    # A conflicting numeric-TYPED field (weight_ct) gets NO value — never summed, can't render "Mixed".
+    assert _attr(merged, "weight_ct") in (None, ""), f"numeric field was summed/kept: {_attr(merged, 'weight_ct')!r}"
+    # A conflicting CUSTOM/free attribute (carats) collapses to the system "Mixed" — never dropped.
+    assert _attr(merged, "carats") == "Mixed", f"custom attr was dropped instead of Mixed: {_attr(merged, 'carats')!r}"
 
-    # Identical values carry through (dropdown or numeric); only conflicts are cleared/mixed.
-    c = await _mk("DD-C", {"grade": "A", "size": "2", "carats": "5"})
-    d = await _mk("DD-D", {"grade": "A", "size": "2", "carats": "5"})
+    # Identical values carry through (dropdown, numeric, or custom); only conflicts are cleared/mixed.
+    c = await _mk("DD-C", {"grade": "A", "size": "2", "weight_ct": "5", "carats": "5"})
+    d = await _mk("DD-D", {"grade": "A", "size": "2", "weight_ct": "5", "carats": "5"})
     rm2 = await client.post("/items/merge", json={"source_entity_ids": [c, d], "target_sku_from": c}, headers=h)
     assert rm2.status_code == 200, rm2.text
     merged2 = (await client.get(f"/items/{rm2.json()['id']}", headers=h)).json()
     assert _attr(merged2, "grade") == "A"
     assert _attr(merged2, "size") == "2"
-    assert float(_attr(merged2, "carats")) == 5.0  # agreeing numeric still carries
+    assert float(_attr(merged2, "weight_ct")) == 5.0  # agreeing numeric still carries
+    assert str(_attr(merged2, "carats")) == "5"       # agreeing custom attr still carries
 
 
 @pytest.mark.asyncio

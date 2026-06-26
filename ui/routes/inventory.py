@@ -2704,28 +2704,15 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
-        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_expired", "children",
-                                         "child_skus", "merged_into", "reserved_quantity",
-                                         "tax_codes", "unit", "expires_at", "total_cost",
-                                         "entity_id"}
-        def _extract_attrs(it: dict) -> dict:
-            return {k: v for k, v in it.items() if k not in _CORE_KEYS and not k.endswith("_price") and v is not None}
-        item_attrs = [_extract_attrs(it) for it in items]
-        all_attr_keys: set[str] = set()
-        for attrs in item_attrs:
-            all_attr_keys.update(attrs.keys())
-        resolved_attrs: dict = {}
-        for key in all_attr_keys:
-            vals = [str(attrs[key]) for attrs in item_attrs if key in attrs]
-            unique = set(vals)
-            resolved_attrs[key] = vals[0] if len(unique) == 1 else "mixed"
+        # Attribute conflict resolution lives entirely in the merge endpoint (schema-aware: dropdowns
+        # and custom attributes collapse to the "Mixed" system value, numeric fields drop). The UI
+        # must not duplicate that logic.
         try:
             result = await api.merge_items(
                 token,
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=total_qty,
-                resolved_attributes=resolved_attrs or None,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.

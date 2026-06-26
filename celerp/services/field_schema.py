@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
 
+# Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
+# of items holding different values for a dropdown or custom attribute). There is ONE canonical form,
+# "Mixed", stored and displayed verbatim — no separate lowercase sentinel vs capitalized label.
+MIXED_VALUE = "Mixed"
+
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Wholesale"},
