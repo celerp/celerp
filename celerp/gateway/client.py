@@ -240,6 +240,9 @@ class GatewayClient:
         elif msg_type == "http.request":
             asyncio.create_task(self._handle_proxy_request(payload))
 
+        elif msg_type == "shopify.webhook":
+            asyncio.create_task(self._handle_shopify_webhook(payload))
+
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
 
@@ -266,6 +269,38 @@ class GatewayClient:
             log.debug("Gateway: feature_flags persisted to config.")
         except Exception as exc:
             log.warning("Gateway: failed to persist feature_flags: %s", exc)
+
+    async def _handle_shopify_webhook(self, payload: dict) -> None:
+        """A Shopify webhook the relay forwarded. Trigger a targeted incremental
+        sync for the affected entity on each company with Shopify configured
+        (idempotency keys dedupe against the reconciliation pass)."""
+        topic = payload.get("topic", "")
+        data = payload.get("data") or {}
+        try:
+            import sqlalchemy as sa
+
+            from celerp.connectors.base import SyncDirection
+            from celerp.connectors.relay_token import fetch_context
+            from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+            from celerp.db import get_session_ctx
+            from celerp.models.connector_config import ConnectorConfig
+
+            async with get_session_ctx() as session:
+                rows = await session.execute(
+                    sa.select(ConnectorConfig.company_id, ConnectorConfig.direction).where(
+                        ConnectorConfig.connector == "shopify"
+                    )
+                )
+                configs = rows.all()
+
+            event = WebhookEvent(platform="shopify", topic=topic, payload=data)
+            for company_id, direction in configs:
+                ctx = await fetch_context(company_id, "shopify")
+                if ctx is None:
+                    continue
+                await handle_webhook(event, ctx, direction=SyncDirection(direction))
+        except Exception as exc:
+            log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)
 
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.

@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     celerp_public_url: str = ""
     # Cloud Relay (opt-in - leave blank to disable entirely).
     # Set GATEWAY_TOKEN to activate the persistent WS connection to relay.celerp.com.
-    # No value = no connection, no telemetry, no cloud dependency.
+    # No `[gateway_token]` means no gateway connection, no product telemetry, and
+    # no cloud dependency, except a startup subscription check.
     gateway_token: str = ""
     gateway_url: str = "wss://relay.celerp.com/ws/connect"
     # Unique instance identifier sent to gateway (auto-generated if blank).

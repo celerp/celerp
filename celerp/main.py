@@ -89,8 +89,9 @@ async def _try_auto_activate() -> None:
         _prev_level = _httpx_log.level
         _httpx_log.setLevel(logging.WARNING)
         try:
+            from celerp import __version__ as _ver
             async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid, "version": _ver})
         finally:
             _httpx_log.setLevel(_prev_level)
         if r.status_code != 200:
@@ -246,6 +247,13 @@ async def lifespan(_app: FastAPI):
     from celerp.services.session_tracker import run_jti_cleanup_loop
     jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
 
+    # Connector reconciliation scheduler: a daily incremental sync per connector,
+    # backstopping any realtime webhooks missed while offline. No-op without a
+    # relay session (self-hosted instances skip token fetch).
+    from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
+    connector_sched_task = asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher))
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -255,6 +263,7 @@ async def lifespan(_app: FastAPI):
     # Stop background tasks
     cleanup_task.cancel()
     jti_cleanup_task.cancel()
+    connector_sched_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

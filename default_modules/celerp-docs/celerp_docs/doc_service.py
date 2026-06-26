@@ -41,15 +41,16 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
         financial_status = order.get("financial_status", "pending")
         status = "closed" if financial_status == "paid" else "open"
 
-        line_items = [
-            {
+        line_items = []
+        for li in order.get("line_items", []):
+            qty = float(li.get("quantity") or 1)      # null/missing → 1
+            price = float(li.get("price") or 0)       # null/missing → 0
+            line_items.append({
                 "name": li.get("title", ""),
-                "quantity": float(li.get("quantity", 1)),
-                "unit_price": float(li.get("price", 0)),
-                "line_total": float(li.get("quantity", 1)) * float(li.get("price", 0)),
-            }
-            for li in order.get("line_items", [])
-        ]
+                "quantity": qty,
+                "unit_price": price,
+                "line_total": qty * price,
+            })
         total = float(order.get("total_price", 0) or 0)
 
         data = {
