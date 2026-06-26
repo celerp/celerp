@@ -365,7 +365,9 @@ async def list_docs(
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
         if converted_to_type:
             out = [x for x in out if x.get("converted_to_type") == converted_to_type]
-        out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
+        # Tiebreak on the unique id so equal-date rows have a deterministic order (same
+        # reason as the SQL path: otherwise OFFSET pagination can skip/duplicate a row).
+        out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
         total = len(out)
         if offset:
             out = out[offset:]
@@ -382,6 +384,10 @@ async def list_docs(
         .where(*base_where)
         .order_by(
             Projection.state["issue_date"].as_string().desc(),
+            # Unique tiebreaker so the sort is a TOTAL order. Without it, rows sharing an
+            # issue_date come back in an arbitrary order that differs between the per-page
+            # queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET.
+            Projection.entity_id.desc(),
         )
         .offset(offset)
     )
