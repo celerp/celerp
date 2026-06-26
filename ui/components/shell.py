@@ -1128,6 +1128,11 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         cls="user-menu__item",
                     ),
                     A(
+                        "🔑 " + t("nav.change_password", lang, default="Change password"),
+                        href="/settings/general?tab=password",
+                        cls="user-menu__item",
+                    ),
+                    A(
                         "⎋ " + t("nav.logout", lang),
                         href="/logout",
                         cls="user-menu__item user-menu__item--logout",
