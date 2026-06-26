@@ -71,6 +71,38 @@ async def test_sync_products_skips_no_sku(shopify, ctx_shopify, mock_upsert_item
 
 
 @pytest.mark.asyncio
+async def test_sync_products_keeps_zero_price(shopify, ctx_shopify, mock_upsert_item):
+    """A real price of 0 must be kept as 0.0, not collapsed to None."""
+    with respx.mock:
+        respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": [
+                {"id": 1, "title": "Freebie", "images": [], "variants": [
+                    {"id": 10, "sku": "FREE-1", "title": "Default Title", "price": "0.00", "inventory_quantity": 1}
+                ]}
+            ]})
+        )
+        await shopify.sync_products(ctx_shopify)
+    item = mock_upsert_item.call_args_list[0][0][1]
+    assert item.sale_price == 0.0
+
+
+@pytest.mark.asyncio
+async def test_sync_products_missing_price_is_none(shopify, ctx_shopify, mock_upsert_item):
+    """A genuinely-absent price maps to None (not 0)."""
+    with respx.mock:
+        respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": [
+                {"id": 1, "title": "Unpriced", "images": [], "variants": [
+                    {"id": 10, "sku": "UNP-1", "title": "Default Title", "inventory_quantity": 1}
+                ]}
+            ]})
+        )
+        await shopify.sync_products(ctx_shopify)
+    item = mock_upsert_item.call_args_list[0][0][1]
+    assert item.sale_price is None
+
+
+@pytest.mark.asyncio
 async def test_sync_products_variant_naming(shopify, ctx_shopify, mock_upsert_item):
     """Default Title variant uses product title only; named variants get appended."""
     with respx.mock:

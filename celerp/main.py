@@ -89,8 +89,9 @@ async def _try_auto_activate() -> None:
         _prev_level = _httpx_log.level
         _httpx_log.setLevel(logging.WARNING)
         try:
+            from celerp import __version__ as _ver
             async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid, "version": _ver})
         finally:
             _httpx_log.setLevel(_prev_level)
         if r.status_code != 200:

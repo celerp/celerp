@@ -167,6 +167,27 @@ class TestUpsertContactFromShopify:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_contact_dedup_is_company_scoped(self):
+        """Regression: the dedup query must filter by company_id — otherwise one
+        company importing a Shopify customer blocks every other company from
+        importing the same customer id (per-company ledger idempotency)."""
+        from celerp_contacts.services import upsert_contact_from_shopify
+
+        customer = {"id": 12345, "email": "x@example.com"}
+        cm, sess = _mock_session_ctx(existing=None)
+
+        with patch("celerp.db.SessionLocal", return_value=cm), \
+             patch("celerp_contacts.services.emit_event", new=AsyncMock(return_value=MagicMock())):
+            result = await upsert_contact_from_shopify("company-A", customer)
+
+        assert result is True
+        first_call = sess.execute.call_args_list[0]
+        sql = str(first_call[0][0])
+        params = first_call[0][1]
+        assert "company_id" in sql
+        assert params.get("cid") == "company-A"
+
+    @pytest.mark.asyncio
     async def test_falls_back_to_email_for_name(self):
         """When first+last are empty, name should fall back to email."""
         from celerp_contacts.services import upsert_contact_from_shopify

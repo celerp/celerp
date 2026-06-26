@@ -36,10 +36,14 @@ async def upsert_contact_from_shopify(company_id: str, customer: dict) -> bool:
     idem_key = f"shopify:customer:{customer['id']}"
 
     async with SessionLocal() as session:
+        # Idempotency is per-company (ledger uq is on company_id+idempotency_key),
+        # so the dedup check MUST be scoped to this company — otherwise one
+        # company importing a customer would block every other company from
+        # importing the same Shopify customer id.
         existing = (
             await session.execute(
-                text("SELECT id FROM ledger WHERE idempotency_key=:k"),
-                {"k": idem_key},
+                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+                {"cid": str(company_id), "k": idem_key},
             )
         ).first()
         if existing:
