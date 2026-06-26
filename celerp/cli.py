@@ -468,7 +468,13 @@ def main() -> None:
 @click.option("--cloud-token", default=None, help="Celerp Cloud token (optional).")
 @click.option("--force", is_flag=True, help="Reconfigure: WIPES the database and all attached files.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the --force wipe confirmation (non-interactive use).")
-def init(db_url, api_port, ui_port, cloud_token, force, assume_yes):
+@click.option(
+    "--no-start", "no_start", is_flag=True,
+    help="Provision the database, run migrations, and write config, then exit "
+         "WITHOUT launching the servers. For service-managed/headless installs "
+         "where a process manager (e.g. systemd) runs `celerp start`.",
+)
+def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start):
     """Initialize Celerp: write config and run database migrations."""
     config_path = _config_path()
 
@@ -612,6 +618,9 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes):
             f"  Back us early: {_handoff('/github', medium='cli')}\n"
         )
 
+    if no_start:
+        click.echo("Setup complete. Start the servers with: celerp start")
+        return
     _start(cfg)
 
 
