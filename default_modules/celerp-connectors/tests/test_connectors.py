@@ -354,6 +354,7 @@ async def test_sync_runner_allows_inbound_when_both():
     )
     with patch("celerp.db.get_session_ctx") as mock_db:
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
         mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await run_sync(shopify, ctx, "products", direction=SyncDirection.BOTH)
@@ -369,6 +370,7 @@ async def test_sync_runner_no_direction_runs_all():
     # products_out will raise NotImplementedError for missing items, but it won't be direction-blocked
     with patch("celerp.db.get_session_ctx") as mock_db:
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
         mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await run_sync(shopify, ctx, "products_out", direction=None)
