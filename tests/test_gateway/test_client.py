@@ -13,6 +13,7 @@ import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+import httpx
 import pytest
 
 from celerp.gateway.client import GatewayClient
@@ -363,7 +364,7 @@ async def test_proxy_routes_everything_to_ui_server(client, monkeypatch, path):
     class FakeResp:
         status_code = 200
         content = b"ok"
-        headers = {}
+        headers = httpx.Headers()
 
     class FakeClient:
         def __init__(self, *a, **k):
@@ -389,3 +390,52 @@ async def test_proxy_routes_everything_to_ui_server(client, monkeypatch, path):
     })
     assert "127.0.0.1:8080" in captured["url"], captured
     assert "127.0.0.1:8000" not in captured["url"], captured
+
+
+@pytest.mark.asyncio
+async def test_proxy_response_preserves_multiple_set_cookie(client, monkeypatch):
+    """A proxied response must serialize headers as an ordered list of pairs so multiple Set-Cookie
+    headers (login/refresh emit access_token + refresh_token) survive. A dict would collapse them
+    into one comma-joined value the browser can't parse, dropping the refresh cookie over the relay."""
+    sent = []
+
+    class FakeResp:
+        status_code = 200
+        content = b"<html></html>"
+        headers = httpx.Headers([
+            ("content-type", "text/html"),
+            ("content-length", "13"),
+            ("set-cookie", "access_token=AAA; Path=/; HttpOnly"),
+            ("set-cookie", "refresh_token=RRR; Path=/; HttpOnly"),
+        ])
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def request(self, method, url, headers=None, content=None):
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+    client._ws = object()
+
+    await client._handle_proxy_request({
+        "id": "r1", "method": "GET", "path": "/x",
+        "query": "", "headers": {}, "body_b64": "",
+    })
+
+    headers = sent[-1]["payload"]["headers"]
+    assert isinstance(headers, list), f"headers must be a list of pairs, got {type(headers)}"
+    cookies = [v for k, v in headers if k.lower() == "set-cookie"]
+    assert len(cookies) == 2, f"both Set-Cookie headers must survive, got: {cookies}"
+    assert any("access_token=AAA" in c for c in cookies)
+    assert any("refresh_token=RRR" in c for c in cookies)
+    # content-length is dropped so the relay recomputes it from the (decoded) body.
+    assert not any(k.lower() == "content-length" for k, _ in headers)

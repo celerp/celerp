@@ -13,6 +13,7 @@ from fasthtml.common import *
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS
+from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
 def _css_version() -> str:
@@ -43,6 +44,24 @@ def _available_locales() -> list[tuple[str, str]]:
     return [(c, _LOCALE_LABELS.get(c, c.upper())) for c in codes]
 
 _LOCALES = _available_locales()
+
+# Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. Uniform
+# across direct and relay access (no token-TTL surgery), and it implements "15 minutes of inactivity"
+# directly. An active user's interactions keep resetting the timer; set idle_logout_minutes=0 to disable.
+_IDLE_LOGOUT_JS = ("""
+(function(){
+  var IDLE_MS = __IDLE_MIN__ * 60000;
+  if (IDLE_MS <= 0) return;
+  var t;
+  function out(){ window.location.href = '/logout?reason=idle'; }
+  function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
+  ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){
+    document.addEventListener(ev, reset, {passive:true});
+  });
+  document.addEventListener('htmx:afterRequest', reset);
+  reset();
+})();
+""").replace("__IDLE_MIN__", str(int(_app_settings.idle_logout_minutes)))
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
@@ -918,6 +937,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         Script(src="/static/htmx.min.js"),
         Script(_CLIENT_JS),
+        Script(_IDLE_LOGOUT_JS),
         Script(_HEALTH_BANNER_JS),
         Script(_BACKUP_BANNER_JS),
         Script(_NOTIFICATION_JS),

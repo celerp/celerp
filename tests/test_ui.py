@@ -187,6 +187,31 @@ class TestAuthRouting:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
+    async def test_htmx_unauthenticated_gets_hx_redirect(self, ui_client):
+        """An HTMX request to a protected route without a session must return HX-Redirect (a real
+        navigation) instead of a 302 the browser would swap inline as a broken fragment. This is the
+        active-logout path so on-page actions don't fail silently when the session ends."""
+        r = await ui_client.get("/", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert r.headers.get("HX-Redirect", "").startswith("/login")
+
+    @pytest.mark.asyncio
+    async def test_login_idle_reason_shows_message(self, ui_client):
+        """/login?reason=idle (where the inactivity timer sends the browser) explains the logout."""
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login?reason=idle")
+        assert r.status_code == 200
+        assert b"inactivity" in r.content.lower()
+
+    def test_idle_logout_js_wired_with_config(self):
+        """The inactivity timer is rendered with the configured minutes and logs out on timeout."""
+        from ui.components.shell import _IDLE_LOGOUT_JS
+        from celerp.config import settings
+        assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
+        assert "addEventListener" in _IDLE_LOGOUT_JS
+        assert f"{int(settings.idle_logout_minutes)} * 60000" in _IDLE_LOGOUT_JS
+
+    @pytest.mark.asyncio
     async def test_login_page_renders(self, ui_client):
         """GET /login → returns HTML login form."""
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
