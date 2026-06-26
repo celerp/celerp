@@ -2518,3 +2518,32 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
     assert _attr(merged2, "grade") == "A"
     assert _attr(merged2, "size") == "2"
     assert float(_attr(merged2, "carats")) == 5.0  # agreeing numeric still carries
+
+
+@pytest.mark.asyncio
+async def test_transform_drops_sell_prices_keeps_cost(client):
+    """A transform must NOT carry the parent's sell prices to the child: selling transformed goods
+    at the pre-transform sell price is unsafe. The child starts with no sell price (the user sets it
+    manually before selling); cost still carries over."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "TX-PARENT", "name": "Parent", "quantity": 20, "sell_by": "piece",
+        "retail_price": 38.0, "wholesale_price": 24.0, "cost_total": 260.0,
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    parent = (await client.get(f"/items/{pid}", headers=h)).json()
+    assert float(parent.get("retail_price") or 0) == 38.0  # parent really has a sell price
+
+    rt = await client.post(f"/items/{pid}/transform", json={
+        "child_sku": "TX-CHILD", "child_category": "Cut", "child_sell_by": "piece",
+        "child_quantity": 10, "child_cost_total": 260.0,
+    }, headers=h)
+    assert rt.status_code == 200, rt.text
+    child = (await client.get(f"/items/{rt.json()['child_id']}", headers=h)).json()
+    # Sell prices dropped — neither carried verbatim nor rebased.
+    assert not child.get("retail_price"), f"retail_price should be dropped, got {child.get('retail_price')!r}"
+    assert not child.get("wholesale_price"), f"wholesale_price should be dropped, got {child.get('wholesale_price')!r}"
+    # Cost still preserved.
+    assert float(child.get("cost_total") or 0) == 260.0

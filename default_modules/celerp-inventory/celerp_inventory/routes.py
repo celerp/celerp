@@ -1760,8 +1760,11 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
-    # Exclude cost fields: child cost is set explicitly from child_cost_total
-    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
+    # Sell-price fields (retail/wholesale/custom price-list rates — every *_price except cost).
+    # These are intentionally DROPPED on the child: a transform changes what the item is, so the
+    # pre-transform sell price must not carry over (it would let the user accidentally sell the
+    # transformed goods at the old price). The user sets the new sell price manually before selling.
+    parent_price_keys = {k for k in parent.state if k.endswith("_price") and k != "cost_price"}
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
@@ -1772,7 +1775,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
     # Also override sell_by and category — the purpose of a transform is to change these.
     child_data: dict = {
-        k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
+        k: v for k, v in parent.state.items()
+        if k not in _CHILD_RESET_FIELDS and k not in parent_price_keys
     }
     child_data.update({
         "sku": payload.child_sku,
@@ -1828,21 +1832,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         metadata_={"reason": "from_transform"},
     )
 
-    # 2. Copy prices
-    for price_type, price_val in parent_prices.items():
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=child_eid,
-            entity_type="item",
-            event_type="item.pricing.set",
-            data={"price_type": price_type, "new_price": price_val},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"reason": "from_transform"},
-        )
+    # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
+    #    parent_price_keys note above). Only cost carries over.
 
     # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
     await emit_event(
