@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
+    # Log the UI out after this many minutes of no user interaction (client-side idle timer).
+    # Uniform across direct and relay access; set to 0 to disable.
+    idle_logout_minutes: int = 15
     # Set to "true" to allow the default JWT secret (CI only).
     allow_insecure_jwt: str = "false"
     # Logging level for both API and UI processes. Override with LOG_LEVEL env var.

@@ -67,6 +67,10 @@ def _auth_guard(req: Request):
         return None
     if req.cookies.get(COOKIE_NAME):
         return None
+    # An HTMX request follows a 302 and swaps the login page into the fragment (a silent, broken
+    # in-page failure). HX-Redirect makes the browser do a real navigation instead.
+    if req.headers.get("hx-request"):
+        return Response(status_code=200, headers={"HX-Redirect": "/login?reason=expired"})
     return RedirectResponse("/login", status_code=302)
 
 
@@ -267,11 +271,12 @@ from ui.api_client import APIError as _APIError
 from starlette.responses import RedirectResponse as _RR
 
 
-def _401_redirect(detail: str) -> _RR:
+def _401_redirect(detail: str, request: Request | None = None):
     """Build a /login redirect from a 401 detail string.
 
     detail may be bare 'Session expired' or 'Session expired|<ip>' (force-login).
-    Any other detail is treated as a generic expiry.
+    Any other detail is treated as a generic expiry. For an HTMX request, return HX-Redirect so the
+    browser navigates instead of swapping the login page into the fragment that fired the request.
     """
     if detail.startswith("Session expired"):
         parts = detail.split("|", 1)
@@ -279,18 +284,21 @@ def _401_redirect(detail: str) -> _RR:
         params = f"reason=evicted&by={ip}" if ip else "reason=evicted"
     else:
         params = "reason=expired"
-    return _RR(f"/login?{params}", status_code=302)
+    url = f"/login?{params}"
+    if request is not None and request.headers.get("hx-request"):
+        return Response(status_code=200, headers={"HX-Redirect": url})
+    return _RR(url, status_code=302)
 
 
-async def ui_401_handler(request: Request, exc) -> _RR:
+async def ui_401_handler(request: Request, exc):
     """Redirect HTTPException 401s to /login."""
-    return _401_redirect(getattr(exc, "detail", "") or "")
+    return _401_redirect(getattr(exc, "detail", "") or "", request)
 
 
-async def ui_api_error_handler(request: Request, exc: _APIError) -> _RR:
+async def ui_api_error_handler(request: Request, exc: _APIError):
     """Redirect APIError 401s (API → UI proxy calls) to /login."""
     if exc.status == 401:
-        return _401_redirect(str(exc.detail or ""))
+        return _401_redirect(str(exc.detail or ""), request)
     # re-raise non-401 APIErrors as 500 so the existing 500 handler formats them
     raise exc
 

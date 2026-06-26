@@ -298,7 +298,7 @@ class GatewayClient:
                 "payload": {
                     "id": request_id,
                     "status": 200,
-                    "headers": {"content-type": "text/event-stream", "cache-control": "no-cache"},
+                    "headers": [["content-type", "text/event-stream"], ["cache-control", "no-cache"]],
                     "body_b64": base64.b64encode(b"data: {}\n\n").decode(),
                 },
             })
@@ -326,12 +326,16 @@ class GatewayClient:
                     content=body,
                 )
             resp_body_b64 = base64.b64encode(resp.content).decode() if resp.content else ""
-            # Filter hop-by-hop headers from response
-            _skip = {"transfer-encoding", "connection", "keep-alive"}
-            resp_headers = {
-                k: v for k, v in resp.headers.items()
+            # Serialize as an ORDERED LIST of pairs (not a dict): a response can carry several
+            # Set-Cookie headers (login/refresh emit access_token + refresh_token), and a dict would
+            # collapse them into one comma-joined value the browser can't parse — so the refresh
+            # cookie never reaches the browser and the session dies at the access token's hard cap.
+            # multi_items() keeps each header separate. Drop content-length; the relay recomputes it.
+            _skip = {"transfer-encoding", "connection", "keep-alive", "content-length"}
+            resp_headers = [
+                [k, v] for k, v in resp.headers.multi_items()
                 if k.lower() not in _skip
-            }
+            ]
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
@@ -348,7 +352,7 @@ class GatewayClient:
                 "payload": {
                     "id": request_id,
                     "status": 502,
-                    "headers": {"content-type": "text/plain"},
+                    "headers": [["content-type", "text/plain"]],
                     "body_b64": base64.b64encode(
                         f"Local app error: {type(exc).__name__}: {exc}".encode()
                     ).decode(),

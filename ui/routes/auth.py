@@ -83,6 +83,8 @@ def setup_routes(app):
             )
         elif reason == "expired":
             notice = flash("Your session expired. Please sign in again.", kind="warning")
+        elif reason == "idle":
+            notice = flash("You were signed out after a period of inactivity. Please sign in again.", kind="warning")
         else:
             notice = ""
         resp = auth_shell(_login_form(notice=notice), title="Sign in - Celerp")
@@ -346,11 +348,13 @@ def setup_routes(app):
 
     @app.get("/logout")
     async def logout_get(request: Request):
-        """GET fallback for no-JS clients. Clears tokens and redirects."""
+        """GET fallback for no-JS clients and the idle-timer. Clears tokens and redirects."""
         token = request.cookies.get(COOKIE_NAME)
         if token:
             await api_logout(token)
-        resp = RedirectResponse("/login", status_code=302)
+        reason = request.query_params.get("reason", "")
+        dest = f"/login?reason={reason}" if reason else "/login"
+        resp = RedirectResponse(dest, status_code=302)
         _clear_tokens(resp)
         return resp
 
