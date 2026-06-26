@@ -1610,12 +1610,14 @@ async def test_merge_then_split_does_not_500(client):
 
 @pytest.mark.asyncio
 async def test_merge_numeric_attrs_stored_as_numbers(client):
-    """After merge, numeric attributes (pieces) must be stored as numbers, not strings."""
+    """An AGREEING numeric attribute carries through after merge as a number, not a string.
+    (Conflicting numeric attributes get no value — see test_merge_dropdown_fields_use_value_or_mixed_never_sum.)
+    """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     loc = (await client.post("/companies/me/locations", json={"name": "WH-MNA", "type": "warehouse"}, headers=h)).json()
     r1 = await client.post("/items", json={"sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 8}}, headers=h)
-    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 12}}, headers=h)
+    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 8}}, headers=h)
     assert r1.status_code == 200
     assert r2.status_code == 200
     id1, id2 = r1.json()["id"], r2.json()["id"]
@@ -1623,9 +1625,11 @@ async def test_merge_numeric_attrs_stored_as_numbers(client):
     assert mr.status_code == 200, mr.text
     merged_id = mr.json()["id"]
     item = (await client.get(f"/items/{merged_id}", headers=h)).json()
-    pieces_val = (item.get("attributes") or {}).get("pieces") or item.get("pieces")
+    pieces_val = (item.get("attributes") or {}).get("pieces")
+    if pieces_val is None:
+        pieces_val = item.get("pieces")
     assert isinstance(pieces_val, (int, float)), f"pieces should be numeric, got {type(pieces_val)}: {pieces_val!r}"
-    assert int(float(pieces_val)) == 20
+    assert int(float(pieces_val)) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -2469,3 +2473,48 @@ async def test_recipe_backed_cost_reads_at_standard_not_lot_total(client):
         f"valuation Cost must value the ring at standard (gold 80 + ring 800), "
         f"got delta {float(val['cost_total']) - base_cost}"
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
+    """Merging must never sum or invent a value for dropdown (select) fields. Identical values
+    carry forward; any disagreement collapses to the system 'mixed'. Regression: numeric-option
+    dropdowns were summed into invalid new values (e.g. size 1 + size 2 -> 3)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Category with a string dropdown (grade) and a NUMERIC-option dropdown (size).
+    r = await client.patch("/companies/me", headers=h, json={"settings": {"category_schemas": {"DD": [
+        {"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B", "C"], "editable": True, "required": False},
+        {"key": "size", "label": "Size", "type": "select", "options": ["1", "2", "3"], "editable": True, "required": False},
+    ]}}})
+    assert r.status_code == 200, r.text
+
+    def _attr(item, key):
+        return (item.get("attributes") or {}).get(key, item.get(key))
+
+    async def _mk(sku, attrs):
+        rr = await client.post("/items", json={"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece",
+                                               "category": "DD", "attributes": attrs}, headers=h)
+        assert rr.status_code == 200, rr.text
+        return rr.json()["id"]
+
+    # Differing dropdowns -> "mixed"; numeric dropdown must NOT sum.
+    a = await _mk("DD-A", {"grade": "A", "size": "1", "carats": "5"})
+    b = await _mk("DD-B", {"grade": "B", "size": "2", "carats": "3"})
+    rm = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert rm.status_code == 200, rm.text
+    merged = (await client.get(f"/items/{rm.json()['id']}", headers=h)).json()
+    assert _attr(merged, "grade") == "mixed"
+    assert _attr(merged, "size") == "mixed", f"numeric dropdown was summed/invented: {_attr(merged, 'size')!r}"
+    # A conflicting non-dropdown numeric attribute (carats) gets NO value — never summed.
+    assert _attr(merged, "carats") in (None, ""), f"numeric attr was summed/kept: {_attr(merged, 'carats')!r}"
+
+    # Identical values carry through (dropdown or numeric); only conflicts are cleared/mixed.
+    c = await _mk("DD-C", {"grade": "A", "size": "2", "carats": "5"})
+    d = await _mk("DD-D", {"grade": "A", "size": "2", "carats": "5"})
+    rm2 = await client.post("/items/merge", json={"source_entity_ids": [c, d], "target_sku_from": c}, headers=h)
+    assert rm2.status_code == 200, rm2.text
+    merged2 = (await client.get(f"/items/{rm2.json()['id']}", headers=h)).json()
+    assert _attr(merged2, "grade") == "A"
+    assert _attr(merged2, "size") == "2"
+    assert float(_attr(merged2, "carats")) == 5.0  # agreeing numeric still carries
