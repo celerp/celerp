@@ -381,3 +381,37 @@ class TestPerPageSelector:
         from fasthtml.common import to_xml
         html = to_xml(_per_page_selector(100, "/inventory", "status=sold"))
         assert "/inventory?per_page=" in html and "status=sold" in html
+
+
+class TestMixedSelectSystemValue:
+    """#178: 'mixed' is a reserved system value for select fields (e.g. a merge of items whose
+    select attribute differed). It must render as a selectable 'Mixed' rather than matching no
+    option and showing empty — and without being added to the field's configured options."""
+
+    def test_editable_select_renders_mixed_as_selected_option(self):
+        from ui.components.table import editable_cell
+        from fasthtml.common import to_xml
+        html = to_xml(editable_cell("item:1", "stone_type", "mixed", cell_type="select",
+                                    options=["Alexandrite", "Amethyst"]))
+        assert "Mixed" in html, "stored 'mixed' must render as a 'Mixed' option, not empty"
+        assert 'value="mixed"' in html and "selected" in html
+
+    def test_editable_select_normal_value_has_no_injected_mixed(self):
+        from ui.components.table import editable_cell
+        from fasthtml.common import to_xml
+        html = to_xml(editable_cell("item:1", "stone_type", "Amethyst", cell_type="select",
+                                    options=["Alexandrite", "Amethyst"]))
+        assert ">Mixed<" not in html, "'Mixed' must not be injected for a normal value"
+
+    def test_display_select_shows_mixed_label(self):
+        from ui.components.table import display_cell
+        from fasthtml.common import to_xml
+        html = to_xml(display_cell("item:1", "stone_type", "mixed", cell_type="select",
+                                   options=["Alexandrite", "Amethyst"]))
+        assert "Mixed" in html
+
+    def test_options_helper_idempotent_when_already_present(self):
+        from ui.components.table import _options_with_mixed
+        # already has a Mixed option → not duplicated
+        opts = [("a", "A"), ("mixed", "Mixed")]
+        assert _options_with_mixed(opts, "mixed") == opts
