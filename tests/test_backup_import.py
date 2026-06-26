@@ -111,6 +111,53 @@ class TestValidateArchiveEnabledModules:
             path.unlink(missing_ok=True)
 
 
+class TestPgVersionPreCheck:
+    """validate_archive must fail early (actionable message) when the backup was made by a
+    newer PostgreSQL than the local pg_restore can read — instead of the cryptic
+    'unsupported version (1.16) in file header' pg_restore emits mid-restore."""
+
+    _PG17 = "pg_dump (PostgreSQL) 17.2 (Ubuntu 17.2-1.pgdg24.04+1)"
+
+    def test_pg_major_parsing(self):
+        from celerp.services.backup_import import _pg_major
+        assert _pg_major(self._PG17) == 17
+        assert _pg_major("pg_restore (PostgreSQL) 16.14 (Ubuntu ...)") == 16
+        assert _pg_major("16") is None      # bare/unrecognized -> unknown (skip check)
+        assert _pg_major("unknown") is None
+        assert _pg_major(None) is None
+
+    def test_blocks_newer_pg_backup_with_actionable_message(self, monkeypatch):
+        from celerp.services import backup_import as bi
+        monkeypatch.setattr(bi, "_local_pg_restore_major", lambda: 16)
+        path = _write_archive_to_tmp(_make_archive(extra_meta={"pg_version": self._PG17}))
+        try:
+            with pytest.raises(ValueError) as ei:
+                bi.validate_archive(path)
+            msg = str(ei.value)
+            assert "PostgreSQL 17" in msg and "PostgreSQL 16" in msg
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_allows_same_or_older_pg(self, monkeypatch):
+        from celerp.services import backup_import as bi
+        monkeypatch.setattr(bi, "_local_pg_restore_major", lambda: 17)  # local newer than backup
+        path = _write_archive_to_tmp(_make_archive(extra_meta={"pg_version": self._PG17}))
+        try:
+            bi.validate_archive(path)  # must not raise
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_skips_when_version_unknown(self, monkeypatch):
+        from celerp.services import backup_import as bi
+        monkeypatch.setattr(bi, "_local_pg_restore_major", lambda: 16)
+        # pg_version not in the recognized format -> can't compare -> don't block
+        path = _write_archive_to_tmp(_make_archive(extra_meta={"pg_version": "unknown"}))
+        try:
+            bi.validate_archive(path)  # must not raise
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class TestRunImportEnabledModules:
     """validate_archive must surface enabled_modules so the UI can preflight.
 

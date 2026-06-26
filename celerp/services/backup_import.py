@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,6 +120,27 @@ class ImportMeta:
     enabled_modules: list[str] = field(default_factory=list)
 
 
+def _pg_major(version_text: str | None) -> int | None:
+    """Major PostgreSQL version from a `pg_dump`/`pg_restore --version` string like
+    'pg_dump (PostgreSQL) 17.2 (Ubuntu ...)'. None if unknown/unparseable."""
+    if not version_text:
+        return None
+    m = re.search(r"PostgreSQL\)\s+(\d+)", version_text)
+    return int(m.group(1)) if m else None
+
+
+def _local_pg_restore_major() -> int | None:
+    """Major version of the pg_restore that will run the restore, or None if it can't be
+    determined (in which case the pre-check is skipped — we never block on inability to check)."""
+    import subprocess
+    from celerp.services.backup import _find_pg_tool
+    try:
+        out = subprocess.run([_find_pg_tool("pg_restore"), "--version"], capture_output=True, timeout=5)
+        return _pg_major(out.stdout.decode(errors="replace"))
+    except Exception:
+        return None
+
+
 def validate_archive(path: Path) -> ImportMeta:
     """Check archive structure and read meta.json.
 
@@ -152,6 +174,21 @@ def validate_archive(path: Path) -> ImportMeta:
         company_name=meta_data.get("company_name", "unknown"),
         enabled_modules=list(meta_data.get("enabled_modules") or []),
     )
+
+    # PostgreSQL forward-compatibility: pg_restore cannot read a backup made by a NEWER
+    # pg_dump. Fail early with an actionable message instead of the cryptic
+    # "unsupported version (1.16) in file header" pg_restore emits mid-restore. Only block
+    # when we can affirmatively determine backup_major > local_major; if either version is
+    # unknown we skip the pre-check and let pg_restore decide.
+    backup_major = _pg_major(meta.pg_version)
+    local_major = _local_pg_restore_major()
+    if backup_major is not None and local_major is not None and backup_major > local_major:
+        raise ValueError(
+            f"This backup was created with PostgreSQL {backup_major}, but this system's "
+            f"restore tools are PostgreSQL {local_major}. Install PostgreSQL {backup_major} "
+            f"(client tools, and a matching server) to restore it - pg_restore cannot read a "
+            f"backup from a newer PostgreSQL."
+        )
 
     # Version compatibility check
     try:
