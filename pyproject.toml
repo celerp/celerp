@@ -83,11 +83,11 @@ markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
 ]
 
-[tool.coverage.run]
-# Use the sys.monitoring core (Python 3.12+). The legacy C tracer does not
-# credit code executed inside async ASGI request handlers (httpx ASGITransport
-# + asyncio), which made coverage badly under-report router/handler lines.
-core = "sysmon"
+# NOTE: do NOT set [tool.coverage.run] core = "sysmon" here. The sys.monitoring
+# core is more accurate for async ASGI handlers, but it breaks the connector
+# tests' respx/AsyncMock interception under coverage (the legacy C tracer is
+# required for this suite). Async-handler coverage is therefore under-reported
+# by the default tracer — verify those paths by functional test review.
 
 [tool.setuptools]
 include-package-data = false
