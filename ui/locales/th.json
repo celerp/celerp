@@ -848,6 +848,7 @@
   "nav.labels": "ป้ายกำกับ",
   "nav.lists": "รายการ",
   "nav.lists_quotations": "รายการ / ใบเสนอราคา",
+  "nav.change_password": "เปลี่ยนรหัสผ่าน",
   "nav.logout": "ออกจากระบบ",
   "nav.report_bug": "รายงานข้อผิดพลาด",
   "nav.suggest_feature": "แนะนำฟีเจอร์",
