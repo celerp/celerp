@@ -247,6 +247,13 @@ async def lifespan(_app: FastAPI):
     from celerp.services.session_tracker import run_jti_cleanup_loop
     jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
 
+    # Connector reconciliation scheduler: a daily incremental sync per connector,
+    # backstopping any realtime webhooks missed while offline. No-op without a
+    # relay session (self-hosted instances skip token fetch).
+    from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
+    connector_sched_task = asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher))
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -256,6 +263,7 @@ async def lifespan(_app: FastAPI):
     # Stop background tasks
     cleanup_task.cancel()
     jti_cleanup_task.cancel()
+    connector_sched_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

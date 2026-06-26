@@ -46,10 +46,13 @@ async def check_and_run_daily_syncs(
     synced: list[str] = []
 
     async with get_session_ctx() as session:
+        # Reconcile EVERY enabled connector once a day — including realtime
+        # (webhook) ones — so a daily incremental pass backstops any webhooks
+        # missed while the instance/tunnel was offline (idempotency keys make
+        # webhook + reconcile converge to a single write).
         rows = await session.execute(
             sa.select(ConnectorConfig).where(
                 ConnectorConfig.company_id == company_id,
-                ConnectorConfig.sync_frequency == SyncFrequency.DAILY.value,
             )
         )
         configs = [row[0] for row in rows]
@@ -117,4 +120,25 @@ async def scheduler_loop(company_id: str, token_fetcher: TokenFetcher | None = N
                 log.info("daily_scheduler: synced %s", ", ".join(synced))
         except Exception as exc:
             log.error("daily_scheduler: error: %s", exc)
+        await asyncio.sleep(_CHECK_INTERVAL_SECONDS)
+
+
+async def _distinct_company_ids() -> list[str]:
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        rows = await session.execute(sa.select(ConnectorConfig.company_id).distinct())
+        return [r[0] for r in rows]
+
+
+async def scheduler_loop_all(token_fetcher: TokenFetcher | None = None) -> None:
+    """Reconciliation backstop: hourly, run any due daily syncs for every company
+    that has a connector configured. Started from the API lifespan."""
+    while True:
+        try:
+            for company_id in await _distinct_company_ids():
+                synced = await check_and_run_daily_syncs(company_id, token_fetcher=token_fetcher)
+                if synced:
+                    log.info("daily_scheduler: synced %s for %s", ", ".join(synced), company_id)
+        except Exception as exc:
+            log.error("daily_scheduler: loop error: %s", exc)
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)
