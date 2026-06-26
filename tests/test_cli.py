@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from unittest.mock import patch
 
 import pytest
@@ -230,15 +234,32 @@ def test_migrate_not_initialized(tmp_config):
 
 
 def test_migrate_runs_with_grants(tmp_config, valid_cfg):
-    """migrate must call _post_migration_grants after _run_migrations."""
+    """migrate must run migrations, grants, then the develop→release reconcile."""
     _write_config(valid_cfg)
     runner = CliRunner()
     with patch("celerp.cli._run_migrations") as mock_mig, \
-         patch("celerp.cli._post_migration_grants") as mock_grants:
+         patch("celerp.cli._post_migration_grants") as mock_grants, \
+         patch("celerp.cli._reconcile_after_migrate") as mock_reconcile:
         result = runner.invoke(main, ["migrate"])
     assert result.exit_code == 0
     mock_mig.assert_called_once_with(valid_cfg["database"]["url"])
     mock_grants.assert_called_once_with(valid_cfg["database"]["url"])
+    mock_reconcile.assert_called_once_with(valid_cfg["database"]["url"])
+
+
+def test_migrate_db_url_overrides_config(tmp_config):
+    """`migrate --db-url` runs without a config (the packaged launcher path) and
+    threads the given URL through migrations, grants, and the reconcile."""
+    url = "postgresql+asyncpg://celerp:celerp@localhost:5432/launcher"
+    runner = CliRunner()
+    with patch("celerp.cli._run_migrations") as mock_mig, \
+         patch("celerp.cli._post_migration_grants") as mock_grants, \
+         patch("celerp.cli._reconcile_after_migrate") as mock_reconcile:
+        result = runner.invoke(main, ["migrate", "--db-url", url])
+    assert result.exit_code == 0, result.output
+    mock_mig.assert_called_once_with(url)
+    mock_grants.assert_called_once_with(url)
+    mock_reconcile.assert_called_once_with(url)
 
 
 # ── celerp start ─────────────────────────────────────────────────────────────
@@ -392,3 +413,38 @@ def test_init_force_aborts_on_no_keeps_everything(tmp_config, tmp_path, monkeypa
     prov.assert_not_called()            # DB not wiped
     stop.assert_not_called()
     assert att.exists() and ai.exists() # files kept
+
+
+# ── `python -m celerp` module entrypoint ────────────────────────────────────
+# The packaged Electron launcher invokes the bundled Python by module
+# (`python -m celerp migrate`), not via the console script. These tests prove
+# the celerp/__main__.py entrypoint exists and dispatches to the CLI group.
+
+def _module_run(args, config_path):
+    env = {
+        **os.environ,
+        "ALLOW_INSECURE_JWT": "true",        # config import guard
+        "CELERP_CONFIG": str(config_path),   # isolate from the real config
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "celerp", *args],
+        capture_output=True, text=True, timeout=20, env=env,
+    )
+
+
+def test_module_entrypoint_help_lists_commands(tmp_path):
+    """`python -m celerp --help` must run and expose the subcommands."""
+    r = _module_run(["--help"], tmp_path / "nope.toml")
+    assert r.returncode == 0, r.stderr
+    assert "migrate" in r.stdout
+
+
+def test_module_entrypoint_dispatches_to_subcommand(tmp_path):
+    """`python -m celerp migrate` must reach the migrate command itself.
+
+    With no config it exits non-zero and says "Not initialized" — proving the
+    invocation dispatched to the real subcommand, not just the group --help.
+    """
+    r = _module_run(["migrate"], tmp_path / "nope.toml")
+    assert r.returncode != 0
+    assert "Not initialized" in (r.stdout + r.stderr)

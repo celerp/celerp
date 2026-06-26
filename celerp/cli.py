@@ -418,6 +418,42 @@ def _run_migrations(db_url: str) -> None:
         sys.exit(1)
 
 
+def _reconcile_after_migrate(db_url: str) -> None:
+    """Replay data-backfill migrations the auto-stamp walker skips on a develop
+    (create_all) database, so a develop→release in-place upgrade preserves data.
+
+    Gated by an instance_meta marker so it runs once per version; the backfills
+    are idempotent, so a redundant run would be a no-op anyway. The projection
+    rebuild (the other half of the version-change reconcile) runs in the API
+    lifespan, where module projection handlers are loaded.
+    """
+    import sqlalchemy as _sa
+
+    from celerp import __version__
+    from celerp.migrations._data_reconcile import (
+        BACKFILL_VERSION_KEY,
+        get_meta,
+        replay_data_backfills,
+        set_meta,
+    )
+
+    sync_url = (
+        db_url.replace("postgresql+asyncpg://", "postgresql://")
+        .replace("postgresql+psycopg2://", "postgresql://")
+    )
+    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
+    try:
+        with engine.begin() as conn:
+            if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
+                return  # already reconciled for this version
+            replayed = replay_data_backfills(conn)
+            set_meta(conn, BACKFILL_VERSION_KEY, __version__)
+        if replayed:
+            click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s) for {__version__}")
+    finally:
+        engine.dispose()
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -697,15 +733,20 @@ def start():
 
 
 @main.command()
-def migrate():
-    """Apply pending database migrations."""
-    cfg = _read_config()
-    if not cfg:
-        click.echo("Not initialized. Run `celerp init` first.", err=True)
-        sys.exit(1)
+@click.option("--db-url", default=None, help="Database URL (overrides config; used by the packaged launcher).")
+def migrate(db_url):
+    """Apply pending database migrations, then the develop→release reconcile."""
+    url = db_url
+    if url is None:
+        cfg = _read_config()
+        if not cfg:
+            click.echo("Not initialized. Run `celerp init` first.", err=True)
+            sys.exit(1)
+        url = cfg["database"]["url"]
     click.echo("Running migrations...")
-    _run_migrations(cfg["database"]["url"])
-    _post_migration_grants(cfg["database"]["url"])
+    _run_migrations(url)
+    _post_migration_grants(url)
+    _reconcile_after_migrate(url)
     click.echo("  ✓ Done")
 
 

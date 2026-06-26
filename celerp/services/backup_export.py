@@ -56,11 +56,16 @@ def _build_archive(dump: bytes, attachment_dirs: list[Path], meta: dict) -> Path
         info.size = len(meta_bytes)
         tar.addfile(info, io.BytesIO(meta_bytes))
 
-        # Attachment directories
+        # File directories (attachments, ai_uploads, custom modules)
         for d in attachment_dirs:
             if not d.exists():
                 continue
             for p in sorted(d.rglob("*")):
+                # Skip regenerable Python bytecode: bundling it bloats the
+                # archive and stale .pyc across machines/python versions is
+                # actively harmful on restore (custom modules carry these).
+                if "__pycache__" in p.parts or p.suffix == ".pyc":
+                    continue
                 if p.is_file():
                     try:
                         rel = str(p.relative_to(d.parent))
@@ -131,6 +136,13 @@ async def export_full() -> Path:
 
     return _build_archive(
         dump,
-        [settings.data_dir / "static" / "attachments", settings.data_dir / "ai_uploads"],
+        [
+            settings.data_dir / "static" / "attachments",
+            settings.data_dir / "ai_uploads",
+            # Custom module code lives on disk (user data), not in the DB dump.
+            # Bundle it so a restore on another machine has the code to interpret
+            # the module's restored tables — not just the tables.
+            settings.data_dir / "modules",
+        ],
         meta,
     )
