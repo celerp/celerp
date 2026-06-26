@@ -2569,10 +2569,10 @@ def setup_routes(app):
                 content=to_xml(Div(str(exc), cls="flash flash--error", id="backup-flash")),
                 media_type="text/html",
             )
-        return Response(
-            content=to_xml(Div(t("settings.backup_imported", lang), cls="flash flash--success", id="backup-flash")),
-            media_type="text/html",
-        )
+        # The API returns a flash (success OR "Import failed: …") at HTTP 200 for the HTMX
+        # swap. Relay it verbatim instead of assuming success — otherwise a failed restore
+        # (e.g. a pg_restore version mismatch) is reported to the user as "imported".
+        return Response(content=r.text, media_type="text/html")
 
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────

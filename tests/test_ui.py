@@ -13093,6 +13093,37 @@ class TestBackupRoutes:
             f"export_backup not called with cookie token. Captured: {captured}"
         )
 
+    @pytest.mark.asyncio
+    async def test_backup_import_relays_failure_not_false_success(self, ui_client):
+        """A failed restore must surface the real error, not a hardcoded "imported".
+
+        Regression: the API signals import failure with a 200 + error-flash body (for the
+        HTMX swap); the UI proxy used to ignore the body and always show success, so a
+        pg_restore version mismatch was reported to the user as a successful import.
+        """
+        import httpx
+        test_token = make_test_token(role="owner")
+        err = ('<div class="flash flash--error" id="backup-flash">'
+               'Import failed: pg_restore failed (exit 1): unsupported version (1.16)</div>')
+        real_cls = httpx.AsyncClient
+
+        def _mock_api_client(*args, **kwargs):
+            # Only the route's API client is built via httpx.AsyncClient; the test client
+            # uses the module-imported AsyncClient name, so it is unaffected by this patch.
+            kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, text=err))
+            return real_cls(*args, **kwargs)
+
+        with patch("httpx.AsyncClient", _mock_api_client):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/import",
+                    files={"file": ("backup.celerp-backup", b"data", "application/octet-stream")},
+                    cookies={"celerp_token": test_token},
+                )
+        assert r.status_code == 200
+        assert "Import failed" in r.text and "flash--error" in r.text
+        assert "flash--success" not in r.text, "failed import was reported as success"
+
 
 class TestUnknownUnitRendererInFixTable:
     """Unit dropdown in fix-table must preserve unrecognised values instead of silently dropping them."""
