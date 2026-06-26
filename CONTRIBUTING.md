@@ -39,8 +39,9 @@ Trademarks are not licensed by any code license; see `legal/TRADEMARK.md`.
 ## CLI commands (pip install)
 
 ```bash
-celerp init       # first-time setup (connects DB, runs migrations, writes config)
-celerp start      # launches API + UI
+celerp init             # first-time setup: DB + migrations + config, then launches the servers
+celerp init --no-start  # same setup, but exit WITHOUT launching (service-managed/headless)
+celerp start            # launch API + UI (e.g. from systemd, after `init --no-start`)
 celerp migrate    # apply pending migrations after an upgrade
 celerp status     # show config, DB connection, migration state
 celerp demo       # seed demo data
@@ -56,8 +57,42 @@ celerp upgrade    # pip install --upgrade celerp + migrate
 | `--ui-port` | `8080` | UI server port |
 | `--cloud-token` | _(empty)_ | Celerp Cloud token (optional) |
 | `--force` | off | Overwrite existing config |
+| `--yes` / `-y` | off | Skip the `--force` wipe confirmation (non-interactive) |
+| `--no-start` | off | Set up, then exit WITHOUT launching servers (service-managed/headless) |
 
 To change ports after init, edit `~/.config/celerp/config.toml` directly.
+
+### Run as a service (systemd)
+
+`celerp init` launches the servers and blocks (good for the one-command desktop
+flow). For a headless box where a process manager owns the lifecycle, set up with
+`--no-start` and let systemd run `celerp start`:
+
+```bash
+# First boot: provision DB + migrations + config, then exit (do not block).
+sudo celerp init --no-start \
+  --db-url "postgresql+asyncpg://celerp:<password>@localhost:5432/celerp" \
+  --api-port 8000 --ui-port 8080
+```
+
+```ini
+# /etc/systemd/system/celerp.service
+[Unit]
+Description=Celerp
+After=network.target postgresql.service
+
+[Service]
+ExecStart=/usr/local/bin/celerp start
+Restart=on-failure
+User=celerp
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now celerp
+```
 
 ## Troubleshooting
 

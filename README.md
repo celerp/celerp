@@ -43,12 +43,15 @@ Or install via pip:
 
 ```bash
 pip install celerp
-celerp init
-celerp start
+celerp init        # sets up the database and launches Celerp
 ```
 
 Open **http://localhost:8080**. Done.
 Your office can securely access the system at your IP address :8080.
+
+Running headless or under a process manager? Use `celerp init --no-start` to set up
+without launching, then have your service run `celerp start` — see
+[Run as a service (systemd)](CONTRIBUTING.md#run-as-a-service-systemd).
 
 ---
 

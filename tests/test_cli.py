@@ -72,6 +72,51 @@ def test_init_defaults(tmp_config):
     assert len(cfg["auth"]["jwt_secret"]) == 64  # secrets.token_hex(32)
 
 
+def test_init_no_start_skips_server_launch(tmp_config):
+    """--no-start provisions + migrates + writes config, then exits without
+    launching servers (headless/service-managed installs)."""
+    runner = CliRunner()
+    with patch(_INIT_PATCHES["test_db"], return_value=None), \
+         patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]) as mock_start:
+        result = runner.invoke(main, ["init", "--no-start"])
+    assert result.exit_code == 0, result.output
+    mock_start.assert_not_called()                      # nothing launched
+    assert tmp_config.exists()                          # config written
+    assert "celerp start" in result.output              # tells the user what to run next
+
+
+def test_init_without_no_start_launches_servers(tmp_config):
+    """Regression guard for the desktop one-command UX: no flag → _start runs."""
+    runner = CliRunner()
+    with patch(_INIT_PATCHES["test_db"], return_value=None), \
+         patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]) as mock_start:
+        result = runner.invoke(main, ["init"])
+    assert result.exit_code == 0, result.output
+    mock_start.assert_called_once()
+
+
+def test_init_force_no_start_skips_launch(tmp_config, valid_cfg):
+    """--no-start also applies on the --force path: it still stops/wipes/re-provisions,
+    then exits without launching."""
+    _write_config(valid_cfg)
+    runner = CliRunner()
+    with patch(_INIT_PATCHES["run_migrations"]), \
+         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["start"]) as mock_start, \
+         patch("celerp.cli._stop_servers") as mock_stop, \
+         patch("celerp.cli._provision_db") as mock_prov, \
+         patch("celerp.cli._needs_ownership_fix", return_value=False):
+        result = runner.invoke(main, ["init", "--force", "--yes", "--no-start"])
+    assert result.exit_code == 0, result.output
+    mock_stop.assert_called_once()        # force still stopped servers
+    mock_prov.assert_called_once()        # force still re-provisioned
+    mock_start.assert_not_called()        # but did not launch
+
+
 def test_init_shows_star_cta_line(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
