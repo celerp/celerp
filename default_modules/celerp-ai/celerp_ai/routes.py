@@ -554,7 +554,8 @@ async def query_in_conversation(
     prior_msgs = await get_messages(session, conversation_id)
     history = build_history_context(prior_msgs)
 
-    # Store user message
+    # Store user message (credits are tracked on the user message for usage analytics)
+    credits = _calculate_query_credits(body.file_ids, company_id)
     await add_message(
         session, conversation_id, "user", body.query,
         file_ids=body.file_ids, credits_used=credits,
