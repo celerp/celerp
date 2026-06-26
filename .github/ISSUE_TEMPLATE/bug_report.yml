@@ -26,18 +26,6 @@ body:
     validations:
       required: true
   - type: dropdown
-    id: install_method
-    attributes:
-      label: Installation method
-      options:
-        - .dmg (macOS)
-        - .exe (Windows)
-        - AppImage (Linux)
-        - pip
-        - Other
-    validations:
-      required: true
-  - type: dropdown
     id: area
     attributes:
       label: Area
@@ -64,25 +52,27 @@ body:
     validations:
       required: false
   - type: textarea
-    id: repro
+    id: current
     attributes:
-      label: Steps to reproduce
-      placeholder: |
-        1. ...
-        2. ...
-        3. ...
+      label: Currently, the system is...
+      description: What is the system doing (that it shouldn't)? In your own words - and if you can, what you did to see it.
+      placeholder: "When I ..., the system ..."
     validations:
       required: true
   - type: textarea
-    id: expected
+    id: should
     attributes:
-      label: Expected behavior
+      label: It should...
+      description: What did you expect to happen instead?
+      placeholder: "It should ..."
     validations:
       required: true
   - type: textarea
-    id: actual
+    id: so_that
     attributes:
-      label: Actual behavior
+      label: So that...
+      description: Why does this matter - what are you trying to get done?
+      placeholder: "...so that I can ..."
     validations:
       required: true
   - type: textarea
