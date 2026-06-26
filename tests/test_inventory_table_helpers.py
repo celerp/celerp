@@ -360,3 +360,24 @@ class TestVirtualCostTotalColumn:
         td = _render_virtual_total_cell("item:1", "cost_price_total", 0.0, 10.0, "THB")
         html = to_xml(td)
         assert "--" in html
+
+
+class TestPerPageSelector:
+    """#171: the per-page dropdown must navigate to the current page's own URL (resetting to
+    page 1), not HTMX-swap a hardcoded #inventory-content target — which made it dead on /docs."""
+
+    def test_navigates_to_base_url_not_hardcoded_inventory_target(self):
+        from ui.components.table import _per_page_selector
+        from fasthtml.common import to_xml
+        html = to_xml(_per_page_selector(50, "/docs", "q=&type=invoice&sort=date&dir=desc"))
+        assert "inventory-content" not in html, "still hardcodes the inventory swap target"
+        assert "hx-get" not in html and "hx-target" not in html
+        assert "onchange" in html
+        assert "/docs?per_page=" in html and "page=1" in html
+        assert "type=invoice" in html  # carries the existing filter state
+
+    def test_works_for_inventory_too(self):
+        from ui.components.table import _per_page_selector
+        from fasthtml.common import to_xml
+        html = to_xml(_per_page_selector(100, "/inventory", "status=sold"))
+        assert "/inventory?per_page=" in html and "status=sold" in html

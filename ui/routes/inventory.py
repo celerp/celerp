@@ -465,6 +465,10 @@ async def _inventory_content(
             api.get_units(token),
         )
         items = items_resp.get("items", [])
+        # Pagination must reflect the SAME filters as the rows (incl. the search `q`), not the
+        # valuation's unfiltered item_count — otherwise a search shows pages that don't exist
+        # and clicking them lands on a blank page.
+        list_total = items_resp.get("total", len(items))
         attribute_facets = items_resp.get("attribute_facets", {})
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
         units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
@@ -474,6 +478,7 @@ async def _inventory_content(
             category_label_map = {}
     except APIError:
         valuation, items, unit_names, units_map, category_label_map, attribute_facets = {}, [], [], {}, {}, {}
+        list_total = 0
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -523,7 +528,7 @@ async def _inventory_content(
             hidden_fields=set(_PAIRED_TABLE.values()),
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
         ) if items else _inventory_empty_state(p),
-        pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
+        pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
         Div(id="modal-container"),
         id="inventory-content",
@@ -562,6 +567,14 @@ def setup_routes(app):
 
         content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang)
 
+        # Search must carry the active filters (status/category/type/location), so searching inside
+        # e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.
+        _search_filters = {k: v for k, v in (
+            ("status", p.get("status")), ("category", p.get("category")),
+            ("inventory_type", p.get("inventory_type")), ("location_id", p.get("location_id")),
+        ) if v}
+        _search_url = "/inventory/content" + (f"?{urlencode(_search_filters)}" if _search_filters else "")
+
         _role_level = _ROLE_LEVELS.get(_get_role(request), 0)
         _is_manager = _role_level >= _ROLE_LEVELS["manager"]
         _is_operator = _role_level >= _ROLE_LEVELS["operator"]
@@ -571,7 +584,7 @@ def setup_routes(app):
                 search_bar(
                     placeholder=t("msg.search_inventory_placeholder", lang),
                     target="#inventory-content",
-                    url="/inventory/content",
+                    url=_search_url,
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _is_manager else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _is_operator else "",

@@ -85,6 +85,29 @@ async def test_list_pagination_stable_across_date_ties(client):
 
 
 @pytest.mark.asyncio
+async def test_invoice_search_comma_operand(client):
+    """#170: docs search treats comma as an OR operand. The search box appends a comma on Enter,
+    so a 'NUM,' query must still match — it used to LIKE the whole 'NUM,' string and find nothing.
+    """
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token)  # carries contact_id "contact:1" (a searchable field)
+    term = "contact:1"
+
+    # Trailing comma (as the search box commits it on Enter) must still find the invoice — it used
+    # to LIKE the whole "contact:1," string and return nothing.
+    r = (await client.get(f"/docs?doc_type=invoice&q={term},", headers=_h(token))).json()["items"]
+    assert any(d["id"] == inv_id for d in r), "trailing-comma search missed a valid invoice"
+
+    # Comma is OR across terms: term,bogus still returns the invoice.
+    r2 = (await client.get(f"/docs?doc_type=invoice&q={term},zzz-no-match-999", headers=_h(token))).json()["items"]
+    assert any(d["id"] == inv_id for d in r2)
+
+    # Sanity: a non-matching term alone returns nothing (so the above isn't a false pass).
+    r3 = (await client.get("/docs?doc_type=invoice&q=zzz-no-match-999", headers=_h(token))).json()["items"]
+    assert not any(d["id"] == inv_id for d in r3)
+
+
+@pytest.mark.asyncio
 async def test_line_level_tax_splits_revenue_and_output_vat_in_finalize_je(client, session):
     """Regression: an invoice with LINE-LEVEL tax must persist the effective tax on the doc and the
     finalize JE must credit Revenue (4100) net of tax and Output VAT (2120) for the tax — not book the
