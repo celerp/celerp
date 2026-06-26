@@ -922,6 +922,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(_BACKUP_BANNER_JS),
         Script(_NOTIFICATION_JS),
         Script(_USER_MENU_JS),
+        Script(_BUG_LINK_JS),
         Script(_STAR_CTA_JS),
     ]
     if extra_head:
@@ -1115,9 +1116,9 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
-                        # Append the current page to the bug form's `page` field at click time
-                        # (server-side URL is cached/page-agnostic; the path is only known client-side).
-                        onclick="this.href=this.dataset.base+'&page='+encodeURIComponent(location.pathname+location.search)",
+                        # Append the current page (and the matching Area) to the bug form at click
+                        # time — the path is only known client-side; see _BUG_LINK_JS.
+                        onclick="this.href=celerpBugUrl(this.dataset.base)",
                         **{"data-base": _bug_report_url()},
                     ),
                     A(
@@ -1158,6 +1159,31 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
 
 # Kernel-level nav entries always present (no module required)
 _KERNEL_NAV: list[dict] = []
+
+_BUG_LINK_JS = """
+(function(){
+  // Build the "Report a bug" URL at click time: prefill the form's `page` field with the
+  // current path, and preselect the `area` dropdown from the route the user is on (the path
+  // is only known client-side). Area values must match the bug form's dropdown options exactly.
+  var AREA_ROUTES = [
+    [/^\\/(inventory|items|lists)/, "Inventory"],
+    [/^\\/docs/, "Invoicing / documents"],
+    [/^\\/manufacturing/, "Manufacturing"],
+    [/^\\/(accounting|finance|payments)/, "Accounting"],
+    [/^\\/(contacts|crm)/, "Contacts / CRM"],
+    [/^\\/(reports|dashboard|history)/, "Reporting"],
+    [/^\\/(settings|setup|onboarding|subscriptions)/, "Setup / admin / permissions"]
+  ];
+  window.celerpBugUrl = function(base) {
+    var path = location.pathname;
+    var url = base + "&page=" + encodeURIComponent(path + location.search);
+    for (var i = 0; i < AREA_ROUTES.length; i++) {
+      if (AREA_ROUTES[i][0].test(path)) { url += "&area=" + encodeURIComponent(AREA_ROUTES[i][1]); break; }
+    }
+    return url;
+  };
+})();
+"""
 
 _USER_MENU_JS = """
 (function(){
