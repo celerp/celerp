@@ -597,6 +597,54 @@ class TestSearchPartials:
         # Full page has doctype or <html>
         assert b"<html" in r.content.lower() or b"<!doctype" in r.content.lower()
 
+    @pytest.mark.asyncio
+    async def test_inventory_search_carries_active_status_filter(self, ui_client):
+        """#167: the search box must carry the active status filter, so searching inside Sold
+        inventory stays scoped to sold instead of falling back to the default active set."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+        assert r.status_code == 200
+        # Assert specifically on the SEARCH INPUT's hx-get (status=sold also appears in other
+        # content-fragment links like sort/pagination, so a bare `in content` check is not enough).
+        import re as _re
+        m = _re.search(rb'<input[^>]*id="search-input"[^>]*>', r.content)
+        assert m, "search input not found in rendered page"
+        assert b'hx-get="/inventory/content?status=sold"' in m.group(0), \
+            "search box does not carry the active status filter"
+
+    @pytest.mark.asyncio
+    async def test_inventory_pagination_uses_filtered_list_total(self, ui_client):
+        """#168: pagination must reflect the search-filtered list total, not the valuation's
+        unfiltered item_count — otherwise a search shows phantom pages that render blank."""
+        valuation = {**_VALUATION, "item_count": 137}  # unfiltered count
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 3})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=sold&q=ruby", cookies=_authed())
+        assert r.status_code == 200
+        assert b"3 records" in r.content, "pagination did not use the filtered list total"
+        assert b"137 records" not in r.content, "pagination still uses the unfiltered valuation count"
+
 
 # ── Company switcher ──────────────────────────────────────────────────────────
 

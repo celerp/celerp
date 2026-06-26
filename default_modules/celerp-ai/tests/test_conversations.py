@@ -292,3 +292,33 @@ async def test_isolation_between_users(session, company, user, user_b):
     # User B sees empty list
     convs = await list_conversations(session, company.id, user_b.id)
     assert len(convs) == 0
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_stable_order_when_updated_at_ties(session, company, user):
+    """Regression: conversations sharing an updated_at must order deterministically by id, so
+    OFFSET pagination can't skip or duplicate a tied row across pages."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+
+    ids = []
+    for i in range(6):
+        c = await create_conversation(session, company.id, user.id, title=f"C{i}")
+        ids.append(c.id)
+    await session.commit()
+
+    await session.execute(
+        update(AIConversation).where(AIConversation.id.in_(ids)).values(updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    )
+    await session.commit()
+
+    listed = await list_conversations(session, company.id, user.id, limit=100)
+    assert [c.id for c in listed] == sorted(ids, reverse=True), \
+        "updated_at-tied conversations are not deterministically ordered by id (no tiebreaker)"
+
+    paged = []
+    for off in range(0, len(ids), 2):
+        page = await list_conversations(session, company.id, user.id, limit=2, offset=off)
+        paged += [c.id for c in page]
+    assert sorted(paged) == sorted(ids)
+    assert len(paged) == len(set(paged))

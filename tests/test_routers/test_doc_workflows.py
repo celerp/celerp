@@ -57,6 +57,57 @@ def _assert_balanced(entries: list[dict]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_pagination_stable_across_date_ties(client):
+    """Regression: invoices sharing an issue_date must paginate without a row vanishing.
+
+    The list sorts by issue_date only; without a unique tiebreaker, equal-date rows came
+    back in an arbitrary order that differed between the per-page queries, so a boundary
+    row was skipped by OFFSET (a real invoice disappeared from the list while still being
+    findable by search). All invoices created here share the same issue_date.
+    """
+    token = await _register(client)
+    n = 7
+    ids = [await _create_invoice(client, token) for _ in range(n)]
+
+    # Walk pages with a small page size so the tie group straddles boundaries.
+    seen: list[str] = []
+    for off in range(0, n + 2, 2):
+        page = (await client.get(f"/docs?doc_type=invoice&offset={off}&limit=2", headers=_h(token))).json()["items"]
+        seen += [d["id"] for d in page]
+        if len(page) < 2:
+            break
+
+    assert sorted(seen) == sorted(ids), "a date-tie row was skipped (or duplicated) across pages"
+    assert len(seen) == len(set(seen)), "a row appeared on more than one page"
+    # Order is deterministic: the paged walk matches a single unpaginated fetch.
+    full = [d["id"] for d in (await client.get("/docs?doc_type=invoice&limit=100", headers=_h(token))).json()["items"]]
+    assert seen == full
+
+
+@pytest.mark.asyncio
+async def test_invoice_search_comma_operand(client):
+    """#170: docs search treats comma as an OR operand. The search box appends a comma on Enter,
+    so a 'NUM,' query must still match — it used to LIKE the whole 'NUM,' string and find nothing.
+    """
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token)  # carries contact_id "contact:1" (a searchable field)
+    term = "contact:1"
+
+    # Trailing comma (as the search box commits it on Enter) must still find the invoice — it used
+    # to LIKE the whole "contact:1," string and return nothing.
+    r = (await client.get(f"/docs?doc_type=invoice&q={term},", headers=_h(token))).json()["items"]
+    assert any(d["id"] == inv_id for d in r), "trailing-comma search missed a valid invoice"
+
+    # Comma is OR across terms: term,bogus still returns the invoice.
+    r2 = (await client.get(f"/docs?doc_type=invoice&q={term},zzz-no-match-999", headers=_h(token))).json()["items"]
+    assert any(d["id"] == inv_id for d in r2)
+
+    # Sanity: a non-matching term alone returns nothing (so the above isn't a false pass).
+    r3 = (await client.get("/docs?doc_type=invoice&q=zzz-no-match-999", headers=_h(token))).json()["items"]
+    assert not any(d["id"] == inv_id for d in r3)
+
+
+@pytest.mark.asyncio
 async def test_line_level_tax_splits_revenue_and_output_vat_in_finalize_je(client, session):
     """Regression: an invoice with LINE-LEVEL tax must persist the effective tax on the doc and the
     finalize JE must credit Revenue (4100) net of tax and Output VAT (2120) for the tax — not book the

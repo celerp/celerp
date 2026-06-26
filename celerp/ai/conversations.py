@@ -82,7 +82,7 @@ async def list_conversations(
             AIConversation.company_id == company_id,
             AIConversation.user_id == user_id,
         )
-        .order_by(AIConversation.updated_at.desc())
+        .order_by(AIConversation.updated_at.desc(), AIConversation.id.desc())  # id tiebreaker → stable pagination
         .limit(limit)
         .offset(offset)
     )

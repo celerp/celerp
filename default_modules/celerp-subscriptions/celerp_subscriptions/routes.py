@@ -108,7 +108,7 @@ def _build_router() -> APIRouter:
             select(_func.count()).select_from(Projection).where(*where)
         )).scalar_one()
         rows = (await session.execute(
-            select(Projection).where(*where).offset(offset).limit(limit)
+            select(Projection).where(*where).order_by(Projection.entity_id.desc()).offset(offset).limit(limit)
         )).scalars().all()
         items = [r.state | {"id": r.entity_id} for r in rows]
         return {"items": items, "total": total}

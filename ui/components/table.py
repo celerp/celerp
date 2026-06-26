@@ -1931,19 +1931,14 @@ def pagination(page: int, total: int, per_page: int, base_url: str, extra_params
 
 def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> FT:
     options = [25, 50, 100, 250, 500]
-    # Swap only the content fragment (avoids double shell render).
-    # base_url is e.g. "/inventory"; content endpoint is "/inventory/content".
-    content_url = base_url.rstrip("/") + "/content"
-    url_with_state = f"{content_url}?{extra_params}" if extra_params else content_url
+    # Navigate full-page (consistent with the numbered page links above), resetting to page 1.
+    # The previous version did an HTMX swap hardcoded to hx_target="#inventory-content", so the
+    # dropdown was dead on every page that isn't /inventory (e.g. /docs — issue #171).
+    suffix = f"&{extra_params}" if extra_params else ""
     return Select(
         *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
         name="per_page",
-        hx_get=url_with_state,
-        hx_trigger="change",
-        hx_target="#inventory-content",
-        hx_swap="outerHTML",
-        hx_include="this",
-        hx_push_url="true",
+        onchange=f"window.location='{base_url}?per_page='+this.value+'&page=1{suffix}'",
         cls="filter-select per-page-select",
     )
 

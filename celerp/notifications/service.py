@@ -118,7 +118,7 @@ async def list_notifications(
             Notification.company_id == company_id,
             (Notification.user_id == user_id) | (Notification.user_id.is_(None)),
         )
-        .order_by(Notification.created_at.desc())
+        .order_by(Notification.created_at.desc(), Notification.id.desc())  # id tiebreaker → stable pagination
         .limit(limit)
         .offset(offset)
     )

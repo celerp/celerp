@@ -839,3 +839,26 @@ async def test_change_type_while_issued(client):
     await client.post(f"/lists/{q}/finalize", headers=h)
     await client.post(f"/lists/{q}/convert", headers=h, json={"target_type": "invoice"})
     assert (await client.post(f"/lists/{q}/change-type", headers=h, json={"list_type": "transfer"})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_list_lists_stable_order_on_issue_date_tie(client):
+    """Regression: lists sharing an issue_date must order deterministically by id, so OFFSET
+    pagination over the sorted result can't skip or duplicate a tied row."""
+    token = await _register(client)
+    ids = [await _create_list(client, token, issue_date="2026-05-07") for _ in range(6)]
+    myids = set(ids)
+
+    items = (await client.get("/lists?limit=100", headers=_h(token))).json()["items"]
+    order = [x["id"] for x in items if x["id"] in myids]
+    assert order == sorted(ids, reverse=True), "issue_date-tied lists not deterministically ordered by id"
+
+    paged = []
+    for off in range(0, 20, 2):
+        page = (await client.get(f"/lists?limit=2&offset={off}", headers=_h(token))).json()["items"]
+        if not page:
+            break
+        paged += [x["id"] for x in page]
+    mine = [i for i in paged if i in myids]
+    assert sorted(mine) == sorted(ids)
+    assert len(mine) == len(set(mine))

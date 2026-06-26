@@ -336,15 +336,20 @@ async def list_docs(
     if due_to:
         base_where.append(Projection.state["due_date"].as_string() <= due_to)
     if q:
-        ql = f"%{q.lower()}%"
-        base_where.append(
-            _sa.or_(
-                _sa.func.lower(Projection.state["doc_number"].as_string()).like(ql),
-                _sa.func.lower(Projection.state["contact_name"].as_string()).like(ql),
-                _sa.func.lower(Projection.state["contact_id"].as_string()).like(ql),
-                _sa.func.lower(Projection.state["ref"].as_string()).like(ql),
-            )
-        )
+        # Comma is an OR operand (matches inventory search + the search box's Enter-appends-comma
+        # behaviour). Split on commas so "2816," / "2816, 2817" match, instead of LIKE-ing the
+        # whole string (which fails on the trailing comma the search box inserts).
+        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
+        if terms:
+            _fields = ("doc_number", "contact_name", "contact_id", "ref")
+            term_clauses = [
+                _sa.or_(*[
+                    _sa.func.lower(Projection.state[f].as_string()).like(f"%{term}%")
+                    for f in _fields
+                ])
+                for term in terms
+            ]
+            base_where.append(_sa.or_(*term_clauses))
 
     # Remaining filters still need Python evaluation (multi-field logic).
     needs_python_filter = any([all_issued, overdue_only, unfulfilled_only, not_restocked, not_stocked, converted_to_type])
@@ -365,7 +370,9 @@ async def list_docs(
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
         if converted_to_type:
             out = [x for x in out if x.get("converted_to_type") == converted_to_type]
-        out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
+        # Tiebreak on the unique id so equal-date rows have a deterministic order (same
+        # reason as the SQL path: otherwise OFFSET pagination can skip/duplicate a row).
+        out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
         total = len(out)
         if offset:
             out = out[offset:]
@@ -382,6 +389,10 @@ async def list_docs(
         .where(*base_where)
         .order_by(
             Projection.state["issue_date"].as_string().desc(),
+            # Unique tiebreaker so the sort is a TOTAL order. Without it, rows sharing an
+            # issue_date come back in an arbitrary order that differs between the per-page
+            # queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET.
+            Projection.entity_id.desc(),
         )
         .offset(offset)
     )
@@ -2523,7 +2534,9 @@ async def list_lists(
         ql = q.lower()
         out = [x for x in out if ql in str(x.get("ref_id") or "").lower()
                or ql in str(x.get("customer_name") or x.get("customer_id") or "").lower()]
-    out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
+    # Tiebreak on the unique id so equal-date rows have a deterministic order (else OFFSET
+    # pagination can skip/duplicate a boundary row — same fix as list_docs).
+    out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
     total = len(out)
     if offset:
         out = out[offset:]

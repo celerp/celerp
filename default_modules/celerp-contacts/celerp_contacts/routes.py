@@ -180,6 +180,9 @@ async def list_contacts(
     if contact_type and contact_type in _CONTACT_TYPE_FILTER:
         allowed = _CONTACT_TYPE_FILTER[contact_type]
         results = [c for c in results if (c.get("contact_type") or "customer") in allowed]
+    # Deterministic order (name, then unique id) so OFFSET pagination over this Python-sliced list
+    # is stable — otherwise the DB's arbitrary row order lets a contact be skipped between pages.
+    results.sort(key=lambda c: ((c.get("name") or "").lower(), c.get("id") or ""))
     return {"items": results[offset:offset + limit], "total": len(results)}
 
 

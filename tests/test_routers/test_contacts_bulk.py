@@ -417,3 +417,27 @@ async def test_merge_contacts_currency_mismatch_returns_warning(client):
     data = r3.json()
     assert len(data.get("warnings", [])) > 0
     assert any("currency" in w.lower() for w in data["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_stable_order_on_name_tie(client):
+    """Regression: contacts sharing a name must order deterministically by id, so OFFSET
+    pagination over the Python-sliced result can't skip or duplicate a tied row."""
+    tok = await _register(client, "TieCo")
+    ids = [await _contact(client, tok, name="Same Name") for _ in range(6)]
+    myids = set(ids)
+
+    listed = (await client.get("/crm/contacts?limit=100", headers=_h(tok))).json()["items"]
+    order = [c["id"] for c in listed if c["id"] in myids]
+    assert order == sorted(ids), "name-tied contacts are not deterministically ordered by id (no sort)"
+
+    # A paged walk covers each tied contact exactly once.
+    paged = []
+    for off in range(0, 20, 2):
+        page = (await client.get(f"/crm/contacts?limit=2&offset={off}", headers=_h(tok))).json()["items"]
+        if not page:
+            break
+        paged += [c["id"] for c in page]
+    mine = [i for i in paged if i in myids]
+    assert sorted(mine) == sorted(ids)
+    assert len(mine) == len(set(mine))
