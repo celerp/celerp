@@ -297,9 +297,9 @@ async def _run_alembic() -> None:
 
 
 async def _extract_files(path: Path) -> None:
-    """Extract attachments/ and ai_uploads/ from the archive into data_dir."""
+    """Extract attachments/, ai_uploads/, and custom modules/ into data_dir."""
     from celerp.config import settings
-    _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
+    _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/", "modules/")
     with tarfile.open(str(path), "r:gz") as tar:
         for member in tar.getmembers():
             if member.name in ("database.dump", "meta.json"):

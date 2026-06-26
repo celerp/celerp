@@ -133,6 +133,7 @@ let apiPort = null;
 let uiPort = null;
 
 const { watchForRestart } = require("./restart");
+const { migrateArgs } = require("./migrate_cmd");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -252,7 +253,7 @@ function runMigrations(dbUrl) {
     PYTHONPATH: APP_DIR,
     ALEMBIC_VERSION_LOCATIONS: _moduleAlembicLocations(),
   };
-  execFileSync(pythonBin(), ["-m", "alembic", "upgrade", "head"], {
+  execFileSync(pythonBin(), migrateArgs(dbUrl), {
     cwd: APP_DIR,
     env,
     stdio: "pipe",

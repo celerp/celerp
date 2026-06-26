@@ -199,6 +199,22 @@ async def lifespan(_app: FastAPI):
         "_module": "_kernel",
     })
 
+    # Develop→release guard: on a version change, rebuild projections with the
+    # release's handlers (now that all handlers are registered). Gated by a
+    # marker so it runs once per version. Non-fatal: a failure must not block
+    # boot — the marker stays unset and a later boot retries.
+    try:
+        from celerp.db import SessionLocal as _GuardSession
+        from celerp.services.dev_release_guard import run_upgrade_guard
+        async with _GuardSession() as _guard_sess:
+            await run_upgrade_guard(_guard_sess)
+            await _guard_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Develop→release upgrade guard failed (non-fatal); projections may be "
+            "stale until rebuilt via doctor or /ledger/rebuild"
+        )
+
     # Start gateway client if configured (opt-in, no-op if GATEWAY_TOKEN is blank)
     gateway_task = None
     if settings.gateway_token:
