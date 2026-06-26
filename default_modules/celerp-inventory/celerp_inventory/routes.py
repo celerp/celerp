@@ -1920,6 +1920,11 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
 
 
+# Sentinel stored on a merged item when sources disagree on a dropdown (select) field — merging
+# must never sum or create a new option for those.
+_MERGE_MIXED_VALUE = "mixed"
+
+
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if len(payload.source_entity_ids) < 2:
@@ -2005,6 +2010,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         all_attr_keys.update((p.state.get("attributes") or {}).keys())
     all_attr_keys -= _EXPIRY_ATTR_KEYS
 
+    # Dropdown (select) fields for the merged category: a merge must NEVER sum these or invent a
+    # new option. Same value across sources → that value; any disagreement → the "mixed" sentinel.
+    from celerp.services.field_schema import get_effective_field_schema
+    _merge_category = (next(iter(categories), "") or "").strip() or None
+    _schema = await get_effective_field_schema(session, company_id, category=_merge_category)
+    _dropdown_keys = {f["key"] for f in _schema if f.get("type") == "select"}
+
     resolved_attrs: dict = {}
     unresolved_conflicts: list[str] = []
     for key in all_attr_keys:
@@ -2015,10 +2027,14 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         if len(unique_str_vals) == 1:
             # No conflict — carry forward the original typed value.
             resolved_attrs[key] = raw_values[0]
+        elif key in _dropdown_keys:
+            # Dropdown field: never sum and never invent an option — differing sources collapse
+            # to the system "mixed" sentinel (issue: merge must not create new dropdown values).
+            resolved_attrs[key] = _MERGE_MIXED_VALUE
         elif all(_is_numeric(v) for v in unique_str_vals):
-            # Numeric conflict — sum. Store as number to preserve type through round-trips.
-            total = sum(float(v) for v in str_values)
-            resolved_attrs[key] = int(total) if total == int(total) else total
+            # Numeric conflict — summing invents a meaningless value (size 1 + 2 ≠ 3; 18K + 14K ≠ 32K).
+            # The correct value is unknowable, so the merged item carries NO value for it.
+            continue  # omit the key → no value
         else:
             # String conflict — require user resolution.
             if payload.resolved_attributes and key in payload.resolved_attributes:
