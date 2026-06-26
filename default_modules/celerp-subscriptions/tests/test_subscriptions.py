@@ -348,3 +348,27 @@ async def test_generated_invoice_appears_in_normal_invoice_list(client):
     assert r2.status_code == 200
     ids = [d.get("entity_id") or d.get("id") for d in r2.json().get("items", [])]
     assert doc_id in ids
+
+
+@pytest.mark.asyncio
+async def test_list_subscription_templates_deterministic_order(client):
+    """Regression: the template list had NO ORDER BY, so OFFSET pagination could skip/duplicate
+    rows. It now orders by entity_id (unique) — assert that deterministic order holds end to end."""
+    tok = await _register(client)
+    h = _h(tok)
+    ids = [(await _create_sub_template(client, h, doc_type="subscription_invoice"))["id"] for _ in range(6)]
+    myids = set(ids)
+
+    items = (await client.get("/subscriptions?direction=sales&limit=100", headers=h)).json()["items"]
+    order = [i["id"] for i in items if i["id"] in myids]
+    assert order == sorted(ids, reverse=True), "subscription templates not deterministically ordered by entity_id"
+
+    paged = []
+    for off in range(0, 20, 2):
+        page = (await client.get(f"/subscriptions?direction=sales&limit=2&offset={off}", headers=h)).json()["items"]
+        if not page:
+            break
+        paged += [i["id"] for i in page]
+    mine = [i for i in paged if i in myids]
+    assert sorted(mine) == sorted(ids)
+    assert len(mine) == len(set(mine))

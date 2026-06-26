@@ -255,3 +255,36 @@ async def test_isolation_between_companies(session, company, company_b, user, us
     assert items_a[0].title == "CoA"
     assert len(items_b) == 1
     assert items_b[0].title == "CoB"
+
+
+@pytest.mark.asyncio
+async def test_list_notifications_stable_order_when_created_at_ties(session, company, user):
+    """Regression: notifications sharing a created_at must order deterministically by id, so
+    OFFSET pagination can't skip or duplicate a tied row across pages."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+
+    ids = []
+    with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        for i in range(6):
+            n = await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
+            ids.append(n.id)
+        await session.commit()
+
+    # Force a created_at tie so the id tiebreaker is the only thing ordering them.
+    await session.execute(
+        update(Notification).where(Notification.id.in_(ids)).values(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    )
+    await session.commit()
+
+    listed = await svc.list_notifications(session, company.id, user.id, limit=100)
+    assert [n.id for n in listed] == sorted(ids, reverse=True), \
+        "created_at-tied notifications are not deterministically ordered by id (no tiebreaker)"
+
+    # And a paged walk over the tie covers every row exactly once.
+    paged = []
+    for off in range(0, len(ids), 2):
+        page = await svc.list_notifications(session, company.id, user.id, limit=2, offset=off)
+        paged += [n.id for n in page]
+    assert sorted(paged) == sorted(ids)
+    assert len(paged) == len(set(paged))
