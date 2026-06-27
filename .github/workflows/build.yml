@@ -4,6 +4,8 @@ on:
   push:
     tags: ["v*"]
     branches: ["develop", "bugfix"]
+  pull_request:
+    branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
   workflow_dispatch:
 
 permissions:
@@ -75,8 +77,9 @@ jobs:
           done
           echo "Assets cleared"
 
-  # Compute the build matrix: the bugfix branch builds macOS only (a fast unsigned
-  # test DMG); every other ref builds all three platforms.
+  # Compute the build matrix: the bugfix branch and pull requests build macOS only
+  # (a fast unsigned test DMG, for the boot-smoke gate); every other ref builds all
+  # three platforms.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -88,7 +91,7 @@ jobs:
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          if [ "${{ github.ref_name }}" = "bugfix" ]; then
+          if [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
@@ -352,7 +355,7 @@ jobs:
         run: pnpm run build:mac -- --publish always
 
       - name: Build macOS (develop dev - signed only, no notarization)
-        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix'
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
         timeout-minutes: 60
         working-directory: electron
         env:
@@ -365,8 +368,9 @@ jobs:
         # speed up the test loop. The resulting .app/.dmg is unsigned and is for our
         # own testing only — get it past Gatekeeper with
         #   xattr -dr com.apple.quarantine /Applications/Celerp.app
-        # (or right-click -> Open). Not for distribution.
-        if: matrix.os == 'macos-latest' && github.ref_name == 'bugfix'
+        # (or right-click -> Open). Not for distribution. PRs use this fast unsigned
+        # path too (signing secrets aren't available to PR builds).
+        if: matrix.os == 'macos-latest' && (github.ref_name == 'bugfix' || github.event_name == 'pull_request')
         timeout-minutes: 60
         working-directory: electron
         env:
@@ -458,6 +462,47 @@ jobs:
             test -f "$RES/pg-win/bin/libpq.dll"
           fi
           echo "OK: third-party licenses present in packaged artifact"
+
+      # Boot smoke: actually LAUNCH the packaged app and require a real, DB-backed
+      # boot before this build can ship. /health/ready does a live SELECT 1, so a
+      # 200 {"db":"ok"} proves electron -> Python API -> embedded Postgres -> a query.
+      # We poll (never sleep) and fail fast if the process dies (crash on launch).
+      - name: Boot smoke (launch the packaged app, require db:ok)
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd electron
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; fi
+          case "$RUNNER_OS" in
+            macOS)   APP_BIN="$(ls -d dist/mac*/Celerp.app | head -1)/Contents/MacOS/Celerp" ;;
+            Windows) APP_BIN="dist/win-unpacked/Celerp.exe" ;;
+            Linux)   APP_BIN="$(find dist/linux-unpacked -maxdepth 1 -type f -executable ! -name 'chrome*' ! -name '*.so*' | head -1)" ;;
+          esac
+          echo "smoke: launching $APP_BIN"
+          API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+          export CELERP_API_PORT="$API_PORT"
+          export HOME="$RUNNER_TEMP/smoke-home"; mkdir -p "$HOME"   # hermetic, throwaway data dir
+          LOG="$RUNNER_TEMP/smoke.log"
+          LAUNCH=("$APP_BIN")
+          [ "$RUNNER_OS" = "Linux" ] && LAUNCH=(xvfb-run -a "$APP_BIN")
+          "${LAUNCH[@]}" >"$LOG" 2>&1 &
+          APP_PID=$!
+          DEADLINE=$(( $(date +%s) + 120 ))     # generous cap; we poll, never sleep-then-check
+          ok=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            kill -0 "$APP_PID" 2>/dev/null || { echo "::error::app exited before becoming ready (crash on launch)"; break; }
+            if curl -fs "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
+          if [ -z "$ok" ]; then
+            echo "::error::boot smoke FAILED on $RUNNER_OS - /health/ready never returned db:ok"
+            echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
+            exit 1
+          fi
+          echo "boot smoke OK on $RUNNER_OS"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

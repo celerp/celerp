@@ -8,7 +8,7 @@
  *
  * 2. Universal mac builds: no-op for the python-arm64 / python-x64 trees — both
  *    are included in every per-arch temp build so @electron/universal merges
- *    cleanly; main.js picks the right one at runtime via process.arch.
+ *    cleanly; app-main.js picks the right one at runtime via process.arch.
  *
  * 3. Windows: prune the StackBuilder GUI DLLs (wxWidgets + libcurl) that the
  *    embedded PostgreSQL package vendors. postgres.exe does not link them
