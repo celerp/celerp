@@ -29,7 +29,10 @@ Only affects item projections where:
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
+
+# In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters.
+# See https://github.com/celerp/celerp/issues/189
+from celerp.migrations._json_compat import update_projection_state
 
 
 revision = "u6v7w8x9y0z1"
@@ -43,30 +46,18 @@ def upgrade() -> None:
 
     # Promote every key ending in _price from attributes to top-level,
     # only when the top-level key doesn't already exist.
-    conn.execute(sa.text("""
-        UPDATE projections
-        SET state = (
-            SELECT jsonb_object_agg(key, value)
-            FROM (
-                -- Start with all existing top-level keys
-                SELECT key, value FROM jsonb_each(state::jsonb)
-                UNION ALL
-                -- Add any _price keys from attributes that aren't already top-level
-                SELECT attr_key, attr_val
-                FROM jsonb_each((state::jsonb)->'attributes') AS t(attr_key, attr_val)
-                WHERE attr_key LIKE '%_price'
-                  AND (state::jsonb)->attr_key IS NULL
-            ) AS merged
-        )
-        WHERE entity_type = 'item'
-          AND state->'attributes' IS NOT NULL
-          AND EXISTS (
-              SELECT 1
-              FROM jsonb_each((state::jsonb)->'attributes') AS t(k, v)
-              WHERE k LIKE '%_price'
-                AND (state::jsonb)->k IS NULL
-          )
-    """))
+    def _promote_attr_prices(state, row):
+        attrs = state.get("attributes")
+        if not isinstance(attrs, dict):
+            return False
+        changed = False
+        for key, value in attrs.items():
+            if key.endswith("_price") and state.get(key) is None:
+                state[key] = value
+                changed = True
+        return changed
+
+    update_projection_state(conn, _promote_attr_prices, where="entity_type = 'item'")
 
 
 def downgrade() -> None:

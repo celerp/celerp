@@ -32,7 +32,10 @@ Only affects items where:
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
+
+# In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters.
+# See https://github.com/celerp/celerp/issues/189
+from celerp.migrations._json_compat import update_projection_state
 
 
 # ---------------------------------------------------------------------------
@@ -52,22 +55,19 @@ depends_on = None
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # For each affected item projection, set state[price_type] = new_price.
-    # price_type is a string like "cost_price"; new_price is a numeric JSON value.
-    # Cast new_price to jsonb explicitly - jsonb_set requires jsonb for the value arg.
-    conn.execute(sa.text("""
-        UPDATE projections
-        SET state = jsonb_set(
-            state::jsonb,
-            ARRAY[state->>'price_type'],
-            (state->'new_price')::jsonb,
-            true
-        )
-        WHERE entity_type = 'item'
-          AND state->>'price_type' IS NOT NULL
-          AND state->>'new_price' IS NOT NULL
-          AND (state::jsonb)->(state->>'price_type') IS NULL
-    """))
+    # For each affected item projection, set state[price_type] = new_price, but
+    # only when price_type and new_price are present and the named key is absent.
+    def _promote_price(state, row):
+        price_type = state.get("price_type")
+        new_price = state.get("new_price")
+        if price_type is None or new_price is None:
+            return False
+        if state.get(price_type) is not None:
+            return False
+        state[price_type] = new_price
+        return True
+
+    update_projection_state(conn, _promote_price, where="entity_type = 'item'")
 
 
 def downgrade() -> None:

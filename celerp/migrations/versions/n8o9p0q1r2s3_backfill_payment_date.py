@@ -30,7 +30,14 @@ This migration repairs the historical data for existing deployments:
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
+
+# In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters.
+# See https://github.com/celerp/celerp/issues/189
+from celerp.migrations._json_compat import (
+    set_if_blank,
+    update_ledger_data,
+    update_projection_state,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -51,42 +58,34 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     # 1. Backfill doc.payment.received ledger events missing payment_date:
-    #    set data->>'payment_date' = DATE(ledger.ts) where the field is absent.
-    conn.execute(sa.text("""
-        UPDATE ledger
-        SET data = jsonb_set(
-            data::jsonb,
-            '{payment_date}',
-            to_jsonb(TO_CHAR(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
-            true
-        )
-        WHERE event_type = 'doc.payment.received'
-          AND (
-            data->>'payment_date' IS NULL
-            OR data->>'payment_date' = ''
-          )
-    """))
+    #    set data['payment_date'] = DATE(ledger.ts) where the field is absent.
+    update_ledger_data(
+        conn,
+        lambda data, row: set_if_blank(data, "payment_date", row["pay_date"]),
+        where="event_type = 'doc.payment.received'",
+        extra_cols=("TO_CHAR(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS pay_date",),
+    )
 
     # 2. Backfill JE projections for payment JEs (je:auto:*:pay:*) missing
     #    state.ts, using DATE(l.ts) from the acc.journal_entry.created event.
-    conn.execute(sa.text("""
-        UPDATE projections AS p
-        SET state = jsonb_set(
-            p.state::jsonb,
-            '{ts}',
-            to_jsonb(TO_CHAR(l.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
-            true
-        )
-        FROM ledger l
-        WHERE p.entity_id LIKE 'je:auto:%:pay:%'
-          AND (
-            p.state->>'ts' IS NULL
-            OR p.state->>'ts' = ''
-          )
-          AND l.entity_id = p.entity_id
-          AND l.event_type = 'acc.journal_entry.created'
-          AND l.company_id = p.company_id
-    """))
+    def _backfill_je_ts(state, row):
+        if row["je_date"] is None:
+            return False
+        return set_if_blank(state, "ts", row["je_date"])
+
+    update_projection_state(
+        conn,
+        _backfill_je_ts,
+        where="entity_id LIKE 'je:auto:%:pay:%'",
+        extra_cols=(
+            "(SELECT TO_CHAR(l.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+            "FROM ledger l "
+            "WHERE l.entity_id = projections.entity_id "
+            "AND l.event_type = 'acc.journal_entry.created' "
+            "AND l.company_id = projections.company_id "
+            "LIMIT 1) AS je_date",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

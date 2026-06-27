@@ -21,7 +21,10 @@ This migration:
 
 from __future__ import annotations
 from alembic import op
-import sqlalchemy as sa
+
+# In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters.
+# See https://github.com/celerp/celerp/issues/189
+from celerp.migrations._json_compat import update_projection_state
 
 
 revision = "w8x9y0z1a2b3"
@@ -158,41 +161,37 @@ CARAT_TO_GRAM = {
 def upgrade() -> None:
     conn = op.get_bind()
 
-    for cat, defaults in CATEGORY_DEFAULTS.items():
+    def _backfill(state, row):
+        cat = state.get("category")
+        defaults = CATEGORY_DEFAULTS.get(cat)
+        if defaults is None:
+            return False
+        changed = False
+
+        # Fix sell_by carat → gram (must run before the purchase_unit check below,
+        # which compares against the post-fix sell_by - matching the original order).
+        if cat in CARAT_TO_GRAM and state.get("sell_by") == "carat":
+            state["sell_by"] = "gram"
+            changed = True
+
+        # Backfill purchase_unit (overwrite if absent or equal to sell_by - the
+        # old generic fallback).
         purchase_unit = defaults["purchase_unit"]
+        cur_pu = state.get("purchase_unit")
+        if cur_pu is None or cur_pu == state.get("sell_by"):
+            if cur_pu != purchase_unit:
+                state["purchase_unit"] = purchase_unit
+                changed = True
+
+        # Backfill weight_unit where missing
         weight_unit = defaults.get("weight_unit")
+        if weight_unit and state.get("weight_unit") is None:
+            state["weight_unit"] = weight_unit
+            changed = True
 
-        # Fix sell_by carat → gram
-        if cat in CARAT_TO_GRAM:
-            conn.execute(sa.text("""
-                UPDATE projections
-                SET state = state::jsonb || '{"sell_by": "gram"}'::jsonb
-                WHERE entity_type = 'item'
-                  AND (state::jsonb)->>'category' = :cat
-                  AND (state::jsonb)->>'sell_by' = 'carat'
-            """), {"cat": cat})
+        return changed
 
-        # Backfill purchase_unit (overwrite if it equals sell_by - the old generic fallback)
-        conn.execute(sa.text("""
-            UPDATE projections
-            SET state = state::jsonb || jsonb_build_object('purchase_unit', :pu)
-            WHERE entity_type = 'item'
-              AND (state::jsonb)->>'category' = :cat
-              AND (
-                (state::jsonb)->'purchase_unit' IS NULL
-                OR (state::jsonb)->>'purchase_unit' = (state::jsonb)->>'sell_by'
-              )
-        """), {"cat": cat, "pu": purchase_unit})
-
-        # Backfill weight_unit where NULL
-        if weight_unit:
-            conn.execute(sa.text("""
-                UPDATE projections
-                SET state = state::jsonb || jsonb_build_object('weight_unit', :wu)
-                WHERE entity_type = 'item'
-                  AND (state::jsonb)->>'category' = :cat
-                  AND (state::jsonb)->'weight_unit' IS NULL
-            """), {"cat": cat, "wu": weight_unit})
+    update_projection_state(conn, _backfill, where="entity_type = 'item'")
 
 
 def downgrade() -> None:
