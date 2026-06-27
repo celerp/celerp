@@ -125,11 +125,32 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in
+  # CI before; they catch the "require added, build.files not updated" class (v1.2.6)
+  # statically, on every PR, with no build.
+  electron:
+    name: Electron unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Install electron deps (skip the electron binary; tests are pure JS)
+        working-directory: electron
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile
+      - name: Run electron unit tests
+        working-directory: electron
+        run: pnpm test
+
   # Aggregator: the single required status check. Branch protection should require "Test"
-  # (this job), which passes only when every unit AND browser shard passed.
+  # (this job), which passes only when every unit, browser, AND electron job passed.
   test:
     name: Test
-    needs: [shard, browser]
+    needs: [shard, browser, electron]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -143,4 +164,8 @@ jobs:
             echo "One or more browser-test shards failed (result: ${{ needs.browser.result }})"
             exit 1
           fi
-          echo "All unit and browser test shards passed."
+          if [ "${{ needs.electron.result }}" != "success" ]; then
+            echo "Electron unit tests failed (result: ${{ needs.electron.result }})"
+            exit 1
+          fi
+          echo "All unit, browser, and electron checks passed."

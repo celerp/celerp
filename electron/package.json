@@ -39,6 +39,7 @@
     ],
     "files": [
       "main.js",
+      "app-main.js",
       "restart.js",
       "migrate_cmd.js",
       "preload.js",
