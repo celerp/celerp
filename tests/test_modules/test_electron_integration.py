@@ -21,7 +21,7 @@ import pytest
 
 CORE_DIR = Path(__file__).parent.parent.parent
 DEFAULT_MODULES_DIR = CORE_DIR / "default_modules"
-ELECTRON_MAIN = CORE_DIR / "electron" / "main.js"
+ELECTRON_MAIN = CORE_DIR / "electron" / "app-main.js"
 
 
 # ── Electron main.js source checks ────────────────────────────────────────────
@@ -256,7 +256,7 @@ class TestElectronConfirmDialog:
     @pytest.fixture(autouse=True)
     def _src(self):
         import os
-        p = os.path.join(os.path.dirname(__file__), "../../electron/main.js")
+        p = os.path.join(os.path.dirname(__file__), "../../electron/app-main.js")
         with open(p) as f:
             self.main_src = f.read()
         p2 = os.path.join(os.path.dirname(__file__), "../../electron/preload.js")

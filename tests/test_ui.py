@@ -11328,7 +11328,7 @@ class TestBuildWorkflowVersioning:
 
     def test_electron_main_disallows_prerelease(self):
         from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/main.js').read_text()
+        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
         assert 'allowPrerelease = false' in main_js
 
     def test_update_card_uses_correct_releases_url(self):
@@ -11339,7 +11339,7 @@ class TestBuildWorkflowVersioning:
 
     def test_electron_main_wires_update_not_available(self):
         from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/main.js').read_text()
+        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
         assert 'update-not-available' in main_js
 
     def test_preload_exposes_on_update_not_available(self):

@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 _PKG = Path(__file__).parent.parent / "electron" / "package.json"
-_MAIN = Path(__file__).parent.parent / "electron" / "main.js"
+_MAIN = Path(__file__).parent.parent / "electron" / "app-main.js"
 _PRELOAD = Path(__file__).parent.parent / "electron" / "preload.js"
 
 
