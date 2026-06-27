@@ -23,7 +23,10 @@ sell_by).
 
 from __future__ import annotations
 from alembic import op
-import sqlalchemy as sa
+
+# In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters.
+# See https://github.com/celerp/celerp/issues/189
+from celerp.migrations._json_compat import update_projection_state
 
 
 # revision identifiers, used by Alembic.
@@ -36,22 +39,21 @@ depends_on = None
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # Backfill purchase_conversion_factor = 1 where missing
-    conn.execute(sa.text("""
-        UPDATE projections
-        SET state = state::jsonb || '{"purchase_conversion_factor": 1}'::jsonb
-        WHERE entity_type = 'item'
-          AND (state::jsonb)->'purchase_conversion_factor' IS NULL
-    """))
-    # Backfill purchase_unit = sell_by where purchase_unit missing and sell_by present
-    conn.execute(sa.text("""
-        UPDATE projections
-        SET state = state::jsonb || jsonb_build_object('purchase_unit', (state::jsonb)->>'sell_by')
-        WHERE entity_type = 'item'
-          AND (state::jsonb)->'purchase_unit' IS NULL
-          AND (state::jsonb)->>'sell_by' IS NOT NULL
-          AND (state::jsonb)->>'sell_by' != ''
-    """))
+    # Backfill purchase_conversion_factor = 1 where missing, and
+    # purchase_unit = sell_by where purchase_unit missing and sell_by present.
+    def _backfill(state, row):
+        changed = False
+        if state.get("purchase_conversion_factor") is None:
+            state["purchase_conversion_factor"] = 1
+            changed = True
+        if state.get("purchase_unit") is None:
+            sell_by = state.get("sell_by")
+            if sell_by not in (None, ""):
+                state["purchase_unit"] = sell_by
+                changed = True
+        return changed
+
+    update_projection_state(conn, _backfill, where="entity_type = 'item'")
 
 
 def downgrade() -> None:
