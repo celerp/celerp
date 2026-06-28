@@ -74,3 +74,49 @@ async def handle_webhook(
     # Pass since=None so the sync methods use the last SyncRun timestamp.
     await run_sync(connector, ctx, entity, direction=direction)
     log.info("webhook: processed %s/%s for %s", event.platform, event.topic, ctx.company_id)
+
+
+async def dispatch_woocommerce_webhook(raw_body: bytes, signature: str, topic: str) -> bool:
+    """Verify and process a WooCommerce webhook the relay forwarded to this instance.
+
+    WooCommerce signs the raw body with the per-config secret (base64 HMAC-SHA256,
+    sent as X-WC-Webhook-Signature). We try each configured WooCommerce company's
+    secret; the first that verifies owns the event. Returns True if handled, False
+    if no configured secret validated the signature (a forged delivery is ignored).
+    """
+    import json
+
+    import sqlalchemy as sa
+
+    from celerp.connectors.relay_token import fetch_context
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    if not signature:
+        return False
+
+    connector = connector_registry.get("woocommerce")
+
+    async with get_session_ctx() as session:
+        rows = await session.execute(
+            sa.select(
+                ConnectorConfig.company_id, ConnectorConfig.direction, ConnectorConfig.webhook_secret
+            ).where(ConnectorConfig.connector == "woocommerce")
+        )
+        configs = rows.all()
+
+    for company_id, direction, secret in configs:
+        if not secret or not connector.validate_webhook(raw_body, signature, secret):
+            continue
+        ctx = await fetch_context(company_id, "woocommerce")
+        if ctx is None:
+            continue
+        try:
+            data = json.loads(raw_body or b"{}")
+        except (ValueError, TypeError):
+            data = {}
+        event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
+        await handle_webhook(event, ctx, direction=SyncDirection(direction))
+        return True
+
+    return False

@@ -243,6 +243,9 @@ class GatewayClient:
         elif msg_type == "shopify.webhook":
             asyncio.create_task(self._handle_shopify_webhook(payload))
 
+        elif msg_type == "woocommerce.webhook":
+            asyncio.create_task(self._handle_woocommerce_webhook(payload))
+
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
 
@@ -301,6 +304,22 @@ class GatewayClient:
                 await handle_webhook(event, ctx, direction=SyncDirection(direction))
         except Exception as exc:
             log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)
+
+    async def _handle_woocommerce_webhook(self, payload: dict) -> None:
+        """A WooCommerce webhook the relay forwarded. The per-install signing
+        secret lives here, so the signature is verified locally before a targeted
+        sync runs (a forged delivery verifies against no secret and is ignored)."""
+        topic = payload.get("topic", "")
+        try:
+            import base64
+
+            from celerp.connectors.webhooks import dispatch_woocommerce_webhook
+
+            raw = base64.b64decode(payload.get("body_b64") or "")
+            signature = payload.get("signature", "")
+            await dispatch_woocommerce_webhook(raw, signature, topic)
+        except Exception as exc:
+            log.warning("woocommerce webhook handling failed (topic=%s): %s", topic, exc)
 
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.

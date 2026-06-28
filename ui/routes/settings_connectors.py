@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, timezone
 
 from fasthtml.common import *
@@ -13,6 +15,60 @@ from ui.i18n import t, get_lang
 from ui.routes.settings import _check_role, _token
 
 from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncFrequency
+
+log = logging.getLogger(__name__)
+
+
+async def _register_woocommerce_webhooks(
+    iid: str, store_url: str, consumer_key: str, consumer_secret: str
+) -> None:
+    """Best-effort: subscribe the WooCommerce store to webhooks delivered to the
+    relay, which forwards them to this instance over the gateway. Persists the
+    signing secret so the instance can verify each delivery locally. Never raises
+    into the connect flow; the scheduled reconciliation backstops any miss."""
+    import json
+    import secrets as _secrets
+
+    import sqlalchemy as sa
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.config import RELAY_URL
+
+    delivery_url = f"{RELAY_URL.rstrip('/')}/webhooks/woocommerce/events"
+    secret = _secrets.token_hex(32)
+    ctx = ConnectorContext(
+        company_id=str(iid),
+        access_token=f"{consumer_key}:{consumer_secret}",
+        store_handle=store_url,
+    )
+    ids = await WooCommerceConnector().register_webhooks(ctx, delivery_url, secret=secret)
+    async with get_session_ctx() as session:
+        await session.execute(
+            sa.update(ConnectorConfig)
+            .where(ConnectorConfig.company_id == iid, ConnectorConfig.connector == "woocommerce")
+            .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids) if ids else None)
+        )
+        await session.commit()
+
+
+def _store_url_error(store_url: str, platform: str) -> str | None:
+    """Validate an API-key connector's store URL. Returns a translation key for the
+    error, or None if valid.
+
+    The consumer key/secret are sent to the store as HTTP Basic Auth, so the URL
+    must be https (cleartext http would expose them); http is allowed only behind
+    the CELERP_ALLOW_HTTP_STORE dev override. WooCommerce additionally requires a
+    store URL (it has no other endpoint)."""
+    if store_url:
+        allow_http = store_url.startswith("http://") and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
+        if not (store_url.startswith("https://") or allow_http):
+            return "connectors.store_url_must_use_https"
+    elif platform == "woocommerce":
+        return "connectors.store_url_required"
+    return None
 
 _CONNECTOR_ICONS: dict[str, str] = {
     "shopify": "🛍️",
@@ -765,12 +821,13 @@ def setup_routes(app):
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
         import httpx
-        import os
 
         iid = ensure_instance_id()
         lang = get_lang(request)
         form = await request.form()
-        store_url = form.get("store_url", "").strip()
+        # Canonicalise (no trailing slash) so the stored handle matches the store
+        # URL WooCommerce sends in webhook deliveries (X-WC-Webhook-Source).
+        store_url = form.get("store_url", "").strip().rstrip("/")
         consumer_key = form.get("consumer_key", "").strip()
         consumer_secret = form.get("consumer_secret", "").strip()
 
@@ -780,6 +837,16 @@ def setup_routes(app):
                      cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
+            )
+
+        if (url_err := _store_url_error(store_url, platform)) is not None:
+            _defaults = {
+                "connectors.store_url_must_use_https": "Store URL must use https:// (API keys are sent as Basic Auth).",
+                "connectors.store_url_required": "Store URL is required.",
+            }
+            return Div(
+                Span(t(url_err, lang, default=_defaults[url_err]), cls="flash flash--warning"),
+                id=f"connector-card-{platform}", cls="connector-card",
             )
 
         if not RELAY_URL.startswith("https://"):
@@ -813,6 +880,15 @@ def setup_routes(app):
         catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
+
+        # Subscribe WooCommerce to real-time webhooks (best-effort; the scheduled
+        # reconciliation backstops it). Never block the connect on it.
+        if platform == "woocommerce":
+            try:
+                await _register_woocommerce_webhooks(iid, store_url, consumer_key, consumer_secret)
+            except Exception:
+                log.warning("woocommerce webhook registration failed (non-fatal)", exc_info=True)
+
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
                               config=config, lang=lang)

@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -37,7 +38,6 @@ import celerp.connectors.upsert as _upsert
 log = logging.getLogger(__name__)
 
 _API_BASE = "https://quickbooks.api.intuit.com/v3/company"
-_SANDBOX_BASE = "https://sandbox-quickbooks.api.intuit.com/v3/company"
 _PAGE_SIZE = 100
 
 
@@ -54,6 +54,10 @@ def _base_url(ctx: ConnectorContext) -> str:
     realm_id = ctx.store_handle or ""
     if not realm_id:
         raise ValueError("ConnectorContext.store_handle (realmId) is required for QuickBooks")
+    # realmId is an Intuit-issued numeric company id; reject anything else so it
+    # can never be used to redirect the request away from the Intuit API host.
+    if not realm_id.isdigit():
+        raise ValueError("QuickBooks realmId must be numeric")
     return f"{_API_BASE}/{realm_id}"
 
 
@@ -142,8 +146,6 @@ class QuickBooksConnector(ConnectorBase):
                 continue
 
             idempotency_key = f"quickbooks:item:{qb_item['Id']}"
-            sale_price = qb_item.get("UnitPrice")
-            cost_price = qb_item.get("PurchaseCost")
             sell_by = "service" if item_type == "Service" else "piece"
 
             try:
@@ -153,8 +155,8 @@ class QuickBooksConnector(ConnectorBase):
                     name=qb_item.get("Name") or sku,
                     description=qb_item.get("Description") or "",
                     sell_by=sell_by,
-                    sale_price=float(sale_price) if sale_price else None,
-                    cost_price=float(cost_price) if cost_price else None,
+                    sale_price=money(qb_item.get("UnitPrice")),
+                    cost_price=money(qb_item.get("PurchaseCost")),
                     idempotency_key=idempotency_key,
                 )
                 created = await _upsert.upsert_item(ctx.company_id, item)
@@ -246,8 +248,8 @@ class QuickBooksConnector(ConnectorBase):
         result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
         realm_id = (ctx.extra or {}).get("realm_id") or ctx.store_handle
-        if not realm_id:
-            result.errors = ["realm_id is required for QuickBooks outbound invoice sync"]
+        if not realm_id or not str(realm_id).isdigit():
+            result.errors = ["A numeric realm_id is required for QuickBooks outbound invoice sync"]
             return result
 
         try:

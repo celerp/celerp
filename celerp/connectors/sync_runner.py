@@ -31,6 +31,32 @@ _SYNC_METHODS = {
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
 
 
+async def _last_success_watermark(company_id: str, connector: str, entity: str):
+    """The start time of the most recent FULLY successful sync for this
+    (company, connector, entity), used as the incremental `since`. Returns None on
+    the first sync or if it can't be read, which means a full pull.
+
+    Only fully-successful runs advance the cursor: a partial run left some records
+    errored, so the next run must re-pull from the last good point to retry them
+    rather than skipping past them."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+
+    try:
+        async with get_session_ctx() as session:
+            return await session.scalar(
+                sa.select(sa.func.max(SyncRun.started_at)).where(
+                    SyncRun.company_id == company_id,
+                    SyncRun.connector == connector,
+                    SyncRun.entity == entity,
+                    SyncRun.status == "success",
+                )
+            )
+    except Exception:
+        return None
+
+
 async def run_sync(
     connector: ConnectorBase,
     ctx: ConnectorContext,
@@ -65,6 +91,11 @@ async def run_sync(
     sync_method = getattr(connector, method_name, None)
     if sync_method is None:
         raise ValueError(f"{connector.name} has no method {method_name}")
+
+    # Incremental by default: pull only what changed since the last successful run
+    # for this entity. Idempotency keys make any overlap dup-safe.
+    if since is None and entity not in _OUTBOUND_ENTITIES:
+        since = await _last_success_watermark(ctx.company_id, connector.name, entity)
 
     started_at = datetime.now(timezone.utc)
 

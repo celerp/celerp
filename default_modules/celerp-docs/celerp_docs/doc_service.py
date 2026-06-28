@@ -8,6 +8,26 @@ from sqlalchemy import text
 from celerp.events.engine import emit_event
 
 
+def _f(v, default: float = 0.0) -> float:
+    """Null-safe float. Missing/null/empty -> default; a real 0 stays 0.0."""
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _doc_exists(session, company_id: str, idem_key: str) -> bool:
+    row = (
+        await session.execute(
+            text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+            {"cid": str(company_id), "k": idem_key},
+        )
+    ).first()
+    return row is not None
+
+
 async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
     """
     Create a doc (invoice) from a Shopify order dict. Returns True if newly created.
@@ -77,4 +97,220 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
             metadata_={},
         )
         await session.commit()
+        return True
+
+
+async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
+    """Native CelERP invoices that are candidates to push out to `platform`.
+
+    Returns invoices that did NOT originate from an external platform (no
+    *_order_id / *_invoice_id marker) and are not yet stamped as pushed to this
+    platform. NOTE: the push write-back that stamps the returned platform id (to
+    make this list shrink and prevent duplicate creates) is a scoped follow-up;
+    until it lands, outbound invoice push must stay manual, not scheduled.
+    """
+    import uuid as _uuid
+    from celerp.db import SessionLocal
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+
+    _IMPORTED_MARKERS = (
+        "shopify_order_id", "woocommerce_order_id",
+        "quickbooks_invoice_id", "xero_invoice_id",
+    )
+    cid = _uuid.UUID(str(company_id))
+    out: list[dict] = []
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == cid,
+                Projection.entity_type == "doc",
+                Projection.state["doc_type"].as_string() == "invoice",
+            )
+        )).scalars().all()
+        for r in rows:
+            st = r.state or {}
+            if any(st.get(m) for m in _IMPORTED_MARKERS):
+                continue  # imported from a platform, not ours to push back
+            if st.get(f"{platform}_invoice_id"):
+                continue  # already pushed to this platform
+            out.append({
+                "ref_id": st.get("ref_id") or st.get("doc_number"),
+                "line_items": st.get("line_items") or [],
+                "total": st.get("total"),
+                "customer_name": st.get("customer_name"),
+                "customer_external_id": st.get("customer_external_id"),
+            })
+    return out
+
+
+async def _emit_doc(session, company_id: str, ref_id: str, data: dict, idem_key: str) -> None:
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=f"doc:{ref_id}",
+        entity_type="doc",
+        event_type="doc.created",
+        data=data,
+        actor_id=None,
+        location_id=None,
+        source="connector",
+        idempotency_key=idem_key,
+        metadata_={},
+    )
+    await session.commit()
+
+
+async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
+    """
+    Create a doc (invoice) from a WooCommerce order dict. Returns True if newly created.
+
+    Idempotency key: woocommerce:order:{id}
+
+    Mapping:
+      order.number                 -> ref_id
+      order.status (completed)     -> closed, else open
+      order.line_items[].price     -> unit_price (per-unit, post-discount)
+      order.line_items[].total     -> line_total
+      order.total                  -> total
+    """
+    from celerp.db import SessionLocal
+
+    idem_key = f"woocommerce:order:{order['id']}"
+
+    async with SessionLocal() as session:
+        if await _doc_exists(session, company_id, idem_key):
+            return False
+
+        ref_id = str(order.get("number") or f"woocommerce-{order['id']}")
+        status = "closed" if order.get("status") == "completed" else "open"
+
+        line_items = []
+        for li in order.get("line_items", []):
+            qty = _f(li.get("quantity"), 1)
+            unit_price = _f(li.get("price"))
+            line_total = _f(li.get("total"), qty * unit_price)
+            line_items.append({
+                "name": li.get("name", ""),
+                "quantity": qty,
+                "unit_price": unit_price,
+                "line_total": line_total,
+            })
+        total = _f(order.get("total"))
+
+        data = {
+            "doc_type": "invoice",
+            "ref_id": ref_id,
+            "status": status,
+            "line_items": line_items,
+            "total": total,
+            "amount_outstanding": 0.0 if status == "closed" else total,
+            "woocommerce_order_id": str(order["id"]),
+        }
+        await _emit_doc(session, company_id, ref_id, data, idem_key)
+        return True
+
+
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool:
+    """
+    Create a doc (invoice) from a QuickBooks Invoice dict. Returns True if newly created.
+
+    Idempotency key: quickbooks:invoice:{Id}
+
+    Mapping:
+      Invoice.DocNumber               -> ref_id
+      Invoice.Balance (0)             -> closed, else open
+      Invoice.Line[SalesItemLineDetail] -> line_items
+      Invoice.TotalAmt                -> total
+      Invoice.Balance                 -> amount_outstanding
+    """
+    from celerp.db import SessionLocal
+
+    idem_key = f"quickbooks:invoice:{invoice['Id']}"
+
+    async with SessionLocal() as session:
+        if await _doc_exists(session, company_id, idem_key):
+            return False
+
+        ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
+        balance = _f(invoice.get("Balance"))
+        status = "closed" if balance == 0 else "open"
+
+        line_items = []
+        for line in invoice.get("Line", []):
+            if line.get("DetailType") != "SalesItemLineDetail":
+                continue  # skip subtotal/discount/other detail rows
+            detail = line.get("SalesItemLineDetail") or {}
+            qty = _f(detail.get("Qty"), 1)
+            unit_price = _f(detail.get("UnitPrice"))
+            line_total = _f(line.get("Amount"), qty * unit_price)
+            line_items.append({
+                "name": line.get("Description", ""),
+                "quantity": qty,
+                "unit_price": unit_price,
+                "line_total": line_total,
+            })
+        total = _f(invoice.get("TotalAmt"))
+
+        data = {
+            "doc_type": "invoice",
+            "ref_id": ref_id,
+            "status": status,
+            "line_items": line_items,
+            "total": total,
+            "amount_outstanding": balance,
+            "quickbooks_invoice_id": str(invoice["Id"]),
+        }
+        await _emit_doc(session, company_id, ref_id, data, idem_key)
+        return True
+
+
+async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
+    """
+    Create a doc (invoice) from a Xero Invoice dict (ACCREC). Returns True if newly created.
+
+    Idempotency key: xero:invoice:{InvoiceID}
+
+    Mapping:
+      Invoice.InvoiceNumber   -> ref_id
+      Invoice.Status (PAID)   -> closed, else open
+      Invoice.LineItems       -> line_items
+      Invoice.Total           -> total
+      Invoice.AmountDue       -> amount_outstanding
+    """
+    from celerp.db import SessionLocal
+
+    idem_key = f"xero:invoice:{invoice['InvoiceID']}"
+
+    async with SessionLocal() as session:
+        if await _doc_exists(session, company_id, idem_key):
+            return False
+
+        ref_id = str(invoice.get("InvoiceNumber") or f"xero-{invoice['InvoiceID']}")
+        status = "closed" if invoice.get("Status") == "PAID" else "open"
+
+        line_items = []
+        for li in invoice.get("LineItems", []):
+            qty = _f(li.get("Quantity"), 1)
+            unit_price = _f(li.get("UnitAmount"))
+            line_total = _f(li.get("LineAmount"), qty * unit_price)
+            line_items.append({
+                "name": li.get("Description", ""),
+                "quantity": qty,
+                "unit_price": unit_price,
+                "line_total": line_total,
+            })
+        total = _f(invoice.get("Total"))
+        amount_due = _f(invoice.get("AmountDue"), total if status == "open" else 0.0)
+
+        data = {
+            "doc_type": "invoice",
+            "ref_id": ref_id,
+            "status": status,
+            "line_items": line_items,
+            "total": total,
+            "amount_outstanding": amount_due,
+            "xero_invoice_id": str(invoice["InvoiceID"]),
+        }
+        await _emit_doc(session, company_id, ref_id, data, idem_key)
         return True

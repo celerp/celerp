@@ -23,13 +23,13 @@ from typing import Any
 import httpx
 
 from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
     SyncDirection,
     SyncEntity,
-    SyncFrequency,
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
@@ -38,17 +38,6 @@ log = logging.getLogger(__name__)
 
 _API_VERSION = "2024-01"
 _PAGE_LIMIT = 250  # Shopify max per page
-
-
-def _money(v) -> float | None:
-    """Parse a Shopify money value to float. Returns None only when genuinely
-    absent (missing/null/empty) — a real price of 0 stays 0.0, not None."""
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _base_url(ctx: ConnectorContext) -> str:
@@ -137,7 +126,7 @@ class ShopifyConnector(ConnectorBase):
                     sku=sku,
                     name=name,
                     sell_by="piece",
-                    sale_price=_money(variant.get("price")),
+                    sale_price=money(variant.get("price")),
                     quantity=float(variant.get("inventory_quantity") or 0),
                     idempotency_key=idempotency_key,
                 )
@@ -173,17 +162,18 @@ class ShopifyConnector(ConnectorBase):
 
         images: list[dict] = product.get("images", [])
 
+        import uuid as _uuid
+
         from sqlalchemy import func
 
         async with get_async_session() as session:
-            # Resolve the item by SKU with a DB-side filter (case-insensitive),
-            # returning the single match — never load the whole catalog into
-            # memory per product (that was O(products × catalog_size)).
+            # Resolve the item by SKU with a single DB-side, case-insensitive
+            # query that returns just the matching row.
             row = (await session.execute(
                 select(Projection).where(
-                    Projection.company_id == ctx.company_id,
+                    Projection.company_id == _uuid.UUID(str(ctx.company_id)),
                     Projection.entity_type == "item",
-                    func.lower(Projection.state["sku"].astext) == sku.strip().lower(),
+                    func.lower(Projection.state["sku"].as_string()) == sku.strip().lower(),
                 ).limit(1)
             )).scalar_one_or_none()
             if row is None:
