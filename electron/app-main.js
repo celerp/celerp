@@ -960,11 +960,14 @@ function isWindowsElevated() {
 if (isWindowsElevated()) {
   let relaunched = false;
   try {
-    childProcess
-      .spawn("runas", ["/trustlevel:0x20000", process.execPath], {
-        detached: true, stdio: "ignore", windowsHide: true,
-      })
-      .unref();
+    // Full path: Node's spawn/execFile does not resolve a bare "runas" (no shell)
+    // to runas.exe. Run it synchronously so a launch failure is caught here rather
+    // than lost as an async 'error' event. runas launches the de-elevated copy and
+    // returns; that copy keeps running after we exit.
+    const runas = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "runas.exe");
+    childProcess.execFileSync(runas, ["/trustlevel:0x20000", process.execPath], {
+      stdio: "ignore", windowsHide: true,
+    });
     relaunched = true;
     console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
   } catch (e) {
