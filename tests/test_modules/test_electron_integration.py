@@ -94,10 +94,18 @@ class TestElectronMainJS:
         assert "default_modules" in self._src
         assert "process.resourcesPath" in self._src
 
-    def test_seed_skips_existing_modules(self):
-        """seedDefaultModules should not overwrite existing user-installed modules."""
-        assert "fs.existsSync(dst)" in self._src
-        assert "continue" in self._src  # Skip existing
+    def test_seed_refreshes_first_party_on_version_change(self):
+        """seedDefaultModules must re-seed bundled modules when the app version
+        changes, so shipped module fixes reach users who upgrade in place."""
+        assert "app.getVersion()" in self._src
+        assert ".default-modules-version" in self._src
+        # A version change replaces the installed copy (remove + re-copy).
+        assert "fs.rmSync(dst" in self._src
+
+    def test_seed_leaves_user_modules_untouched(self):
+        """Only bundled modules (iterated from DEFAULT_MODULES_SRC) are managed;
+        a user-added module whose name isn't in the bundle is never overwritten."""
+        assert "fs.readdirSync(srcDir)" in self._src
 
     def test_module_setup_failure_is_nonfatal(self):
         """module_setup.py failure should be caught and logged, not fatal."""
@@ -240,8 +248,10 @@ class TestSecondBootGuards:
             "pgInstance.initialise() must be inside an if (!fs.existsSync(...)) guard"
         )
 
-    def test_seed_default_modules_skips_existing(self):
-        """seedDefaultModules must skip already-installed module dirs (idempotent)."""
+    def test_seed_default_modules_idempotent_within_version(self):
+        """On a second boot of the same app version, seedDefaultModules must not
+        re-copy already-installed modules - it is version-gated, so it's a no-op."""
+        assert "seededVersion !== appVersion" in self._src
         assert "fs.existsSync(dst)" in self._src
         assert "continue" in self._src
 
