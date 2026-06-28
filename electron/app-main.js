@@ -41,15 +41,19 @@ const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
   const resolved = rewriteAsarPath(cmd);
   const child = _spawn(resolved, args, opts);
-  // Drain embedded-postgres's child pipes. embedded-postgres spawns initdb/postgres
-  // with piped stdio but reads only stdout in initialise(), leaving stderr unread.
-  // PostgreSQL tools write their progress to stderr, and Windows anonymous pipes
-  // have a tiny buffer — an unread stderr fills, the child blocks on the write and
-  // never exits, hanging first-boot initialisation. Attaching no-op drains keeps
-  // the pipes empty; embedded-postgres's own 'data' parsers still receive the data.
+  // TEMP DIAGNOSTIC: capture (and thereby drain) embedded-postgres child output to
+  // a file so we can see exactly where first-boot initdb wedges on Windows.
   if (typeof resolved === "string" && resolved.includes("@embedded-postgres")) {
-    child.stdout?.on("data", () => {});
-    child.stderr?.on("data", () => {});
+    const _log = (tag) => (chunk) => {
+      try {
+        const dir = path.join(app.getPath("userData"), "celerp-data", "logs");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.appendFileSync(path.join(dir, "pg-stdio.log"), `[${tag}] ${chunk}`);
+      } catch { /* ignore */ }
+    };
+    try { fs.appendFileSync(path.join(app.getPath("userData"), "celerp-data", "logs", "pg-stdio.log"), `\n=== spawn ${resolved} ${JSON.stringify(args)} ===\n`); } catch { /* ignore */ }
+    child.stdout?.on("data", _log("out"));
+    child.stderr?.on("data", _log("err"));
   }
   return child;
 };
