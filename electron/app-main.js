@@ -209,10 +209,17 @@ function pythonBin() {
 // (same args/auth so the cluster is identical and .start() can connect), but with
 // stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
 async function initialisePostgresWindows() {
-  const pkgJson = require.resolve("@embedded-postgres/windows-x64/package.json");
-  const initdbBin = rewriteAsarPath(path.join(path.dirname(pkgJson), "native", "bin", "initdb.exe"));
+  const logPath = path.join(LOG_DIR, "initdb-win.log");
+  const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
+  let initdbBin;
+  try {
+    const pkgJson = require.resolve("@embedded-postgres/windows-x64/package.json");
+    initdbBin = rewriteAsarPath(path.join(path.dirname(pkgJson), "native", "bin", "initdb.exe"));
+  } catch (e) { trace("resolve initdb failed: " + e.message); throw e; }
+  trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
   const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
   fs.writeFileSync(pwfile, "celerp\n");
+  const out = fs.openSync(logPath, "a");
   try {
     await new Promise((resolve, reject) => {
       const proc = _spawn(initdbBin, [
@@ -221,11 +228,12 @@ async function initialisePostgresWindows() {
         "--username=celerp",
         `--pwfile=${pwfile}`,
         "--lc-messages=en_US.UTF-8",
-      ], { stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, LC_MESSAGES: "en_US.UTF-8" } });
-      proc.on("error", reject);
-      proc.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))));
+      ], { stdio: ["ignore", out, out], env: { ...process.env, LC_MESSAGES: "en_US.UTF-8" } });
+      proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
+      proc.on("exit", (code) => { trace("initdb exit code=" + code); (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))); });
     });
   } finally {
+    try { fs.closeSync(out); } catch { /* ignore */ }
     try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
   }
 }
@@ -233,6 +241,7 @@ async function initialisePostgresWindows() {
 async function startPostgres(dbPort) {
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
+  try { fs.appendFileSync(path.join(LOG_DIR, "boot-trace.log"), `startPostgres entered platform=${process.platform} pgVersionExists=${fs.existsSync(path.join(PG_DATA_DIR, "PG_VERSION"))}\n`); } catch { /* ignore */ }
 
   if (!EmbeddedPostgres) {
     EmbeddedPostgres = (await import("embedded-postgres")).default;
