@@ -607,20 +607,25 @@ jobs:
           icacls $app /grant "Users:(OI)(CI)RX" /T | Out-Null
           $exe = Join-Path $app "Celerp.exe"
 
-          # The app's data dir lives under the standard user's profile; its exact
-          # name depends on Electron's app name, so discover the API port from the
-          # api-port file the app publishes rather than guessing the path or relying
-          # on env inheritance through the credentialed launch.
-          $roaming = "C:\Users\$u\AppData\Roaming"
+          # Launch through a cmd wrapper that captures Electron's own stdout/stderr
+          # (ELECTRON_ENABLE_LOGGING) to a world-readable file, so we can see where
+          # early boot wedges even before the app writes its own data-dir logs. The
+          # api-port file is discovered by searching the whole user profile (its
+          # exact path depends on Electron's resolved app name).
+          $boot = "C:\Users\Public\celerp-boot.out"
+          $run  = "C:\Users\Public\celerp-run.cmd"
+          Remove-Item $boot -EA SilentlyContinue
+          Set-Content -Encoding Ascii $run "@echo off`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" > `"$boot`" 2>&1"
+          $userHome = "C:\Users\$u"
 
-          Write-Host "smoke: launching $exe as standard user $u"
-          Start-Process -FilePath $exe -Credential $cred -LoadUserProfile -WorkingDirectory $app
+          Write-Host "smoke: launching $exe as standard user $u (output captured to $boot)"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $app
 
-          $deadline = (Get-Date).AddSeconds(300)
+          $deadline = (Get-Date).AddSeconds(240)
           $ok = $false; $port = $null; $tick = 0
           while ((Get-Date) -lt $deadline) {
             if (-not $port) {
-              $pf = Get-ChildItem -Path $roaming -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+              $pf = Get-ChildItem -Path $userHome -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
               if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
             }
             if ($port) {
@@ -630,13 +635,12 @@ jobs:
             $tick++; Start-Sleep -Seconds 2
           }
           taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          if (-not $ok) {
-            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
-            Write-Host "===== logs under $roaming ====="
-            Get-ChildItem -Path $roaming -Recurse -Include "*.log","logfile" -EA SilentlyContinue |
-              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-            exit 1
-          }
+          Write-Host "===== Electron stdout/stderr ($boot) ====="
+          if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
+          Write-Host "===== logs under $userHome ====="
+          Get-ChildItem -Path $userHome -Recurse -Include "*.log","logfile" -EA SilentlyContinue |
+            ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+          if (-not $ok) { Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"; exit 1 }
           Write-Host "boot smoke OK on Windows (port $port)"
 
       - name: Verify YML artifact names
