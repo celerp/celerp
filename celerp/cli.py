@@ -206,20 +206,30 @@ def _post_migration_grants(db_url: str) -> None:
 
     Must run AFTER migrations since sequences/tables created by migrations
     won't be covered by ALTER DEFAULT PRIVILEGES set during provisioning.
+
+    Runs in-process over the existing connection rather than shelling out to
+    `sudo -u postgres psql` (which does not exist on Windows and crashed the
+    bundled launcher's migrate step). On the bundled single-user cluster the
+    connecting user is the superuser/owner, so the grants apply; best-effort so a
+    grant error never blocks startup.
     """
     parts = _parse_db_url(db_url)
     if not parts:
         return
     user = parts["user"]
-    dbname = parts["dbname"]
-    for grant_sql in [
-        f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {user};",
-        f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {user};",
-    ]:
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", dbname, "-c", grant_sql],
-            capture_output=True, text=True,
-        )
+    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(sync_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{user}";'))
+                conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "{user}";'))
+        finally:
+            engine.dispose()
+    except Exception:
+        # Best-effort: on the bundled cluster the app user already owns its objects.
+        pass
 
 
 
