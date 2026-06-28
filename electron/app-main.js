@@ -96,7 +96,7 @@ const CONFIG_PATH = path.join(DATA_DIR, "celerp-config.json");
 const PYTHON_CONFIG_PATH = path.join(DATA_DIR, "config.toml");
 
 // Default modules shipped with the binary (in app resources/default_modules/).
-// Copied to MODULE_DIR on first boot if not already present.
+// Seeded into MODULE_DIR on first boot and refreshed from the bundle on upgrade.
 const DEFAULT_MODULES_SRC = IS_DEV
   ? path.resolve(__dirname, "../default_modules")
   : path.join(process.resourcesPath, "app", "default_modules");
@@ -260,20 +260,56 @@ function runMigrations(dbUrl) {
   });
 }
 
-/** Seed default modules from resources into DATA_DIR/modules/ on first boot. */
+/**
+ * Seed the bundled (first-party) default modules into DATA_DIR/modules/.
+ *
+ * The copies under MODULE_DIR are what actually run (they are on PYTHONPATH), so
+ * they must be refreshed whenever a new app version ships - otherwise a release's
+ * module fixes never reach users who upgrade in place. We record the app version
+ * that last seeded the bundle in a marker file and re-copy the first-party
+ * modules from the bundle whenever it changes.
+ *
+ * Only directories shipped in DEFAULT_MODULES_SRC are managed here. Modules a
+ * user added themselves (names not present in the bundle) are never touched -
+ * default modules are shipped code, not user data.
+ */
 function seedDefaultModules() {
   const srcDir = DEFAULT_MODULES_SRC;
   if (!fs.existsSync(srcDir)) return; // Dev mode, modules already on path
 
   fs.mkdirSync(MODULE_DIR, { recursive: true });
 
+  const markerPath = path.join(MODULE_DIR, ".default-modules-version");
+  const appVersion = app.getVersion();
+  let seededVersion = "";
+  try {
+    seededVersion = fs.readFileSync(markerPath, "utf8").trim();
+  } catch {
+    // No marker yet (fresh install): treat as a version change so we seed.
+  }
+  const refresh = seededVersion !== appVersion;
+
   for (const modName of fs.readdirSync(srcDir)) {
     const src = path.join(srcDir, modName);
     const dst = path.join(MODULE_DIR, modName);
     if (!fs.statSync(src).isDirectory()) continue;
-    if (fs.existsSync(dst)) continue; // Already installed — never overwrite user edits
+    const installed = fs.existsSync(dst);
+    // Already present and the app version is unchanged: the bundled source can't
+    // have changed either, so leave it as-is.
+    if (installed && !refresh) continue;
+    // Refresh from the bundle so shipped fixes (and removals) take effect. Only
+    // first-party modules - those present in the bundle - ever reach this path.
+    if (installed) fs.rmSync(dst, { recursive: true, force: true });
     _copyDirSync(src, dst);
-    console.log(`[modules] Seeded default module: ${modName}`);
+    console.log(`[modules] ${installed ? "Refreshed" : "Seeded"} default module: ${modName}`);
+  }
+
+  if (refresh) {
+    try {
+      fs.writeFileSync(markerPath, appVersion);
+    } catch (e) {
+      console.warn("[modules] could not record seeded module version:", e.message);
+    }
   }
 }
 
