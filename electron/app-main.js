@@ -960,29 +960,37 @@ function isWindowsElevated() {
 if (isWindowsElevated()) {
   let relaunched = false;
   try {
-    // runas /trustlevel cannot launch the GUI exe directly (it produces no running
-    // process), but launching it through a tiny cmd wrapper that `start`s the app
-    // works (verified: the de-elevated copy boots and Postgres runs). `start`
-    // detaches the app so the wrapper/runas return immediately - execFileSync then
-    // catches a launch failure without blocking. Full runas path: Node won't
-    // resolve a bare "runas" without a shell.
+    // Relaunch de-elevated through a one-shot Scheduled Task. Two facts force this
+    // shape:
+    //   1. Electron runs its child processes in a job object with KILL_ON_JOB_CLOSE,
+    //      so a plain (even detached) relaunch dies the instant this elevated copy
+    //      exits. A Scheduled Task action runs under the Task Scheduler service,
+    //      outside that job, so the relaunched copy survives.
+    //   2. SAFER (runas /trustlevel) is the only way to drop the admin token when
+    //      UAC is off (a /rl LIMITED task still runs elevated there); runas cannot
+    //      launch a GUI exe directly, so it goes through a tiny cmd wrapper that
+    //      foreground-launches the app.
     const os = require("os");
-    const runas = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "runas.exe");
-    const wrapper = path.join(os.tmpdir(), "celerp-deelevate.cmd");
-    // Foreground launch (NOT `start`): cmd stays the de-elevated app's parent so
-    // it isn't orphaned and killed. Spawn detached so the whole runas->cmd->app
-    // tree keeps running after this elevated instance exits.
-    fs.writeFileSync(wrapper, `@echo off\r\n"${process.execPath}"\r\n`);
-    const child = childProcess.spawn(runas, ["/trustlevel:0x20000", wrapper], {
-      detached: true, stdio: "ignore", windowsHide: true,
-    });
-    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
-    child.unref();
+    const sysRoot = process.env.SystemRoot || "C:\\Windows";
+    const runas = path.join(sysRoot, "System32", "runas.exe");
+    const schtasks = path.join(sysRoot, "System32", "schtasks.exe");
+    const tmp = os.tmpdir();
+    const inner = path.join(tmp, "celerp-deelevate-run.cmd");
+    const outer = path.join(tmp, "celerp-deelevate-task.cmd");
+    fs.writeFileSync(inner, `@echo off\r\n"${process.execPath}"\r\n`);
+    fs.writeFileSync(outer, `@echo off\r\n"${runas}" /trustlevel:0x20000 "${inner}"\r\n`);
+    const task = "CelerpDeelevate";
+    const opts = { stdio: "ignore", windowsHide: true };
+    // Remove any stale one-shot from a previous elevated launch, then (re)create.
+    try { childProcess.execFileSync(schtasks, ["/delete", "/f", "/tn", task], opts); } catch {}
+    childProcess.execFileSync(schtasks,
+      ["/create", "/f", "/tn", task, "/sc", "ONCE", "/st", "00:00", "/tr", outer, "/rl", "LIMITED"], opts);
+    childProcess.execFileSync(schtasks, ["/run", "/tn", task], opts);
     relaunched = true;
     console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
   } catch (e) {
-    // SAFER may be disabled by policy; fall through and boot (Postgres will then
-    // report the admin error, no worse than before).
+    // SAFER or the Task Scheduler may be disabled by policy; fall through and boot
+    // (Postgres will then report the admin error, no worse than before).
     console.error("[startup] de-elevation relaunch failed; continuing:", e);
   }
   if (relaunched) {
