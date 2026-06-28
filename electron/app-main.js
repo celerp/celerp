@@ -960,37 +960,24 @@ function isWindowsElevated() {
 if (isWindowsElevated()) {
   let relaunched = false;
   try {
-    // Relaunch de-elevated through a one-shot Scheduled Task. Two facts force this
-    // shape:
-    //   1. Electron runs its child processes in a job object with KILL_ON_JOB_CLOSE,
-    //      so a plain (even detached) relaunch dies the instant this elevated copy
-    //      exits. A Scheduled Task action runs under the Task Scheduler service,
-    //      outside that job, so the relaunched copy survives.
-    //   2. SAFER (runas /trustlevel) is the only way to drop the admin token when
-    //      UAC is off (a /rl LIMITED task still runs elevated there); runas cannot
-    //      launch a GUI exe directly, so it goes through a tiny cmd wrapper that
-    //      foreground-launches the app.
-    const os = require("os");
-    const sysRoot = process.env.SystemRoot || "C:\\Windows";
-    const runas = path.join(sysRoot, "System32", "runas.exe");
-    const schtasks = path.join(sysRoot, "System32", "schtasks.exe");
-    const tmp = os.tmpdir();
-    const inner = path.join(tmp, "celerp-deelevate-run.cmd");
-    const outer = path.join(tmp, "celerp-deelevate-task.cmd");
-    fs.writeFileSync(inner, `@echo off\r\n"${process.execPath}"\r\n`);
-    fs.writeFileSync(outer, `@echo off\r\n"${runas}" /trustlevel:0x20000 "${inner}"\r\n`);
-    const task = "CelerpDeelevate";
-    const opts = { stdio: "ignore", windowsHide: true };
-    // Remove any stale one-shot from a previous elevated launch, then (re)create.
-    try { childProcess.execFileSync(schtasks, ["/delete", "/f", "/tn", task], opts); } catch {}
-    childProcess.execFileSync(schtasks,
-      ["/create", "/f", "/tn", task, "/sc", "ONCE", "/st", "00:00", "/tr", outer, "/rl", "LIMITED"], opts);
-    childProcess.execFileSync(schtasks, ["/run", "/tn", task], opts);
+    // Relaunch de-elevated by handing the exe back to Explorer (the shell). With
+    // UAC on - the normal Windows configuration - Explorer runs at the user's
+    // standard integrity, so the copy it starts inherits a non-admin token, which
+    // is what Postgres needs. This also sidesteps Electron's job object: Electron
+    // runs its own children in a job with KILL_ON_JOB_CLOSE, so a direct relaunch
+    // would die the moment this instance exits, but an Explorer-launched process is
+    // the shell's child, not ours, and survives.
+    const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe");
+    const child = childProcess.spawn(explorer, [process.execPath], {
+      detached: true, stdio: "ignore", windowsHide: true,
+    });
+    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
+    child.unref();
     relaunched = true;
     console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
   } catch (e) {
-    // SAFER or the Task Scheduler may be disabled by policy; fall through and boot
-    // (Postgres will then report the admin error, no worse than before).
+    // Fall through and boot (Postgres will then report the admin error, no worse
+    // than before).
     console.error("[startup] de-elevation relaunch failed; continuing:", e);
   }
   if (relaunched) {

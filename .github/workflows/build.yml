@@ -541,11 +541,19 @@ jobs:
           $dataDir  = Join-Path $env:APPDATA "celerp\celerp-data"
           $portFile = Join-Path $dataDir "api-port"
           Remove-Item $portFile -ErrorAction SilentlyContinue
-          # Launch normally; the app self-de-elevates on Windows (Postgres can't run
-          # as admin) and publishes its API port to a file we read. The deadline is
-          # generous because first-boot initdb on a fresh runner is slow.
-          Write-Host "smoke: launching $exe (whoami: $(whoami))"
-          Start-Process -FilePath $exe
+          # The GitHub runner has UAC off, so every process here runs as a full
+          # administrator - the one config where the app's in-app (Explorer) de-
+          # elevation can't apply, because Explorer is elevated too. To exercise the
+          # real binary + bundled Postgres (which refuses an admin token), drop the
+          # token explicitly via SAFER (runas /trustlevel), which works regardless of
+          # UAC. runas can't start a GUI exe directly, so it goes through a foreground
+          # cmd wrapper; this shell stays alive holding the session, so the de-
+          # elevated app survives. The deadline is generous: first-boot initdb on a
+          # fresh runner is slow. The app publishes its API port to a file we read.
+          $wrapper = Join-Path $env:TEMP "celerp-smoke.cmd"
+          Set-Content -Path $wrapper -Value "@echo off`r`n`"$exe`"" -Encoding ascii
+          Write-Host "smoke: launching de-elevated via runas (whoami: $(whoami))"
+          Start-Process -FilePath "$env:SystemRoot\System32\runas.exe" -ArgumentList '/trustlevel:0x20000', "`"$wrapper`""
           $deadline = (Get-Date).AddSeconds(300)
           $port = $null; $ok = $false; $tick = 0
           while ((Get-Date) -lt $deadline) {
