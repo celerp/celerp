@@ -553,9 +553,9 @@ jobs:
           Set-Service seclogon -StartupType Manual
           Start-Service seclogon
 
-          cmd /c "net user $u `"$pw`" /add" | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "net user /add failed (exit $LASTEXITCODE)" }
           $sec  = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Users" -Member $u -ErrorAction SilentlyContinue
           $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$u", $sec)
 
           # Grant the standard user access to this process's window station + desktop
