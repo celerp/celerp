@@ -535,26 +535,45 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = "Continue"
           Set-Location electron
           $exe = (Resolve-Path "dist/win-unpacked/Celerp.exe").Path
           $dataDir  = Join-Path $env:APPDATA "celerp\celerp-data"
           $portFile = Join-Path $dataDir "api-port"
           Remove-Item $portFile -ErrorAction SilentlyContinue
-          # The GitHub runner has UAC off, so every process here runs as a full
-          # administrator - the one config where the app's in-app (Explorer) de-
-          # elevation can't apply, because Explorer is elevated too. To exercise the
-          # real binary + bundled Postgres (which refuses an admin token), drop the
-          # token explicitly via SAFER (runas /trustlevel), which works regardless of
-          # UAC. runas can't start a GUI exe directly, so it goes through a foreground
-          # cmd wrapper; this shell stays alive holding the session, so the de-
-          # elevated app survives. The deadline is generous: first-boot initdb on a
-          # fresh runner is slow. The app publishes its API port to a file we read.
+          # --- DIAGNOSTIC: which de-elevation primitive actually works on this runner? ---
+          # The runner is full-admin + UAC off; Postgres refuses an admin token. Earlier
+          # runas /trustlevel attempts launched nothing (procs=0, no logs). Settle the
+          # mechanism in one run: report the token, the seclogon service, whether
+          # runas/trustlevel launches a wrapper at all, and whether a freshly-created
+          # standard user (no admin token) can be launched via -Credential.
+          Write-Host "=== runner token ==="; whoami /groups | Select-String "S-1-5-32-544|Mandatory Label"
+          Write-Host "=== seclogon service ==="; (Get-Service seclogon | Select-Object Name,Status,StartType | Out-String).Trim()
+          $tmp = $env:RUNNER_TEMP
+          # Probe 1: runas /trustlevel:0x20000 -> does the wrapper even run, and at what token?
+          $m1 = Join-Path $tmp "m1.txt"; Remove-Item $m1 -EA SilentlyContinue
+          $w1 = Join-Path $tmp "w1.cmd"; Set-Content -Encoding Ascii $w1 "whoami /groups > `"$m1`" 2>&1"
+          Start-Process -FilePath "$env:SystemRoot\System32\runas.exe" -ArgumentList '/trustlevel:0x20000', "`"$w1`""
+          Start-Sleep 6
+          Write-Host "=== probe1: runas /trustlevel ==="
+          if (Test-Path $m1) { (Get-Content $m1 | Select-String "S-1-5-32-544|Mandatory Label" | Out-String).Trim() } else { Write-Host "runas/trustlevel: NO marker -> did not launch the wrapper" }
+          # Probe 2: standard (non-admin) user launched via -Credential (uses seclogon).
+          $u = "celerpci"; $pw = "Celerp!" + ([guid]::NewGuid().ToString("N").Substring(0,12))
+          cmd /c "net user $u $pw /add" | Out-Null
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          $cred = New-Object System.Management.Automation.PSCredential($u, $sec)
+          $m2 = "C:\Users\Public\celerp-m2.txt"; Remove-Item $m2 -EA SilentlyContinue
+          $w2 = Join-Path $tmp "w2.cmd"; Set-Content -Encoding Ascii $w2 "whoami /groups > `"$m2`" 2>&1"
+          try { Start-Process -FilePath "cmd.exe" -ArgumentList "/c","`"$w2`"" -Credential $cred -WorkingDirectory "C:\Users\Public"; Write-Host "probe2: launched cmd as $u" } catch { Write-Host "probe2 threw: $_" }
+          Start-Sleep 6
+          Write-Host "=== probe2: standard-user via -Credential ==="
+          if (Test-Path $m2) { (Get-Content $m2 | Select-String "S-1-5-32-544|Mandatory Label" | Out-String).Trim() } else { Write-Host "standard-user: NO marker -> launch failed" }
+          Write-Host "--- end diagnostic; proceeding with the original runas attempt for log continuity ---"
           $wrapper = Join-Path $env:TEMP "celerp-smoke.cmd"
           Set-Content -Path $wrapper -Value "@echo off`r`n`"$exe`"" -Encoding ascii
           Write-Host "smoke: launching de-elevated via runas (whoami: $(whoami))"
           Start-Process -FilePath "$env:SystemRoot\System32\runas.exe" -ArgumentList '/trustlevel:0x20000', "`"$wrapper`""
-          $deadline = (Get-Date).AddSeconds(300)
+          $deadline = (Get-Date).AddSeconds(45)
           $port = $null; $ok = $false; $tick = 0
           while ((Get-Date) -lt $deadline) {
             if (-not $port -and (Test-Path $portFile)) { $port = (Get-Content $portFile -Raw).Trim(); Write-Host "smoke: app published API port $port" }
