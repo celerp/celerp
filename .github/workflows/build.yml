@@ -538,6 +538,22 @@ jobs:
           $ErrorActionPreference = "Stop"
           Set-Location electron
           $exe = (Resolve-Path "dist/win-unpacked/Celerp.exe").Path
+          # --- DIAGNOSTIC: does `runas /trustlevel` run + actually drop admin here? ---
+          $probeOut = Join-Path $env:RUNNER_TEMP "deelev.txt"
+          $probeCmd = Join-Path $env:RUNNER_TEMP "probe.cmd"
+          Set-Content -Encoding Ascii $probeCmd "whoami /groups > `"$probeOut`" 2>&1"
+          Remove-Item $probeOut -ErrorAction SilentlyContinue
+          try {
+            $rp = Start-Process -FilePath "runas.exe" -ArgumentList "/trustlevel:0x20000",$probeCmd -PassThru -Wait -RedirectStandardError (Join-Path $env:RUNNER_TEMP "runas.err")
+            Write-Host "probe: runas exit=$($rp.ExitCode)"
+          } catch { Write-Host "probe: runas threw: $_" }
+          Get-Content (Join-Path $env:RUNNER_TEMP "runas.err") -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "probe runas.err: $_" }
+          Start-Sleep 3
+          if (Test-Path $probeOut) {
+            Write-Host "probe: de-elevated token (Administrators state + integrity):"
+            Get-Content $probeOut | Select-String -Pattern "Administrators|Mandatory Label"
+          } else { Write-Host "probe: NO output -> runas /trustlevel did not launch the wrapper at all" }
+          Write-Host "--- end diagnostic ---"
           # The app self-de-elevates into a fresh process (Postgres can't run as
           # admin), which wouldn't inherit a port we set in env. So we don't pin
           # the port: the app picks a free one and publishes it to api-port, which
