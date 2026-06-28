@@ -607,52 +607,34 @@ jobs:
           icacls $app /grant "Users:(OI)(CI)RX" /T | Out-Null
           $exe = Join-Path $app "Celerp.exe"
 
-          # Launch through a cmd wrapper that captures Electron's own stdout/stderr
-          # (ELECTRON_ENABLE_LOGGING) to a world-readable file, so we can see where
-          # early boot wedges even before the app writes its own data-dir logs. The
-          # api-port file is discovered by searching the whole user profile (its
-          # exact path depends on Electron's resolved app name).
-          # Launch through a cmd wrapper that captures Electron's stdout/stderr. Pin
-          # the data dir with Electron's built-in --user-data-dir: a credentialed
-          # launch has no fully-established user profile, so Electron can't resolve
-          # %APPDATA% and app.getPath("userData") throws. A world-writable override
-          # path sidesteps that (real users have working profiles).
-          $boot = "C:\Users\Public\celerp-boot.out"
-          $run  = "C:\Users\Public\celerp-run.cmd"
-          $udd  = "C:\Users\Public\celerp-udd"
-          Remove-Item $boot -EA SilentlyContinue
-          Remove-Item $udd -Recurse -Force -EA SilentlyContinue
-          Set-Content -Encoding Ascii $run "@echo off`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" --user-data-dir=`"$udd`" > `"$boot`" 2>&1"
-
-          Write-Host "smoke: launching $exe as standard user $u (data dir $udd, output $boot)"
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $app
-
-          $deadline = (Get-Date).AddSeconds(240)
-          $ok = $false; $port = $null; $tick = 0
+          # --- DIAGNOSTIC: does the bundled initdb run to completion as a standard
+          # user? The app wedges in startPostgres -> pgInstance.initialise() (initdb),
+          # which never resolves and never errors. Run the bundled initdb directly,
+          # capture its output + exit code, with a timeout so a hang is visible.
+          $initdb = (Get-ChildItem $app -Recurse -Filter "initdb.exe" -EA SilentlyContinue | Select-Object -First 1)
+          if (-not $initdb) { throw "initdb.exe not found under $app" }
+          Write-Host "initdb: $($initdb.FullName)"
+          $pgtest = "C:\Users\Public\pgtest"
+          $idout  = "C:\Users\Public\initdb.out"
+          $idw    = "C:\Users\Public\initdb.cmd"
+          Remove-Item $pgtest -Recurse -Force -EA SilentlyContinue
+          Remove-Item $idout -EA SilentlyContinue
+          Set-Content -Encoding Ascii $idw "@echo off`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$($initdb.FullName)`" -D `"$pgtest`" -U celerp -A trust --encoding=UTF8 --no-locale --no-sync > `"$idout`" 2>&1`r`necho EXITCODE=%ERRORLEVEL%>> `"$idout`""
+          Write-Host "smoke: running bundled initdb directly as standard user $u"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$idw`"" -Credential $cred -LoadUserProfile -WorkingDirectory $app
+          $deadline = (Get-Date).AddSeconds(120); $done = $false
           while ((Get-Date) -lt $deadline) {
-            if (-not $port) {
-              $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
-              if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
-            }
-            if ($port) {
-              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-            }
-            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
-            $tick++; Start-Sleep -Seconds 2
+            if ((Test-Path $idout) -and (Select-String -Path $idout -Pattern "EXITCODE=" -Quiet -EA SilentlyContinue)) { $done = $true; break }
+            Start-Sleep -Seconds 2
           }
-          taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          Write-Host "===== Electron stdout/stderr ($boot) ====="
-          if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
-          Write-Host "===== file tree under $udd (Chromium caches elided) ====="
-          Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '(?i)\\(Cache|GPUCache|Code Cache|DawnCache|blob_storage|Local Storage|Session Storage|Network|Crashpad)\\' } |
-            ForEach-Object { Write-Host $_.FullName }
-          Write-Host "===== boot-relevant files (logs / postgres state) ====="
-          Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-            Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat' } |
-            ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-          if (-not $ok) { Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"; exit 1 }
-          Write-Host "boot smoke OK on Windows (port $port)"
+          taskkill /IM initdb.exe /F 2>$null | Out-Null
+          taskkill /IM postgres.exe /F 2>$null | Out-Null
+          Write-Host "===== initdb output (completed=$done) ====="
+          if (Test-Path $idout) { Get-Content $idout } else { Write-Host "(no output captured)" }
+          Write-Host "===== pgtest dir ====="
+          Get-ChildItem -Path $pgtest -EA SilentlyContinue | ForEach-Object { Write-Host $_.Name }
+          Write-Host "::error::initdb isolation diagnostic (intentionally non-final)"
+          exit 1
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
