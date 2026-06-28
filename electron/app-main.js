@@ -39,7 +39,19 @@ function rewriteAsarPath(p) {
 // from 'child_process', so a local wrapper would not affect it.
 const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
-  return _spawn(rewriteAsarPath(cmd), args, opts);
+  const resolved = rewriteAsarPath(cmd);
+  const child = _spawn(resolved, args, opts);
+  // Drain embedded-postgres's child pipes. embedded-postgres spawns initdb/postgres
+  // with piped stdio but reads only stdout in initialise(), leaving stderr unread.
+  // PostgreSQL tools write their progress to stderr, and Windows anonymous pipes
+  // have a tiny buffer — an unread stderr fills, the child blocks on the write and
+  // never exits, hanging first-boot initialisation. Attaching no-op drains keeps
+  // the pipes empty; embedded-postgres's own 'data' parsers still receive the data.
+  if (typeof resolved === "string" && resolved.includes("@embedded-postgres")) {
+    child.stdout?.on("data", () => {});
+    child.stderr?.on("data", () => {});
+  }
+  return child;
 };
 const spawn = childProcess.spawn;
 
