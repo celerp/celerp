@@ -263,18 +263,14 @@ async function startPostgres(dbPort) {
   // on an existing data directory causes initdb to exit non-zero and crash.
   const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
   if (!fs.existsSync(pgVersionFile)) {
-    if (process.platform === "win32") {
-      // embedded-postgres is ESM and imports the builtin child_process.spawn, so
-      // our spawn wrapper can't reach it; its initialise() reads only initdb's
-      // stdout, leaving stderr unread. On Windows the small anonymous-pipe buffer
-      // fills, initdb blocks on the write and never exits — first boot hangs. Run
-      // initdb ourselves with stdio disabled (it can't block), producing the same
-      // cluster initialise() would; the PG_VERSION it writes makes the guard skip
-      // embedded-postgres's own initialise().
-      await initialisePostgresWindows();
-    } else {
-      await pgInstance.initialise();
-    }
+    // First boot: create the cluster. On Windows we initialise it ourselves (see
+    // initialisePostgresWindows) because embedded-postgres is ESM and imports the
+    // builtin child_process.spawn — our spawn wrapper can't reach it — and its
+    // initialise() leaves initdb's stderr unread, which deadlocks initdb on
+    // Windows (tiny pipe buffer). Both paths run only when PG_VERSION is absent.
+    await (process.platform === "win32"
+      ? initialisePostgresWindows()
+      : pgInstance.initialise());
   }
   await pgInstance.start();
 
