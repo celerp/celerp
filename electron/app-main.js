@@ -39,23 +39,7 @@ function rewriteAsarPath(p) {
 // from 'child_process', so a local wrapper would not affect it.
 const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
-  const resolved = rewriteAsarPath(cmd);
-  const child = _spawn(resolved, args, opts);
-  // TEMP DIAGNOSTIC: capture (and thereby drain) embedded-postgres child output to
-  // a file so we can see exactly where first-boot initdb wedges on Windows.
-  if (typeof resolved === "string" && resolved.includes("@embedded-postgres")) {
-    const _log = (tag) => (chunk) => {
-      try {
-        const dir = path.join(app.getPath("userData"), "celerp-data", "logs");
-        fs.mkdirSync(dir, { recursive: true });
-        fs.appendFileSync(path.join(dir, "pg-stdio.log"), `[${tag}] ${chunk}`);
-      } catch { /* ignore */ }
-    };
-    try { fs.appendFileSync(path.join(app.getPath("userData"), "celerp-data", "logs", "pg-stdio.log"), `\n=== spawn ${resolved} ${JSON.stringify(args)} ===\n`); } catch { /* ignore */ }
-    child.stdout?.on("data", _log("out"));
-    child.stderr?.on("data", _log("err"));
-  }
-  return child;
+  return _spawn(rewriteAsarPath(cmd), args, opts);
 };
 const spawn = childProcess.spawn;
 
@@ -221,6 +205,31 @@ function pythonBin() {
 
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
+// Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
+// (same args/auth so the cluster is identical and .start() can connect), but with
+// stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
+async function initialisePostgresWindows() {
+  const pkgJson = require.resolve("@embedded-postgres/windows-x64/package.json");
+  const initdbBin = rewriteAsarPath(path.join(path.dirname(pkgJson), "native", "bin", "initdb.exe"));
+  const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
+  fs.writeFileSync(pwfile, "celerp\n");
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = _spawn(initdbBin, [
+        `--pgdata=${PG_DATA_DIR}`,
+        "--auth=password",
+        "--username=celerp",
+        `--pwfile=${pwfile}`,
+        "--lc-messages=en_US.UTF-8",
+      ], { stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, LC_MESSAGES: "en_US.UTF-8" } });
+      proc.on("error", reject);
+      proc.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))));
+    });
+  } finally {
+    try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
+  }
+}
+
 async function startPostgres(dbPort) {
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -242,7 +251,18 @@ async function startPostgres(dbPort) {
   // on an existing data directory causes initdb to exit non-zero and crash.
   const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
   if (!fs.existsSync(pgVersionFile)) {
-    await pgInstance.initialise();
+    if (process.platform === "win32") {
+      // embedded-postgres is ESM and imports the builtin child_process.spawn, so
+      // our spawn wrapper can't reach it; its initialise() reads only initdb's
+      // stdout, leaving stderr unread. On Windows the small anonymous-pipe buffer
+      // fills, initdb blocks on the write and never exits — first boot hangs. Run
+      // initdb ourselves with stdio disabled (it can't block), producing the same
+      // cluster initialise() would; the PG_VERSION it writes makes the guard skip
+      // embedded-postgres's own initialise().
+      await initialisePostgresWindows();
+    } else {
+      await pgInstance.initialise();
+    }
   }
   await pgInstance.start();
 
