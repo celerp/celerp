@@ -468,14 +468,21 @@ jobs:
       # 200 {"db":"ok"} proves electron -> Python API -> embedded Postgres -> a query.
       # We poll (never sleep) and fail fast if the process dies (crash on launch).
       - name: Boot smoke (launch the packaged app, require db:ok)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -uo pipefail
           cd electron
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+            # Electron's SUID sandbox helper must be owned by root with mode 4755;
+            # the unpacked tree ships it owned by the runner (real AppImage/deb
+            # installs set this), so fix it here or the sandbox aborts on launch.
+            sudo chown root:root dist/linux-unpacked/chrome-sandbox
+            sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+          fi
           case "$RUNNER_OS" in
             macOS)   APP_BIN="$(ls -d dist/mac*/Celerp.app | head -1)/Contents/MacOS/Celerp" ;;
-            Windows) APP_BIN="dist/win-unpacked/Celerp.exe" ;;
             Linux)   APP_BIN="$(find dist/linux-unpacked -maxdepth 1 -type f -executable ! -name 'chrome*' ! -name '*.so*' | head -1)" ;;
           esac
           echo "smoke: launching $APP_BIN"
@@ -503,6 +510,50 @@ jobs:
             exit 1
           fi
           echo "boot smoke OK on $RUNNER_OS"
+
+      # Windows needs its own launch path: the runner is elevated and embedded
+      # Postgres refuses to run as a Windows administrator. We run the app at a
+      # limited (medium-integrity) token via a scheduled task, so Postgres starts
+      # exactly as it does for a normal per-user install.
+      - name: Boot smoke (Windows, de-elevated, require db:ok)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location electron
+          $port = Get-Random -Minimum 20000 -Maximum 60000
+          $exe  = (Resolve-Path "dist/win-unpacked/Celerp.exe").Path
+          $log  = Join-Path $env:RUNNER_TEMP "smoke.log"
+          # The de-elevated task is a fresh process, so pass the port via machine
+          # env (new processes inherit it); cleaned up below.
+          [Environment]::SetEnvironmentVariable("CELERP_API_PORT", "$port", "Machine")
+          $wrap = Join-Path $env:RUNNER_TEMP "smoke-run.cmd"
+          "@echo off`r`n`"$exe`" > `"$log`" 2>&1" | Set-Content -Encoding Ascii $wrap
+          Write-Host "smoke: launching $exe (de-elevated via scheduled task) on port $port"
+          $action    = New-ScheduledTaskAction -Execute $wrap
+          $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -RunLevel Limited
+          Register-ScheduledTask -TaskName celerpsmoke -Action $action -Principal $principal -Force | Out-Null
+          Start-ScheduledTask -TaskName celerpsmoke
+          $deadline = (Get-Date).AddSeconds(120)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"
+              if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 1
+          }
+          schtasks /End /TN celerpsmoke 2>$null | Out-Null
+          taskkill /IM Celerp.exe /F 2>$null | Out-Null
+          schtasks /Delete /TN celerpsmoke /F 2>$null | Out-Null
+          [Environment]::SetEnvironmentVariable("CELERP_API_PORT", $null, "Machine")
+          if (-not $ok) {
+            Write-Host "::error::boot smoke FAILED on Windows - /health/ready never returned db:ok"
+            Write-Host "----- app log (tail) -----"
+            if (Test-Path $log) { Get-Content $log -Tail 200 }
+            exit 1
+          }
+          Write-Host "boot smoke OK on Windows"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
