@@ -245,7 +245,6 @@ async function initialisePostgresWindows() {
 async function startPostgres(dbPort) {
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
-  try { fs.appendFileSync(path.join(LOG_DIR, "boot-trace.log"), `startPostgres entered platform=${process.platform} pgVersionExists=${fs.existsSync(path.join(PG_DATA_DIR, "PG_VERSION"))}\n`); } catch { /* ignore */ }
 
   if (!EmbeddedPostgres) {
     EmbeddedPostgres = (await import("embedded-postgres")).default;
@@ -1165,7 +1164,9 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
-    try { fs.appendFileSync(path.join(LOG_DIR, "boot-trace.log"), `FATAL: ${err?.stack ?? err}\n`); } catch { /* ignore */ }
+    // Record why startup failed so it is recoverable from the data dir after the
+    // error dialog is dismissed.
+    try { fs.appendFileSync(path.join(LOG_DIR, "startup-error.log"), `${new Date().toISOString()} ${err?.stack ?? err}\n`); } catch { /* ignore */ }
     showError("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
