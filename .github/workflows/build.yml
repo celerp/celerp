@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to build on this manual run"
+        type: choice
+        default: all
+        options: [all, windows, linux, mac]
 
 permissions:
   contents: write
@@ -91,7 +97,16 @@ jobs:
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          if [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          sel="${{ github.event.inputs.platforms }}"
+          if [ -n "$sel" ] && [ "$sel" != "all" ]; then
+            case "$sel" in
+              windows) inc="$win" ;;
+              linux)   inc="$lin" ;;
+              mac)     inc="$mac" ;;
+              *)       inc="$lin,$win,$mac" ;;
+            esac
+            echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
@@ -528,13 +543,17 @@ jobs:
           # the port: the app picks a free one and publishes it to api-port, which
           # we read. Same user => same %APPDATA%, so the de-elevated copy's file is
           # here.
-          $portFile = Join-Path $env:APPDATA "celerp\celerp-data\api-port"
-          $logDir   = Join-Path $env:APPDATA "celerp\celerp-data\logs"
+          $dataDir  = Join-Path $env:APPDATA "celerp\celerp-data"
+          $portFile = Join-Path $dataDir "api-port"
           Remove-Item $portFile -ErrorAction SilentlyContinue
-          Write-Host "smoke: launching $exe"
-          Start-Process -FilePath $exe
+          # Capture the launched process's own stdout/stderr (the de-elevation
+          # guard logs there) in addition to the app's file logs.
+          $boot = Join-Path $env:RUNNER_TEMP "boot.out"
+          $err  = Join-Path $env:RUNNER_TEMP "boot.err"
+          Write-Host "smoke: launching $exe (whoami: $(whoami))"
+          Start-Process -FilePath $exe -RedirectStandardOutput $boot -RedirectStandardError $err
           $deadline = (Get-Date).AddSeconds(150)
-          $port = $null; $ok = $false
+          $port = $null; $ok = $false; $tick = 0
           while ((Get-Date) -lt $deadline) {
             if (-not $port -and (Test-Path $portFile)) {
               $port = (Get-Content $portFile -Raw).Trim()
@@ -546,14 +565,20 @@ jobs:
                 if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break }
               } catch { }
             }
-            Start-Sleep -Seconds 1
+            if (($tick % 15) -eq 0) {
+              $procs = @(Get-Process Celerp -ErrorAction SilentlyContinue).Count
+              Write-Host "smoke: t+${tick}s  Celerp procs=$procs  portFile=$(Test-Path $portFile)"
+            }
+            $tick++; Start-Sleep -Seconds 1
           }
           taskkill /IM Celerp.exe /F 2>$null | Out-Null
           if (-not $ok) {
             Write-Host "::error::boot smoke FAILED on Windows - /health/ready never returned db:ok (port=$port)"
-            Write-Host "----- app logs (tail) -----"
-            Get-ChildItem -Path $logDir -Filter "*.log" -ErrorAction SilentlyContinue |
-              ForEach-Object { Write-Host "== $($_.Name) =="; Get-Content $_.FullName -Tail 60 -ErrorAction SilentlyContinue }
+            Write-Host "----- launch stdout -----"; if (Test-Path $boot) { Get-Content $boot -Tail 60 }
+            Write-Host "----- launch stderr -----"; if (Test-Path $err)  { Get-Content $err  -Tail 60 }
+            Write-Host "----- data-dir logs (tail) -----"
+            Get-ChildItem -Path $dataDir -Recurse -Include "*.log","logfile" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 60 -ErrorAction SilentlyContinue }
             exit 1
           }
           Write-Host "boot smoke OK on Windows (port $port)"
