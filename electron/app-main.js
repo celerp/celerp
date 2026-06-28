@@ -960,12 +960,17 @@ function isWindowsElevated() {
 if (isWindowsElevated()) {
   let relaunched = false;
   try {
-    // Full path: Node's spawn/execFile does not resolve a bare "runas" (no shell)
-    // to runas.exe. Run it synchronously so a launch failure is caught here rather
-    // than lost as an async 'error' event. runas launches the de-elevated copy and
-    // returns; that copy keeps running after we exit.
+    // runas /trustlevel cannot launch the GUI exe directly (it produces no running
+    // process), but launching it through a tiny cmd wrapper that `start`s the app
+    // works (verified: the de-elevated copy boots and Postgres runs). `start`
+    // detaches the app so the wrapper/runas return immediately - execFileSync then
+    // catches a launch failure without blocking. Full runas path: Node won't
+    // resolve a bare "runas" without a shell.
+    const os = require("os");
     const runas = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "runas.exe");
-    childProcess.execFileSync(runas, ["/trustlevel:0x20000", process.execPath], {
+    const wrapper = path.join(os.tmpdir(), "celerp-deelevate.cmd");
+    fs.writeFileSync(wrapper, `@echo off\r\nstart "" "${process.execPath}"\r\n`);
+    childProcess.execFileSync(runas, ["/trustlevel:0x20000", wrapper], {
       stdio: "ignore", windowsHide: true,
     });
     relaunched = true;
