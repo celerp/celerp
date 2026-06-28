@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to build on this manual run"
+        type: choice
+        default: all
+        options: [all, windows, linux, mac]
 
 permissions:
   contents: write
@@ -91,7 +97,16 @@ jobs:
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          if [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          sel="${{ github.event.inputs.platforms }}"
+          if [ -n "$sel" ] && [ "$sel" != "all" ]; then
+            case "$sel" in
+              windows) inc="$win" ;;
+              linux)   inc="$lin" ;;
+              mac)     inc="$mac" ;;
+              *)       inc="$lin,$win,$mac" ;;
+            esac
+            echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
@@ -470,14 +485,21 @@ jobs:
       # 200 {"db":"ok"} proves electron -> Python API -> embedded Postgres -> a query.
       # We poll (never sleep) and fail fast if the process dies (crash on launch).
       - name: Boot smoke (launch the packaged app, require db:ok)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -uo pipefail
           cd electron
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+            # Electron's SUID sandbox helper must be owned by root with mode 4755;
+            # the unpacked tree ships it owned by the runner (real AppImage/deb
+            # installs set this), so fix it here or the sandbox aborts on launch.
+            sudo chown root:root dist/linux-unpacked/chrome-sandbox
+            sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+          fi
           case "$RUNNER_OS" in
             macOS)   APP_BIN="$(ls -d dist/mac*/Celerp.app | head -1)/Contents/MacOS/Celerp" ;;
-            Windows) APP_BIN="dist/win-unpacked/Celerp.exe" ;;
             Linux)   APP_BIN="$(find dist/linux-unpacked -maxdepth 1 -type f -executable ! -name 'chrome*' ! -name '*.so*' | head -1)" ;;
           esac
           echo "smoke: launching $APP_BIN"
@@ -505,6 +527,128 @@ jobs:
             exit 1
           fi
           echo "boot smoke OK on $RUNNER_OS"
+
+      # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
+      # run under an administrator token. The app self-de-elevates at startup
+      # (relaunches at a restricted token), so we launch it normally and just pass
+      # the port via machine env — the relaunched, restricted process inherits the
+      # machine environment (it would not inherit our process env).
+      - name: Boot smoke (Windows, require db:ok)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location electron
+          # The GitHub runner is full-admin with UAC off, where the bundled Postgres
+          # refuses to start (it rejects an administrator token). Real users run
+          # non-admin, so reproduce that: launch the packaged app as a freshly-created
+          # standard user. A SAFER/runas restricted token would crash Electron; a real
+          # standard account gives a clean medium token where both Electron and
+          # Postgres run. We grant that user access to the runner's window station and
+          # desktop so Electron's main process can initialise, then wait for a real
+          # db:ok from the app's own boot -> migrations -> API path.
+          $u  = "celerpci"
+          $pw = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
+
+          # seclogon backs Start-Process -Credential and is Stopped/Manual on the runner.
+          Set-Service seclogon -StartupType Manual
+          Start-Service seclogon
+
+          $sec  = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group "Users" -Member $u -ErrorAction SilentlyContinue
+          $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$u", $sec)
+
+          # Grant the standard user access to this process's window station + desktop
+          # (Electron's main process needs a desktop even before any window). The
+          # -Credential child inherits the caller's window station/desktop, so granting
+          # on the handles we hold is what lets the launched app attach to them.
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Security.AccessControl;
+          using System.Security.Principal;
+          public class WinStaAccess {
+            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
+            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetThreadDesktop(uint threadId);
+            [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+            [DllImport("user32.dll", SetLastError=true)] static extern bool GetUserObjectSecurity(IntPtr h, ref int si, byte[] sd, int len, ref int needed);
+            [DllImport("user32.dll", SetLastError=true)] static extern bool SetUserObjectSecurity(IntPtr h, ref int si, byte[] sd);
+            const int DACL = 4;
+            static byte[] Get(IntPtr h) {
+              int si = DACL; int need = 0; GetUserObjectSecurity(h, ref si, null, 0, ref need);
+              byte[] b = new byte[need];
+              if (!GetUserObjectSecurity(h, ref si, b, need, ref need)) throw new Exception("Get failed " + Marshal.GetLastWin32Error());
+              return b;
+            }
+            static void Set(IntPtr h, byte[] b) { int si = DACL; if (!SetUserObjectSecurity(h, ref si, b)) throw new Exception("Set failed " + Marshal.GetLastWin32Error()); }
+            static void Add(IntPtr h, SecurityIdentifier sid, int mask, bool inheritOnlyGenericAll) {
+              var sd = new RawSecurityDescriptor(Get(h), 0);
+              var dacl = sd.DiscretionaryAcl == null ? new RawAcl(2, 1) : sd.DiscretionaryAcl;
+              int i = dacl.Count;
+              if (inheritOnlyGenericAll)
+                dacl.InsertAce(i++, new CommonAce(AceFlags.ObjectInherit|AceFlags.ContainerInherit|AceFlags.InheritOnly, AceQualifier.AccessAllowed, unchecked((int)0x10000000), sid, false, null));
+              dacl.InsertAce(i++, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, mask, sid, false, null));
+              sd.DiscretionaryAcl = dacl;
+              byte[] outb = new byte[sd.BinaryLength]; sd.GetBinaryForm(outb, 0); Set(h, outb);
+            }
+            public static void Grant(string account) {
+              var sid = (SecurityIdentifier)(new NTAccount(account)).Translate(typeof(SecurityIdentifier));
+              Add(GetProcessWindowStation(), sid, 0x37F, true);            // WINSTA_ALL_ACCESS + inherit-only GENERIC_ALL
+              Add(GetThreadDesktop(GetCurrentThreadId()), sid, 0x1FF, false); // DESKTOP_ALL
+            }
+          }
+          '@
+          [WinStaAccess]::Grant("$env:COMPUTERNAME\$u")
+
+          # Stage the app where the standard user can read+execute it (the runner
+          # workspace may be ACL'd to the admin only).
+          $app = "C:\Users\Public\celerp-app"
+          if (Test-Path $app) { Remove-Item $app -Recurse -Force }
+          Copy-Item "dist/win-unpacked" $app -Recurse
+          icacls $app /grant "Users:(OI)(CI)RX" /T | Out-Null
+          $exe = Join-Path $app "Celerp.exe"
+
+          # Launch through a cmd wrapper that captures Electron's stdout/stderr. Pin
+          # the data dir with Electron's built-in --user-data-dir: a credentialed
+          # launch has no fully-established user profile, so Electron can't resolve
+          # %APPDATA% and app.getPath("userData") throws. A world-writable override
+          # path sidesteps that (real users have working profiles).
+          $boot = "C:\Users\Public\celerp-boot.out"
+          $run  = "C:\Users\Public\celerp-run.cmd"
+          $udd  = "C:\Users\Public\celerp-udd"
+          Remove-Item $boot -EA SilentlyContinue
+          Remove-Item $udd -Recurse -Force -EA SilentlyContinue
+          Set-Content -Encoding Ascii $run "@echo off`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" --user-data-dir=`"$udd`" > `"$boot`" 2>&1"
+
+          Write-Host "smoke: launching $exe as standard user $u (data dir $udd, output $boot)"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $app
+
+          $deadline = (Get-Date).AddSeconds(240)
+          $ok = $false; $port = $null; $tick = 0
+          while ((Get-Date) -lt $deadline) {
+            if (-not $port) {
+              $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+              if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
+            }
+            if ($port) {
+              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
+            }
+            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
+            $tick++; Start-Sleep -Seconds 2
+          }
+          taskkill /IM Celerp.exe /F 2>$null | Out-Null
+          if (-not $ok) {
+            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
+            Write-Host "===== Electron stdout/stderr ($boot) ====="
+            if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
+            Write-Host "===== boot-relevant files (logs / postgres state) ====="
+            Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
+              Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat' } |
+              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+            exit 1
+          }
+          Write-Host "boot smoke OK on Windows (port $port)"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

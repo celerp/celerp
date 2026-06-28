@@ -205,6 +205,43 @@ function pythonBin() {
 
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
+// Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
+// (same args/auth so the cluster is identical and .start() can connect), but with
+// stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
+async function initialisePostgresWindows() {
+  const logPath = path.join(LOG_DIR, "initdb-win.log");
+  const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
+  // The platform package's "exports" blocks require.resolve of its package.json, so
+  // locate the binary under the unpacked resources directly (asarUnpack keeps the
+  // native bins outside app.asar).
+  const initdbBin = path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
+    "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
+  trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
+  const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
+  fs.writeFileSync(pwfile, "celerp\n");
+  const out = fs.openSync(logPath, "a");
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = _spawn(initdbBin, [
+        `--pgdata=${PG_DATA_DIR}`,
+        "--auth=password",
+        "--username=celerp",
+        `--pwfile=${pwfile}`,
+        // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
+        // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
+        // against a WIN1252 database.
+        "--encoding=UTF8",
+        "--no-locale",
+      ], { stdio: ["ignore", out, out], env: { ...process.env } });
+      proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
+      proc.on("exit", (code) => { trace("initdb exit code=" + code); (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))); });
+    });
+  } finally {
+    try { fs.closeSync(out); } catch { /* ignore */ }
+    try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
+  }
+}
+
 async function startPostgres(dbPort) {
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -226,7 +263,14 @@ async function startPostgres(dbPort) {
   // on an existing data directory causes initdb to exit non-zero and crash.
   const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
   if (!fs.existsSync(pgVersionFile)) {
-    await pgInstance.initialise();
+    // First boot: create the cluster. On Windows we initialise it ourselves (see
+    // initialisePostgresWindows) because embedded-postgres is ESM and imports the
+    // builtin child_process.spawn — our spawn wrapper can't reach it — and its
+    // initialise() leaves initdb's stderr unread, which deadlocks initdb on
+    // Windows (tiny pipe buffer). Both paths run only when PG_VERSION is absent.
+    await (process.platform === "win32"
+      ? initialisePostgresWindows()
+      : pgInstance.initialise());
   }
   await pgInstance.start();
 
@@ -939,6 +983,53 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 // uninstall-delete-data: delete all user data then quit.
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
+// ── Windows: de-elevate before doing anything else ──────────────────────────
+// The bundled Postgres refuses to run under a Windows administrator token, so a
+// user who launches Celerp elevated (Run as administrator, or a machine with UAC
+// turned off) would crash on boot. If we hold an admin token, relaunch ourselves
+// at a restricted "normal user" token (SAFER /trustlevel) in the same desktop
+// session and exit; the relaunched copy boots normally. This must run BEFORE the
+// single-instance lock so the relaunched copy can acquire it.
+function isWindowsElevated() {
+  if (process.platform !== "win32") return false;
+  try {
+    // `net session` succeeds only with administrator rights; it throws otherwise.
+    childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (isWindowsElevated()) {
+  let relaunched = false;
+  try {
+    // Relaunch de-elevated by handing the exe back to Explorer (the shell). With
+    // UAC on - the normal Windows configuration - Explorer runs at the user's
+    // standard integrity, so the copy it starts inherits a non-admin token, which
+    // is what Postgres needs. This also sidesteps Electron's job object: Electron
+    // runs its own children in a job with KILL_ON_JOB_CLOSE, so a direct relaunch
+    // would die the moment this instance exits, but an Explorer-launched process is
+    // the shell's child, not ours, and survives.
+    const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe");
+    const child = childProcess.spawn(explorer, [process.execPath], {
+      detached: true, stdio: "ignore", windowsHide: true,
+    });
+    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
+    child.unref();
+    relaunched = true;
+    console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
+  } catch (e) {
+    // Fall through and boot (Postgres will then report the admin error, no worse
+    // than before).
+    console.error("[startup] de-elevation relaunch failed; continuing:", e);
+  }
+  if (relaunched) {
+    app.quit();
+    return;  // stop the elevated instance (CommonJS module: top-level return is valid)
+  }
+}
+
 // ── Single-instance lock ─────────────────────────────────────────────────────
 
 const gotLock = app.requestSingleInstanceLock();
@@ -1031,6 +1122,10 @@ app.whenReady().then(async () => {
     const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
     apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
     uiPort = await getFreePort();
+    // Publish the chosen API port so external tooling (the CI boot smoke,
+    // local debugging) can discover it without having to dictate it — needed when
+    // the app self-de-elevated into a fresh process that didn't inherit our env.
+    try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
     setLoadingStatus("Starting API server…");
     await startApi(dbConfig.url, cfg);
     setLoadingStatus("Starting UI server…");
@@ -1065,6 +1160,9 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
+    // Record why startup failed so it is recoverable from the data dir after the
+    // error dialog is dismissed.
+    try { fs.appendFileSync(path.join(LOG_DIR, "startup-error.log"), `${new Date().toISOString()} ${err?.stack ?? err}\n`); } catch { /* ignore */ }
     showError("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
