@@ -211,11 +211,11 @@ function pythonBin() {
 async function initialisePostgresWindows() {
   const logPath = path.join(LOG_DIR, "initdb-win.log");
   const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
-  let initdbBin;
-  try {
-    const pkgJson = require.resolve("@embedded-postgres/windows-x64/package.json");
-    initdbBin = rewriteAsarPath(path.join(path.dirname(pkgJson), "native", "bin", "initdb.exe"));
-  } catch (e) { trace("resolve initdb failed: " + e.message); throw e; }
+  // The platform package's "exports" blocks require.resolve of its package.json, so
+  // locate the binary under the unpacked resources directly (asarUnpack keeps the
+  // native bins outside app.asar).
+  const initdbBin = path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
+    "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
   const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
   fs.writeFileSync(pwfile, "celerp\n");
