@@ -939,6 +939,66 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 // uninstall-delete-data: delete all user data then quit.
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
+// ── Windows: de-elevate before doing anything else ──────────────────────────
+// The bundled Postgres refuses to run under a Windows administrator token, so a
+// user who launches Celerp elevated (Run as administrator, or a machine with UAC
+// turned off) would crash on boot. If we hold an admin token, relaunch ourselves
+// at a restricted "normal user" token (SAFER /trustlevel) in the same desktop
+// session and exit; the relaunched copy boots normally. This must run BEFORE the
+// single-instance lock so the relaunched copy can acquire it.
+function isWindowsElevated() {
+  if (process.platform !== "win32") return false;
+  try {
+    // `net session` succeeds only with administrator rights; it throws otherwise.
+    childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (isWindowsElevated()) {
+  let relaunched = false;
+  try {
+    // Relaunch de-elevated through a one-shot Scheduled Task. Two facts force this
+    // shape:
+    //   1. Electron runs its child processes in a job object with KILL_ON_JOB_CLOSE,
+    //      so a plain (even detached) relaunch dies the instant this elevated copy
+    //      exits. A Scheduled Task action runs under the Task Scheduler service,
+    //      outside that job, so the relaunched copy survives.
+    //   2. SAFER (runas /trustlevel) is the only way to drop the admin token when
+    //      UAC is off (a /rl LIMITED task still runs elevated there); runas cannot
+    //      launch a GUI exe directly, so it goes through a tiny cmd wrapper that
+    //      foreground-launches the app.
+    const os = require("os");
+    const sysRoot = process.env.SystemRoot || "C:\\Windows";
+    const runas = path.join(sysRoot, "System32", "runas.exe");
+    const schtasks = path.join(sysRoot, "System32", "schtasks.exe");
+    const tmp = os.tmpdir();
+    const inner = path.join(tmp, "celerp-deelevate-run.cmd");
+    const outer = path.join(tmp, "celerp-deelevate-task.cmd");
+    fs.writeFileSync(inner, `@echo off\r\n"${process.execPath}"\r\n`);
+    fs.writeFileSync(outer, `@echo off\r\n"${runas}" /trustlevel:0x20000 "${inner}"\r\n`);
+    const task = "CelerpDeelevate";
+    const opts = { stdio: "ignore", windowsHide: true };
+    // Remove any stale one-shot from a previous elevated launch, then (re)create.
+    try { childProcess.execFileSync(schtasks, ["/delete", "/f", "/tn", task], opts); } catch {}
+    childProcess.execFileSync(schtasks,
+      ["/create", "/f", "/tn", task, "/sc", "ONCE", "/st", "00:00", "/tr", outer, "/rl", "LIMITED"], opts);
+    childProcess.execFileSync(schtasks, ["/run", "/tn", task], opts);
+    relaunched = true;
+    console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
+  } catch (e) {
+    // SAFER or the Task Scheduler may be disabled by policy; fall through and boot
+    // (Postgres will then report the admin error, no worse than before).
+    console.error("[startup] de-elevation relaunch failed; continuing:", e);
+  }
+  if (relaunched) {
+    app.quit();
+    return;  // stop the elevated instance (CommonJS module: top-level return is valid)
+  }
+}
+
 // ── Single-instance lock ─────────────────────────────────────────────────────
 
 const gotLock = app.requestSingleInstanceLock();
@@ -1031,6 +1091,10 @@ app.whenReady().then(async () => {
     const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
     apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
     uiPort = await getFreePort();
+    // Publish the chosen API port so external tooling (the CI boot smoke,
+    // local debugging) can discover it without having to dictate it — needed when
+    // the app self-de-elevated into a fresh process that didn't inherit our env.
+    try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
     setLoadingStatus("Starting API server…");
     await startApi(dbConfig.url, cfg);
     setLoadingStatus("Starting UI server…");
