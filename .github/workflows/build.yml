@@ -547,7 +547,6 @@ jobs:
           # db:ok from the app's own boot -> migrations -> API path.
           $u  = "celerpci"
           $pw = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
-          $port = 8765   # pin the API port so we can poll a known address
 
           # seclogon backs Start-Process -Credential and is Stopped/Manual on the runner.
           Set-Service seclogon -StartupType Manual
@@ -608,25 +607,33 @@ jobs:
           icacls $app /grant "Users:(OI)(CI)RX" /T | Out-Null
           $exe = Join-Path $app "Celerp.exe"
 
-          $userData = "C:\Users\$u\AppData\Roaming\celerp\celerp-data"
-          [Environment]::SetEnvironmentVariable("CELERP_API_PORT", "$port", "Machine")
+          # The app's data dir lives under the standard user's profile; its exact
+          # name depends on Electron's app name, so discover the API port from the
+          # api-port file the app publishes rather than guessing the path or relying
+          # on env inheritance through the credentialed launch.
+          $roaming = "C:\Users\$u\AppData\Roaming"
 
-          Write-Host "smoke: launching $exe as standard user $u (pinned API port $port)"
+          Write-Host "smoke: launching $exe as standard user $u"
           Start-Process -FilePath $exe -Credential $cred -LoadUserProfile -WorkingDirectory $app
 
           $deadline = (Get-Date).AddSeconds(300)
-          $ok = $false; $tick = 0
+          $ok = $false; $port = $null; $tick = 0
           while ((Get-Date) -lt $deadline) {
-            try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-            if (($tick % 20) -eq 0) { Write-Host "smoke: t+${tick}s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count)" }
-            $tick++; Start-Sleep -Seconds 1
+            if (-not $port) {
+              $pf = Get-ChildItem -Path $roaming -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+              if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
+            }
+            if ($port) {
+              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
+            }
+            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
+            $tick++; Start-Sleep -Seconds 2
           }
           taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          [Environment]::SetEnvironmentVariable("CELERP_API_PORT", $null, "Machine")
           if (-not $ok) {
-            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached"
-            Write-Host "===== data-dir logs ====="
-            Get-ChildItem -Path $userData -Recurse -Include "*.log","logfile" -EA SilentlyContinue |
+            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
+            Write-Host "===== logs under $roaming ====="
+            Get-ChildItem -Path $roaming -Recurse -Include "*.log","logfile" -EA SilentlyContinue |
               ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
             exit 1
           }
