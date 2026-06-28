@@ -939,6 +939,45 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 // uninstall-delete-data: delete all user data then quit.
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
+// ── Windows: de-elevate before doing anything else ──────────────────────────
+// The bundled Postgres refuses to run under a Windows administrator token, so a
+// user who launches Celerp elevated (Run as administrator, or a machine with UAC
+// turned off) would crash on boot. If we hold an admin token, relaunch ourselves
+// at a restricted "normal user" token (SAFER /trustlevel) in the same desktop
+// session and exit; the relaunched copy boots normally. This must run BEFORE the
+// single-instance lock so the relaunched copy can acquire it.
+function isWindowsElevated() {
+  if (process.platform !== "win32") return false;
+  try {
+    // `net session` succeeds only with administrator rights; it throws otherwise.
+    childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (isWindowsElevated()) {
+  let relaunched = false;
+  try {
+    childProcess
+      .spawn("runas", ["/trustlevel:0x20000", process.execPath], {
+        detached: true, stdio: "ignore", windowsHide: true,
+      })
+      .unref();
+    relaunched = true;
+    console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
+  } catch (e) {
+    // SAFER may be disabled by policy; fall through and boot (Postgres will then
+    // report the admin error, no worse than before).
+    console.error("[startup] de-elevation relaunch failed; continuing:", e);
+  }
+  if (relaunched) {
+    app.quit();
+    return;  // stop the elevated instance (CommonJS module: top-level return is valid)
+  }
+}
+
 // ── Single-instance lock ─────────────────────────────────────────────────────
 
 const gotLock = app.requestSingleInstanceLock();

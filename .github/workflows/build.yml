@@ -511,11 +511,12 @@ jobs:
           fi
           echo "boot smoke OK on $RUNNER_OS"
 
-      # Windows needs its own launch path: the runner is elevated and embedded
-      # Postgres refuses to run as a Windows administrator. We run the app at a
-      # limited (medium-integrity) token via a scheduled task, so Postgres starts
-      # exactly as it does for a normal per-user install.
-      - name: Boot smoke (Windows, de-elevated, require db:ok)
+      # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
+      # run under an administrator token. The app self-de-elevates at startup
+      # (relaunches at a restricted token), so we launch it normally and just pass
+      # the port via machine env — the relaunched, restricted process inherits the
+      # machine environment (it would not inherit our process env).
+      - name: Boot smoke (Windows, require db:ok)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -523,17 +524,9 @@ jobs:
           Set-Location electron
           $port = Get-Random -Minimum 20000 -Maximum 60000
           $exe  = (Resolve-Path "dist/win-unpacked/Celerp.exe").Path
-          $log  = Join-Path $env:RUNNER_TEMP "smoke.log"
-          # The de-elevated task is a fresh process, so pass the port via machine
-          # env (new processes inherit it); cleaned up below.
           [Environment]::SetEnvironmentVariable("CELERP_API_PORT", "$port", "Machine")
-          $wrap = Join-Path $env:RUNNER_TEMP "smoke-run.cmd"
-          "@echo off`r`n`"$exe`" > `"$log`" 2>&1" | Set-Content -Encoding Ascii $wrap
-          Write-Host "smoke: launching $exe (de-elevated via scheduled task) on port $port"
-          $action    = New-ScheduledTaskAction -Execute $wrap
-          $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -RunLevel Limited
-          Register-ScheduledTask -TaskName celerpsmoke -Action $action -Principal $principal -Force | Out-Null
-          Start-ScheduledTask -TaskName celerpsmoke
+          Write-Host "smoke: launching $exe on port $port"
+          Start-Process -FilePath $exe
           $deadline = (Get-Date).AddSeconds(120)
           $ok = $false
           while ((Get-Date) -lt $deadline) {
@@ -543,14 +536,13 @@ jobs:
             } catch { }
             Start-Sleep -Seconds 1
           }
-          schtasks /End /TN celerpsmoke 2>$null | Out-Null
           taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          schtasks /Delete /TN celerpsmoke /F 2>$null | Out-Null
           [Environment]::SetEnvironmentVariable("CELERP_API_PORT", $null, "Machine")
           if (-not $ok) {
             Write-Host "::error::boot smoke FAILED on Windows - /health/ready never returned db:ok"
-            Write-Host "----- app log (tail) -----"
-            if (Test-Path $log) { Get-Content $log -Tail 200 }
+            Write-Host "----- postgres log (tail) -----"
+            Get-ChildItem -Path (Join-Path $env:APPDATA "celerp") -Recurse -Filter "*log*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -ErrorAction SilentlyContinue }
             exit 1
           }
           Write-Host "boot smoke OK on Windows"
