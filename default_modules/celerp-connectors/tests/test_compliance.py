@@ -10,8 +10,9 @@ import pytest
 from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncEntity
 from celerp.connectors.registry import all_connectors
 
-# Only test the three release connectors (exclude marketplace)
-_RELEASE_CONNECTORS = [c for c in all_connectors() if c.name in ("shopify", "quickbooks", "xero")]
+_RELEASE_CONNECTORS = [
+    c for c in all_connectors() if c.name in ("shopify", "quickbooks", "xero", "woocommerce")
+]
 
 
 @pytest.fixture(params=_RELEASE_CONNECTORS, ids=lambda c: c.name)

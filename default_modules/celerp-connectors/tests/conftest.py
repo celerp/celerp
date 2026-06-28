@@ -26,7 +26,7 @@ def ctx_quickbooks():
     return ConnectorContext(
         company_id="test-co",
         access_token="qb_test_token",
-        store_handle="realm-123",
+        store_handle="1234567890",  # realmId is Intuit-issued and numeric
     )
 
 

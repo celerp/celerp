@@ -25,6 +25,67 @@ async def create_item(session, company_id: str, data: dict, actor_id: str | None
     )
 
 
+def _external_ids(platform: str, idem_key: str) -> dict:
+    """Recover the platform's external ids from a connector item's idempotency key.
+
+    Inbound upserts encode the platform id in the idempotency key, so outbound
+    sync recovers it from there rather than storing duplicate columns:
+      shopify:{product_id}:{variant_id} -> shopify_product_id, shopify_variant_id
+      woocommerce:{product_id}          -> woocommerce_product_id
+    (Shopify location-level inventory needs a location id that is not captured on
+    import; those items are skipped by the connector's inventory push.)
+    """
+    parts = (idem_key or "").split(":")
+    if platform == "shopify" and len(parts) >= 3:
+        return {"shopify_product_id": parts[1], "shopify_variant_id": parts[2]}
+    if platform == "woocommerce" and len(parts) >= 2:
+        return {"woocommerce_product_id": parts[1]}
+    return {}
+
+
+async def _items_with_external_id(company_id: str, platform: str) -> list[dict]:
+    """All item projections linked to `platform`, as outbound-ready dicts."""
+    import uuid as _uuid
+    from celerp.db import SessionLocal as AsyncSessionLocal
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+
+    cid = _uuid.UUID(str(company_id))
+    out: list[dict] = []
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == cid,
+                Projection.entity_type == "item",
+                Projection.state["idempotency_key"].as_string().like(f"{platform}:%"),
+            )
+        )).scalars().all()
+        for r in rows:
+            st = r.state or {}
+            out.append({
+                "sku": st.get("sku"),
+                "name": st.get("name"),
+                "description": st.get("description"),
+                "sale_price": st.get("sale_price"),
+                "quantity": st.get("quantity", 0),
+                "files": st.get("files") or [],
+                **_external_ids(platform, st.get("idempotency_key", "")),
+            })
+    return out
+
+
+async def list_items_with_external_id(company_id: str, platform: str) -> list[dict]:
+    """Items linked to a platform (have an external id), for outbound inventory push."""
+    return await _items_with_external_id(company_id, platform)
+
+
+async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list[dict]:
+    """Items linked to a platform, for outbound product push. Currently returns all
+    externally-linked items (outbound PUTs are idempotent); a per-item modified
+    watermark is a follow-up once outbound sync-state tracking lands."""
+    return await _items_with_external_id(company_id, platform)
+
+
 async def upsert_from_connector(company_id: str, item) -> bool:
     """
     Create an item from a connector payload. Returns True if newly created.

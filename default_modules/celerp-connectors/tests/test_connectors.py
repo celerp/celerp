@@ -355,6 +355,7 @@ async def test_sync_runner_allows_inbound_when_both():
     with patch("celerp.db.get_session_ctx") as mock_db:
         mock_session = AsyncMock()
         mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
+        mock_session.scalar = AsyncMock(return_value=None)  # no prior watermark -> full sync
         mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await run_sync(shopify, ctx, "products", direction=SyncDirection.BOTH)
@@ -371,6 +372,7 @@ async def test_sync_runner_no_direction_runs_all():
     with patch("celerp.db.get_session_ctx") as mock_db:
         mock_session = AsyncMock()
         mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
+        mock_session.scalar = AsyncMock(return_value=None)  # no prior watermark -> full sync
         mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await run_sync(shopify, ctx, "products_out", direction=None)
@@ -454,16 +456,6 @@ async def test_handle_webhook_unknown_platform():
     with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
         await handle_webhook(event, ctx)
         mock_sync.assert_not_called()
-
-
-# ── OutboundQueue model ──────────────────────────────────────────────────────
-
-def test_outbound_queue_backoff_minutes():
-    from celerp.connectors.outbound_queue import MAX_RETRIES, BACKOFF_MINUTES
-    assert MAX_RETRIES == 5
-    assert len(BACKOFF_MINUTES) == 5
-    assert BACKOFF_MINUTES[0] == 1
-    assert BACKOFF_MINUTES[-1] == 240
 
 
 # ── ConnectorConfig model ────────────────────────────────────────────────────

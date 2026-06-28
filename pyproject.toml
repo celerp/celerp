@@ -135,5 +135,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"
-local_scheme = "no-local-version"
+# node-and-date appends the commit hash + build date to non-release builds, e.g.
+# 0.1.dev158+ge75c48e.d20260627, so a dev build identifies the exact commit it was
+# built from (a clean tagged release emits no local segment and stays e.g. 1.2.6).
+local_scheme = "node-and-date"
 tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"

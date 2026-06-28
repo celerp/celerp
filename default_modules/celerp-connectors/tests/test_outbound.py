@@ -173,8 +173,8 @@ def ctx_quickbooks():
     return ConnectorContext(
         company_id="test-co",
         access_token="qb_test_token",
-        store_handle="realm-123",
-        extra={"realm_id": "realm-123"},
+        store_handle="1234567890",
+        extra={"realm_id": "1234567890"},
     )
 
 
@@ -187,7 +187,7 @@ async def test_quickbooks_sync_invoices_out_success(qb, ctx_quickbooks):
     ]
     with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
         with respx.mock:
-            respx.post("https://quickbooks.api.intuit.com/v3/company/realm-123/invoice").mock(
+            respx.post("https://quickbooks.api.intuit.com/v3/company/1234567890/invoice").mock(
                 return_value=httpx.Response(200, json={"Invoice": {"Id": "qb-inv-1"}})
             )
             result = await qb.sync_invoices_out(ctx_quickbooks)
@@ -215,7 +215,7 @@ async def test_quickbooks_sync_invoices_out_error_accumulation(qb, ctx_quickbook
 
     with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
         with respx.mock:
-            respx.post("https://quickbooks.api.intuit.com/v3/company/realm-123/invoice").mock(
+            respx.post("https://quickbooks.api.intuit.com/v3/company/1234567890/invoice").mock(
                 side_effect=side_effect
             )
             result = await qb.sync_invoices_out(ctx_quickbooks)

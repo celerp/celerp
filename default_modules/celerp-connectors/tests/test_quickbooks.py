@@ -23,7 +23,7 @@ def qb():
 @pytest.mark.asyncio
 async def test_sync_products_filters_by_type(qb, ctx_quickbooks, mock_upsert_item):
     with respx.mock:
-        respx.get("https://quickbooks.api.intuit.com/v3/company/realm-123/query").mock(
+        respx.get("https://quickbooks.api.intuit.com/v3/company/1234567890/query").mock(
             return_value=httpx.Response(200, json={"QueryResponse": {"Item": [
                 {"Id": "1", "Name": "Widget", "Sku": "WDG", "Type": "Inventory", "UnitPrice": 10},
                 {"Id": "2", "Name": "Category", "Type": "Category"},  # should be skipped
@@ -38,7 +38,7 @@ async def test_sync_products_filters_by_type(qb, ctx_quickbooks, mock_upsert_ite
 async def test_sync_products_sku_fallback(qb, ctx_quickbooks, mock_upsert_item):
     """Falls back to Name when Sku is empty."""
     with respx.mock:
-        respx.get("https://quickbooks.api.intuit.com/v3/company/realm-123/query").mock(
+        respx.get("https://quickbooks.api.intuit.com/v3/company/1234567890/query").mock(
             return_value=httpx.Response(200, json={"QueryResponse": {"Item": [
                 {"Id": "1", "Name": "Consulting", "Type": "Service"},
             ]}})
@@ -52,7 +52,7 @@ async def test_sync_products_sku_fallback(qb, ctx_quickbooks, mock_upsert_item):
 @pytest.mark.asyncio
 async def test_sync_products_api_error(qb, ctx_quickbooks):
     with respx.mock:
-        respx.get("https://quickbooks.api.intuit.com/v3/company/realm-123/query").mock(
+        respx.get("https://quickbooks.api.intuit.com/v3/company/1234567890/query").mock(
             return_value=httpx.Response(500)
         )
         result = await qb.sync_products(ctx_quickbooks)
@@ -63,7 +63,7 @@ async def test_sync_products_api_error(qb, ctx_quickbooks):
 async def test_sync_products_incremental(qb, ctx_quickbooks, mock_upsert_item):
     since = datetime(2026, 3, 1, tzinfo=timezone.utc)
     with respx.mock:
-        route = respx.get("https://quickbooks.api.intuit.com/v3/company/realm-123/query").mock(
+        route = respx.get("https://quickbooks.api.intuit.com/v3/company/1234567890/query").mock(
             return_value=httpx.Response(200, json={"QueryResponse": {}})
         )
         await qb.sync_products(ctx_quickbooks, since=since)

@@ -125,6 +125,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history + tags so setuptools-scm can derive the version
 
       - uses: actions/setup-node@v4
         with:

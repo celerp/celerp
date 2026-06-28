@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -64,8 +65,17 @@ class XeroConnector(ConnectorBase):
 
     # -- Internal helpers ------------------------------------------------------
 
-    async def _paginate(self, ctx: ConnectorContext, path: str, key: str, since: datetime | None = None) -> list[dict[str, Any]]:
-        """Fetch all pages for a resource using Xero's page-based pagination."""
+    async def _paginate(
+        self,
+        ctx: ConnectorContext,
+        path: str,
+        key: str,
+        since: datetime | None = None,
+        paginated: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fetch a resource. Paginating endpoints (Invoices, Contacts) use Xero's
+        page-based paging; endpoints that return the full set in one response
+        (Items) pass paginated=False and are fetched in a single request."""
         results: list[dict[str, Any]] = []
         page = 1
         headers = _headers(ctx)
@@ -73,16 +83,13 @@ class XeroConnector(ConnectorBase):
             headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
         async with RateLimitedClient() as client:
             while True:
-                resp = await client.get(
-                    f"{_API_BASE}{path}",
-                    headers=headers,
-                    params={"page": page, "pageSize": _PAGE_SIZE},
-                )
+                params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else None
+                resp = await client.get(f"{_API_BASE}{path}", headers=headers, params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 items = data.get(key, [])
                 results.extend(items)
-                if len(items) < _PAGE_SIZE:
+                if not paginated or len(items) < _PAGE_SIZE:
                     break
                 page += 1
         return results
@@ -105,7 +112,7 @@ class XeroConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            items = await self._paginate(ctx, "/Items", "Items", since=since)
+            items = await self._paginate(ctx, "/Items", "Items", since=since, paginated=False)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"Xero API error: {exc}"]
             return result
@@ -117,8 +124,6 @@ class XeroConnector(ConnectorBase):
                 continue
 
             idempotency_key = f"xero:item:{xero_item['ItemID']}"
-            sale_price = (xero_item.get("SalesDetails") or {}).get("UnitPrice")
-            cost_price = (xero_item.get("PurchaseDetails") or {}).get("UnitPrice")
 
             try:
                 from celerp_inventory.routes import ItemCreate
@@ -127,8 +132,8 @@ class XeroConnector(ConnectorBase):
                     name=xero_item.get("Name") or sku,
                     description=xero_item.get("Description") or "",
                     sell_by="piece",
-                    sale_price=float(sale_price) if sale_price else None,
-                    cost_price=float(cost_price) if cost_price else None,
+                    sale_price=money((xero_item.get("SalesDetails") or {}).get("UnitPrice")),
+                    cost_price=money((xero_item.get("PurchaseDetails") or {}).get("UnitPrice")),
                     idempotency_key=idempotency_key,
                 )
                 created = await _upsert.upsert_item(ctx.company_id, item)

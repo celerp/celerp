@@ -17,10 +17,34 @@ from sqlalchemy import delete, text
 
 from celerp import __version__
 from celerp.events.engine import emit_event
-from celerp.migrations._data_reconcile import PROJECTION_VERSION_KEY, get_meta, set_meta
+from celerp.migrations._data_reconcile import (
+    PROJECTION_VERSION_KEY,
+    _META_TABLE,
+    _ensure_meta_table,
+    get_meta,
+    set_meta,
+)
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.dev_release_guard import run_upgrade_guard, unknown_event_types
+
+
+@pytest.fixture(autouse=True)
+async def _isolate_version_marker(session):
+    """The projection-version marker lives in the global `instance_meta` table,
+    which is outside the per-test transaction's company scope: a committed write
+    from another test (e.g. the app-lifespan guard) can leak in and make the
+    "marker is unset" assertions flaky. Clear the key inside this test's own
+    transaction so every test starts from a known-unset marker; the delete rolls
+    back at teardown like the rest of the test's writes."""
+    conn = await session.connection()
+
+    def _clear(c):
+        _ensure_meta_table(c)
+        c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = :k"), {"k": PROJECTION_VERSION_KEY})
+
+    await conn.run_sync(_clear)
+    yield
 
 
 async def _seed_item(session) -> uuid.UUID:

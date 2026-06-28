@@ -20,13 +20,13 @@ import httpx
 import json
 
 from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
     SyncDirection,
     SyncEntity,
-    SyncFrequency,
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
@@ -61,6 +61,7 @@ class WooCommerceConnector(ConnectorBase):
         "products": "external_wins",
         "orders": "external_wins",
         "contacts": "external_wins",
+        "inventory": "internal_wins",   # stock is pushed out; CelERP is the source
     }
 
     # -- Internal helpers ------------------------------------------------------
@@ -88,8 +89,15 @@ class WooCommerceConnector(ConnectorBase):
                 resp.raise_for_status()
                 data = resp.json()
                 results.extend(data)
-                total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
-                if page >= total_pages:
+                if not data:
+                    break
+                total_pages_hdr = resp.headers.get("X-WP-TotalPages")
+                if total_pages_hdr is not None:
+                    if page >= int(total_pages_hdr):
+                        break
+                elif len(data) < _PER_PAGE:
+                    # No total-pages header (proxy stripped it / error envelope):
+                    # keep paging until a short page rather than truncating at 1.
                     break
                 page += 1
 
@@ -127,11 +135,11 @@ class WooCommerceConnector(ConnectorBase):
             pid = product.get("id")
             sku = (product.get("sku") or "").strip() or f"WC-{pid}"
             name = product.get("name") or sku
-            sell_price_raw = product.get("regular_price") or product.get("price") or "0"
-            try:
-                sell_price = float(sell_price_raw) or None
-            except (ValueError, TypeError):
-                sell_price = None
+            # regular_price is the base price; fall back to the active price only
+            # when regular_price is genuinely absent. A real 0 (free item) is kept.
+            sell_price = money(product.get("regular_price"))
+            if sell_price is None:
+                sell_price = money(product.get("price"))
 
             idempotency_key = f"woocommerce:{pid}"
 
@@ -167,22 +175,25 @@ class WooCommerceConnector(ConnectorBase):
 
     async def _pull_product_files(self, ctx: ConnectorContext, product: dict[str, Any], sku: str) -> None:
         """Pull images and cert metafields from a WC product and store as item files."""
+        import uuid as _uuid
         from celerp.db import get_session_ctx as get_async_session
         from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         images: list[dict] = product.get("images", [])
         meta_data: list[dict] = product.get("meta_data", [])
 
         async with get_async_session() as session:
-            rows = (await session.execute(
+            # Resolve the item by SKU with a single DB-side, case-insensitive
+            # query, limited to the one matching row.
+            row = (await session.execute(
                 select(Projection).where(
-                    Projection.company_id == ctx.company_id,
+                    Projection.company_id == _uuid.UUID(str(ctx.company_id)),
                     Projection.entity_type == "item",
-                )
-            )).scalars().all()
-            row = next((r for r in rows if str(r.state.get("sku", "")).strip().lower() == sku.strip().lower()), None)
+                    func.lower(Projection.state["sku"].as_string()) == sku.strip().lower(),
+                ).limit(1)
+            )).scalar_one_or_none()
             if row is None:
                 return
 
@@ -399,28 +410,32 @@ class WooCommerceConnector(ConnectorBase):
             return []
         return self._INBOUND_TOPICS
 
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
-        """Register WooCommerce webhooks via REST API."""
+    async def register_webhooks(
+        self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
+    ) -> list[str]:
+        """Register WooCommerce webhooks via REST API.
+
+        When `secret` is supplied it is set on every webhook so deliveries are
+        signed with a value we already hold (X-WC-Webhook-Signature = base64
+        HMAC-SHA256 of the body), letting the receiver verify them. Returns the
+        created webhook ids."""
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         ids: list[str] = []
         topics = self.webhook_topics_for_direction(self.direction)
         async with RateLimitedClient() as client:
             for topic in topics:
-                resp = await client.post(
-                    f"{base_url}/webhooks",
-                    auth=auth,
-                    json={
-                        "name": f"CelERP {topic}",
-                        "topic": topic,
-                        "delivery_url": webhook_url,
-                        "status": "active",
-                    },
-                )
+                body = {
+                    "name": f"CelERP {topic}",
+                    "topic": topic,
+                    "delivery_url": webhook_url,
+                    "status": "active",
+                }
+                if secret:
+                    body["secret"] = secret
+                resp = await client.post(f"{base_url}/webhooks", auth=auth, json=body)
                 if resp.status_code in (200, 201):
-                    wh = resp.json()
-                    ids.append(str(wh.get("id", "")))
-                    # WC generates its own secret, stored in the response
+                    ids.append(str(resp.json().get("id", "")))
                 else:
                     log.warning("woocommerce.register_webhook topic=%s status=%d", topic, resp.status_code)
         return ids
