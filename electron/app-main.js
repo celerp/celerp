@@ -227,8 +227,12 @@ async function initialisePostgresWindows() {
         "--auth=password",
         "--username=celerp",
         `--pwfile=${pwfile}`,
-        "--lc-messages=en_US.UTF-8",
-      ], { stdio: ["ignore", out, out], env: { ...process.env, LC_MESSAGES: "en_US.UTF-8" } });
+        // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
+        // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
+        // against a WIN1252 database.
+        "--encoding=UTF8",
+        "--no-locale",
+      ], { stdio: ["ignore", out, out], env: { ...process.env } });
       proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
       proc.on("exit", (code) => { trace("initdb exit code=" + code); (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))); });
     });
@@ -1161,6 +1165,7 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
+    try { fs.appendFileSync(path.join(LOG_DIR, "boot-trace.log"), `FATAL: ${err?.stack ?? err}\n`); } catch { /* ignore */ }
     showError("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
