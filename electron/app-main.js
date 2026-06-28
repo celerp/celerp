@@ -969,10 +969,15 @@ if (isWindowsElevated()) {
     const os = require("os");
     const runas = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "runas.exe");
     const wrapper = path.join(os.tmpdir(), "celerp-deelevate.cmd");
-    fs.writeFileSync(wrapper, `@echo off\r\nstart "" "${process.execPath}"\r\n`);
-    childProcess.execFileSync(runas, ["/trustlevel:0x20000", wrapper], {
-      stdio: "ignore", windowsHide: true,
+    // Foreground launch (NOT `start`): cmd stays the de-elevated app's parent so
+    // it isn't orphaned and killed. Spawn detached so the whole runas->cmd->app
+    // tree keeps running after this elevated instance exits.
+    fs.writeFileSync(wrapper, `@echo off\r\n"${process.execPath}"\r\n`);
+    const child = childProcess.spawn(runas, ["/trustlevel:0x20000", wrapper], {
+      detached: true, stdio: "ignore", windowsHide: true,
     });
+    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
+    child.unref();
     relaunched = true;
     console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
   } catch (e) {
