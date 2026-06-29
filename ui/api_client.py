@@ -1526,6 +1526,11 @@ async def bulk_set_status(token: str, entity_ids: list[str], status: str) -> dic
         return _raise(await c.post("/items/bulk/status", json={"entity_ids": entity_ids, "status": status})).json()
 
 
+async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/bulk/shopify-sync", json={"entity_ids": entity_ids, "enable": enable})).json()
+
+
 async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/transfer", json={"entity_ids": entity_ids, "to_location_id": to_location_id})).json()

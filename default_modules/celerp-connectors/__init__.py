@@ -44,5 +44,22 @@ PLUGIN_MANIFEST = {
                 "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
             },
         ],
+        # Inventory bulk actions to opt items into / out of outbound Shopify sync.
+        "bulk_action": [
+            {
+                "label": "Enable Shopify sync",
+                "form_action": "/api/items/bulk/shopify-sync/enable",
+                "icon": "🛍",
+                "action_type": "htmx",
+                "min_role": "manager",
+            },
+            {
+                "label": "Disable Shopify sync",
+                "form_action": "/api/items/bulk/shopify-sync/disable",
+                "icon": "🛍",
+                "action_type": "htmx",
+                "min_role": "manager",
+            },
+        ],
     },
 }

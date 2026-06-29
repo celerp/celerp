@@ -346,6 +346,8 @@
   "connectors.syncing": "Syncing…",
   "connectors.back_to_connectors": "Back to connectors",
   "connectors.changes": "Changes",
+  "connectors.disable_shopify_sync": "Disable Shopify sync",
+  "connectors.enable_shopify_sync": "Enable Shopify sync",
   "connectors.entity": "Data",
   "connectors.issues_header": "Issues",
   "connectors.open": "Open",
