@@ -334,6 +334,14 @@ async def _kickoff_connector_sync(iid: str, platform: str) -> None:
     asyncio.create_task(_do_sync())
 
 
+async def _autosync_once(iid: str, platform: str) -> None:
+    """Best-effort background sync kickoff that never raises into a render path."""
+    try:
+        await _kickoff_connector_sync(iid, platform)
+    except Exception:
+        log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
+
+
 _HOW_IT_WORKS: dict[str, list[str]] = {
     "shopify": [
         "Enter your Shopify store domain below",
@@ -715,6 +723,15 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
         if c.get("connected"):
             cfg = await _ensure_connector_config(iid, c["id"], c.get("category", "website"))
             configs[c["id"]] = cfg
+
+    # Auto-sync a freshly connected store that has never synced (e.g. just returned from
+    # OAuth) so the merchant's data appears without a manual step - the activation moment.
+    # Idempotent: run_sync's in-progress row + concurrency guard prevent re-triggering on
+    # re-render, and once any run exists this branch no longer fires.
+    import asyncio
+    for c in catalog:
+        if c.get("connected") and last_runs.get(c["id"]) is None:
+            asyncio.create_task(_autosync_once(iid, c["id"]))
 
     # Group by category, labelled by what the sync does for the customer
     group_labels = {
