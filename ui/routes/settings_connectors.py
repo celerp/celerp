@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fasthtml.common import *
 from starlette.requests import Request
 
+from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
 from ui.routes.settings import _check_role, _token
 
@@ -100,51 +101,26 @@ def _validate_platform(platform: str):
     return None
 
 
-def _entity_chip(entity: str) -> FT:
-    return Span(entity, cls="connector-entity-chip")
-
-
-def _status_badge(connected: bool, lang: str = "en") -> FT:
-    if connected:
-        return Span("✓ " + t("connectors.connected", lang, default="Connected"),
-                    cls="badge badge--active")
-    return Span(t("connectors.not_connected", lang, default="Not Connected"),
-                cls="badge badge--inactive")
-
-
-def _coming_soon_badge(lang: str = "en") -> FT:
-    return Span(t("connectors.coming_soon", lang, default="Coming Soon"),
-                cls="badge badge--coming-soon")
-
-
 def _last_sync_info(run) -> FT:
-    """Render last SyncRun info or '-'."""
+    """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
+    relative_time() formatter and thousands-separated counts for consistency with the
+    rest of the app."""
     if run is None:
-        return Span("-", cls="connector-sync-info")
+        return Span(t("connectors.never_synced", default="Never synced"), cls="connector-sync-info")
+    if run.finished_at is None:
+        return Span(t("connectors.syncing", default="Syncing…"),
+                    cls="connector-sync-info connector-sync-info--running")
     finished = run.finished_at
-    if finished:
-        if finished.tzinfo is None:
-            finished = finished.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - finished
-        minutes = int(delta.total_seconds() // 60)
-        if minutes < 60:
-            time_str = f"{minutes}m ago"
-        elif minutes < 1440:
-            time_str = f"{minutes // 60}h ago"
-        else:
-            time_str = f"{minutes // 1440}d ago"
-    else:
-        time_str = "in progress"
-
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
     status_cls = {
         "success": "connector-sync-info--ok",
         "partial": "connector-sync-info--warn",
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
-
-    counts = f"+{run.created_count} ~{run.updated_count}"
+    counts = f"+{run.created_count:,} ~{run.updated_count:,}"
     return Span(
-        f"{time_str} · {run.status} · {counts}",
+        f"{relative_time(finished.isoformat())} · {run.status} · {counts}",
         cls=f"connector-sync-info {status_cls}",
     )
 
@@ -196,18 +172,6 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
         ),
         cls="connector-frequency-select",
     )
-
-
-def _webhook_status(connected: bool, category: str, lang: str = "en") -> FT:
-    """Show webhook live status for e-commerce connectors."""
-    if category != ConnectorCategory.WEBSITE.value:
-        return Span()
-    if connected:
-        return Span(
-            "● " + t("connectors.live", lang, default="Live"),
-            cls="connector-webhook-status connector-webhook-status--live",
-        )
-    return Span()
 
 
 async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -> dict:

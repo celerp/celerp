@@ -343,6 +343,7 @@
   "connectors.not_connected": "Not connected",
   "connectors.shop_url_placeholder": "https://mystore.myshopify.com",
   "connectors.sync_now": "Sync now",
+  "connectors.syncing": "Syncing…",
   "connectors.webhook_active": "Webhook active",
   "connectors.webhook_inactive": "Webhook inactive",
   "doc.0_rows_selected": "0 rows selected",
