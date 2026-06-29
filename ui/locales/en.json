@@ -818,6 +818,8 @@
   "msg.not_authenticated": "Not authenticated.",
   "msg.notifications": "Notifications",
   "msg.onboarding_skip": "Or skip for now and start with an empty workspace:",
+  "msg.connect_store_desc": "Installed from Shopify? Link by email to sync your products, orders, and customers.",
+  "page.connect_your_store": "Connect your store",
   "msg.onboarding_subtitle": "Celerp is empty. Import your inventory, customers, or invoices to get started.",
   "msg.powered_by": "Powered by Celerp · Self-hosted business software for AI transformations",
   "msg.preferences_hint": "Defaults applied when no date filter or page size is set by the user.",
