@@ -68,3 +68,44 @@ async def test_shop_sync_disabled_clears_flag(session):
 
     proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
     assert proj.is_sync_to_shopify is False
+
+
+@pytest.mark.asyncio
+async def test_outbound_lists_only_flagged_shopify_items(_db_engine):
+    """Outbound product/inventory push returns only items the user opted in
+    (is_sync_to_shopify) for Shopify; other platforms are unaffected by the flag."""
+    from datetime import datetime, timezone
+
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import (
+        list_items_modified_since_last_sync,
+        list_items_with_external_id,
+    )
+
+    cid = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+
+    def _proj(eid, idem, flag):
+        return Projection(
+            company_id=cid, entity_id=eid, entity_type="item",
+            state={"sku": eid, "name": eid, "idempotency_key": idem},
+            version=1, created_at=now, updated_at=now, is_sync_to_shopify=flag,
+        )
+
+    async with get_session_ctx() as s:
+        s.add(Company(id=cid, name="OutCo", slug=f"outco-{cid.hex[:8]}"))
+        await s.flush()
+        s.add_all([
+            _proj("on", "shopify:1:1", True),
+            _proj("off", "shopify:2:2", False),
+            _proj("woo", "woocommerce:3", False),
+        ])
+        await s.commit()
+
+    shop = await list_items_modified_since_last_sync(str(cid), "shopify")
+    assert {i["sku"] for i in shop} == {"on"}          # only the opted-in item pushes
+    shop_inv = await list_items_with_external_id(str(cid), "shopify")
+    assert {i["sku"] for i in shop_inv} == {"on"}
+    woo = await list_items_modified_since_last_sync(str(cid), "woocommerce")
+    assert {i["sku"] for i in woo} == {"woo"}          # non-shopify: flag not applied
