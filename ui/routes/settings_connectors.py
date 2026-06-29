@@ -303,6 +303,37 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
 
 
+async def _kickoff_connector_sync(iid: str, platform: str) -> None:
+    """Fetch the live token and start a background sync of all supported entities.
+    Raises on setup failure (bad token, unknown connector); per-entity errors are captured
+    in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
+    import asyncio
+
+    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.registry import get as get_connector
+    from celerp.connectors.sync_runner import run_sync
+    from ui.config import RELAY_URL
+
+    connector = get_connector(platform)
+    config = await _get_connector_config(iid, platform)
+    direction = SyncDirection(config.direction) if config else SyncDirection.BOTH
+    token_data = await _fetch_access_token(RELAY_URL, iid, platform)
+    ctx = ConnectorContext(
+        company_id=iid,
+        access_token=token_data["access_token"],
+        store_handle=token_data.get("store_handle"),
+    )
+
+    async def _do_sync():
+        for entity_enum in connector.supported_entities:
+            try:
+                await run_sync(connector, ctx, entity_enum.value, direction=direction)
+            except Exception:
+                pass
+
+    asyncio.create_task(_do_sync())
+
+
 _HOW_IT_WORKS: dict[str, list[str]] = {
     "shopify": [
         "Enter your Shopify store domain below",
@@ -904,31 +935,7 @@ def setup_routes(app):
         lang = get_lang(request)
 
         try:
-            import asyncio
-
-            from celerp.connectors.base import ConnectorContext, SyncDirection
-            from celerp.connectors.registry import get as get_connector
-            from celerp.connectors.sync_runner import run_sync
-            from ui.config import RELAY_URL
-
-            connector = get_connector(platform)
-            config = await _get_connector_config(iid, platform)
-            direction = SyncDirection(config.direction) if config else SyncDirection.BOTH
-            token_data = await _fetch_access_token(RELAY_URL, iid, platform)
-            ctx = ConnectorContext(
-                company_id=iid,
-                access_token=token_data["access_token"],
-                store_handle=token_data.get("store_handle"),
-            )
-
-            async def _do_sync():
-                for entity_enum in connector.supported_entities:
-                    try:
-                        await run_sync(connector, ctx, entity_enum.value, direction=direction)
-                    except Exception:
-                        pass
-
-            asyncio.create_task(_do_sync())
+            await _kickoff_connector_sync(iid, platform)
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
@@ -1090,6 +1097,13 @@ def setup_routes(app):
                 await _register_woocommerce_webhooks(iid, store_url, consumer_key, consumer_secret)
             except Exception:
                 log.warning("woocommerce webhook registration failed (non-fatal)", exc_info=True)
+
+        # Auto-sync on connect so the merchant's data appears without a manual step
+        # (the activation moment). Best-effort: a failure here doesn't block the connect.
+        try:
+            await _kickoff_connector_sync(iid, platform)
+        except Exception:
+            log.warning("auto-sync on connect failed (non-fatal) for %s", platform, exc_info=True)
 
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
