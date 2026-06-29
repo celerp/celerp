@@ -133,3 +133,35 @@ async def test_bulk_shopify_sync_endpoint_sets_flag(session):
     await ProjectionEngine.rebuild(session)
     proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
     assert proj.is_sync_to_shopify is True
+
+
+@pytest.mark.asyncio
+async def test_list_items_source_filter(session):
+    """?source=shopify returns only items linked to that platform (idempotency-key prefix);
+    powers the connector detail 'View synced products' deep-link."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from celerp.models.projections import Projection
+    from celerp_inventory.routes import list_items
+
+    cid = uuid.uuid4()
+    session.add(Company(id=cid, name="SrcCo", slug=f"srcco-{cid.hex[:8]}"))
+    await session.flush()
+    now = datetime.now(timezone.utc)
+
+    def _proj(eid, idem):
+        return Projection(
+            company_id=cid, entity_id=eid, entity_type="item",
+            state={"sku": eid, "name": eid, "status": "available", "idempotency_key": idem},
+            version=1, created_at=now, updated_at=now,
+        )
+
+    session.add_all([_proj("s1", "shopify:1:1"), _proj("w1", "woocommerce:2"), _proj("m1", "manual-x")])
+    await session.flush()
+
+    req = SimpleNamespace(query_params=SimpleNamespace(multi_items=lambda: []))
+    resp = await list_items(req, company_id=cid, session=session, role="owner", source="shopify")
+    assert {i["sku"] for i in resp["items"]} == {"s1"}
+    resp_all = await list_items(req, company_id=cid, session=session, role="owner")
+    assert {i["sku"] for i in resp_all["items"]} == {"s1", "w1", "m1"}

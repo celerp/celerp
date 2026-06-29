@@ -293,6 +293,7 @@ async def list_items(
     category: str | None = None,
     inventory_type: str | None = None,
     location_id: str | None = None,
+    source: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -337,6 +338,12 @@ async def list_items(
     if category:
         cats = {c.strip() for c in category.split(",") if c.strip()}
         result = [r for r in result if str(r.get("category") or "") in cats]
+
+    # Connector source: items linked to a platform encode it in the idempotency key
+    # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
+    if source:
+        _prefix = f"{source.strip().lower()}:"
+        result = [r for r in result if str(r.get("idempotency_key") or "").lower().startswith(_prefix)]
 
     if inventory_type:
         types = {it.strip() for it in inventory_type.split(",") if it.strip()}

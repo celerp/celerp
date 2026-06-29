@@ -368,6 +368,7 @@ def _parse_params(request: Request) -> dict:
         "category": q.get("category", ""),
         "inventory_type": q.get("inventory_type", ""),
         "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
+        "source": q.get("source", ""),  # connector source filter (e.g. ?source=shopify)
         # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
         "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
@@ -454,6 +455,8 @@ async def _inventory_content(
             params["inventory_type"] = p["inventory_type"]
         if p.get("location_id"):
             params["location_id"] = p["location_id"]
+        if p.get("source"):
+            params["source"] = p["source"]
         for akey, aval in (p.get("attr_filters") or {}).items():
             if aval:
                 params[f"attr.{akey}"] = aval

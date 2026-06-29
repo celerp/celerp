@@ -357,6 +357,7 @@
   "connectors.status_partial": "Issues",
   "connectors.sync_complete": "Sync complete",
   "connectors.sync_failed": "Sync failed",
+  "connectors.view_synced": "View synced products",
   "connectors.webhook_active": "Webhook active",
   "connectors.webhook_inactive": "Webhook inactive",
   "doc.0_rows_selected": "0 rows selected",

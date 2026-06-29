@@ -468,6 +468,8 @@ def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
         Div(*config_rows, cls="connector-connected-details"),
         P(t("connectors.status", lang), cls="settings-section-title"),
         _connector_status_view(cid, runs, lang),
+        P(A(t("connectors.view_synced"), href=f"/inventory?source={cid}",
+            cls="btn btn--sm btn--outline"), cls="connector-synced-link"),
         cls="settings-card",
     )
 
