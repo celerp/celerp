@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
 
 from fasthtml.common import *
 from starlette.requests import Request
+from starlette.responses import HTMLResponse
 
 from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
@@ -309,7 +311,144 @@ _ENTITY_LABELS: dict[str, str] = {
     "contacts": "Contacts",
     "inventory": "Inventory",
     "invoices": "Invoices",
+    "products_out": "Products (push)",
+    "invoices_out": "Invoices (push)",
+    "inventory_out": "Inventory (push)",
 }
+
+_ENTITY_ORDER = ["products", "orders", "contacts", "inventory", "invoices",
+                 "products_out", "invoices_out", "inventory_out"]
+
+
+async def _entity_runs(company_id: str, connector: str) -> dict:
+    """Latest SyncRun per entity for a connector (entity -> SyncRun). Used by the detail
+    view and the polling status fragment."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.sync_run import SyncRun
+
+    out: dict = {}
+    try:
+        async with get_session_ctx() as session:
+            rows = await session.execute(
+                sa.select(SyncRun)
+                .where(SyncRun.company_id == company_id, SyncRun.connector == connector)
+                .order_by(SyncRun.started_at.desc())
+            )
+            for (run,) in rows:
+                out.setdefault(run.entity, run)
+    except Exception:
+        pass
+    return out
+
+
+def _any_in_progress(runs: dict) -> bool:
+    """True if any entity has an unfinished (in-progress) run."""
+    return any(getattr(r, "finished_at", True) is None for r in runs.values())
+
+
+def _overall_status(runs: dict) -> str:
+    """Aggregate status across entities (for the completion toast)."""
+    statuses = {getattr(r, "status", "") for r in runs.values()}
+    if "failed" in statuses:
+        return "failed"
+    if "partial" in statuses:
+        return "partial"
+    return "success"
+
+
+def _status_badge_for(status: str, lang: str = "en") -> FT:
+    cls = {"success": "badge--active", "partial": "badge--draft",
+           "failed": "badge--overdue", "running": "badge--inactive"}.get(status, "badge--inactive")
+    label = {"success": t("connectors.status_ok", lang), "partial": t("connectors.status_partial", lang),
+             "failed": t("connectors.status_failed", lang), "running": t("connectors.syncing", lang)}.get(
+        status, status or "-")
+    return Span(label, cls=f"badge {cls}")
+
+
+def _entity_status_table(runs: dict, lang: str = "en") -> FT:
+    """Per-entity sync status table. Shared by the detail view and the polling fragment."""
+    present = [e for e in _ENTITY_ORDER if e in runs]
+    if not present:
+        return P(t("connectors.never_synced", lang), cls="empty-state-msg")
+    rows = []
+    for e in present:
+        r = runs[e]
+        running = getattr(r, "finished_at", None) is None
+        when = t("connectors.syncing", lang) if running else relative_time(r.finished_at.isoformat())
+        counts = "" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
+        errs = list(getattr(r, "errors", None) or [])
+        rows.append(Tr(
+            Td(_ENTITY_LABELS.get(e, e)),
+            Td(when),
+            Td(_status_badge_for("running" if running else r.status, lang)),
+            Td(counts, cls="cell--number"),
+            Td(str(len(errs)) if errs else "", cls="cell--number", title="; ".join(errs) if errs else ""),
+            cls="data-row",
+        ))
+    return Table(
+        Thead(Tr(Th(t("connectors.entity", lang)), Th(t("connectors.last_sync", lang)),
+                 Th(t("connectors.status", lang)), Th(t("connectors.changes", lang)),
+                 Th(t("connectors.issues_header", lang)))),
+        Tbody(*rows),
+        cls="data-table",
+    )
+
+
+def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_poll: bool = False) -> FT:
+    """Status table wrapped in a self-re-triggering container. While a sync is in progress
+    (or force_poll, right after kicking one off) the fragment re-fetches itself every 2s
+    (native `load delay` idiom - the app does not use `every`); when all entities are
+    terminal it renders WITHOUT the trigger, stopping the poll. aria-live announces it."""
+    polling = force_poll or _any_in_progress(runs)
+    attrs: dict = {}
+    if polling:
+        attrs = {"hx_get": f"/settings/connectors/{platform}/status?polling=1",
+                 "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
+    return Div(
+        _entity_status_table(runs, lang),
+        id=f"connector-status-{platform}",
+        cls="connector-status-view",
+        **{"aria-live": "polite"},
+        **attrs,
+    )
+
+
+def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
+    """The reusable detail body (header actions + config + live status table). Used by the
+    full-page detail route."""
+    cid = c["id"]
+    category = c.get("category", "website")
+    direction = config.direction if config else SyncDirection.BOTH.value
+    frequency = config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
+
+    sync_btn = Button(
+        Span(t("connectors.sync_now", lang)), Span(cls="btn-spinner"),
+        cls="btn btn--sm btn--primary",
+        hx_post=f"/settings/connectors/{cid}/sync",
+        hx_target=f"#connector-status-{cid}",
+        hx_swap="outerHTML",
+        hx_disabled_elt="this",
+    )
+    disconnect_btn = Button(
+        t("connectors.disconnect", lang),
+        cls="btn btn--sm btn--outline btn--danger", style="margin-left:8px;",
+        hx_delete=f"/settings/connectors/{cid}/disconnect?redirect=1",
+        hx_confirm=t("connectors.disconnect_confirm", lang),
+        hx_swap="none",
+    )
+    config_rows = [_direction_toggle(cid, direction, lang)]
+    if category == ConnectorCategory.ACCOUNTING.value:
+        config_rows.append(_frequency_select(cid, frequency, lang))
+
+    return Div(
+        Div(sync_btn, disconnect_btn, cls="connector-action-area"),
+        Div(*config_rows, cls="connector-connected-details"),
+        P(t("connectors.status", lang), cls="settings-section-title"),
+        _connector_status_view(cid, runs, lang),
+        cls="settings-card",
+    )
 
 
 def _connector_card(
@@ -378,12 +517,10 @@ def _connector_card(
         )
     elif connected:
         action_area = Div(
-            Button(
-                t("connectors.sync_now", lang),
+            A(
+                t("connectors.open", lang),
+                href=f"/settings/connectors/{cid}",
                 cls="btn btn--sm btn--primary",
-                hx_post=f"/settings/connectors/{cid}/sync",
-                hx_target=f"#connector-sync-info-{cid}",
-                hx_swap="innerHTML",
             ),
             Button(
                 t("connectors.disconnect", lang),
@@ -712,6 +849,11 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
+        if request.query_params.get("redirect"):
+            # Disconnected from the full-page detail view -> return to the overview tab.
+            from starlette.responses import Response
+            return Response(status_code=204, headers={"HX-Redirect": "/settings?tab=connectors"})
+
         catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
@@ -719,7 +861,9 @@ def setup_routes(app):
 
     @app.post("/settings/connectors/{platform}/sync")
     async def connector_sync_now(request: Request, platform: str):
-        """HTMX: trigger an immediate sync for a connector. Returns updated sync info."""
+        """HTMX: kick off a sync (background) and return the live status view, which polls
+        itself until terminal. Setup failures (bad token, unknown connector) return inline;
+        per-entity sync failures surface in the status table + the completion toast."""
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
@@ -729,32 +873,27 @@ def setup_routes(app):
             return err
 
         from celerp.config import ensure_instance_id
-        from ui.i18n import get_lang
 
         iid = ensure_instance_id()
         lang = get_lang(request)
 
         try:
-            from celerp.connectors.registry import get as get_connector
+            import asyncio
+
             from celerp.connectors.base import ConnectorContext, SyncDirection
+            from celerp.connectors.registry import get as get_connector
             from celerp.connectors.sync_runner import run_sync
             from ui.config import RELAY_URL
 
             connector = get_connector(platform)
-
-            # Get direction config
             config = await _get_connector_config(iid, platform)
             direction = SyncDirection(config.direction) if config else SyncDirection.BOTH
-
-            # Fetch live access token from relay
             token_data = await _fetch_access_token(RELAY_URL, iid, platform)
             ctx = ConnectorContext(
                 company_id=iid,
                 access_token=token_data["access_token"],
                 store_handle=token_data.get("store_handle"),
             )
-
-            import asyncio
 
             async def _do_sync():
                 for entity_enum in connector.supported_entities:
@@ -764,11 +903,84 @@ def setup_routes(app):
                         pass
 
             asyncio.create_task(_do_sync())
-            msg = t("connectors.sync_started", lang, default="Sync started...")
         except Exception as exc:
-            msg = f"✗ {exc}"
+            return Span(f"✗ {exc}", cls="flash flash--warning")
 
-        return Span(msg, cls="connector-sync-info")
+        # Force the first poll so the view picks up the in-progress rows the background
+        # task is writing.
+        runs = await _entity_runs(iid, platform)
+        return _connector_status_view(platform, runs, lang, force_poll=True)
+
+    @app.get("/settings/connectors/{platform}/status")
+    async def connector_status(request: Request, platform: str):
+        """Live per-entity status fragment. Self-re-triggers while in progress; on the poll
+        that first sees all-terminal it stops polling and fires a one-time completion toast
+        (only when ?polling=1, so opening the detail page never fires a stale toast)."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := _check_role(request, "admin")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+
+        from celerp.config import ensure_instance_id
+
+        iid = ensure_instance_id()
+        lang = get_lang(request)
+        runs = await _entity_runs(iid, platform)
+        view = _connector_status_view(platform, runs, lang)
+        polling = request.query_params.get("polling") == "1"
+        if polling and runs and not _any_in_progress(runs):
+            ok = _overall_status(runs) != "failed"
+            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang)
+            return HTMLResponse(
+                to_xml(view),
+                headers={"HX-Trigger": json.dumps(
+                    {"celerpToast": {"message": msg, "type": "success" if ok else "error"}})},
+            )
+        return view
+
+    @app.get("/settings/connectors/{platform}")
+    async def connector_detail_page(request: Request, platform: str):
+        """Full-page connector detail (status + config + actions). Reached from the overview
+        'Open' link; the back-link returns to the connectors settings tab."""
+        from starlette.responses import RedirectResponse
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := _check_role(request, "admin")):
+            return r
+        if _validate_platform(platform) is not None:
+            return RedirectResponse("/settings?tab=connectors", status_code=302)
+
+        from celerp.config import ensure_instance_id
+        from ui.components.shell import base_shell, page_header
+        from ui.components.table import breadcrumbs
+        from ui.config import RELAY_URL
+
+        iid = ensure_instance_id()
+        lang = get_lang(request)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        c = next((x for x in catalog if x["id"] == platform),
+                 {"id": platform, "name": platform.title(), "category": "website"})
+        config = await _get_connector_config(iid, platform)
+        runs = await _entity_runs(iid, platform)
+        icon = _CONNECTOR_ICONS.get(platform, "🔌")
+        name = c.get("name", platform.title())
+        return base_shell(
+            breadcrumbs([(t("settings.tab_connectors", lang), "/settings?tab=connectors"), (name, None)]),
+            page_header(
+                f"{icon} {name}",
+                A(t("connectors.back_to_connectors", lang), href="/settings?tab=connectors",
+                  cls="btn btn--secondary btn--sm"),
+            ),
+            _connector_detail_body(c, runs, config, lang),
+            title=f"{name} - Celerp",
+            nav_active="settings",
+            request=request,
+        )
 
     @app.post("/settings/connectors/{platform}/connect-apikey")
     async def connector_connect_apikey(request: Request, platform: str):
