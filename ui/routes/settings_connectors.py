@@ -282,6 +282,27 @@ async def _ensure_connector_config(company_id: str, connector: str, category: st
     return config
 
 
+async def _clear_connector_config(company_id: str, connector: str) -> None:
+    """Delete a connector's ConnectorConfig (clears the stored webhook secret/ids and
+    direction/frequency) so a later reconnect starts clean. Best-effort."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    try:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.delete(ConnectorConfig).where(
+                    ConnectorConfig.company_id == company_id,
+                    ConnectorConfig.connector == connector,
+                )
+            )
+            await session.commit()
+    except Exception:
+        log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
+
+
 _HOW_IT_WORKS: dict[str, list[str]] = {
     "shopify": [
         "Enter your Shopify store domain below",
@@ -848,6 +869,9 @@ def setup_routes(app):
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
+
+        # Clear local connector state so a later reconnect starts clean.
+        await _clear_connector_config(iid, platform)
 
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.

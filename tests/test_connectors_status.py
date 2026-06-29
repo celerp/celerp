@@ -81,3 +81,20 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
     runs = await _entity_runs(cid, "shopify")
     assert set(runs) == {"products", "orders"}
     assert runs["products"].created_count == 9  # latest, not the older run
+
+
+@pytest.mark.asyncio
+async def test_clear_connector_config_removes_row(_db_engine):
+    """Disconnect's cleanup deletes the ConnectorConfig (stored secret/webhook-ids +
+    direction/frequency) so a later reconnect starts clean."""
+    from ui.routes.settings_connectors import (
+        _clear_connector_config,
+        _ensure_connector_config,
+        _get_connector_config,
+    )
+
+    cid = f"co-{uuid.uuid4().hex[:10]}"
+    await _ensure_connector_config(cid, "woocommerce", "website")
+    assert await _get_connector_config(cid, "woocommerce") is not None
+    await _clear_connector_config(cid, "woocommerce")
+    assert await _get_connector_config(cid, "woocommerce") is None
