@@ -27,6 +27,7 @@ class Projection(Base):
     is_available: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_on_memo: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_on_marketplace: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_sync_to_shopify: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_in_production: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_expired: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     expires_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)

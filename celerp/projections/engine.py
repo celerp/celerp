@@ -91,6 +91,7 @@ class ProjectionEngine:
                     updated_at=now,
                     is_on_memo=next_state.get("is_on_memo"),
                     is_on_marketplace=next_state.get("is_on_marketplace"),
+                    is_sync_to_shopify=next_state.get("is_sync_to_shopify"),
                     is_in_production=next_state.get("is_in_production"),
                     is_expired=next_state.get("is_expired"),
                     expires_at=expires_at,
@@ -104,6 +105,7 @@ class ProjectionEngine:
             projection.updated_at = now
             projection.is_on_memo = next_state.get("is_on_memo")
             projection.is_on_marketplace = next_state.get("is_on_marketplace")
+            projection.is_sync_to_shopify = next_state.get("is_sync_to_shopify")
             projection.is_in_production = next_state.get("is_in_production")
             projection.is_expired = next_state.get("is_expired")
             projection.expires_at = expires_at

@@ -34,9 +34,15 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
-        "projection_handler": {
-            "prefix": "mp.",
-            "handler": "celerp.projections.handlers.marketplace:apply_marketplace_event",
-        },
+        "projection_handler": [
+            {
+                "prefix": "mp.",
+                "handler": "celerp.projections.handlers.marketplace:apply_marketplace_event",
+            },
+            {
+                "prefix": "shop.sync.",
+                "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
+            },
+        ],
     },
 }
