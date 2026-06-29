@@ -8,7 +8,7 @@ import io
 import uuid
 from datetime import datetime, timezone
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -58,6 +58,21 @@ def _read_pieces(state: dict) -> float | None:
     if raw is None:
         raw = (state.get("attributes") or {}).get("pieces")
     return float(raw) if raw not in (None, "") else None
+
+
+def _num_pieces(raw) -> Decimal | None:
+    """Coerce a stored `pieces` value (int / float / numeric str) to a Decimal.
+
+    Treats None / "" (and anything non-numeric) as *unset* → None. Different write paths
+    persist pieces as int, float, or string; coercing here lets the merge compare and sum
+    them uniformly (the rest of the system already coerces via float()/int(float())).
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def _read_float(state: dict, key: str) -> float | None:
@@ -2004,6 +2019,18 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     resolved_attrs: dict = {}
     for key in all_attr_keys:
+        if key == "pieces":
+            # `pieces` is an EXTENSIVE/additive count (unlike intensive numeric attributes such as
+            # size or grade), so it is summed rather than collapsed. Coerce every source's value to
+            # a number (int/float/str are equivalent). If every source has pieces set → the merged
+            # item's pieces is the sum; if any source has it unset, the true total is unknowable, so
+            # the merged item carries NO pieces. See issue #197.
+            coerced = [_num_pieces((p.state.get("attributes") or {}).get("pieces")) for p in source_projections]
+            if coerced and all(v is not None for v in coerced):
+                total = sum(coerced, Decimal(0))
+                resolved_attrs["pieces"] = int(total) if total == total.to_integral_value() else float(total)
+            # else: at least one source lacks pieces → omit the key (no value)
+            continue
         # Collect raw attribute values (preserve original type for numeric fields)
         raw_values = [(p.state.get("attributes") or {}).get(key) for p in source_projections if key in (p.state.get("attributes") or {})]
         str_values = [str(v) for v in raw_values]
