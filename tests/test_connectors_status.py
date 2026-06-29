@@ -98,3 +98,13 @@ async def test_clear_connector_config_removes_row(_db_engine):
     assert await _get_connector_config(cid, "woocommerce") is not None
     await _clear_connector_config(cid, "woocommerce")
     assert await _get_connector_config(cid, "woocommerce") is None
+
+
+def test_entitlement_cta_renders_trial_link():
+    """When connecting is blocked by no subscription, the CTA shows a start-trial link
+    to the cloud settings page (not a raw error)."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _entitlement_cta
+    out = to_xml(_entitlement_cta())
+    assert "/settings/cloud" in out
+    assert "subscription" in out.lower()

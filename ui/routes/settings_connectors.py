@@ -677,6 +677,16 @@ def _connector_card(
     )
 
 
+def _entitlement_cta(lang: str = "en") -> FT:
+    """Shown when connecting is blocked by no active/trialing subscription - the trial
+    paywall moment. A clear CTA to start the trial, not a raw error."""
+    return Div(
+        P(t("connectors.no_subscription", lang), cls="settings-hint"),
+        A(t("connectors.start_trial", lang), href="/settings/cloud", cls="btn btn--sm btn--primary"),
+        cls="flash flash--warning connector-entitlement-cta",
+    )
+
+
 async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     """Render the full connectors tab (catalog grouped by category)."""
     from celerp.config import ensure_instance_id
@@ -766,9 +776,13 @@ def setup_routes(app):
             return r
         lang = get_lang(request)
 
-        from ui.api_client import get_connector_authorize_url
+        from ui.api_client import APIError, get_connector_authorize_url
         try:
             result = await get_connector_authorize_url(token, platform, shop=shop)
+        except APIError as exc:
+            if exc.status == 402:  # no active/trialing subscription
+                return _entitlement_cta(lang)
+            return Span(str(exc), cls="flash flash--warning")
         except Exception as exc:
             return Span(str(exc), cls="flash flash--warning")
 
