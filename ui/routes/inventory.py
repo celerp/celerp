@@ -2027,27 +2027,41 @@ function celerpPrintLabel(entityId, templateId) {
         # Convert numeric fields from string to float
         elif field == "quantity" or field.endswith("_price") or field.endswith("_price_total"):
             raw_str = str(form.get("value", ""))
-            try:
-                value = float(value)
-            except (ValueError, TypeError):
-                # Return editable cell with error so user can correct without a page reload.
-                cell_type = "number" if field == "quantity" else "money"
-                patch_url = f"/api/items/{entity_id}/field/{field}"
-                restore_url = (
-                    f"/api/items/{entity_id}/field/{field}/paired-display"
-                    if field in _PAIRED_FIELDS
-                    else f"/api/items/{entity_id}/field/{field}/display"
-                )
-                from ui.components.table import editable_cell
-                edit_td = editable_cell(
-                    entity_id=entity_id, field=field, value=raw_str,
-                    cell_type=cell_type, restore_url=restore_url,
-                )
-                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
-                return edit_td
+            if raw_str.strip() == "" and field != "quantity":
+                value = None  # blanking an optional price/cost cell = clear it (issue #202)
+            else:
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    # Return editable cell with error so user can correct without a page reload.
+                    cell_type = "number" if field == "quantity" else "money"
+                    patch_url = f"/api/items/{entity_id}/field/{field}"
+                    restore_url = (
+                        f"/api/items/{entity_id}/field/{field}/paired-display"
+                        if field in _PAIRED_FIELDS
+                        else f"/api/items/{entity_id}/field/{field}/display"
+                    )
+                    from ui.components.table import editable_cell
+                    edit_td = editable_cell(
+                        entity_id=entity_id, field=field, value=raw_str,
+                        cell_type=cell_type, restore_url=restore_url,
+                    )
+                    edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    return edit_td
 
         try:
-            if field == "location_name":
+            if value is None:
+                # Clearing an optional price/cost field (issue #202): unset it. A "<x>_price_total"
+                # cell is virtual — clear its underlying unit price (cost maps to cost_total, which is
+                # the canonical primitive for cost).
+                if field.endswith("_price_total"):
+                    _unit = field[: -len("_total")]          # retail_price_total -> retail_price
+                    clear_field = "cost_total" if _unit == "cost_price" else _unit
+                else:
+                    clear_field = "cost_total" if field == "cost_price" else field
+                old_item = await api.get_item(token, entity_id)
+                await api.patch_item(token, entity_id, {clear_field: {"old": old_item.get(clear_field), "new": None}})
+            elif field == "location_name":
                 # Transfer requires location_id; resolve name → id from locations list
                 locs = (await api.get_locations(token)).get("items", [])
                 loc = next((l for l in locs if l.get("name") == value), None)
@@ -3432,23 +3446,33 @@ function celerpPrintLabel(entityId, templateId) {
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = f"{pl_name.lower()}_price"
+                if conventional_key not in form:
+                    continue  # field not submitted — leave it untouched
                 val = str(form.get(conventional_key, "")).strip()
-                if val:
-                    try:
-                        price = float(val)
-                    except ValueError:
-                        continue
-                    # cost_price is a derived field; always save as cost_total to avoid being
-                    # overwritten by _flatten_item on the next read.
-                    # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
-                    if conventional_key == "cost_price" and item_qty > 0:
-                        old_cost_total = item_for_price.get("cost_total")
-                        await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                if val == "":
+                    # Cleared price → unset it (issue #202). Cost is canonically cost_total. Use
+                    # patch_item with new=None so the field is removed, not stored as "" / 0.
+                    if conventional_key == "cost_price":
+                        await api.patch_item(token, entity_id, {"cost_total": {"old": item_for_price.get("cost_total"), "new": None}})
                         cost_changed = True
                     else:
-                        await api.set_item_price(token, entity_id, pl_name, price)
-                        if conventional_key == "cost_price":
-                            cost_changed = True
+                        await api.patch_item(token, entity_id, {conventional_key: {"old": item_for_price.get(conventional_key), "new": None}})
+                    continue
+                try:
+                    price = float(val)
+                except ValueError:
+                    continue
+                # cost_price is a derived field; always save as cost_total to avoid being
+                # overwritten by _flatten_item on the next read.
+                # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
+                if conventional_key == "cost_price" and item_qty > 0:
+                    old_cost_total = item_for_price.get("cost_total")
+                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                    cost_changed = True
+                else:
+                    await api.set_item_price(token, entity_id, pl_name, price)
+                    if conventional_key == "cost_price":
+                        cost_changed = True
             # A cost change ripples into every recipe that uses this item — recost them now so
             # the Manufacturing tab and margins stay current without any manual step.
             if cost_changed:

@@ -872,6 +872,15 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if blocked:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
 
+    # Normalize "clear" gestures: an empty-string new value means "unset the field" -> None (issue #202).
+    # Without this, an optional field can't be returned to None — barcode rejects "" (digit check), cost
+    # crashes on float(""), and prices/category/text store "" instead of clearing. Required fields keep
+    # their own handling. The projection handler then removes the key when new is None.
+    _CLEAR_PROTECTED = {"name", "sell_by", "quantity"}
+    for _f, _fc in payload.fields_changed.items():
+        if _f not in _CLEAR_PROTECTED and isinstance(_fc, dict) and _fc.get("new") == "":
+            _fc["new"] = None
+
     # Validate sell_by change
     if "sell_by" in changed_keys:
         new_sell_by = (payload.fields_changed["sell_by"] or {}).get("new")

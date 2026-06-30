@@ -171,7 +171,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 # _recompute_cost. cost_price is a unit value (× qty -> base); cost_total is the base
                 # directly. Clearing either removes the base.
                 new_val = change.get("new")
-                if new_val is None:
+                if new_val in (None, ""):
                     current.pop("cost_base", None)
                     current.pop("cost_price", None)
                     current.pop("cost_total", None)
@@ -183,7 +183,13 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 else:  # cost_total
                     current["cost_base"] = round(float(new_val), 2)
             else:
-                current[field] = change.get("new")
+                # Clearing any other field (None/"") unsets it — remove the key rather than storing
+                # an empty string or null, so the field reads as truly absent (issue #202).
+                new_val = change.get("new")
+                if new_val in (None, ""):
+                    current.pop(field, None)
+                else:
+                    current[field] = new_val
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
     elif event_type == "item.pricing.set":

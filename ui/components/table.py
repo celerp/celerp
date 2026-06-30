@@ -822,7 +822,11 @@ def editable_cell(
         else:
             _opt_items = [(o, o) if isinstance(o, str) else o for o in options]
             input_el = Select(
-                *([] if display_val else [Option("", value="", disabled=True, selected=True)]),
+                # Offer a selectable blank "(clear)" option so a SET optional select can be unset
+                # (issue #202); `status` stays required. When empty, show a disabled placeholder.
+                *([Option("— clear —", value="")] if (display_val and cell_type == "select")
+                  else [] if display_val
+                  else [Option("", value="", disabled=True, selected=True)]),
                 *[Option(lbl, value=val, selected=(val == display_val)) for val, lbl in _opt_items],
                 name="value",
                 **swap,
