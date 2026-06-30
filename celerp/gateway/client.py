@@ -158,6 +158,11 @@ class GatewayClient:
             from celerp.config import read_config
             cfg = read_config() or {}
             tos_version = cfg.get("cloud", {}).get("tos_version", "")
+            # App version: the Electron wrapper passes the release version via
+            # CELERP_APP_VERSION; fall back to the package version. Sent on every
+            # connect so the handshake reflects the build that is actually running.
+            from celerp import __version__ as _pkg_version
+            app_version = os.environ.get("CELERP_APP_VERSION") or _pkg_version
             # Send hello handshake
             await self._send(ws, {
                 "type": "hello",
@@ -166,6 +171,7 @@ class GatewayClient:
                     "gateway_token": self._token,
                     "instance_id": self._instance_id,
                     "tos_version": tos_version,
+                    "version": app_version,
                 },
             })
             # Message dispatch loop
