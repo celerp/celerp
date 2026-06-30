@@ -186,6 +186,18 @@ async def test_list_items_with_external_id_parses_ids(use_test_session):
         sku="W1", name="Woo Item", sell_by="piece", sale_price=8.0,
         idempotency_key="woocommerce:333"))
 
+    # Shopify outbound is opt-in per item: enable sync on the linked item so it is
+    # eligible for outbound push (inbound import alone does not enable outbound).
+    import sqlalchemy as sa
+    from celerp.models.projections import Projection
+    await session.execute(
+        sa.update(Projection).where(
+            Projection.company_id == cid,
+            Projection.state["idempotency_key"].as_string().like("shopify:%"),
+        ).values(is_sync_to_shopify=True)
+    )
+    await session.flush()
+
     shop = await u.list_items_with_external_id(str(cid), platform="shopify")
     assert len(shop) == 1
     assert shop[0]["shopify_product_id"] == "111"

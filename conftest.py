@@ -355,6 +355,14 @@ _SLOT_CONTRIBUTIONS = [
             "_module": "celerp-manufacturing",
         },
     },
+    {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "shop.sync.",
+            "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
+            "_module": "celerp-connectors",
+        },
+    },
 ]
 
 # If celerp-sales-funnel is installed, add the deal projection handler.

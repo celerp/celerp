@@ -151,6 +151,7 @@ async def test_run_sync_uses_last_success_watermark_when_since_none():
             return SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.BOTH)
 
     sess = MagicMock(); sess.add = MagicMock(); sess.commit = AsyncMock()
+    sess.scalar = AsyncMock(return_value=None); sess.refresh = AsyncMock(); sess.execute = AsyncMock()
     cm = MagicMock(); cm.__aenter__ = AsyncMock(return_value=sess); cm.__aexit__ = AsyncMock(return_value=False)
     ctx = ConnectorContext(company_id="co", access_token="t")
     with patch.object(sync_runner, "_last_success_watermark", new=AsyncMock(return_value=wm)), \
@@ -171,6 +172,7 @@ async def test_run_sync_records_failure_on_exception():
             raise RuntimeError("api 500")
 
     sess = MagicMock(); sess.add = MagicMock(); sess.commit = AsyncMock()
+    sess.scalar = AsyncMock(return_value=None); sess.refresh = AsyncMock(); sess.execute = AsyncMock()
     cm = MagicMock(); cm.__aenter__ = AsyncMock(return_value=sess); cm.__aexit__ = AsyncMock(return_value=False)
     ctx = ConnectorContext(company_id="co", access_token="t")
     with patch.object(sync_runner, "_last_success_watermark", new=AsyncMock(return_value=None)), \
@@ -192,6 +194,7 @@ async def test_run_sync_handles_not_implemented():
             raise NotImplementedError("nope")
 
     sess = MagicMock(); sess.add = MagicMock(); sess.commit = AsyncMock()
+    sess.scalar = AsyncMock(return_value=None); sess.refresh = AsyncMock(); sess.execute = AsyncMock()
     cm = MagicMock(); cm.__aenter__ = AsyncMock(return_value=sess); cm.__aexit__ = AsyncMock(return_value=False)
     ctx = ConnectorContext(company_id="co", access_token="t")
     with patch.object(sync_runner, "_last_success_watermark", new=AsyncMock(return_value=None)), \
@@ -218,6 +221,7 @@ async def test_run_sync_outbound_skips_watermark():
             return SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
 
     sess = MagicMock(); sess.add = MagicMock(); sess.commit = AsyncMock()
+    sess.scalar = AsyncMock(return_value=None); sess.refresh = AsyncMock(); sess.execute = AsyncMock()
     cm = MagicMock(); cm.__aenter__ = AsyncMock(return_value=sess); cm.__aexit__ = AsyncMock(return_value=False)
     ctx = ConnectorContext(company_id="co", access_token="t")
     with patch.object(sync_runner, "_last_success_watermark", new=_wm), \

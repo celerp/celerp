@@ -642,6 +642,15 @@ def _onboarding_view() -> FT:
             cls="auth-header",
         ),
         Div(
+            # Featured first: link the cloud account. For an App-Store-acquired Shopify
+            # merchant this claims the subscription + binds the store (then it auto-syncs);
+            # for direct users it links their existing subscription by email.
+            A(
+                Strong(t("page.connect_your_store")),
+                P(t("msg.connect_store_desc"), cls="quick-link-desc"),
+                href="/settings/cloud",
+                cls="quick-link-card quick-link-card--featured",
+            ),
             *[
                 A(
                     Strong(label),

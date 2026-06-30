@@ -43,8 +43,12 @@ def _external_ids(platform: str, idem_key: str) -> dict:
     return {}
 
 
-async def _items_with_external_id(company_id: str, platform: str) -> list[dict]:
-    """All item projections linked to `platform`, as outbound-ready dicts."""
+async def _items_with_external_id(company_id: str, platform: str, require_sync_flag: bool = False) -> list[dict]:
+    """All item projections linked to `platform`, as outbound-ready dicts.
+
+    When ``require_sync_flag`` is set, only items the user has opted into outbound sync
+    (is_sync_to_shopify=True) are returned - so the catalog is never mass-pushed back to
+    the store; the merchant explicitly enables each item."""
     import uuid as _uuid
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.models.projections import Projection
@@ -53,13 +57,14 @@ async def _items_with_external_id(company_id: str, platform: str) -> list[dict]:
     cid = _uuid.UUID(str(company_id))
     out: list[dict] = []
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == cid,
-                Projection.entity_type == "item",
-                Projection.state["idempotency_key"].as_string().like(f"{platform}:%"),
-            )
-        )).scalars().all()
+        query = select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "item",
+            Projection.state["idempotency_key"].as_string().like(f"{platform}:%"),
+        )
+        if require_sync_flag:
+            query = query.where(Projection.is_sync_to_shopify.is_(True))
+        rows = (await session.execute(query)).scalars().all()
         for r in rows:
             st = r.state or {}
             out.append({
@@ -75,15 +80,18 @@ async def _items_with_external_id(company_id: str, platform: str) -> list[dict]:
 
 
 async def list_items_with_external_id(company_id: str, platform: str) -> list[dict]:
-    """Items linked to a platform (have an external id), for outbound inventory push."""
-    return await _items_with_external_id(company_id, platform)
+    """Items linked to a platform (have an external id), for outbound inventory push.
+    Shopify outbound is opt-in per item (is_sync_to_shopify); other platforms push all
+    linked items (a per-platform flag is a follow-up)."""
+    return await _items_with_external_id(company_id, platform, require_sync_flag=(platform == "shopify"))
 
 
 async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list[dict]:
-    """Items linked to a platform, for outbound product push. Currently returns all
-    externally-linked items (outbound PUTs are idempotent); a per-item modified
-    watermark is a follow-up once outbound sync-state tracking lands."""
-    return await _items_with_external_id(company_id, platform)
+    """Items linked to a platform, for outbound product push. Shopify pushes only items
+    the user opted in (is_sync_to_shopify); other platforms push all linked items.
+    Outbound PUTs are idempotent and failed items re-push on the next run, so a per-item
+    modified watermark is a follow-up rather than launch work."""
+    return await _items_with_external_id(company_id, platform, require_sync_flag=(platform == "shopify"))
 
 
 async def upsert_from_connector(company_id: str, item) -> bool:

@@ -484,6 +484,7 @@ a:hover { text-decoration: underline; }
   display: block;
 }
 .quick-link-card:hover { border-color: var(--c-accent); background: var(--c-bg3); text-decoration: none; }
+.quick-link-card--featured { border-color: var(--c-accent); border-left-width: 3px; }
 .quick-link-desc { font-size: 11px; color: var(--c-text2); margin-top: 4px; }
 
 /* ─── Detail card ─────────────────────────────────────────────────────── */

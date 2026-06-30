@@ -308,6 +308,7 @@ async def list_items(
     category: str | None = None,
     inventory_type: str | None = None,
     location_id: str | None = None,
+    source: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -352,6 +353,12 @@ async def list_items(
     if category:
         cats = {c.strip() for c in category.split(",") if c.strip()}
         result = [r for r in result if str(r.get("category") or "") in cats]
+
+    # Connector source: items linked to a platform encode it in the idempotency key
+    # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
+    if source:
+        _prefix = f"{source.strip().lower()}:"
+        result = [r for r in result if str(r.get("idempotency_key") or "").lower().startswith(_prefix)]
 
     if inventory_type:
         types = {it.strip() for it in inventory_type.split(",") if it.strip()}
@@ -1039,6 +1046,38 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
         event_ids.append(entry.id)
     await session.commit()
     return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+class BulkShopifySyncBody(BaseModel):
+    entity_ids: list[str]
+    enable: bool = True
+
+
+@router.post("/bulk/shopify-sync")
+async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Opt the selected items into (or out of) outbound Shopify sync by emitting
+    shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
+    event_ids = []
+    for entity_id in payload.entity_ids:
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type=event_type,
+            data={},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+        event_ids.append(entry.id)
+    await session.commit()
+    return {"updated": len(event_ids), "enabled": payload.enable}
 
 
 async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:

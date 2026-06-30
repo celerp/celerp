@@ -1101,3 +1101,9 @@ def register_event_type(event_type: str, schema: type[BaseModel] | None = None) 
     """
     if event_type not in EVENT_SCHEMA_MAP:
         EVENT_SCHEMA_MAP[event_type] = schema or ModuleEvent
+
+
+# First-party connector events: per-item outbound (ERP -> Shopify) sync opt-in toggle.
+# Empty payload, so the accept-any ModuleEvent schema is sufficient.
+register_event_type("shop.sync.enabled")
+register_event_type("shop.sync.disabled")

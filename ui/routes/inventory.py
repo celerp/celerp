@@ -368,6 +368,7 @@ def _parse_params(request: Request) -> dict:
         "category": q.get("category", ""),
         "inventory_type": q.get("inventory_type", ""),
         "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
+        "source": q.get("source", ""),  # connector source filter (e.g. ?source=shopify)
         # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
         "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
@@ -454,6 +455,8 @@ async def _inventory_content(
             params["inventory_type"] = p["inventory_type"]
         if p.get("location_id"):
             params["location_id"] = p["location_id"]
+        if p.get("source"):
+            params["source"] = p["source"]
         for akey, aval in (p.get("attr_filters") or {}).items():
             if aval:
                 params[f"attr.{akey}"] = aval
@@ -2642,6 +2645,25 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
         return _bulk_destructive_success(f"{updated} item(s) updated to '{status}'.")
+
+    @app.post("/api/items/bulk/shopify-sync/{action}")
+    async def bulk_item_shopify_sync(request: Request, action: str):
+        """Bulk enable/disable outbound Shopify sync on the selected items."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        enable = action == "enable"
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.bulk_shopify_sync(token, entity_ids, enable)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        updated = result.get("updated", len(entity_ids))
+        verb = t("connectors.enable_shopify_sync") if enable else t("connectors.disable_shopify_sync")
+        return _bulk_destructive_success(f"{verb}: {updated} item(s).")
 
     @app.post("/api/items/bulk/transfer")
     async def bulk_item_transfer(request: Request):
