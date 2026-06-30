@@ -83,6 +83,7 @@ scripts/pdf_screenshots/
 scripts/verify_pdfs.py
 scripts/pdf_to_png.py
 data/
+memory/
 
 # Nested repos (separate deployments)
 celerp-cloud/
