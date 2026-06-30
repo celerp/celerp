@@ -1985,13 +1985,19 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
     total_weight = sum(weights) if weights else None
-    # Compute merged cost_total: sum of all source cost_totals (Q2=Option A)
-    merged_cost_total = sum(
-        float(p.state.get("cost_total") or 0) or (
-            float(p.state.get("cost_price") or 0) * float(p.state.get("quantity") or 0)
-        )
-        for p in source_projections
-    ) or None
+    # Merged cost_total (issue #199): reconcile on the source TOTALS — if every source has a cost,
+    # the merged cost is their sum; if ANY source has no cost, the true total is unknowable, so the
+    # merged item carries NO cost (None) rather than silently counting the missing one as 0.
+    def _src_cost_total(p: Projection):
+        ct = p.state.get("cost_total")
+        if ct not in (None, ""):
+            return float(ct)
+        cp = p.state.get("cost_price")
+        if cp not in (None, ""):
+            return float(cp) * float(p.state.get("quantity") or 0)
+        return None  # unset
+    _src_costs = [_src_cost_total(p) for p in source_projections]
+    merged_cost_total = sum(_src_costs) if _src_costs and all(c is not None for c in _src_costs) else None
 
     expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
     earliest_expiry = expiry_dates[0] if expiry_dates else None
@@ -2150,13 +2156,28 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 metadata_={"reason": "from_merge"},
             )
 
-    # Emit pricing events for all price fields from target; emit cost_total (not cost_price) for cost.
+    # Emit pricing events for the merged money fields (issue #199). Each *_price field is a PER-UNIT
+    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
+    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
+    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
+    # or treating the missing one as 0. cost_total is already a total (computed above).
     price_fields: dict = {}
     if resulting_cost is not None:
         price_fields["cost_total"] = resulting_cost
-    for pf, val in target_state.items():
-        if pf.endswith("_price") and pf != "cost_price" and val is not None:
-            price_fields[pf] = val
+    _price_keys = {
+        k for p in source_projections for k in p.state
+        if k.endswith("_price") and k != "cost_price"
+    }
+    _merge_qty = float(resulting_qty) or 0.0
+    for pk in _price_keys:
+        src_totals = []
+        for p in source_projections:
+            unit = p.state.get(pk)
+            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
+        if src_totals and all(t is not None for t in src_totals):
+            merged_total = sum(src_totals)
+            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
+        # else: at least one source lacks this price → omit (merged item has no value for it)
 
     for price_type, price_val in price_fields.items():
         await emit_event(
