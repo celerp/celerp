@@ -1610,14 +1610,17 @@ async def test_merge_then_split_does_not_500(client):
 
 @pytest.mark.asyncio
 async def test_merge_numeric_attrs_stored_as_numbers(client):
-    """An AGREEING numeric attribute carries through after merge as a number, not a string.
-    (Conflicting numeric attributes get no value — see test_merge_dropdown_fields_use_value_or_mixed_never_sum.)
+    """An AGREEING (intensive) numeric attribute carries through after merge as a number, not a string.
+    (Conflicting numeric attributes get no value — see test_merge_dropdown_fields_use_value_or_mixed_never_sum.
+    NOTE: `pieces` is intentionally NOT used here — it is an *additive* count that is summed on merge,
+    not carried through; see tests/test_merge_pieces.py / issue #197. `size` is intensive, so it carries
+    through unchanged.)
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     loc = (await client.post("/companies/me/locations", json={"name": "WH-MNA", "type": "warehouse"}, headers=h)).json()
-    r1 = await client.post("/items", json={"sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 8}}, headers=h)
-    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 8}}, headers=h)
+    r1 = await client.post("/items", json={"sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
+    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
     assert r1.status_code == 200
     assert r2.status_code == 200
     id1, id2 = r1.json()["id"], r2.json()["id"]
@@ -1625,11 +1628,11 @@ async def test_merge_numeric_attrs_stored_as_numbers(client):
     assert mr.status_code == 200, mr.text
     merged_id = mr.json()["id"]
     item = (await client.get(f"/items/{merged_id}", headers=h)).json()
-    pieces_val = (item.get("attributes") or {}).get("pieces")
-    if pieces_val is None:
-        pieces_val = item.get("pieces")
-    assert isinstance(pieces_val, (int, float)), f"pieces should be numeric, got {type(pieces_val)}: {pieces_val!r}"
-    assert int(float(pieces_val)) == 8
+    size_val = (item.get("attributes") or {}).get("size")
+    if size_val is None:
+        size_val = item.get("size")
+    assert isinstance(size_val, (int, float)), f"size should be numeric, got {type(size_val)}: {size_val!r}"
+    assert int(float(size_val)) == 8
 
 
 # ---------------------------------------------------------------------------
