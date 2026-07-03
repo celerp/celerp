@@ -3,9 +3,7 @@
 
 import uuid
 
-from sqlalchemy import text
 
-from celerp.events.engine import emit_event
 
 
 def _f(v, default: float = 0.0) -> float:
@@ -16,16 +14,6 @@ def _f(v, default: float = 0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
-
-
-async def _doc_exists(session, company_id: str, idem_key: str) -> bool:
-    row = (
-        await session.execute(
-            text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-            {"cid": str(company_id), "k": idem_key},
-        )
-    ).first()
-    return row is not None
 
 
 async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
@@ -46,18 +34,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
     idem_key = f"shopify:order:{order['id']}"
 
     async with SessionLocal() as session:
-        existing = (
-            await session.execute(
-                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-                {"cid": str(company_id), "k": idem_key},
-            )
-        ).first()
-        if existing:
-            return False
-
         ref_id = order.get("name", f"shopify-{order['id']}")
-        entity_id = f"doc:{ref_id}"
-
         financial_status = order.get("financial_status", "pending")
         status = "closed" if financial_status == "paid" else "open"
 
@@ -82,22 +59,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
             "amount_outstanding": 0.0 if status == "closed" else total,
             "shopify_order_id": str(order["id"]),
         }
-
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="doc",
-            event_type="doc.created",
-            data=data,
-            actor_id=None,
-            location_id=None,
-            source="connector",
-            idempotency_key=idem_key,
-            metadata_={},
-        )
-        await session.commit()
-        return True
+        return await _emit_doc(session, company_id, data, idem_key)
 
 
 async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
@@ -144,24 +106,17 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
     return out
 
 
-async def _emit_doc(session, company_id: str, ref_id: str, data: dict, idem_key: str) -> None:
-    await emit_event(
-        session,
-        company_id=company_id,
-        # Key the projection on the unique platform id (carried by idem_key), NOT the
-        # human ref_id/DocNumber — two different source invoices can share a DocNumber
-        # (QB allows it) and would otherwise collapse into one doc. ref_id stays in data.
-        entity_id=f"doc:{idem_key}",
-        entity_type="doc",
-        event_type="doc.created",
-        data=data,
-        actor_id=None,
-        location_id=None,
-        source="connector",
-        idempotency_key=idem_key,
-        metadata_={},
+async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> bool:
+    # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
+    # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
+    # and would otherwise collapse into one doc. A changed re-import updates the same doc.
+    from celerp.events.engine import connector_upsert
+    wrote = await connector_upsert(
+        session, company_id=company_id, entity_type="doc",
+        event_type="doc.created", idem_key=idem_key, data=data,
     )
     await session.commit()
+    return wrote
 
 
 async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
@@ -182,9 +137,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
     idem_key = f"woocommerce:order:{order['id']}"
 
     async with SessionLocal() as session:
-        if await _doc_exists(session, company_id, idem_key):
-            return False
-
         ref_id = str(order.get("number") or f"woocommerce-{order['id']}")
         # Paid/outstanding must come from PAYMENT status, not fulfillment: WooCommerce
         # "completed" means shipped, not paid. A processing-but-paid order is closed;
@@ -214,8 +166,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
             "amount_outstanding": 0.0 if status == "closed" else total,
             "woocommerce_order_id": str(order["id"]),
         }
-        await _emit_doc(session, company_id, ref_id, data, idem_key)
-        return True
+        return await _emit_doc(session, company_id, data, idem_key)
 
 
 async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool:
@@ -236,9 +187,6 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
     idem_key = f"quickbooks:invoice:{invoice['Id']}"
 
     async with SessionLocal() as session:
-        if await _doc_exists(session, company_id, idem_key):
-            return False
-
         ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
         balance = _f(invoice.get("Balance"))
         status = "closed" if balance == 0 else "open"
@@ -268,8 +216,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
             "amount_outstanding": balance,
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
-        await _emit_doc(session, company_id, ref_id, data, idem_key)
-        return True
+        return await _emit_doc(session, company_id, data, idem_key)
 
 
 async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
@@ -290,9 +237,6 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
     idem_key = f"xero:invoice:{invoice['InvoiceID']}"
 
     async with SessionLocal() as session:
-        if await _doc_exists(session, company_id, idem_key):
-            return False
-
         ref_id = str(invoice.get("InvoiceNumber") or f"xero-{invoice['InvoiceID']}")
         status = "closed" if invoice.get("Status") == "PAID" else "open"
 
@@ -319,5 +263,4 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
             "amount_outstanding": amount_due,
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
-        await _emit_doc(session, company_id, ref_id, data, idem_key)
-        return True
+        return await _emit_doc(session, company_id, data, idem_key)

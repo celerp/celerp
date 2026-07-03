@@ -41,17 +41,20 @@ def use_test_session(session, monkeypatch):
     return session
 
 
+# Connector events key the ledger on "{idem_key}:{content_hash}" so a changed re-import
+# updates the same entity rather than dedup'ing; match all events for one external item.
 async def _ledger_rows(session, cid, idem_key) -> int:
     return await session.scalar(text(
-        "SELECT count(*) FROM ledger WHERE company_id = :c AND idempotency_key = :k"
-    ), {"c": cid, "k": idem_key})
+        "SELECT count(*) FROM ledger WHERE company_id = :c AND idempotency_key LIKE :k"
+    ), {"c": cid, "k": idem_key + ":%"})
 
 
 async def _state(session, cid, idem_key) -> dict:
-    """The projection state for the entity created under this idempotency key."""
+    """The projection state for the entity imported under this idempotency key (latest event)."""
     row = (await session.execute(text(
-        "SELECT entity_id FROM ledger WHERE company_id = :c AND idempotency_key = :k"
-    ), {"c": cid, "k": idem_key})).first()
+        "SELECT entity_id FROM ledger WHERE company_id = :c AND idempotency_key LIKE :k "
+        "ORDER BY id DESC LIMIT 1"
+    ), {"c": cid, "k": idem_key + ":%"})).first()
     st = await session.scalar(text(
         "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"
     ), {"c": cid, "e": row[0]})
@@ -121,6 +124,27 @@ async def test_duplicate_docnumber_does_not_collapse(use_test_session):
     st2 = await _state(session, cid, "quickbooks:invoice:102")
     assert st1["total"] == 10.0 and st1["line_items"][0]["name"] == "A"   # not overwritten
     assert st2["total"] == 20.0 and st2["line_items"][0]["name"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_reimport_with_changed_data_updates_the_doc(use_test_session):
+    """Update propagation (blocker D): an unchanged re-import is a no-op; a changed one
+    updates the same doc rather than creating a duplicate or silently skipping."""
+    session = use_test_session
+    cid = await _seed_company(session, "UpdProp")
+    inv = {"Id": "300", "DocNumber": "INV-300", "Balance": 10.0, "TotalAmt": 10.0,
+           "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 10.0, "Description": "X",
+                     "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 10.0}}]}
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is True    # created
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is False   # unchanged → no-op
+
+    inv["TotalAmt"], inv["Balance"] = 25.0, 0
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is True    # changed → updated
+
+    st = await _state(session, cid, "quickbooks:invoice:300")
+    assert st["total"] == 25.0          # new value propagated
+    assert st["status"] == "closed"     # Balance 0 → closed
+    assert await _ledger_rows(session, cid, "quickbooks:invoice:300") == 2  # create + one update
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,48 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
         )
 
 
+async def connector_upsert(
+    session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict
+) -> bool:
+    """Create-or-update a projection from a connector payload. Returns True if a write
+    happened (create or update), False if this exact content was already applied.
+
+    entity_id is derived deterministically from idem_key ("{entity_type}:{idem_key}") so
+    a re-import targets the SAME projection, and the event's idempotency key varies with
+    the content — so an unchanged re-import dedups (no-op) while a changed one updates.
+    """
+    import hashlib
+    import json as _json
+
+    entity_id = f"{entity_type}:{idem_key}"
+    content = _json.dumps(
+        {k: v for k, v in data.items() if k != "idempotency_key"}, sort_keys=True, default=str
+    )
+    event_idem = f"{idem_key}:{hashlib.sha1(content.encode()).hexdigest()[:12]}"
+
+    seen = (await session.execute(
+        text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+        {"cid": str(company_id), "k": event_idem},
+    )).first()
+    if seen:
+        return False
+
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type=entity_type,
+        event_type=event_type,
+        data=data,
+        actor_id=None,
+        location_id=None,
+        source="connector",
+        idempotency_key=event_idem,
+        metadata_={},
+    )
+    return True
+
+
 async def emit_event(session, **kwargs) -> LedgerEntry:
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.

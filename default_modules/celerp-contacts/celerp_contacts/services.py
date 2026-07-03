@@ -1,9 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
-import uuid
 
-from sqlalchemy import text
 
 from celerp.events.engine import emit_event
 
@@ -31,92 +29,38 @@ async def upsert_contact_from_shopify(company_id: str, customer: dict) -> bool:
     Idempotency key: shopify:customer:{customer_id}
     Maps: id, email, first_name, last_name, phone → CelERP contact fields.
     """
-    from celerp.db import SessionLocal
-
     idem_key = f"shopify:customer:{customer['id']}"
-
-    async with SessionLocal() as session:
-        # Idempotency is per-company (ledger uq is on company_id+idempotency_key),
-        # so the dedup check MUST be scoped to this company — otherwise one
-        # company importing a customer would block every other company from
-        # importing the same Shopify customer id.
-        existing = (
-            await session.execute(
-                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-                {"cid": str(company_id), "k": idem_key},
-            )
-        ).first()
-        if existing:
-            return False
-
-        addr = (customer.get("addresses") or [{}])[0]
-        name_parts = [customer.get("first_name", ""), customer.get("last_name", "")]
-        name = " ".join(p for p in name_parts if p).strip() or customer.get("email", f"shopify:{customer['id']}")
-
-        data = {
-            "name": name,
-            "email": customer.get("email"),
-            "phone": customer.get("phone") or addr.get("phone"),
-            "attributes": {
-                "shopify_id": str(customer["id"]),
-                "city": addr.get("city"),
-                "country": addr.get("country"),
-            },
-        }
-        # Remove None values
-        data = {k: v for k, v in data.items() if v is not None}
-
-        entity_id = f"contact:{uuid.uuid4()}"
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="contact",
-            event_type="crm.contact.created",
-            data=data,
-            actor_id=None,
-            location_id=None,
-            source="connector",
-            idempotency_key=idem_key,
-            metadata_={},
-        )
-        await session.commit()
-        return True
+    addr = (customer.get("addresses") or [{}])[0]
+    name_parts = [customer.get("first_name", ""), customer.get("last_name", "")]
+    name = " ".join(p for p in name_parts if p).strip() or customer.get("email", f"shopify:{customer['id']}")
+    data = {
+        "name": name,
+        "email": customer.get("email"),
+        "phone": customer.get("phone") or addr.get("phone"),
+        "attributes": {
+            "shopify_id": str(customer["id"]),
+            "city": addr.get("city"),
+            "country": addr.get("country"),
+        },
+    }
+    return await _emit_contact(company_id, idem_key, data)
 
 
 async def _emit_contact(company_id: str, idem_key: str, data: dict) -> bool:
-    """Shared contact create: company-scoped dedup, drop None fields, emit.
-    Returns True if newly created, False if the idempotency key already exists."""
+    """Shared contact create-or-update: drop None fields, then upsert (content-based
+    dedup + deterministic entity from idem_key). True if a write happened; a changed
+    re-import updates the same contact."""
     from celerp.db import SessionLocal
+    from celerp.events.engine import connector_upsert
 
+    data = {k: v for k, v in data.items() if v is not None}
     async with SessionLocal() as session:
-        # Dedup is per-company (ledger uq is company_id+idempotency_key); scoping
-        # the check prevents one company's import from blocking another's.
-        existing = (
-            await session.execute(
-                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-                {"cid": str(company_id), "k": idem_key},
-            )
-        ).first()
-        if existing:
-            return False
-
-        data = {k: v for k, v in data.items() if v is not None}
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=f"contact:{uuid.uuid4()}",
-            entity_type="contact",
-            event_type="crm.contact.created",
-            data=data,
-            actor_id=None,
-            location_id=None,
-            source="connector",
-            idempotency_key=idem_key,
-            metadata_={},
+        wrote = await connector_upsert(
+            session, company_id=company_id, entity_type="contact",
+            event_type="crm.contact.created", idem_key=idem_key, data=data,
         )
         await session.commit()
-        return True
+        return wrote
 
 
 async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> bool:
