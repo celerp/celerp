@@ -148,6 +148,20 @@ async def test_reimport_with_changed_data_updates_the_doc(use_test_session):
 
 
 @pytest.mark.asyncio
+async def test_line_totals_are_decimal_quantized(use_test_session):
+    """P11: money amounts go through Decimal quantization — no 0.30000000000000004."""
+    session = use_test_session
+    cid = await _seed_company(session, "Money")
+    inv = {"Id": "400", "DocNumber": "M-400", "Balance": 0, "TotalAmt": 0.30,
+           "Line": [{"DetailType": "SalesItemLineDetail", "Description": "x",
+                     "SalesItemLineDetail": {"Qty": 3, "UnitPrice": 0.1}}]}  # Amount absent → computed
+    await u.upsert_invoice_from_quickbooks(str(cid), inv)
+    st = await _state(session, cid, "quickbooks:invoice:400")
+    assert st["line_items"][0]["line_total"] == 0.30   # raw float would be 0.30000000000000004
+    assert st["total"] == 0.30
+
+
+@pytest.mark.asyncio
 async def test_xero_invoice_creates_doc(use_test_session):
     session = use_test_session
     cid = await _seed_company(session, "XeroInv")

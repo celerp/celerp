@@ -49,6 +49,9 @@ class GatewayClient:
         self._stop_event = asyncio.Event()
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
         self._required_tos_version: str = ""
+        # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
+        # (a dropped task = a lost proxy response or webhook sync).
+        self._bg_tasks: set = set()
         # Resolve local server ports for proxy routing.
         # In Electron builds the ports are dynamic; Electron passes them via
         # CELERP_API_PORT / CELERP_UI_PORT env vars so we don't rely on the
@@ -63,6 +66,13 @@ class GatewayClient:
             cfg = read_config() or {}
             self._ui_port = cfg.get("server", {}).get("ui_port", 8080)
             self._api_port = cfg.get("server", {}).get("api_port", 8000)
+
+    def _spawn(self, coro) -> None:
+        """Run a coroutine fire-and-forget while holding a strong reference to the
+        task (discarded on completion) so it can't be garbage-collected mid-run."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -244,13 +254,13 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            asyncio.create_task(self._handle_proxy_request(payload))
+            self._spawn(self._handle_proxy_request(payload))
 
         elif msg_type == "shopify.webhook":
-            asyncio.create_task(self._handle_shopify_webhook(payload))
+            self._spawn(self._handle_shopify_webhook(payload))
 
         elif msg_type == "woocommerce.webhook":
-            asyncio.create_task(self._handle_woocommerce_webhook(payload))
+            self._spawn(self._handle_woocommerce_webhook(payload))
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)

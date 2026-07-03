@@ -16,6 +16,19 @@ def _f(v, default: float = 0.0) -> float:
         return default
 
 
+def _amt(v, currency: str | None) -> float:
+    """Quantize a money AMOUNT to currency dp via Decimal — never raw float arithmetic."""
+    from celerp.services.money import round_money, to_stored_float
+    return to_stored_float(round_money(v, currency or ""))
+
+
+def _line_total(li_total, qty: float, unit_price: float, currency: str | None) -> float:
+    """Line total from the platform value, else qty*unit_price computed in Decimal."""
+    from celerp.services.money import to_decimal
+    base = li_total if li_total not in (None, "") else to_decimal(qty) * to_decimal(unit_price)
+    return _amt(base, currency)
+
+
 async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
     """
     Create a doc (invoice) from a Shopify order dict. Returns True if newly created.
@@ -37,18 +50,19 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
         ref_id = order.get("name", f"shopify-{order['id']}")
         financial_status = order.get("financial_status", "pending")
         status = "closed" if financial_status == "paid" else "open"
+        currency = order.get("currency")
 
         line_items = []
         for li in order.get("line_items", []):
-            qty = float(li.get("quantity") or 1)      # null/missing → 1
-            price = float(li.get("price") or 0)       # null/missing → 0
+            qty = _f(li.get("quantity"), 1)
+            price = _f(li.get("price"))
             line_items.append({
                 "name": li.get("title", ""),
                 "quantity": qty,
                 "unit_price": price,
-                "line_total": qty * price,
+                "line_total": _line_total(None, qty, price, currency),
             })
-        total = float(order.get("total_price", 0) or 0)
+        total = _amt(order.get("total_price"), currency)
 
         data = {
             "doc_type": "invoice",
@@ -57,6 +71,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
             "line_items": line_items,
             "total": total,
             "amount_outstanding": 0.0 if status == "closed" else total,
+            "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)
@@ -143,19 +158,20 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
         # an unpaid one is open regardless of fulfillment.
         paid = bool(order.get("date_paid")) and not order.get("needs_payment", False)
         status = "closed" if paid else "open"
+        currency = order.get("currency")
 
         line_items = []
         for li in order.get("line_items", []):
             qty = _f(li.get("quantity"), 1)
             unit_price = _f(li.get("price"))
-            line_total = _f(li.get("total"), qty * unit_price)
+            line_total = _line_total(li.get("total"), qty, unit_price, currency)
             line_items.append({
                 "name": li.get("name", ""),
                 "quantity": qty,
                 "unit_price": unit_price,
                 "line_total": line_total,
             })
-        total = _f(order.get("total"))
+        total = _amt(order.get("total"), currency)
 
         data = {
             "doc_type": "invoice",
@@ -164,6 +180,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
             "line_items": line_items,
             "total": total,
             "amount_outstanding": 0.0 if status == "closed" else total,
+            "currency": currency,
             "woocommerce_order_id": str(order["id"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)
@@ -188,7 +205,8 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
 
     async with SessionLocal() as session:
         ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
-        balance = _f(invoice.get("Balance"))
+        currency = (invoice.get("CurrencyRef") or {}).get("value")
+        balance = _amt(invoice.get("Balance"), currency)
         status = "closed" if balance == 0 else "open"
 
         line_items = []
@@ -198,14 +216,14 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
             detail = line.get("SalesItemLineDetail") or {}
             qty = _f(detail.get("Qty"), 1)
             unit_price = _f(detail.get("UnitPrice"))
-            line_total = _f(line.get("Amount"), qty * unit_price)
+            line_total = _line_total(line.get("Amount"), qty, unit_price, currency)
             line_items.append({
                 "name": line.get("Description", ""),
                 "quantity": qty,
                 "unit_price": unit_price,
                 "line_total": line_total,
             })
-        total = _f(invoice.get("TotalAmt"))
+        total = _amt(invoice.get("TotalAmt"), currency)
 
         data = {
             "doc_type": "invoice",
@@ -214,6 +232,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
             "line_items": line_items,
             "total": total,
             "amount_outstanding": balance,
+            "currency": currency,
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)
@@ -238,21 +257,22 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
 
     async with SessionLocal() as session:
         ref_id = str(invoice.get("InvoiceNumber") or f"xero-{invoice['InvoiceID']}")
+        currency = invoice.get("CurrencyCode")
         status = "closed" if invoice.get("Status") == "PAID" else "open"
 
         line_items = []
         for li in invoice.get("LineItems", []):
             qty = _f(li.get("Quantity"), 1)
             unit_price = _f(li.get("UnitAmount"))
-            line_total = _f(li.get("LineAmount"), qty * unit_price)
+            line_total = _line_total(li.get("LineAmount"), qty, unit_price, currency)
             line_items.append({
                 "name": li.get("Description", ""),
                 "quantity": qty,
                 "unit_price": unit_price,
                 "line_total": line_total,
             })
-        total = _f(invoice.get("Total"))
-        amount_due = _f(invoice.get("AmountDue"), total if status == "open" else 0.0)
+        total = _amt(invoice.get("Total"), currency)
+        amount_due = _amt(_f(invoice.get("AmountDue"), total if status == "open" else 0.0), currency)
 
         data = {
             "doc_type": "invoice",
@@ -261,6 +281,7 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
             "line_items": line_items,
             "total": total,
             "amount_outstanding": amount_due,
+            "currency": currency,
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)
