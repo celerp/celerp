@@ -53,13 +53,11 @@ class ConnectorInfo(BaseModel):
     name: str
     display_name: str
     supported_entities: list[SyncEntity]
-    direction: str
 
 
 class SyncResponse(BaseModel):
     connector: str
     entity: SyncEntity
-    direction: str
     created: int
     updated: int
     skipped: int
@@ -78,7 +76,6 @@ async def list_connectors(
             name=c.name,
             display_name=c.display_name,
             supported_entities=c.supported_entities,
-            direction=c.direction.value,
         )
         for c in connectors.all_connectors()
     ]
@@ -109,19 +106,12 @@ async def trigger_sync(
         extra=payload.extra,
     )
 
+    # Route through run_sync so the manual path gets the same audit row, concurrency
+    # guard, and incremental watermark as the scheduled/webhook paths.
+    from celerp.connectors.sync_runner import run_sync
     try:
-        match payload.entity:
-            case SyncEntity.PRODUCTS:
-                result = await connector.sync_products(ctx)
-            case SyncEntity.ORDERS:
-                result = await connector.sync_orders(ctx)
-            case SyncEntity.CONTACTS:
-                result = await connector.sync_contacts(ctx)
-            case SyncEntity.INVENTORY:
-                result = await connector.sync_inventory(ctx)
-            case _:
-                raise HTTPException(status_code=400, detail=f"Unsupported entity: {payload.entity}")
-    except NotImplementedError as exc:
+        result = await run_sync(connector, ctx, payload.entity.value)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector_name, payload.entity)
@@ -130,7 +120,6 @@ async def trigger_sync(
     return SyncResponse(
         connector=connector_name,
         entity=result.entity,
-        direction=result.direction.value,
         created=result.created,
         updated=result.updated,
         skipped=result.skipped,

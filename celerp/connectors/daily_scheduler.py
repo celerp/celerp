@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncFrequency
+from celerp.connectors.base import ConnectorCategory, SyncFrequency  # noqa: F401
 from celerp.models.connector_config import ConnectorConfig
 
 log = logging.getLogger(__name__)
@@ -81,8 +81,7 @@ async def check_and_run_daily_syncs(
             )
             continue
 
-        direction = SyncDirection(config.direction)
-        log.info("daily_scheduler: running %s (direction=%s)", config.connector, direction.value)
+        log.info("daily_scheduler: running %s", config.connector)
 
         try:
             ctx = await token_fetcher(company_id, config.connector)
@@ -90,16 +89,23 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
             continue
 
-        # Run sync for all supported entities respecting direction
+        # Run an inbound sync for every supported entity.
+        entity_results = []
         for entity_enum in connector.supported_entities:
             try:
-                await run_sync(connector, ctx, entity_enum.value, direction=direction)
+                entity_results.append(await run_sync(connector, ctx, entity_enum.value))
             except Exception as exc:
                 log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity_enum.value, exc)
 
-        synced.append(config.connector)
+        # Only mark the connector synced (advancing the daily clock) if at least one
+        # entity made progress. If every entity hard-failed (e.g. a transient outage),
+        # leave last_daily_sync_at unset so the next hourly tick retries rather than
+        # waiting a full day.
+        if not any((r.created or r.updated or not r.errors) for r in entity_results):
+            log.warning("daily_scheduler: all entities failed for %s — will retry next tick", config.connector)
+            continue
 
-        # Update last_daily_sync_at only after actually running
+        synced.append(config.connector)
         async with get_session_ctx() as session:
             await session.execute(
                 sa.update(ConnectorConfig)

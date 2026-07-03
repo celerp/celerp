@@ -129,8 +129,15 @@ async def upsert_from_connector(company_id: str, item) -> bool:
         }
         if item.sale_price is not None:
             data["sale_price"] = item.sale_price
+            data["retail_price"] = item.sale_price   # canonical selling-price field
         if item.quantity:
             data["quantity"] = item.quantity
+        if getattr(item, "cost_price", None) is not None:
+            data["cost_price"] = item.cost_price     # else margin/COGS/valuation read zero cost
+        if getattr(item, "description", None):
+            data["description"] = item.description
+        if getattr(item, "currency", None):
+            data["currency"] = item.currency
 
         await emit_event(
             session,

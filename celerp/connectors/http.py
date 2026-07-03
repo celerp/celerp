@@ -45,9 +45,25 @@ class RateLimitedClient:
     async def delete(self, url: str, **kwargs) -> httpx.Response:
         return await self._request("DELETE", url, **kwargs)
 
+    # Transient transport failures (flaky network, mid-pagination drops) — retried
+    # with the same backoff as 429/503 rather than aborting the whole sync page.
+    _RETRY_EXC = (
+        httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout,
+        httpx.PoolTimeout, httpx.RemoteProtocolError,
+    )
+
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         for attempt in range(self._max_retries + 1):
-            resp = await self._client.request(method, url, **kwargs)
+            try:
+                resp = await self._client.request(method, url, **kwargs)
+            except self._RETRY_EXC as exc:
+                if attempt == self._max_retries:
+                    raise
+                delay = self._backoff_base ** attempt
+                log.info("Transport error (%s), retry %d/%d in %.1fs",
+                         type(exc).__name__, attempt + 1, self._max_retries, delay)
+                await asyncio.sleep(delay)
+                continue
             if resp.status_code not in (429, 503):
                 return resp
             if attempt == self._max_retries:

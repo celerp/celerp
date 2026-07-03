@@ -281,14 +281,14 @@ class GatewayClient:
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
-        sync for the affected entity on each company with Shopify configured
+        sync for the affected entity on the company that owns this shop
         (idempotency keys dedupe against the reconciliation pass)."""
         topic = payload.get("topic", "")
+        shop = payload.get("shop", "")
         data = payload.get("data") or {}
         try:
             import sqlalchemy as sa
 
-            from celerp.connectors.base import SyncDirection
             from celerp.connectors.relay_token import fetch_context
             from celerp.connectors.webhooks import WebhookEvent, handle_webhook
             from celerp.db import get_session_ctx
@@ -296,18 +296,22 @@ class GatewayClient:
 
             async with get_session_ctx() as session:
                 rows = await session.execute(
-                    sa.select(ConnectorConfig.company_id, ConnectorConfig.direction).where(
+                    sa.select(ConnectorConfig.company_id).where(
                         ConnectorConfig.connector == "shopify"
                     )
                 )
                 configs = rows.all()
 
             event = WebhookEvent(platform="shopify", topic=topic, payload=data)
-            for company_id, direction in configs:
+            for (company_id,) in configs:
                 ctx = await fetch_context(company_id, "shopify")
                 if ctx is None:
                     continue
-                await handle_webhook(event, ctx, direction=SyncDirection(direction))
+                # Only the company that owns this shop should sync — otherwise every
+                # Shopify company on a multi-company instance re-syncs on each webhook.
+                if shop and ctx.store_handle and ctx.store_handle != shop:
+                    continue
+                await handle_webhook(event, ctx)
         except Exception as exc:
             log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)
 

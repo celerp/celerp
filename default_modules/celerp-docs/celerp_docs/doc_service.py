@@ -148,7 +148,10 @@ async def _emit_doc(session, company_id: str, ref_id: str, data: dict, idem_key:
     await emit_event(
         session,
         company_id=company_id,
-        entity_id=f"doc:{ref_id}",
+        # Key the projection on the unique platform id (carried by idem_key), NOT the
+        # human ref_id/DocNumber — two different source invoices can share a DocNumber
+        # (QB allows it) and would otherwise collapse into one doc. ref_id stays in data.
+        entity_id=f"doc:{idem_key}",
         entity_type="doc",
         event_type="doc.created",
         data=data,
@@ -183,7 +186,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
             return False
 
         ref_id = str(order.get("number") or f"woocommerce-{order['id']}")
-        status = "closed" if order.get("status") == "completed" else "open"
+        # Paid/outstanding must come from PAYMENT status, not fulfillment: WooCommerce
+        # "completed" means shipped, not paid. A processing-but-paid order is closed;
+        # an unpaid one is open regardless of fulfillment.
+        paid = bool(order.get("date_paid")) and not order.get("needs_payment", False)
+        status = "closed" if paid else "open"
 
         line_items = []
         for li in order.get("line_items", []):

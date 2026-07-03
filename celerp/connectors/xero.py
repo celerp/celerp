@@ -28,7 +28,6 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
-    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -53,14 +52,12 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BOTH
+    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
         SyncEntity.CONTACTS: "merge",
-        SyncEntity.INVOICES: "platform",
     }
 
     # -- Internal helpers ------------------------------------------------------
@@ -108,7 +105,7 @@ class XeroConnector(ConnectorBase):
           Item.PurchaseDetails.UnitPrice -> item.cost_price
           Item.ItemID        -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -164,7 +161,7 @@ class XeroConnector(ConnectorBase):
           Invoice.Status         -> doc.status (PAID->paid, AUTHORISED->final, DRAFT->draft)
           Invoice.InvoiceID      -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -197,7 +194,7 @@ class XeroConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Xero Contacts -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -221,51 +218,3 @@ class XeroConnector(ConnectorBase):
 
     # -- Outbound: Invoices push -----------------------------------------------
 
-    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp invoices -> Xero (outbound)."""
-        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
-        errors: list[str] = []
-
-        try:
-            invoices = await _upsert.list_unsynced_invoices(ctx.company_id, platform="xero")
-        except Exception as exc:
-            result.errors = [f"Failed to load invoices: {exc}"]
-            return result
-
-        async with RateLimitedClient() as client:
-            for inv in invoices:
-                try:
-                    line_items = [
-                        {
-                            "Description": line.get("description", ""),
-                            "Quantity": float(line.get("quantity", 1)),
-                            "UnitAmount": float(line.get("unit_price", 0)),
-                            "LineAmount": float(line.get("total", 0)),
-                        }
-                        for line in (inv.get("line_items") or [])
-                    ]
-                    payload = {
-                        "Invoices": [{
-                            "Type": "ACCREC",
-                            "InvoiceNumber": inv.get("ref_id"),
-                            "Contact": {"ContactID": inv.get("customer_external_id") or inv.get("customer_name", "")},
-                            "LineItems": line_items,
-                            "Status": "AUTHORISED",
-                        }]
-                    }
-                    resp = await client.put(
-                        f"{_API_BASE}/Invoices",
-                        headers=_headers(ctx),
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    result.created += 1
-                except Exception as exc:
-                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "xero.sync_invoices_out company=%s created=%d errors=%d",
-            ctx.company_id, result.created, len(errors),
-        )
-        return result

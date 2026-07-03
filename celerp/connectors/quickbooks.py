@@ -29,7 +29,6 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
-    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -100,14 +99,12 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
 class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BOTH
+    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
         SyncEntity.CONTACTS: "merge",
-        SyncEntity.INVOICES: "platform",
     }
 
     # -- Products (Items in QB) ------------------------------------------------
@@ -124,7 +121,7 @@ class QuickBooksConnector(ConnectorBase):
           Item.PurchaseCost     -> item.cost_price
           Item.Id               -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -187,7 +184,7 @@ class QuickBooksConnector(ConnectorBase):
           Invoice.Balance         -> used to determine status
           Invoice.Id              -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -218,7 +215,7 @@ class QuickBooksConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull QuickBooks Customers -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -243,56 +240,3 @@ class QuickBooksConnector(ConnectorBase):
 
     # -- Outbound: Invoices push -----------------------------------------------
 
-    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp invoices -> QuickBooks (outbound)."""
-        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
-        errors: list[str] = []
-        realm_id = (ctx.extra or {}).get("realm_id") or ctx.store_handle
-        if not realm_id or not str(realm_id).isdigit():
-            result.errors = ["A numeric realm_id is required for QuickBooks outbound invoice sync"]
-            return result
-
-        try:
-            invoices = await _upsert.list_unsynced_invoices(ctx.company_id, platform="quickbooks")
-        except Exception as exc:
-            result.errors = [f"Failed to load invoices: {exc}"]
-            return result
-
-        base = f"{_API_BASE}/{realm_id}"
-        async with RateLimitedClient() as client:
-            for inv in invoices:
-                try:
-                    line_items = [
-                        {
-                            "DetailType": "SalesItemLineDetail",
-                            "Amount": float(line.get("total", 0)),
-                            "Description": line.get("description", ""),
-                            "SalesItemLineDetail": {
-                                "Qty": float(line.get("quantity", 1)),
-                                "UnitPrice": float(line.get("unit_price", 0)),
-                            },
-                        }
-                        for line in (inv.get("line_items") or [])
-                    ]
-                    payload = {
-                        "CustomerRef": {"value": inv.get("customer_external_id") or inv.get("customer_name", "")},
-                        "Line": line_items,
-                        "DocNumber": inv.get("ref_id"),
-                    }
-                    resp = await client.post(
-                        f"{base}/invoice",
-                        headers=_headers(ctx),
-                        params={"minorversion": "65"},
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    result.created += 1
-                except Exception as exc:
-                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "quickbooks.sync_invoices_out company=%s created=%d errors=%d",
-            ctx.company_id, result.created, len(errors),
-        )
-        return result

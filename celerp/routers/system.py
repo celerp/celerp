@@ -60,7 +60,7 @@ async def restart_server(
 _TRUNCATE_TABLES = [
     "ledger", "projections", "notifications", "import_batches", "sync_runs",
     "doc_share_tokens", "ai_conversations", "ai_messages", "ai_batch_jobs",
-    "outbound_queue", "connector_configs",
+    "connector_configs",
     "accounts", "bank_accounts", "bank_statement_lines",
     "label_templates", "reconciliation_rules", "reconciliation_sessions",
     "marketplace_configs", "session_registry", "user_auth_state",

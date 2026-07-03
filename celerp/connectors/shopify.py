@@ -28,7 +28,6 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
-    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -58,7 +57,6 @@ class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
-    direction = SyncDirection.BOTH
     category = ConnectorCategory.WEBSITE
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
@@ -99,7 +97,7 @@ class ShopifyConnector(ConnectorBase):
         """
         from celerp_inventory.routes import ItemCreate
 
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -203,7 +201,7 @@ class ShopifyConnector(ConnectorBase):
           financial_status            -> doc status (paid -> closed, pending -> open)
           order.id                    -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -238,7 +236,7 @@ class ShopifyConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Shopify customers -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -259,163 +257,6 @@ class ShopifyConnector(ConnectorBase):
 
         result.errors = errors or None
         return result
-
-    # -- Outbound: Inventory push ----------------------------------------------
-
-    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Push Celerp stock levels -> Shopify inventory levels."""
-        result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
-        errors: list[str] = []
-
-        try:
-            items = await _upsert.list_items_with_external_id(ctx.company_id, platform="shopify")
-        except Exception as exc:
-            result.errors = [f"Failed to load inventory: {exc}"]
-            return result
-
-        async with RateLimitedClient() as client:
-            for item in items:
-                variant_id = item.get("shopify_variant_id")
-                location_id = item.get("shopify_location_id")
-                if not variant_id or not location_id:
-                    result.skipped += 1
-                    continue
-                try:
-                    resp = await client.post(
-                        f"{_base_url(ctx)}/inventory_levels/set.json",
-                        headers=_headers(ctx),
-                        json={
-                            "location_id": location_id,
-                            "inventory_item_id": variant_id,
-                            "available": int(item.get("quantity", 0)),
-                        },
-                    )
-                    resp.raise_for_status()
-                    result.updated += 1
-                except Exception as exc:
-                    errors.append(f"Item {item.get('sku')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "shopify.sync_inventory_out company=%s updated=%d skipped=%d errors=%d",
-            ctx.company_id, result.updated, result.skipped, len(errors),
-        )
-        return result
-
-    # -- Outbound: Products push -----------------------------------------------
-
-    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
-        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
-
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
-        errors: list[str] = []
-
-        try:
-            items = await _upsert.list_items_modified_since_last_sync(ctx.company_id, platform="shopify")
-        except Exception as exc:
-            result.errors = [f"Failed to load items: {exc}"]
-            return result
-
-        async with RateLimitedClient() as client:
-            for item in items:
-                product_id = item.get("shopify_product_id")
-                if not product_id:
-                    result.skipped += 1
-                    continue
-                try:
-                    payload: dict = {"product": {}}
-                    if item.get("name"):
-                        payload["product"]["title"] = item["name"]
-                    if item.get("description"):
-                        payload["product"]["body_html"] = item["description"]
-                    if item.get("sale_price") is not None:
-                        payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
-
-                    # Push images
-                    files: list[dict] = item.get("files") or []
-                    image_payload = build_platform_image_payload(files)
-                    if image_payload["hero_url"]:
-                        payload["product"]["images"] = [{"src": image_payload["hero_url"]}] + [
-                            {"src": u} for u in image_payload["additional_urls"]
-                        ]
-
-                    resp = await client.put(
-                        f"{_base_url(ctx)}/products/{product_id}.json",
-                        headers=_headers(ctx),
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-
-                    # Push certificate metafields (separate calls per metafield)
-                    cert_payload = build_platform_cert_payload(files)
-                    for tag_key, certs in cert_payload.items():
-                        try:
-                            mf_resp = await client.post(
-                                f"{_base_url(ctx)}/products/{product_id}/metafields.json",
-                                headers=_headers(ctx),
-                                json={"metafield": {
-                                    "namespace": "custom",
-                                    "key": tag_key,
-                                    "value": json.dumps(certs),
-                                    "type": "json",
-                                }},
-                            )
-                            mf_resp.raise_for_status()
-                        except Exception as mf_exc:
-                            log.warning("shopify: metafield push failed product=%s tag=%s: %s", product_id, tag_key, mf_exc)
-
-                    result.updated += 1
-                except Exception as exc:
-                    errors.append(f"Product {product_id}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "shopify.sync_products_out company=%s updated=%d skipped=%d errors=%d",
-            ctx.company_id, result.updated, result.skipped, len(errors),
-        )
-        return result
-
-    # -- Webhook lifecycle -----------------------------------------------------
-
-    _INBOUND_TOPICS = [
-        "products/create", "products/update", "products/delete",
-        "orders/create", "orders/updated",
-        "inventory_levels/update",
-        "customers/create", "customers/update",
-    ]
-
-    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
-        if direction == SyncDirection.OUTBOUND:
-            return []
-        return self._INBOUND_TOPICS
-
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
-        """Register Shopify webhooks. Returns list of webhook IDs."""
-        base = _base_url(ctx)
-        ids: list[str] = []
-        topics = self.webhook_topics_for_direction(self.direction)
-        async with RateLimitedClient() as client:
-            for topic in topics:
-                resp = await client.post(
-                    f"{base}/webhooks.json",
-                    headers=_headers(ctx),
-                    json={"webhook": {"topic": topic, "address": webhook_url, "format": "json"}},
-                )
-                if resp.status_code in (200, 201):
-                    wh = resp.json().get("webhook", {})
-                    ids.append(str(wh.get("id", "")))
-                else:
-                    log.warning("shopify.register_webhook topic=%s status=%d", topic, resp.status_code)
-        return ids
-
-    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
-        base = _base_url(ctx)
-        async with RateLimitedClient() as client:
-            for wid in webhook_ids:
-                resp = await client.delete(f"{base}/webhooks/{wid}.json", headers=_headers(ctx))
-                if resp.status_code not in (200, 204):
-                    log.warning("shopify.deregister_webhook id=%s status=%d", wid, resp.status_code)
 
 
 # -- Pagination helper ---------------------------------------------------------
