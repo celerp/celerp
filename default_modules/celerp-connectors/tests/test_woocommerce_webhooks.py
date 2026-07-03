@@ -59,7 +59,7 @@ async def test_dispatch_valid_signature_triggers_handle():
     body = b'{"id": 42}'
     secret = "shhh"
     hw = AsyncMock()
-    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", "both", secret)])), \
+    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", secret)])), \
          patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=MagicMock())), \
          patch("celerp.connectors.webhooks.handle_webhook", new=hw):
         handled = await dispatch_woocommerce_webhook(body, _sign(body, secret), "order.created")
@@ -73,7 +73,7 @@ async def test_dispatch_bad_signature_returns_false():
     from celerp.connectors.webhooks import dispatch_woocommerce_webhook
     body = b'{"id": 42}'
     hw = AsyncMock()
-    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", "both", "realsecret")])), \
+    with patch("celerp.db.get_session_ctx", return_value=_mock_session_ctx([("co-1", "realsecret")])), \
          patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=MagicMock())), \
          patch("celerp.connectors.webhooks.handle_webhook", new=hw):
         handled = await dispatch_woocommerce_webhook(body, _sign(body, "wrongsecret"), "order.created")

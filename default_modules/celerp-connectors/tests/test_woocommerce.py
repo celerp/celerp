@@ -13,7 +13,7 @@ import httpx
 from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.woocommerce import WooCommerceConnector, _base_url, _auth
-from celerp.connectors.base import ConnectorContext, SyncEntity, SyncDirection
+from celerp.connectors.base import ConnectorContext, SyncEntity
 
 
 @pytest.fixture
@@ -244,99 +244,5 @@ async def test_sync_contacts_incremental(woo, ctx, mock_upsert_contact):
 
 # -- sync_inventory_out --
 
-@pytest.mark.asyncio
-async def test_sync_inventory_out_pushes_stock(woo, ctx):
-    items = [{"woocommerce_product_id": 99, "sku": "WDG-001", "quantity": 42}]
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        with respx.mock:
-            route = respx.put("https://store.example.com/wp-json/wc/v3/products/99").mock(
-                return_value=httpx.Response(200, json={"id": 99})
-            )
-            result = await woo.sync_inventory_out(ctx)
-    assert result.updated == 1
-    assert result.entity == SyncEntity.INVENTORY
-    sent = route.calls[0].request
-    import json
-    body = json.loads(sent.content)
-    assert body["stock_quantity"] == 42
-    assert body["manage_stock"] is True
-
-
-@pytest.mark.asyncio
-async def test_sync_inventory_out_skips_missing_id(woo, ctx):
-    items = [{"sku": "NO-ID", "quantity": 10}]  # no woocommerce_product_id
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        with respx.mock:
-            result = await woo.sync_inventory_out(ctx)
-    assert result.skipped == 1
-    assert result.updated == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_inventory_out_error_accumulation(woo, ctx):
-    items = [
-        {"woocommerce_product_id": 1, "quantity": 5},
-        {"woocommerce_product_id": 2, "quantity": 3},
-    ]
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        with respx.mock:
-            respx.put("https://store.example.com/wp-json/wc/v3/products/1").mock(
-                return_value=httpx.Response(500)
-            )
-            respx.put("https://store.example.com/wp-json/wc/v3/products/2").mock(
-                return_value=httpx.Response(500)
-            )
-            result = await woo.sync_inventory_out(ctx)
-    assert result.errors is not None
-    assert len(result.errors) == 2
-
-
 # -- sync_products_out --
 
-@pytest.mark.asyncio
-async def test_sync_products_out_pushes_images_and_certs(woo, ctx):
-    import json
-    items = [{
-        "woocommerce_product_id": 50,
-        "files": [
-            {"url": "https://img.test/hero.jpg", "is_hero": True, "mime": "image/jpeg", "document_tag": "product_images"},
-            {"url": "https://img.test/extra.jpg", "is_hero": False, "mime": "image/jpeg", "document_tag": "product_images"},
-            {"url": "https://img.test/cert.pdf", "filename": "cert.pdf", "document_tag": "certificates"},
-        ],
-    }]
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        with respx.mock:
-            route = respx.put("https://store.example.com/wp-json/wc/v3/products/50").mock(
-                return_value=httpx.Response(200, json={"id": 50}))
-            result = await woo.sync_products_out(ctx)
-    assert result.updated == 1
-    body = json.loads(route.calls[0].request.content)
-    assert body["images"][0]["src"] == "https://img.test/hero.jpg"
-    assert body["images"][1]["src"] == "https://img.test/extra.jpg"
-    assert any(m["key"] == "certificates" for m in body["meta_data"])
-
-
-@pytest.mark.asyncio
-async def test_sync_products_out_skips_missing_id(woo, ctx):
-    items = [{"files": [{"url": "x", "is_hero": True, "document_tag": "product_images"}]}]  # no wc id
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        result = await woo.sync_products_out(ctx)
-    assert result.skipped == 1
-    assert result.updated == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_products_out_skips_when_nothing_to_push(woo, ctx):
-    items = [{"woocommerce_product_id": 7, "files": []}]  # no images, no certs
-    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=items):
-        result = await woo.sync_products_out(ctx)
-    assert result.skipped == 1
-    assert result.updated == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_products_out_load_error(woo, ctx):
-    with patch("celerp.connectors.upsert.list_items_with_external_id",
-               new=AsyncMock(side_effect=RuntimeError("db down"))):
-        result = await woo.sync_products_out(ctx)
-    assert result.errors and "Failed to load items" in result.errors[0]

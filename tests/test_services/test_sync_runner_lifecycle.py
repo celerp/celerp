@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
+from celerp.connectors.base import ConnectorContext, SyncEntity, SyncResult
 from celerp.connectors.sync_runner import run_sync
 from celerp.db import get_session_ctx
 from celerp.models.sync_run import SyncRun
@@ -30,7 +30,6 @@ def _cid() -> str:
 
 class _Stub:
     name = "stub_lifecycle"
-    direction = SyncDirection.BOTH
 
     def __init__(self, on_run=None, boom=False):
         self._on_run = on_run
@@ -41,7 +40,7 @@ class _Stub:
             await self._on_run()
         if self._boom:
             raise RuntimeError("api 500")
-        return SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.BOTH, created=2, updated=1)
+        return SyncResult(entity=SyncEntity.ORDERS, created=2, updated=1)
 
 
 async def _rows(cid):
@@ -77,8 +76,7 @@ async def test_concurrency_guard_refuses_second_run(_db_engine):
     cid = _cid()
     async with get_session_ctx() as s:
         s.add(SyncRun(
-            company_id=cid, connector="stub_lifecycle", entity="orders", direction="both",
-            started_at=datetime.now(timezone.utc), finished_at=None,
+            company_id=cid, connector="stub_lifecycle", entity="orders", started_at=datetime.now(timezone.utc), finished_at=None,
             created_count=0, updated_count=0, skipped_count=0, errors_json=None, status="running",
         ))
         await s.commit()

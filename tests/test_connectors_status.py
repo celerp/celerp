@@ -67,14 +67,11 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
     now = datetime.now(timezone.utc)
     async with get_session_ctx() as s:
         s.add_all([
-            SyncRun(company_id=cid, connector="shopify", entity="products", direction="both",
-                    started_at=now - timedelta(minutes=5), finished_at=now - timedelta(minutes=5),
+            SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now - timedelta(minutes=5), finished_at=now - timedelta(minutes=5),
                     created_count=1, updated_count=0, skipped_count=0, errors_json=None, status="success"),
-            SyncRun(company_id=cid, connector="shopify", entity="products", direction="both",
-                    started_at=now, finished_at=now,
+            SyncRun(company_id=cid, connector="shopify", entity="products", started_at=now, finished_at=now,
                     created_count=9, updated_count=0, skipped_count=0, errors_json=None, status="success"),
-            SyncRun(company_id=cid, connector="shopify", entity="orders", direction="both",
-                    started_at=now, finished_at=now,
+            SyncRun(company_id=cid, connector="shopify", entity="orders", started_at=now, finished_at=now,
                     created_count=2, updated_count=0, skipped_count=0, errors_json=None, status="success"),
         ])
         await s.commit()

@@ -65,7 +65,7 @@ async def test_woocommerce_order_creates_doc(use_test_session):
     session = use_test_session
     cid = await _seed_company(session, "WooOrd")
     order = {
-        "id": 55, "number": "1001", "status": "completed",
+        "id": 55, "number": "1001", "status": "completed", "date_paid": "2024-06-01T10:00:00",
         "line_items": [{"name": "Widget", "quantity": 2, "price": "5.00", "total": "10.00"}],
         "total": "10.00",
     }
@@ -74,7 +74,7 @@ async def test_woocommerce_order_creates_doc(use_test_session):
     assert await _ledger_rows(session, cid, "woocommerce:order:55") == 1
     st = await _state(session, cid, "woocommerce:order:55")
     assert st["doc_type"] == "invoice"
-    assert st["status"] == "closed"           # completed -> closed
+    assert st["status"] == "closed"           # paid -> closed
     assert st["total"] == 10.0
     assert st["line_items"][0]["unit_price"] == 5.0
     assert st["woocommerce_order_id"] == "55"
@@ -175,65 +175,6 @@ async def test_contact_dedup_is_per_company(use_test_session):
 # ── Outbound list helpers ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_list_items_with_external_id_parses_ids(use_test_session):
-    session = use_test_session
-    cid = await _seed_company(session, "OutItems")
-    from celerp_inventory.routes import ItemCreate
-    await u.upsert_item(str(cid), ItemCreate(
-        sku="S1", name="Shop Item", sell_by="piece", sale_price=12.0,
-        idempotency_key="shopify:111:222"))
-    await u.upsert_item(str(cid), ItemCreate(
-        sku="W1", name="Woo Item", sell_by="piece", sale_price=8.0,
-        idempotency_key="woocommerce:333"))
-
-    # Shopify outbound is opt-in per item: enable sync on the linked item so it is
-    # eligible for outbound push (inbound import alone does not enable outbound).
-    import sqlalchemy as sa
-    from celerp.models.projections import Projection
-    await session.execute(
-        sa.update(Projection).where(
-            Projection.company_id == cid,
-            Projection.state["idempotency_key"].as_string().like("shopify:%"),
-        ).values(is_sync_to_shopify=True)
-    )
-    await session.flush()
-
-    shop = await u.list_items_with_external_id(str(cid), platform="shopify")
-    assert len(shop) == 1
-    assert shop[0]["shopify_product_id"] == "111"
-    assert shop[0]["shopify_variant_id"] == "222"
-
-    woo = await u.list_items_with_external_id(str(cid), platform="woocommerce")
-    assert len(woo) == 1
-    assert woo[0]["woocommerce_product_id"] == "333"
-    assert woo[0]["sale_price"] == 8.0
-
-
-@pytest.mark.asyncio
-async def test_list_unsynced_invoices_excludes_imported(use_test_session):
-    """Returns native invoices to push out; excludes platform-imported ones."""
-    session = use_test_session
-    cid = await _seed_company(session, "Unsynced")
-    # A native invoice (no platform marker) and an imported one (has woo marker).
-    await u.upsert_order_from_woocommerce(str(cid), {
-        "id": 1, "number": "WC-1", "status": "completed",
-        "line_items": [{"name": "x", "quantity": 1, "price": "1", "total": "1"}], "total": "1"})
-    from celerp.events.engine import emit_event
-    await emit_event(
-        session, company_id=cid, entity_id="doc:NATIVE-1", entity_type="doc",
-        event_type="doc.created",
-        data={"doc_type": "invoice", "ref_id": "NATIVE-1", "line_items": [], "total": 5.0},
-        actor_id=None, location_id=None, source="api",
-        idempotency_key="native-invoice-1", metadata_={})
-    await session.commit()
-
-    out = await u.list_unsynced_invoices(str(cid), platform="quickbooks")
-    refs = {r["ref_id"] for r in out}
-    assert "NATIVE-1" in refs       # native -> candidate to push
-    assert "WC-1" not in refs       # imported from WooCommerce -> excluded
-
-
-@pytest.mark.asyncio
 async def test_watermark_only_advances_on_full_success(session, monkeypatch):
     """A partial run must NOT advance the incremental cursor (its errored records
     would be skipped forever); only a fully successful run does."""
@@ -250,15 +191,13 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
 
     co = "wm-co-1"
     t_partial = datetime(2026, 6, 2, tzinfo=timezone.utc)
-    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", direction="inbound",
-                        started_at=t_partial, finished_at=t_partial, status="partial"))
+    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", started_at=t_partial, finished_at=t_partial, status="partial"))
     await session.flush()
     # partial alone -> no watermark (next run does a full pull and retries failures)
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") is None
 
     t_ok = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", direction="inbound",
-                        started_at=t_ok, finished_at=t_ok, status="success"))
+    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", started_at=t_ok, finished_at=t_ok, status="success"))
     await session.flush()
     # now the cursor is the successful run's start, not the later partial's
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_ok

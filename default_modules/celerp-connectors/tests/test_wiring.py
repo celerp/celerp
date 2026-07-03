@@ -60,7 +60,7 @@ async def test_handle_shopify_webhook_triggers_handle_webhook():
 
     sess = MagicMock()
     res = MagicMock()
-    res.all = MagicMock(return_value=[("co-1", "both")])
+    res.all = MagicMock(return_value=[("co-1",)])
     sess.execute = AsyncMock(return_value=res)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
@@ -85,7 +85,7 @@ async def test_handle_shopify_webhook_skips_when_no_token():
 
     sess = MagicMock()
     res = MagicMock()
-    res.all = MagicMock(return_value=[("co-1", "both")])
+    res.all = MagicMock(return_value=[("co-1",)])
     sess.execute = AsyncMock(return_value=res)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)

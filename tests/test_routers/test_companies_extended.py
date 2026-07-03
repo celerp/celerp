@@ -297,14 +297,13 @@ def patch_session_token():
 async def test_connector_sync_success(client, patch_session_token):
     """POST /connectors/shopify/sync with mocked connector returns 200 SyncResponse."""
     from unittest.mock import AsyncMock, patch
-    from celerp.connectors.base import SyncResult, SyncEntity, SyncDirection
+    from celerp.connectors.base import SyncResult, SyncEntity
 
     base_headers = await _register(client, "conn_sync")
     headers = {**base_headers, "X-Session-Token": _FAKE_SESSION_TOKEN}
 
     mock_result = SyncResult(
         entity=SyncEntity.PRODUCTS,
-        direction=SyncDirection.INBOUND,
         created=3,
         updated=0,
         skipped=1,

@@ -12,7 +12,7 @@ import respx
 import httpx
 
 from celerp.connectors.shopify import ShopifyConnector, _next_page_url
-from celerp.connectors.base import SyncEntity, SyncDirection
+from celerp.connectors.base import SyncEntity
 
 
 @pytest.fixture
