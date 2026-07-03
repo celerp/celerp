@@ -124,6 +124,27 @@ async def test_sync_products_creates_items(woo, ctx, mock_upsert_item):
 
 
 @pytest.mark.asyncio
+async def test_sync_products_imports_variations(woo, ctx, mock_upsert_item):
+    """A variable product imports each variation as its own item, not the priceless parent."""
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[{"id": 20, "name": "Shirt", "type": "variable"}])
+        )
+        respx.get("https://store.example.com/wp-json/wc/v3/products/20/variations").mock(
+            return_value=httpx.Response(200, json=[
+                {"id": 201, "sku": "SHIRT-RED-L", "price": "19.99",
+                 "attributes": [{"option": "Red"}, {"option": "L"}]},
+                {"id": 202, "sku": "SHIRT-BLU-M", "price": "19.99",
+                 "attributes": [{"option": "Blue"}, {"option": "M"}]},
+            ])
+        )
+        result = await woo.sync_products(ctx)
+    assert result.created == 2   # two variations; parent not imported as a sellable item
+    idems = {call.args[1].idempotency_key for call in mock_upsert_item.call_args_list}
+    assert idems == {"woocommerce:20:201", "woocommerce:20:202"}
+
+
+@pytest.mark.asyncio
 async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
     """When sku is blank, fall back to WC-{id}."""
     with respx.mock:

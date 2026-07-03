@@ -408,14 +408,14 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         r = runs[e]
         running = getattr(r, "finished_at", None) is None
         when = t("connectors.syncing", lang) if running else relative_time(r.finished_at.isoformat())
-        counts = "" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
+        counts = "…" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
         errs = list(getattr(r, "errors", None) or [])
         rows.append(Tr(
             Td(_ENTITY_LABELS.get(e, e)),
             Td(when),
             Td(_status_badge_for("running" if running else r.status, lang)),
             Td(counts, cls="cell--number"),
-            Td(str(len(errs)) if errs else "", cls="cell--number", title="; ".join(errs) if errs else ""),
+            Td(str(len(errs)) if errs else "--", cls="cell--number", title="; ".join(errs) if errs else ""),
             cls="data-row",
         ))
     return Table(
@@ -777,8 +777,17 @@ def setup_routes(app):
         if not url:
             return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
 
-        # Return script that opens the URL; card stays as-is (user returns after OAuth)
-        return Script(f"window.open({url!r}, '_blank', 'noopener');")
+        # Open the authorize URL in a new tab AND show an on-screen next step + fallback
+        # link — so nothing is silently lost if the popup is blocked (GDR: users must
+        # always know what comes next and have a visible way forward).
+        return Div(
+            Script(f"window.open({url!r}, '_blank', 'noopener');"),
+            Span(t("connectors.authorize_opened", lang,
+                   default="Opening authorization in a new tab — complete it there, then return here."),
+                 cls="flash flash--info"),
+            A(t("connectors.authorize_link", lang, default="If nothing opened, click here to authorize"),
+              href=url, target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
+        )
 
     @app.post("/settings/connectors/{platform}/frequency")
     async def connector_set_frequency(request: Request, platform: str):
@@ -1019,6 +1028,26 @@ def setup_routes(app):
                          cls="flash flash--warning"),
                     id=f"connector-card-{platform}",
                     cls="connector-card",
+                )
+
+        # Validate the credentials against the store BEFORE storing them, so a bad
+        # key/secret/URL fails here with a clear message instead of silently failing on
+        # the first background sync.
+        if platform == "woocommerce":
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as c:
+                    probe = await c.get(
+                        f"{store_url}/wp-json/wc/v3/products",
+                        params={"per_page": 1}, auth=(consumer_key, consumer_secret),
+                    )
+                if probe.status_code == 401:
+                    raise RuntimeError("store rejected the consumer key/secret (401)")
+                probe.raise_for_status()
+            except Exception as exc:
+                return Div(
+                    Span(t("connectors.connect_check_failed", lang,
+                           default=f"Could not connect to the store: {exc}"), cls="flash flash--warning"),
+                    id=f"connector-card-{platform}", cls="connector-card",
                 )
 
         from celerp.gateway.state import relay_session_headers

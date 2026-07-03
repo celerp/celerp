@@ -129,40 +129,56 @@ class WooCommerceConnector(ConnectorBase):
             result.errors = [f"WooCommerce API error: {exc}"]
             return result
 
-        for product in products:
-            pid = product.get("id")
-            sku = (product.get("sku") or "").strip() or f"WC-{pid}"
-            name = product.get("name") or sku
-            # regular_price is the base price; fall back to the active price only
-            # when regular_price is genuinely absent. A real 0 (free item) is kept.
-            sell_price = money(product.get("regular_price"))
-            if sell_price is None:
-                sell_price = money(product.get("price"))
-
-            idempotency_key = f"woocommerce:{pid}"
-
-            item = ItemCreate(
-                sku=sku,
-                name=name,
-                sell_by="piece",
-                sale_price=sell_price,
-                idempotency_key=idempotency_key,
-            )
-
+        async def _upsert_item(sku: str, name: str, price, idem: str) -> bool:
+            item = ItemCreate(sku=sku, name=name, sell_by="piece", sale_price=price, idempotency_key=idem)
             try:
                 created = await _upsert.upsert_item(ctx.company_id, item)
                 if created:
                     result.created += 1
                 else:
                     result.skipped += 1
+                return True
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
+                return False
+
+        for product in products:
+            pid = product.get("id")
+            name = product.get("name") or f"WC-{pid}"
+
+            # Variable products are containers; import each variation as its own sellable
+            # item (its own SKU / price), not the price-less parent.
+            if product.get("type") == "variable":
+                try:
+                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
+                except (httpx.HTTPStatusError, ValueError) as exc:
+                    errors.append(f"Product {pid} variations: {exc}")
+                    continue
+                for var in variations:
+                    vid = var.get("id")
+                    var_sku = (var.get("sku") or "").strip() or f"WC-{pid}-{vid}"
+                    opts = " / ".join(
+                        str(a.get("option", "")) for a in (var.get("attributes") or []) if a.get("option")
+                    )
+                    var_price = money(var.get("price"))
+                    if var_price is None:
+                        var_price = money(var.get("regular_price"))
+                    await _upsert_item(var_sku, f"{name} - {opts}" if opts else name,
+                                       var_price, f"woocommerce:{pid}:{vid}")
                 continue
-            # Pull images and certificates after upsert (idempotent, best-effort)
-            try:
-                await self._pull_product_files(ctx, product, sku)
-            except Exception as img_exc:
-                log.warning("woocommerce file pull failed for SKU %s: %s", sku, img_exc)
+
+            # Simple product: regular_price is the base; fall back to the active price only
+            # when regular_price is genuinely absent (a real 0 = free item is kept).
+            sku = (product.get("sku") or "").strip() or f"WC-{pid}"
+            sell_price = money(product.get("regular_price"))
+            if sell_price is None:
+                sell_price = money(product.get("price"))
+            if await _upsert_item(sku, name, sell_price, f"woocommerce:{pid}"):
+                # Pull images/certs after upsert (idempotent, best-effort)
+                try:
+                    await self._pull_product_files(ctx, product, sku)
+                except Exception as img_exc:
+                    log.warning("woocommerce file pull failed for SKU %s: %s", sku, img_exc)
 
         result.errors = errors or None
         log.info(
