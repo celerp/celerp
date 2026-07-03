@@ -102,6 +102,28 @@ async def test_quickbooks_invoice_creates_doc(use_test_session):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_docnumber_does_not_collapse(use_test_session):
+    """Two DIFFERENT invoices that share a DocNumber (QB allows it) must stay two
+    distinct docs. Keyed on the human DocNumber they collapsed into one; keyed on the
+    platform Id (via the idempotency key) they don't."""
+    session = use_test_session
+    cid = await _seed_company(session, "DupDoc")
+    inv1 = {"Id": "101", "DocNumber": "1001", "Balance": 0, "TotalAmt": 10.0,
+            "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 10.0, "Description": "A",
+                      "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 10.0}}]}
+    inv2 = {"Id": "102", "DocNumber": "1001", "Balance": 20.0, "TotalAmt": 20.0,
+            "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 20.0, "Description": "B",
+                      "SalesItemLineDetail": {"Qty": 2, "UnitPrice": 10.0}}]}
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv1) is True
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv2) is True
+
+    st1 = await _state(session, cid, "quickbooks:invoice:101")
+    st2 = await _state(session, cid, "quickbooks:invoice:102")
+    assert st1["total"] == 10.0 and st1["line_items"][0]["name"] == "A"   # not overwritten
+    assert st2["total"] == 20.0 and st2["line_items"][0]["name"] == "B"
+
+
+@pytest.mark.asyncio
 async def test_xero_invoice_creates_doc(use_test_session):
     session = use_test_session
     cid = await _seed_company(session, "XeroInv")
