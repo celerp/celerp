@@ -16,7 +16,6 @@ from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorCategory, SyncFrequency  # noqa: F401
 from celerp.models.connector_config import ConnectorConfig
 
 log = logging.getLogger(__name__)
@@ -98,11 +97,11 @@ async def check_and_run_daily_syncs(
                 log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity_enum.value, exc)
 
         # Only mark the connector synced (advancing the daily clock) if at least one
-        # entity made progress. If every entity hard-failed (e.g. a transient outage),
-        # leave last_daily_sync_at unset so the next hourly tick retries rather than
-        # waiting a full day.
+        # entity made progress. On a total failure (e.g. a transient outage) we leave
+        # last_daily_sync_at unset, so the connector stays "due" and retries at the next
+        # tick that lands on its configured hour (the next day, or sooner on app restart).
         if not any((r.created or r.updated or not r.errors) for r in entity_results):
-            log.warning("daily_scheduler: all entities failed for %s — will retry next tick", config.connector)
+            log.warning("daily_scheduler: all entities failed for %s — will retry when next due", config.connector)
             continue
 
         synced.append(config.connector)

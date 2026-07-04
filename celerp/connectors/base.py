@@ -61,6 +61,15 @@ class SyncResult:
     def ok(self) -> bool:
         return not self.errors
 
+    def record(self, outcome: str) -> None:
+        """Tally a `connector_upsert` outcome ("created" | "updated" | "noop")."""
+        if outcome == "created":
+            self.created += 1
+        elif outcome == "updated":
+            self.updated += 1
+        else:
+            self.skipped += 1
+
 
 class ConnectorBase(ABC):
     """Abstract base for all platform connectors (inbound only)."""

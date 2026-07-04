@@ -24,82 +24,13 @@ async def create_item(session, company_id: str, data: dict, actor_id: str | None
     )
 
 
-def _external_ids(platform: str, idem_key: str) -> dict:
-    """Recover the platform's external ids from a connector item's idempotency key.
-
-    Inbound upserts encode the platform id in the idempotency key, so outbound
-    sync recovers it from there rather than storing duplicate columns:
-      shopify:{product_id}:{variant_id} -> shopify_product_id, shopify_variant_id
-      woocommerce:{product_id}          -> woocommerce_product_id
-    (Shopify location-level inventory needs a location id that is not captured on
-    import; those items are skipped by the connector's inventory push.)
+async def upsert_from_connector(company_id: str, item) -> str:
     """
-    parts = (idem_key or "").split(":")
-    if platform == "shopify" and len(parts) >= 3:
-        return {"shopify_product_id": parts[1], "shopify_variant_id": parts[2]}
-    if platform == "woocommerce" and len(parts) >= 2:
-        return {"woocommerce_product_id": parts[1]}
-    return {}
-
-
-async def _items_with_external_id(company_id: str, platform: str, require_sync_flag: bool = False) -> list[dict]:
-    """All item projections linked to `platform`, as outbound-ready dicts.
-
-    When ``require_sync_flag`` is set, only items the user has opted into outbound sync
-    (is_sync_to_shopify=True) are returned - so the catalog is never mass-pushed back to
-    the store; the merchant explicitly enables each item."""
-    import uuid as _uuid
-    from celerp.db import SessionLocal as AsyncSessionLocal
-    from celerp.models.projections import Projection
-    from sqlalchemy import select
-
-    cid = _uuid.UUID(str(company_id))
-    out: list[dict] = []
-    async with AsyncSessionLocal() as session:
-        query = select(Projection).where(
-            Projection.company_id == cid,
-            Projection.entity_type == "item",
-            Projection.state["idempotency_key"].as_string().like(f"{platform}:%"),
-        )
-        if require_sync_flag:
-            query = query.where(Projection.is_sync_to_shopify.is_(True))
-        rows = (await session.execute(query)).scalars().all()
-        for r in rows:
-            st = r.state or {}
-            out.append({
-                "sku": st.get("sku"),
-                "name": st.get("name"),
-                "description": st.get("description"),
-                "sale_price": st.get("sale_price"),
-                "quantity": st.get("quantity", 0),
-                "files": st.get("files") or [],
-                **_external_ids(platform, st.get("idempotency_key", "")),
-            })
-    return out
-
-
-async def list_items_with_external_id(company_id: str, platform: str) -> list[dict]:
-    """Items linked to a platform (have an external id), for outbound inventory push.
-    Shopify outbound is opt-in per item (is_sync_to_shopify); other platforms push all
-    linked items (a per-platform flag is a follow-up)."""
-    return await _items_with_external_id(company_id, platform, require_sync_flag=(platform == "shopify"))
-
-
-async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list[dict]:
-    """Items linked to a platform, for outbound product push. Shopify pushes only items
-    the user opted in (is_sync_to_shopify); other platforms push all linked items.
-    Outbound PUTs are idempotent and failed items re-push on the next run, so a per-item
-    modified watermark is a follow-up rather than launch work."""
-    return await _items_with_external_id(company_id, platform, require_sync_flag=(platform == "shopify"))
-
-
-async def upsert_from_connector(company_id: str, item) -> bool:
-    """
-    Create or update an item from a connector payload. Returns True if a write
-    happened (created or updated), False if this exact content was already applied.
+    Create or update an item from a connector payload. Returns the write outcome:
+    "created", "updated", or "noop" (this exact content was already applied).
 
     `item` must have: sku, name, idempotency_key (stable per external item).
-    Optional: sale_price, quantity, cost_price, description, currency.
+    Optional: sale_price, quantity, cost_price, description.
 
     Uses a fresh DB session so the connector does not need to manage
     session lifecycle. Idempotency is enforced at the ledger level.
@@ -114,7 +45,6 @@ async def upsert_from_connector(company_id: str, item) -> bool:
     data = {
         "sku": item.sku,
         "name": item.name,
-        "idempotency_key": idem_key,
     }
     if item.sale_price is not None:
         data["sale_price"] = item.sale_price
@@ -125,13 +55,11 @@ async def upsert_from_connector(company_id: str, item) -> bool:
         data["cost_price"] = item.cost_price     # else margin/COGS/valuation read zero cost
     if getattr(item, "description", None):
         data["description"] = item.description
-    if getattr(item, "currency", None):
-        data["currency"] = item.currency
 
     async with AsyncSessionLocal() as session:
-        wrote = await connector_upsert(
+        outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data,
         )
         await session.commit()
-        return wrote
+        return outcome

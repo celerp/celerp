@@ -133,11 +133,7 @@ class XeroConnector(ConnectorBase):
                     cost_price=money((xero_item.get("PurchaseDetails") or {}).get("UnitPrice")),
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -175,11 +171,7 @@ class XeroConnector(ConnectorBase):
                 result.skipped += 1
                 continue
             try:
-                created = await _upsert.upsert_invoice_from_xero(ctx.company_id, inv)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('InvoiceNumber')}: {exc}")
 
@@ -205,11 +197,7 @@ class XeroConnector(ConnectorBase):
 
         for contact in contacts:
             try:
-                created = await _upsert.upsert_contact_from_xero(ctx.company_id, contact)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_xero(ctx.company_id, contact))
             except Exception as exc:
                 errors.append(f"Contact {contact.get('ContactID')}: {exc}")
 

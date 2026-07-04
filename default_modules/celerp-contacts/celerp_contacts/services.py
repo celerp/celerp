@@ -22,9 +22,10 @@ async def create_crm_entity(session, company_id: str, entity_type: str, data: di
     )
 
 
-async def upsert_contact_from_shopify(company_id: str, customer: dict) -> bool:
+async def upsert_contact_from_shopify(company_id: str, customer: dict) -> str:
     """
-    Create a CRM contact from a Shopify customer dict. Returns True if newly created.
+    Create or update a CRM contact from a Shopify customer dict.
+    Returns "created", "updated", or "noop".
 
     Idempotency key: shopify:customer:{customer_id}
     Maps: id, email, first_name, last_name, phone → CelERP contact fields.
@@ -46,25 +47,25 @@ async def upsert_contact_from_shopify(company_id: str, customer: dict) -> bool:
     return await _emit_contact(company_id, idem_key, data)
 
 
-async def _emit_contact(company_id: str, idem_key: str, data: dict) -> bool:
+async def _emit_contact(company_id: str, idem_key: str, data: dict) -> str:
     """Shared contact create-or-update: drop None fields, then upsert (content-based
-    dedup + deterministic entity from idem_key). True if a write happened; a changed
-    re-import updates the same contact."""
+    dedup, resolved to the contact's stable idem_key). Returns "created", "updated",
+    or "noop"; a changed re-import updates the same contact."""
     from celerp.db import SessionLocal
     from celerp.events.engine import connector_upsert
 
     data = {k: v for k, v in data.items() if v is not None}
     async with SessionLocal() as session:
-        wrote = await connector_upsert(
+        outcome = await connector_upsert(
             session, company_id=company_id, entity_type="contact",
             event_type="crm.contact.created", idem_key=idem_key, data=data,
         )
         await session.commit()
-        return wrote
+        return outcome
 
 
-async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> bool:
-    """Create a CRM contact from a WooCommerce customer dict. Idempotency: woocommerce:customer:{id}."""
+async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> str:
+    """Create/update a CRM contact from a WooCommerce customer dict. Idempotency: woocommerce:customer:{id}."""
     idem_key = f"woocommerce:customer:{customer['id']}"
     billing = customer.get("billing") or {}
     name = " ".join(
@@ -83,8 +84,8 @@ async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> bo
     return await _emit_contact(company_id, idem_key, data)
 
 
-async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> bool:
-    """Create a CRM contact from a QuickBooks Customer dict. Idempotency: quickbooks:customer:{Id}."""
+async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> str:
+    """Create/update a CRM contact from a QuickBooks Customer dict. Idempotency: quickbooks:customer:{Id}."""
     idem_key = f"quickbooks:customer:{customer['Id']}"
     bill_addr = customer.get("BillAddr") or {}
     name = (customer.get("DisplayName") or " ".join(
@@ -103,8 +104,8 @@ async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> boo
     return await _emit_contact(company_id, idem_key, data)
 
 
-async def upsert_contact_from_xero(company_id: str, contact: dict) -> bool:
-    """Create a CRM contact from a Xero Contact dict. Idempotency: xero:contact:{ContactID}."""
+async def upsert_contact_from_xero(company_id: str, contact: dict) -> str:
+    """Create/update a CRM contact from a Xero Contact dict. Idempotency: xero:contact:{ContactID}."""
     idem_key = f"xero:contact:{contact['ContactID']}"
     phones = contact.get("Phones") or []
     phone = next(

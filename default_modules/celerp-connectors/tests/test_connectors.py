@@ -150,7 +150,7 @@ async def test_sync_products_creates_items(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         result = await shopify.sync_products(ctx)
     assert result.ok
     assert result.created == 2
@@ -164,7 +164,7 @@ async def test_sync_products_skips_duplicate(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=False)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="noop")):
         result = await shopify.sync_products(ctx)
     assert result.created == 0
     assert result.skipped == 3
@@ -214,7 +214,7 @@ async def test_sync_orders_creates_docs(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/orders.json").mock(
         return_value=httpx.Response(200, json=orders)
     )
-    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new=AsyncMock(return_value="created")):
         result = await shopify.sync_orders(ctx)
     assert result.ok
     assert result.created == 1
@@ -229,7 +229,7 @@ async def test_sync_contacts(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/customers.json").mock(
         return_value=httpx.Response(200, json=customers)
     )
-    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new=AsyncMock(return_value="created")):
         result = await shopify.sync_contacts(ctx)
     assert result.ok
     assert result.created == 1
@@ -427,7 +427,7 @@ async def test_quickbooks_sync_products_success(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock) as mock_upsert:
-        mock_upsert.return_value = True
+        mock_upsert.return_value = "created"
         result = await qb.sync_products(qb_ctx)
     assert result.created == 2
     assert result.ok
@@ -459,7 +459,7 @@ async def test_quickbooks_sync_orders(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_invoice_from_quickbooks", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await qb.sync_orders(qb_ctx)
     assert result.created == 1
     assert result.ok
@@ -479,7 +479,7 @@ async def test_quickbooks_sync_contacts(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_contact_from_quickbooks", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await qb.sync_contacts(qb_ctx)
     assert result.created == 1
     assert result.ok
@@ -536,7 +536,7 @@ async def test_xero_sync_products_success(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_products(xero_ctx)
     assert result.created == 1
     assert result.skipped == 1
@@ -557,7 +557,7 @@ async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_invoice_from_xero", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_orders(xero_ctx)
     assert result.created == 1
     assert result.skipped == 1
@@ -574,7 +574,7 @@ async def test_xero_sync_contacts(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_contact_from_xero", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_contacts(xero_ctx)
     assert result.created == 1
     assert result.ok
@@ -631,7 +631,7 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
             {"id": 2, "sku": "", "name": "No SKU Item", "regular_price": "10.00"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
     assert result.created == 2  # both get SKUs (second gets WC-2 fallback)
@@ -645,7 +645,7 @@ async def test_woocommerce_sync_orders(wc, wc_ctx):
             {"id": 100, "status": "processing", "line_items": []},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new=AsyncMock(return_value="created")):
         result = await wc.sync_orders(wc_ctx)
     assert result.ok
     assert result.created == 1
@@ -659,7 +659,7 @@ async def test_woocommerce_sync_contacts(wc, wc_ctx):
             {"id": 50, "email": "customer@example.com", "first_name": "Bob", "last_name": "Jones"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new=AsyncMock(return_value="created")):
         result = await wc.sync_contacts(wc_ctx)
     assert result.ok
     assert result.created == 1

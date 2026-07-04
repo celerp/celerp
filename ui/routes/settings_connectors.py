@@ -276,12 +276,23 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
 
 
+_BG_TASKS: set = set()
+
+
+def _spawn(coro) -> None:
+    """Fire-and-forget a coroutine while holding a strong reference to the task
+    (discarded on completion) so the event loop can't garbage-collect it mid-run."""
+    import asyncio
+
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
 async def _kickoff_connector_sync(iid: str, platform: str) -> None:
     """Fetch the live token and start a background sync of all supported entities.
     Raises on setup failure (bad token, unknown connector); per-entity errors are captured
     in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
-    import asyncio
-
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.registry import get as get_connector
     from celerp.connectors.sync_runner import run_sync
@@ -302,7 +313,7 @@ async def _kickoff_connector_sync(iid: str, platform: str) -> None:
             except Exception as exc:
                 log.warning("connector sync %s/%s failed: %s", platform, entity_enum.value, exc)
 
-    asyncio.create_task(_do_sync())
+    _spawn(_do_sync())
 
 
 async def _autosync_once(iid: str, platform: str) -> None:
@@ -322,7 +333,7 @@ _HOW_IT_WORKS: dict[str, list[str]] = {
     "woocommerce": [
         "Enter your WooCommerce store URL",
         "Paste your REST API consumer key and secret",
-        "Choose sync direction and frequency",
+        "Products, orders, and customers sync automatically",
     ],
     "quickbooks": [
         "Click Connect to open QuickBooks authorization",
@@ -695,10 +706,9 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     # OAuth) so the merchant's data appears without a manual step - the activation moment.
     # Idempotent: run_sync's in-progress row + concurrency guard prevent re-triggering on
     # re-render, and once any run exists this branch no longer fires.
-    import asyncio
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            asyncio.create_task(_autosync_once(iid, c["id"]))
+            _spawn(_autosync_once(iid, c["id"]))
 
     # Group by category, labelled by what the sync does for the customer
     group_labels = {

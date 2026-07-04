@@ -29,6 +29,16 @@ _PING_INTERVAL = 30   # seconds
 _BACKOFF_MAX = 60     # seconds
 
 
+def _shop_key(handle: str | None) -> str:
+    """Normalize a Shopify store handle/shop domain for comparison (strip scheme,
+    trailing slash, and the .myshopify.com suffix), so a token's `store_handle`
+    and a webhook's `shop` compare equal regardless of stored form."""
+    s = (handle or "").strip().lower()
+    for pre in ("https://", "http://"):
+        s = s.removeprefix(pre)
+    return s.rstrip("/").removesuffix(".myshopify.com")
+
+
 class GatewayClient:
     """Persistent outbound WS connection to the Celerp gateway.
 
@@ -291,8 +301,8 @@ class GatewayClient:
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
-        sync for the affected entity on the company that owns this shop
-        (idempotency keys dedupe against the reconciliation pass)."""
+        sync for the affected entity on every Shopify-connected company whose store
+        matches the webhook's shop (idempotency keys dedupe against the reconcile pass)."""
         topic = payload.get("topic", "")
         shop = payload.get("shop", "")
         data = payload.get("data") or {}
@@ -313,13 +323,16 @@ class GatewayClient:
                 configs = rows.all()
 
             event = WebhookEvent(platform="shopify", topic=topic, payload=data)
+            want = _shop_key(shop)
             for (company_id,) in configs:
                 ctx = await fetch_context(company_id, "shopify")
                 if ctx is None:
                     continue
-                # Only the company that owns this shop should sync — otherwise every
-                # Shopify company on a multi-company instance re-syncs on each webhook.
-                if shop and ctx.store_handle and ctx.store_handle != shop:
+                # Guard against a misrouted/stale delivery: only sync when the webhook's
+                # shop matches this instance's connected store. (Companies on an instance
+                # share one instance-level Shopify token, so this matches on the store,
+                # not a specific company — per-company store routing isn't modelled.)
+                if want and _shop_key(ctx.store_handle) != want:
                     continue
                 await handle_webhook(event, ctx)
         except Exception as exc:

@@ -42,41 +42,41 @@ def ctx_xero():
 
 @pytest.fixture
 def mock_upsert_item():
-    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_order():
-    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_contact_shopify():
-    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_invoice_qb():
-    with patch("celerp.connectors.upsert.upsert_invoice_from_quickbooks", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_invoice_from_quickbooks", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_contact_qb():
-    with patch("celerp.connectors.upsert.upsert_contact_from_quickbooks", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_contact_from_quickbooks", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_invoice_xero():
-    with patch("celerp.connectors.upsert.upsert_invoice_from_xero", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_invoice_from_xero", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_contact_xero():
-    with patch("celerp.connectors.upsert.upsert_contact_from_xero", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_contact_from_xero", new_callable=AsyncMock, return_value="created") as m:
         yield m

@@ -32,19 +32,19 @@ def ctx():
 
 @pytest.fixture
 def mock_upsert_item():
-    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_order():
-    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 
 @pytest.fixture
 def mock_upsert_contact():
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new_callable=AsyncMock, return_value=True) as m:
+    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new_callable=AsyncMock, return_value="created") as m:
         yield m
 
 

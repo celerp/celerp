@@ -43,7 +43,7 @@ def _captured_price(mock_upsert):
 @pytest.mark.asyncio
 async def test_woocommerce_zero_price_kept():
     ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)) as up:
+    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")) as up:
         respx.get("https://shop.test/wp-json/wc/v3/products").mock(return_value=httpx.Response(
             200, json=[{"id": 1, "sku": "FREE", "name": "Free", "regular_price": "0"}],
             headers={"X-WP-TotalPages": "1"}))
@@ -54,7 +54,7 @@ async def test_woocommerce_zero_price_kept():
 @pytest.mark.asyncio
 async def test_quickbooks_zero_price_kept():
     ctx = ConnectorContext(company_id="co", access_token="t", store_handle="1234567890")
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)) as up:
+    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")) as up:
         respx.get("https://quickbooks.api.intuit.com/v3/company/1234567890/query").mock(
             return_value=httpx.Response(200, json={"QueryResponse": {"Item": [
                 {"Id": "1", "Name": "Free", "Sku": "FREE", "Type": "Inventory", "UnitPrice": 0}]}}))
@@ -66,7 +66,7 @@ async def test_quickbooks_zero_price_kept():
 async def test_xero_zero_price_kept():
     ctx = ConnectorContext(company_id="co", access_token="t", store_handle="tenant-abc",
                            extra={"tenant_id": "tenant-abc"})
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)) as up:
+    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")) as up:
         respx.get("https://api.xero.com/api.xro/2.0/Items").mock(return_value=httpx.Response(
             200, json={"Items": [{"ItemID": "i1", "Code": "FREE", "Name": "Free",
                                   "SalesDetails": {"UnitPrice": 0}}]}))
@@ -83,7 +83,7 @@ async def test_xero_items_fetched_once_not_looped():
     ctx = ConnectorContext(company_id="co", access_token="t", store_handle="tenant-abc",
                            extra={"tenant_id": "tenant-abc"})
     items = [{"ItemID": f"i{i}", "Code": f"C{i}", "Name": f"N{i}"} for i in range(100)]
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         route = respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
             return_value=httpx.Response(200, json={"Items": items}))
         result = await XeroConnector().sync_products(ctx)
@@ -108,7 +108,7 @@ async def test_woocommerce_paginates_without_total_pages_header():
     ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
     page1 = [{"id": i, "sku": f"S{i}", "name": "x", "regular_price": "1"} for i in range(100)]
     page2 = [{"id": 100, "sku": "S100", "name": "x", "regular_price": "1"}]
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         route = respx.get("https://shop.test/wp-json/wc/v3/products").mock(side_effect=[
             httpx.Response(200, json=page1),   # full page, no header
             httpx.Response(200, json=page2),   # short page -> stop
@@ -130,7 +130,4 @@ def test_store_url_error_rules(monkeypatch):
     # http allowed under the dev override
     monkeypatch.setenv("CELERP_ALLOW_HTTP_STORE", "1")
     assert _store_url_error("http://shop.test", "woocommerce") is None
-
-
-# ── QB6: run_sync pulls incrementally from the last successful watermark ───────
 

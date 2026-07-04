@@ -23,9 +23,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_column("sync_runs", "direction")
-    op.drop_column("connector_configs", "direction")
-    op.drop_table("outbound_queue")
+    # Idempotent: a develop build creates its schema from the current models (which
+    # already lack these) via create_all, then the dev→release path replays migrations.
+    # Guard each drop so re-applying against an already-current schema is a no-op.
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    if "direction" in {c["name"] for c in insp.get_columns("sync_runs")}:
+        op.drop_column("sync_runs", "direction")
+    if "direction" in {c["name"] for c in insp.get_columns("connector_configs")}:
+        op.drop_column("connector_configs", "direction")
+    if insp.has_table("outbound_queue"):
+        op.drop_table("outbound_queue")
 
 
 def downgrade() -> None:

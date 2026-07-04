@@ -130,11 +130,7 @@ class ShopifyConnector(ConnectorBase):
                 )
 
                 try:
-                    created = await _upsert.upsert_item(ctx.company_id, item)
-                    if created:
-                        result.created += 1
-                    else:
-                        result.skipped += 1
+                    result.record(await _upsert.upsert_item(ctx.company_id, item))
                 except Exception as exc:
                     errors.append(f"SKU {sku}: {exc}")
                     continue
@@ -215,11 +211,7 @@ class ShopifyConnector(ConnectorBase):
 
         for order in orders:
             try:
-                created = await _upsert.upsert_order_from_shopify(ctx.company_id, order)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order))
             except Exception as exc:
                 msg = f"Order {order.get('name')}: {exc}"
                 log.warning("shopify.sync_orders error: %s", msg)
@@ -247,11 +239,7 @@ class ShopifyConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert.upsert_contact_from_shopify(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_shopify(ctx.company_id, customer))
             except Exception as exc:
                 errors.append(f"Customer {customer.get('id')}: {exc}")
 

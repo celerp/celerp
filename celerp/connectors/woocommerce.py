@@ -130,13 +130,11 @@ class WooCommerceConnector(ConnectorBase):
             return result
 
         async def _upsert_item(sku: str, name: str, price, idem: str) -> bool:
+            """Upsert one item and tally the outcome. Returns False on error so the
+            caller skips the follow-up file pull."""
             item = ItemCreate(sku=sku, name=name, sell_by="piece", sale_price=price, idempotency_key=idem)
             try:
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
                 return True
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
@@ -160,11 +158,25 @@ class WooCommerceConnector(ConnectorBase):
                     opts = " / ".join(
                         str(a.get("option", "")) for a in (var.get("attributes") or []) if a.get("option")
                     )
-                    var_price = money(var.get("price"))
+                    # regular_price is the base (same rule as simple products below);
+                    # fall back to the active price only when regular_price is absent.
+                    var_price = money(var.get("regular_price"))
                     if var_price is None:
-                        var_price = money(var.get("regular_price"))
-                    await _upsert_item(var_sku, f"{name} - {opts}" if opts else name,
-                                       var_price, f"woocommerce:{pid}:{vid}")
+                        var_price = money(var.get("price"))
+                    if await _upsert_item(var_sku, f"{name} - {opts}" if opts else name,
+                                          var_price, f"woocommerce:{pid}:{vid}"):
+                        # Variations are real items too: pull the variation's own image
+                        # (if any) plus the parent gallery/certs. (idempotent, best-effort)
+                        var_img = var.get("image")
+                        files = {
+                            "images": ([var_img] if var_img and var_img.get("src") else [])
+                            + product.get("images", []),
+                            "meta_data": product.get("meta_data", []),
+                        }
+                        try:
+                            await self._pull_product_files(ctx, files, var_sku)
+                        except Exception as img_exc:
+                            log.warning("woocommerce file pull failed for SKU %s: %s", var_sku, img_exc)
                 continue
 
             # Simple product: regular_price is the base; fall back to the active price only
@@ -262,11 +274,7 @@ class WooCommerceConnector(ConnectorBase):
 
         for order in orders:
             try:
-                created = await _upsert.upsert_order_from_woocommerce(ctx.company_id, order)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_order_from_woocommerce(ctx.company_id, order))
             except Exception as exc:
                 msg = f"Order {order.get('id')}: {exc}"
                 log.warning("woocommerce.sync_orders error: %s", msg)
@@ -299,11 +307,7 @@ class WooCommerceConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer))
             except Exception as exc:
                 errors.append(f"Customer {customer.get('id')}: {exc}")
 

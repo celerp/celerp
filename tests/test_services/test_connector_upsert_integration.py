@@ -72,8 +72,8 @@ async def test_woocommerce_order_creates_doc(use_test_session):
         "line_items": [{"name": "Widget", "quantity": 2, "price": "5.00", "total": "10.00"}],
         "total": "10.00",
     }
-    assert await u.upsert_order_from_woocommerce(str(cid), order) is True
-    assert await u.upsert_order_from_woocommerce(str(cid), order) is False  # dedup
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "noop"  # dedup
     assert await _ledger_rows(session, cid, "woocommerce:order:55") == 1
     st = await _state(session, cid, "woocommerce:order:55")
     assert st["doc_type"] == "invoice"
@@ -96,7 +96,7 @@ async def test_quickbooks_invoice_creates_doc(use_test_session):
             {"DetailType": "SubTotalLineDetail", "Amount": 30.0},  # must be skipped
         ],
     }
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is True
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) == "created"
     st = await _state(session, cid, "quickbooks:invoice:77")
     assert st["status"] == "closed"           # Balance 0 -> closed
     assert len(st["line_items"]) == 1         # subtotal row skipped
@@ -117,8 +117,8 @@ async def test_duplicate_docnumber_does_not_collapse(use_test_session):
     inv2 = {"Id": "102", "DocNumber": "1001", "Balance": 20.0, "TotalAmt": 20.0,
             "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 20.0, "Description": "B",
                       "SalesItemLineDetail": {"Qty": 2, "UnitPrice": 10.0}}]}
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv1) is True
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv2) is True
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv1) == "created"
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv2) == "created"
 
     st1 = await _state(session, cid, "quickbooks:invoice:101")
     st2 = await _state(session, cid, "quickbooks:invoice:102")
@@ -135,11 +135,11 @@ async def test_reimport_with_changed_data_updates_the_doc(use_test_session):
     inv = {"Id": "300", "DocNumber": "INV-300", "Balance": 10.0, "TotalAmt": 10.0,
            "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 10.0, "Description": "X",
                      "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 10.0}}]}
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is True    # created
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is False   # unchanged → no-op
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) == "created"    # created
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) == "noop"   # unchanged → no-op
 
     inv["TotalAmt"], inv["Balance"] = 25.0, 0
-    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) is True    # changed → updated
+    assert await u.upsert_invoice_from_quickbooks(str(cid), inv) == "updated"  # changed → updated
 
     st = await _state(session, cid, "quickbooks:invoice:300")
     assert st["total"] == 25.0          # new value propagated
@@ -170,7 +170,7 @@ async def test_xero_invoice_creates_doc(use_test_session):
         "Total": 42.0, "AmountDue": 42.0,
         "LineItems": [{"Description": "Item", "Quantity": 1, "UnitAmount": 42.0, "LineAmount": 42.0}],
     }
-    assert await u.upsert_invoice_from_xero(str(cid), inv) is True
+    assert await u.upsert_invoice_from_xero(str(cid), inv) == "created"
     st = await _state(session, cid, "xero:invoice:abc-123")
     assert st["status"] == "open"             # AUTHORISED (not PAID) -> open
     assert st["amount_outstanding"] == 42.0
@@ -185,7 +185,7 @@ async def test_shopify_order_still_works_after_import_fix(use_test_session):
     cid = await _seed_company(session, "ShopOrd")
     order = {"id": 9001, "name": "#1001", "financial_status": "paid",
              "line_items": [{"title": "T", "quantity": 1, "price": "3.00"}], "total_price": "3.00"}
-    assert await u.upsert_order_from_shopify(str(cid), order) is True
+    assert await u.upsert_order_from_shopify(str(cid), order) == "created"
     assert await _ledger_rows(session, cid, "shopify:order:9001") == 1
 
 
@@ -198,16 +198,16 @@ async def test_contacts_create_for_all_platforms(use_test_session):
 
     assert await u.upsert_contact_from_woocommerce(str(cid), {
         "id": 1, "first_name": "Ada", "last_name": "Lovelace", "email": "ada@x.test",
-        "billing": {"phone": "123", "city": "London", "country": "GB"}}) is True
+        "billing": {"phone": "123", "city": "London", "country": "GB"}}) == "created"
     assert await u.upsert_contact_from_quickbooks(str(cid), {
         "Id": "2", "DisplayName": "Bob Co", "PrimaryEmailAddr": {"Address": "bob@x.test"},
-        "PrimaryPhone": {"FreeFormNumber": "456"}, "BillAddr": {"City": "NYC", "Country": "US"}}) is True
+        "PrimaryPhone": {"FreeFormNumber": "456"}, "BillAddr": {"City": "NYC", "Country": "US"}}) == "created"
     assert await u.upsert_contact_from_xero(str(cid), {
         "ContactID": "x-3", "Name": "Carol", "EmailAddress": "carol@x.test",
         "Phones": [{"PhoneType": "DEFAULT", "PhoneNumber": "789"}],
-        "Addresses": [{"City": "Sydney", "Country": "AU"}]}) is True
+        "Addresses": [{"City": "Sydney", "Country": "AU"}]}) == "created"
     assert await u.upsert_contact_from_shopify(str(cid), {
-        "id": 4, "first_name": "Dan", "email": "dan@x.test", "addresses": [{"city": "LA"}]}) is True
+        "id": 4, "first_name": "Dan", "email": "dan@x.test", "addresses": [{"city": "LA"}]}) == "created"
 
     for key in ("woocommerce:customer:1", "quickbooks:customer:2", "xero:contact:x-3", "shopify:customer:4"):
         assert await _ledger_rows(session, cid, key) == 1
@@ -225,9 +225,9 @@ async def test_contact_dedup_is_per_company(use_test_session):
     a = await _seed_company(session, "CoA")
     b = await _seed_company(session, "CoB")
     cust = {"id": 99, "first_name": "Same", "email": "same@x.test", "billing": {}}
-    assert await u.upsert_contact_from_woocommerce(str(a), cust) is True
-    assert await u.upsert_contact_from_woocommerce(str(b), cust) is True   # NOT blocked by A
-    assert await u.upsert_contact_from_woocommerce(str(a), cust) is False  # A's own dedup
+    assert await u.upsert_contact_from_woocommerce(str(a), cust) == "created"
+    assert await u.upsert_contact_from_woocommerce(str(b), cust) == "created"   # NOT blocked by A
+    assert await u.upsert_contact_from_woocommerce(str(a), cust) == "noop"  # A's own dedup
     assert await _ledger_rows(session, a, "woocommerce:customer:99") == 1
     assert await _ledger_rows(session, b, "woocommerce:customer:99") == 1
 
@@ -294,3 +294,83 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
     await WooCommerceConnector()._pull_product_files(ctx, product, "WID-1")
     assert emit.await_count == 2  # the hero image + the certificate
+
+
+@pytest.mark.asyncio
+async def test_reimport_updates_legacy_uuid_projection_not_duplicate(use_test_session):
+    """Finding: a record imported under the pre-deterministic-id scheme (random-uuid
+    entity_id, but idempotency_key present in state — as the backfill migration stamps it)
+    must UPDATE in place on re-import, not spawn a duplicate under the new deterministic
+    entity_id."""
+    from celerp.events.engine import emit_event
+
+    session = use_test_session
+    cid = await _seed_company(session, "Legacy")
+    # A legacy import: a doc projection under a random entity_id whose state carries the
+    # stable idempotency_key (what the e4f5a6b7c8d9 backfill stamps onto old rows).
+    await emit_event(
+        session, company_id=cid, entity_id="doc:legacy-uuid-xyz", entity_type="doc",
+        event_type="doc.created",
+        data={"doc_type": "invoice", "ref_id": "#1001", "status": "open", "total": 10.0,
+              "shopify_order_id": "555", "idempotency_key": "shopify:order:555"},
+        actor_id=None, location_id=None, source="connector",
+        idempotency_key="shopify:order:555", metadata_={},
+    )
+    await session.flush()  # the legacy row exists before the re-import queries for it
+    # A changed re-import of the same Shopify order after upgrade.
+    order = {"id": 555, "name": "#1001", "financial_status": "paid",
+             "line_items": [{"title": "X", "quantity": 1, "price": "20.00"}], "total_price": "20.00"}
+    assert await u.upsert_order_from_shopify(str(cid), order) == "updated"  # not "created"
+
+    n = await session.scalar(text(
+        "SELECT count(*) FROM projections WHERE company_id = :c AND entity_type='doc' "
+        "AND state->>'idempotency_key' = 'shopify:order:555'"), {"c": cid})
+    assert n == 1  # exactly one doc — no duplicate
+    eid = await session.scalar(text(
+        "SELECT entity_id FROM projections WHERE company_id = :c AND entity_type='doc' "
+        "AND state->>'idempotency_key' = 'shopify:order:555'"), {"c": cid})
+    assert eid == "doc:legacy-uuid-xyz"  # updated in place under the legacy id
+
+
+@pytest.mark.asyncio
+async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
+    """run_sync must pass the last-successful watermark into the connector as `since=`
+    — the incremental-pull wiring. Without it every scheduled/webhook sync silently
+    degrades to a full pull on each tick."""
+    import contextlib
+    from datetime import datetime, timezone
+
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncEntity, SyncResult
+    from celerp.models.sync_run import SyncRun
+
+    @contextlib.asynccontextmanager
+    async def _ctx():
+        yield session
+    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
+
+    co = "wm-since-1"
+    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    session.add(SyncRun(company_id=co, connector="shopify", entity="products",
+                        started_at=watermark, finished_at=watermark, status="success"))
+    await session.flush()
+
+    seen: dict = {}
+
+    class _Stub(ConnectorBase):
+        name = "shopify"
+        display_name = "Stub"
+        category = None
+        supported_entities = [SyncEntity.PRODUCTS]
+        conflict_strategy: dict = {}
+
+        async def sync_products(self, ctx, since=None):
+            seen["since"] = since
+            return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+        async def sync_orders(self, ctx, since=None):
+            return SyncResult(entity=SyncEntity.ORDERS)
+
+    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s.myshopify.com")
+    await sync_runner.run_sync(_Stub(), ctx, "products")  # since defaults to the watermark
+    assert seen["since"] == watermark

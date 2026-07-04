@@ -156,11 +156,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=money(qb_item.get("PurchaseCost")),
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -196,11 +192,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for inv in invoices:
             try:
-                created = await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('DocNumber')}: {exc}")
 
@@ -227,11 +219,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer))
             except Exception as exc:
                 errors.append(f"Customer {customer.get('Id')}: {exc}")
 

@@ -17,9 +17,14 @@ def _f(v, default: float = 0.0) -> float:
 
 
 def _amt(v, currency: str | None) -> float:
-    """Quantize a money AMOUNT to currency dp via Decimal — never raw float arithmetic."""
+    """Quantize a money AMOUNT to currency dp via Decimal — never raw float arithmetic.
+    Blank/missing/non-numeric coerces to 0.0 (a bad total must not poison the whole
+    run: a raised InvalidOperation would error the record forever and pin the watermark)."""
     from celerp.services.money import round_money, to_stored_float
-    return to_stored_float(round_money(v, currency or ""))
+    try:
+        return to_stored_float(round_money(v, currency or ""))
+    except (ArithmeticError, ValueError, TypeError):
+        return 0.0
 
 
 def _line_total(li_total, qty: float, unit_price: float, currency: str | None) -> float:
@@ -29,9 +34,10 @@ def _line_total(li_total, qty: float, unit_price: float, currency: str | None) -
     return _amt(base, currency)
 
 
-async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
+async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
     """
-    Create a doc (invoice) from a Shopify order dict. Returns True if newly created.
+    Create/update a doc (invoice) from a Shopify order dict.
+    Returns "created", "updated", or "noop".
 
     Idempotency key: shopify:order:{order_id}
 
@@ -77,66 +83,24 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
         return await _emit_doc(session, company_id, data, idem_key)
 
 
-async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
-    """Native CelERP invoices that are candidates to push out to `platform`.
-
-    Returns invoices that did NOT originate from an external platform (no
-    *_order_id / *_invoice_id marker) and are not yet stamped as pushed to this
-    platform. NOTE: the push write-back that stamps the returned platform id (to
-    make this list shrink and prevent duplicate creates) is a scoped follow-up;
-    until it lands, outbound invoice push must stay manual, not scheduled.
-    """
-    import uuid as _uuid
-    from celerp.db import SessionLocal
-    from celerp.models.projections import Projection
-    from sqlalchemy import select
-
-    _IMPORTED_MARKERS = (
-        "shopify_order_id", "woocommerce_order_id",
-        "quickbooks_invoice_id", "xero_invoice_id",
-    )
-    cid = _uuid.UUID(str(company_id))
-    out: list[dict] = []
-    async with SessionLocal() as session:
-        rows = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == cid,
-                Projection.entity_type == "doc",
-                Projection.state["doc_type"].as_string() == "invoice",
-            )
-        )).scalars().all()
-        for r in rows:
-            st = r.state or {}
-            if any(st.get(m) for m in _IMPORTED_MARKERS):
-                continue  # imported from a platform, not ours to push back
-            if st.get(f"{platform}_invoice_id"):
-                continue  # already pushed to this platform
-            out.append({
-                "ref_id": st.get("ref_id") or st.get("doc_number"),
-                "line_items": st.get("line_items") or [],
-                "total": st.get("total"),
-                "customer_name": st.get("customer_name"),
-                "customer_external_id": st.get("customer_external_id"),
-            })
-    return out
-
-
-async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> bool:
+async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
+    # Returns "created", "updated", or "noop".
     from celerp.events.engine import connector_upsert
-    wrote = await connector_upsert(
+    outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
     )
     await session.commit()
-    return wrote
+    return outcome
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
+async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     """
-    Create a doc (invoice) from a WooCommerce order dict. Returns True if newly created.
+    Create/update a doc (invoice) from a WooCommerce order dict.
+    Returns "created", "updated", or "noop".
 
     Idempotency key: woocommerce:order:{id}
 
@@ -186,9 +150,10 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
         return await _emit_doc(session, company_id, data, idem_key)
 
 
-async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool:
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
     """
-    Create a doc (invoice) from a QuickBooks Invoice dict. Returns True if newly created.
+    Create/update a doc (invoice) from a QuickBooks Invoice dict.
+    Returns "created", "updated", or "noop".
 
     Idempotency key: quickbooks:invoice:{Id}
 
@@ -238,9 +203,10 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool
         return await _emit_doc(session, company_id, data, idem_key)
 
 
-async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
+async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
     """
-    Create a doc (invoice) from a Xero Invoice dict (ACCREC). Returns True if newly created.
+    Create/update a doc (invoice) from a Xero Invoice dict (ACCREC).
+    Returns "created", "updated", or "noop".
 
     Idempotency key: xero:invoice:{InvoiceID}
 
