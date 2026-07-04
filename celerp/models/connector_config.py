@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""ConnectorConfig - persistent per-connector sync configuration."""
+"""ConnectorConfig + OutboundQueue - persistent state for connector sync."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,7 @@ class ConnectorConfig(Base):
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
     company_id: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
     connector: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="both")
     sync_frequency: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="realtime")
     daily_sync_hour: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=2)
     webhook_ids_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
@@ -38,3 +39,22 @@ class ConnectorConfig(Base):
     @webhook_ids.setter
     def webhook_ids(self, ids: list[str]) -> None:
         self.webhook_ids_json = json.dumps(ids) if ids else None
+
+
+class OutboundQueue(Base):
+    """Queue for failed or pending outbound sync pushes."""
+    __tablename__ = "outbound_queue"
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
+    connector: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    entity_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    entity_id: Mapped[str] = mapped_column(sa.String(128), nullable=False)
+    payload_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    status: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="pending")
+    retry_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
+    error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)

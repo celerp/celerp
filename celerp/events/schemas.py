@@ -429,6 +429,16 @@ class DocPatched(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class DocPushed(BaseModel):
+    """Outbound write-back: a Celerp doc was pushed OUT to an external platform, which
+    returned `external_id`. Stamping it (as {platform}_{entity}_id) means the doc drops
+    off list_unsynced_* and is never created on the platform twice."""
+    platform: str
+    external_id: str
+    entity: str = "invoice"
+    model_config = {"extra": "allow"}
+
+
 class DocLinked(BaseModel):
     entity_id: str
     entity_type: str
@@ -988,6 +998,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.updated": DocUpdated,
     "doc.renumbered": DocRenumbered,
     "doc.patched": DocPatched,
+    "doc.pushed": DocPushed,
     "doc.linked": DocLinked,
     "doc.finalized": DocFinalized,
     "doc.voided": DocVoided,

@@ -4,7 +4,7 @@
 """Backfill connector idempotency_key on legacy doc/contact rows + add lookup index.
 
 Revision ID: e4f5a6b7c8d9
-Revises: d3e4f5a6b7c8
+Revises: c2d3e4f5a6b7
 Create Date: 2026-07-04
 
 Context
@@ -34,7 +34,7 @@ from alembic import op
 from celerp.migrations._json_compat import update_ledger_data, update_projection_state
 
 revision = "e4f5a6b7c8d9"
-down_revision = "d3e4f5a6b7c8"
+down_revision = "c2d3e4f5a6b7"
 branch_labels = None
 depends_on = None
 

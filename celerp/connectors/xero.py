@@ -28,6 +28,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -54,6 +55,7 @@ class XeroConnector(ConnectorBase):
     display_name = "Xero"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
+    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -206,3 +208,56 @@ class XeroConnector(ConnectorBase):
 
     # -- Outbound: Invoices push -----------------------------------------------
 
+    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp invoices -> Xero (outbound)."""
+        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            invoices = await _upsert.list_unsynced_invoices(ctx.company_id, platform="xero")
+        except Exception as exc:
+            result.errors = [f"Failed to load invoices: {exc}"]
+            return result
+
+        async with RateLimitedClient() as client:
+            for inv in invoices:
+                try:
+                    line_items = [
+                        {
+                            "Description": line.get("description", ""),
+                            "Quantity": float(line.get("quantity", 1)),
+                            "UnitAmount": float(line.get("unit_price", 0)),
+                            "LineAmount": float(line.get("total", 0)),
+                        }
+                        for line in (inv.get("line_items") or [])
+                    ]
+                    payload = {
+                        "Invoices": [{
+                            "Type": "ACCREC",
+                            "InvoiceNumber": inv.get("ref_id"),
+                            "Contact": {"ContactID": inv.get("customer_external_id") or inv.get("customer_name", "")},
+                            "LineItems": line_items,
+                            "Status": "AUTHORISED",
+                        }]
+                    }
+                    resp = await client.put(
+                        f"{_API_BASE}/Invoices",
+                        headers=_headers(ctx),
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    # Write-back: stamp the returned Xero InvoiceID so the next run's
+                    # list_unsynced_invoices skips this doc — never created in Xero twice.
+                    xero_id = ((resp.json() or {}).get("Invoices") or [{}])[0].get("InvoiceID")
+                    if xero_id and inv.get("entity_id"):
+                        await _upsert.mark_doc_pushed(ctx.company_id, inv["entity_id"], "xero", xero_id)
+                    result.created += 1
+                except Exception as exc:
+                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "xero.sync_invoices_out company=%s created=%d errors=%d",
+            ctx.company_id, result.created, len(errors),
+        )
+        return result

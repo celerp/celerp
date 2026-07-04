@@ -83,6 +83,72 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
         return await _emit_doc(session, company_id, data, idem_key)
 
 
+async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
+    """Native CelERP invoices that are candidates to push out to `platform`.
+
+    Returns invoices that did NOT originate from an external platform (no
+    *_order_id / *_invoice_id marker) and are not yet stamped as pushed to this
+    platform ({platform}_invoice_id). The outbound push stamps that id via a
+    doc.pushed event (see doc_projections) so a pushed invoice drops off this list
+    on the next run and is never created twice.
+    """
+    import uuid as _uuid
+    from celerp.db import SessionLocal
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+
+    _IMPORTED_MARKERS = (
+        "shopify_order_id", "woocommerce_order_id",
+        "quickbooks_invoice_id", "xero_invoice_id",
+    )
+    cid = _uuid.UUID(str(company_id))
+    out: list[dict] = []
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == cid,
+                Projection.entity_type == "doc",
+                Projection.state["doc_type"].as_string() == "invoice",
+            )
+        )).scalars().all()
+        for r in rows:
+            st = r.state or {}
+            if any(st.get(m) for m in _IMPORTED_MARKERS):
+                continue  # imported from a platform, not ours to push back
+            if st.get(f"{platform}_invoice_id"):
+                continue  # already pushed to this platform
+            out.append({
+                "entity_id": r.entity_id,
+                "ref_id": st.get("ref_id") or st.get("doc_number"),
+                "line_items": st.get("line_items") or [],
+                "total": st.get("total"),
+                "customer_name": st.get("customer_name"),
+                "customer_external_id": st.get("customer_external_id"),
+            })
+    return out
+
+
+async def mark_doc_pushed(
+    company_id: str, entity_id: str, platform: str, external_id: str, entity: str = "invoice"
+) -> None:
+    """Outbound write-back: stamp the external id a platform returned onto the doc, so a
+    re-run's list_unsynced_invoices skips it and it is never created on the platform twice.
+    Idempotent per (platform, entity, external_id)."""
+    from celerp.db import SessionLocal
+    from celerp.events.engine import emit_event
+
+    async with SessionLocal() as session:
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+            event_type="doc.pushed",
+            data={"platform": platform, "external_id": str(external_id), "entity": entity},
+            actor_id=None, location_id=None, source="connector",
+            idempotency_key=f"{platform}:pushed:{entity}:{external_id}",
+            metadata_={},
+        )
+        await session.commit()
+
+
 async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)

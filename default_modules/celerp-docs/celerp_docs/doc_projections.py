@@ -51,6 +51,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
         current.setdefault("files", [])
+    elif event_type == "doc.pushed":
+        # Outbound write-back: record the id the platform returned so this doc is never
+        # pushed (created) there again. Field matches list_unsynced_invoices' skip check.
+        platform = data.get("platform")
+        ext_id = data.get("external_id")
+        if platform and ext_id:
+            current[f"{platform}_{data.get('entity', 'invoice')}_id"] = str(ext_id)
     elif event_type == "doc.updated":
         _is_template = current.get("doc_type") in {"subscription_invoice", "subscription_po"}
         _PATCH_PROTECTED = {"entity_type", "company_id"} if _is_template else {"status", "entity_type", "company_id"}

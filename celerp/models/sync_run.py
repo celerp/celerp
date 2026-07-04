@@ -20,6 +20,7 @@ class SyncRun(Base):
     company_id: Mapped[str] = mapped_column(sa.String(64), nullable=False, index=True)
     connector: Mapped[str] = mapped_column(sa.String(32), nullable=False)
     entity: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="inbound")
     started_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)

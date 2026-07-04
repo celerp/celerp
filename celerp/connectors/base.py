@@ -7,9 +7,10 @@ Each connector (Shopify, QuickBooks, Xero, ...) implements ConnectorBase.
 Connectors do NOT hold OAuth tokens directly - tokens are brokered by the
 CelERP relay service and injected at call time via ConnectorContext.
 
-Connectors are INBOUND only: they pull products, orders, and contacts from the
-external platform into Celerp. Celerp is the downstream system of record for the
-imported data; nothing is pushed back out.
+Sync direction:
+  - INBOUND: external platform -> Celerp (pull products, orders, contacts)
+  - OUTBOUND: Celerp -> external platform (push items, invoices, inventory)
+  - BOTH: bidirectional
 """
 from __future__ import annotations
 
@@ -23,10 +24,18 @@ from enum import Enum
 from typing import Any
 
 
+class SyncDirection(str, Enum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+    BOTH = "both"
+
+
 class SyncEntity(str, Enum):
     PRODUCTS = "products"
     ORDERS = "orders"
     CONTACTS = "contacts"
+    INVENTORY = "inventory"
+    INVOICES = "invoices"
 
 
 class ConnectorCategory(str, Enum):
@@ -38,6 +47,23 @@ class SyncFrequency(str, Enum):
     REALTIME = "realtime"   # webhook-driven (e-commerce only)
     MANUAL = "manual"       # user clicks Sync Now
     DAILY = "daily"         # once per day at configured hour
+
+
+# Entity classification for direction filtering. Inbound entities are pulled from
+# the platform; the *_out entities are pushed from Celerp to the platform.
+_INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
+_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+
+
+def entity_allowed(entity: str, direction: SyncDirection) -> bool:
+    """Check whether an entity sync is allowed given the configured direction."""
+    if direction == SyncDirection.BOTH:
+        return True
+    if direction == SyncDirection.INBOUND:
+        return entity in _INBOUND_ENTITIES
+    if direction == SyncDirection.OUTBOUND:
+        return entity in _OUTBOUND_ENTITIES
+    return False
 
 
 @dataclass
@@ -52,6 +78,7 @@ class ConnectorContext:
 @dataclass
 class SyncResult:
     entity: SyncEntity
+    direction: SyncDirection = SyncDirection.INBOUND
     created: int = 0
     updated: int = 0
     skipped: int = 0
@@ -62,7 +89,7 @@ class SyncResult:
         return not self.errors
 
     def record(self, outcome: str) -> None:
-        """Tally a `connector_upsert` outcome ("created" | "updated" | "noop")."""
+        """Tally a `connector_upsert`/push outcome ("created" | "updated" | "noop")."""
         if outcome == "created":
             self.created += 1
         elif outcome == "updated":
@@ -72,11 +99,12 @@ class SyncResult:
 
 
 class ConnectorBase(ABC):
-    """Abstract base for all platform connectors (inbound only)."""
+    """Abstract base for all platform connectors (inbound + outbound)."""
 
     name: str
     display_name: str
     supported_entities: list[SyncEntity]
+    direction: SyncDirection
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
 
@@ -90,14 +118,38 @@ class ConnectorBase(ABC):
         """Pull orders from platform -> Celerp documents."""
         ...
 
+    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull inventory levels from platform -> Celerp. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support inventory sync")
+
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support contact sync")
 
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp items -> platform. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support outbound product sync")
+
+    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp invoices -> platform. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support outbound invoice sync")
+
+    async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp inventory -> platform. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support outbound inventory sync")
+
     # -- Webhook lifecycle (override for e-commerce connectors) ----------------
 
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
+    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None) -> list[str]:
         """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
+        return []
+
+    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
+        """Remove registered webhooks. Override if supported."""
+        pass
+
+    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
+        """Return webhook topics to register for the given direction. Override if supported."""
         return []
 
     def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:

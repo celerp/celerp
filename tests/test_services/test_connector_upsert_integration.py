@@ -251,13 +251,13 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
 
     co = "wm-co-1"
     t_partial = datetime(2026, 6, 2, tzinfo=timezone.utc)
-    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", started_at=t_partial, finished_at=t_partial, status="partial"))
+    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", direction="inbound", started_at=t_partial, finished_at=t_partial, status="partial"))
     await session.flush()
     # partial alone -> no watermark (next run does a full pull and retries failures)
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") is None
 
     t_ok = datetime(2026, 6, 1, tzinfo=timezone.utc)
-    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", started_at=t_ok, finished_at=t_ok, status="success"))
+    session.add(SyncRun(company_id=co, connector="shopify", entity="orders", direction="inbound", started_at=t_ok, finished_at=t_ok, status="success"))
     await session.flush()
     # now the cursor is the successful run's start, not the later partial's
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_ok
@@ -333,6 +333,55 @@ async def test_reimport_updates_legacy_uuid_projection_not_duplicate(use_test_se
 
 
 @pytest.mark.asyncio
+async def test_invoice_push_writeback_prevents_duplicate(use_test_session, monkeypatch):
+    """Outbound invoice push stamps the returned external id (doc.pushed), so the doc
+    drops off list_unsynced_invoices and is never created on the platform twice — the
+    fix for the create-without-write-back duplication."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.quickbooks import QuickBooksConnector
+    from celerp.events.engine import emit_event
+    from celerp_docs.doc_service import list_unsynced_invoices
+
+    session = use_test_session
+    cid = await _seed_company(session, "QbPush")
+    # A native Celerp invoice (no quickbooks_invoice_id marker) — an outbound candidate.
+    await emit_event(
+        session, company_id=cid, entity_id="doc:native-1", entity_type="doc",
+        event_type="doc.created",
+        data={"doc_type": "invoice", "ref_id": "INV-100", "status": "open", "total": 50.0,
+              "line_items": [{"description": "X", "quantity": 1, "unit_price": 50.0, "total": 50.0}]},
+        actor_id=None, location_id=None, source="api", idempotency_key="native-1", metadata_={},
+    )
+    await session.flush()
+
+    before = await list_unsynced_invoices(str(cid), "quickbooks")
+    assert any(i["ref_id"] == "INV-100" for i in before)  # a push candidate before the push
+
+    # Mock the QuickBooks POST to return a created invoice Id.
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"Invoice": {"Id": "QB-555"}})
+    client = MagicMock()
+    client.post = AsyncMock(return_value=resp)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr("celerp.connectors.quickbooks.RateLimitedClient", lambda *a, **k: client)
+
+    ctx = ConnectorContext(company_id=str(cid), access_token="t", store_handle="123456789")
+    result = await QuickBooksConnector().sync_invoices_out(ctx)
+    assert result.created == 1 and not result.errors
+
+    # After push: stamped, and no longer a candidate -> a re-run won't create it again.
+    after = await list_unsynced_invoices(str(cid), "quickbooks")
+    assert not any(i["ref_id"] == "INV-100" for i in after)
+    st = await session.scalar(text(
+        "SELECT state FROM projections WHERE company_id = :c AND entity_id = 'doc:native-1'"), {"c": cid})
+    assert st["quickbooks_invoice_id"] == "QB-555"
+
+
+@pytest.mark.asyncio
 async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
     """run_sync must pass the last-successful watermark into the connector as `since=`
     — the incremental-pull wiring. Without it every scheduled/webhook sync silently
@@ -341,7 +390,9 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
     from datetime import datetime, timezone
 
     from celerp.connectors import sync_runner
-    from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncEntity, SyncResult
+    from celerp.connectors.base import (
+        ConnectorBase, ConnectorContext, SyncDirection, SyncEntity, SyncResult,
+    )
     from celerp.models.sync_run import SyncRun
 
     @contextlib.asynccontextmanager
@@ -352,7 +403,7 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
     co = "wm-since-1"
     watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
     session.add(SyncRun(company_id=co, connector="shopify", entity="products",
-                        started_at=watermark, finished_at=watermark, status="success"))
+                        direction="inbound", started_at=watermark, finished_at=watermark, status="success"))
     await session.flush()
 
     seen: dict = {}
@@ -361,6 +412,7 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
         name = "shopify"
         display_name = "Stub"
         category = None
+        direction = SyncDirection.BOTH
         supported_entities = [SyncEntity.PRODUCTS]
         conflict_strategy: dict = {}
 

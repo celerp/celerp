@@ -127,6 +127,33 @@ def _last_sync_info(run) -> FT:
     )
 
 
+def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
+    """Three-option sync direction toggle: Inbound / Outbound / Both."""
+    options = [
+        ("inbound", t("connectors.dir_inbound", lang, default="Inbound")),
+        ("outbound", t("connectors.dir_outbound", lang, default="Outbound")),
+        ("both", t("connectors.dir_both", lang, default="Both")),
+    ]
+    buttons = []
+    for val, label in options:
+        active = "btn--primary" if val == current else "btn--outline"
+        buttons.append(
+            Button(
+                label,
+                cls=f"btn btn--xs {active}",
+                hx_post=f"/settings/connectors/{cid}/direction",
+                hx_vals=f'{{"direction": "{val}"}}',
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+            )
+        )
+    return Div(
+        Span(t("connectors.direction", lang, default="Direction") + ": ", cls="connector-label"),
+        *buttons,
+        cls="connector-direction-toggle",
+    )
+
+
 def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
     """Sync frequency selector for accounting connectors."""
     options = [
@@ -333,7 +360,7 @@ _HOW_IT_WORKS: dict[str, list[str]] = {
     "woocommerce": [
         "Enter your WooCommerce store URL",
         "Paste your REST API consumer key and secret",
-        "Products, orders, and customers sync automatically",
+        "Choose sync direction and frequency",
     ],
     "quickbooks": [
         "Click Connect to open QuickBooks authorization",
@@ -479,7 +506,7 @@ def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
         hx_confirm=t("connectors.disconnect_confirm", lang),
         hx_swap="none",
     )
-    config_rows = []
+    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
     if category == ConnectorCategory.ACCOUNTING.value:
         config_rows.append(_frequency_select(cid, frequency, lang))
 
@@ -538,6 +565,7 @@ def _connector_card(
     connected_details = Span()
     if connected:
         sync_info = _last_sync_info(last_run)
+        dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
             Div(
@@ -545,6 +573,7 @@ def _connector_card(
                 Div(sync_info, id=f"connector-sync-info-{cid}", cls="connector-meta-value"),
                 cls="connector-meta-row",
             ),
+            dir_row,
             freq_row,
             cls="connector-connected-details",
         )
@@ -833,6 +862,49 @@ def setup_routes(app):
                     ConnectorConfig.connector == platform,
                 )
                 .values(sync_frequency=frequency)
+            )
+            await session.commit()
+
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        last_runs = await _get_last_runs(iid)
+        config = await _get_connector_config(iid, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
+                              config=config, lang=lang)
+
+    @app.post("/settings/connectors/{platform}/direction")
+    async def connector_set_direction(request: Request, platform: str):
+        """HTMX: update sync direction (inbound / outbound / both) for a connector."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := _check_role(request, "admin")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+
+        from celerp.config import ensure_instance_id
+        from celerp.db import get_session_ctx
+        from celerp.models.connector_config import ConnectorConfig
+        from ui.config import RELAY_URL
+        from ui.i18n import get_lang
+        import sqlalchemy as sa
+
+        iid = ensure_instance_id()
+        lang = get_lang(request)
+        form = await request.form()
+        direction = form.get("direction", "both")
+        if direction not in ("inbound", "outbound", "both"):
+            direction = "both"
+
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.update(ConnectorConfig)
+                .where(
+                    ConnectorConfig.company_id == iid,
+                    ConnectorConfig.connector == platform,
+                )
+                .values(direction=direction)
             )
             await session.commit()
 

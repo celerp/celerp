@@ -25,6 +25,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -54,6 +55,7 @@ class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
     display_name = "WooCommerce"
     category = ConnectorCategory.WEBSITE
+    direction = SyncDirection.BOTH
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     conflict_strategy = {
         "products": "external_wins",
@@ -315,6 +317,105 @@ class WooCommerceConnector(ConnectorBase):
         log.info(
             "woocommerce.sync_contacts company=%s created=%d skipped=%d",
             ctx.company_id, result.created, result.skipped,
+        )
+        return result
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp item updates (images + certs) -> WooCommerce products."""
+        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+
+        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            items = await _upsert.list_items_with_external_id(ctx.company_id, platform="woocommerce")
+        except Exception as exc:
+            result.errors = [f"Failed to load items: {exc}"]
+            return result
+
+        base_url = _base_url(ctx)
+        auth = _auth(ctx)
+
+        async with RateLimitedClient() as client:
+            for item in items:
+                wc_id = item.get("woocommerce_product_id")
+                if not wc_id:
+                    result.skipped += 1
+                    continue
+                try:
+                    files: list[dict] = item.get("files") or []
+                    image_payload = build_platform_image_payload(files)
+                    cert_payload = build_platform_cert_payload(files)
+
+                    product_patch: dict = {}
+                    if image_payload["hero_url"]:
+                        product_patch["images"] = [{"src": image_payload["hero_url"]}] + [
+                            {"src": u} for u in image_payload["additional_urls"]
+                        ]
+                    if cert_payload:
+                        product_patch["meta_data"] = [
+                            {"key": tag_key, "value": json.dumps(certs)}
+                            for tag_key, certs in cert_payload.items()
+                        ]
+                    if not product_patch:
+                        result.skipped += 1
+                        continue
+
+                    resp = await client.put(
+                        f"{base_url}/products/{wc_id}", auth=auth, json=product_patch
+                    )
+                    resp.raise_for_status()
+                    result.updated += 1
+                except Exception as exc:
+                    errors.append(f"WC product {wc_id}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "woocommerce.sync_products_out company=%s updated=%d skipped=%d errors=%d",
+            ctx.company_id, result.updated, result.skipped, len(errors),
+        )
+        return result
+
+    # -- Outbound: Inventory push ----------------------------------------------
+
+    async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp stock levels -> WooCommerce product stock_quantity."""
+        result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            items = await _upsert.list_items_with_external_id(ctx.company_id, platform="woocommerce")
+        except Exception as exc:
+            result.errors = [f"Failed to load inventory: {exc}"]
+            return result
+
+        base_url = _base_url(ctx)
+        auth = _auth(ctx)
+
+        async with RateLimitedClient() as client:
+            for item in items:
+                product_id = item.get("woocommerce_product_id")
+                if not product_id:
+                    result.skipped += 1
+                    continue
+                try:
+                    resp = await client.put(
+                        f"{base_url}/products/{product_id}",
+                        auth=auth,
+                        json={
+                            "stock_quantity": int(item.get("quantity", 0)),
+                            "manage_stock": True,
+                        },
+                    )
+                    resp.raise_for_status()
+                    result.updated += 1
+                except Exception as exc:
+                    errors.append(f"Product {product_id}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "woocommerce.sync_inventory_out company=%s updated=%d skipped=%d errors=%d",
+            ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
 

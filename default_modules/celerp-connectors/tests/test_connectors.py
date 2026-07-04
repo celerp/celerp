@@ -382,7 +382,7 @@ async def test_sync_unsupported_entity(client, patch_session_token):
         "X-Session-Token": _FAKE_SESSION_TOKEN,
     }
     resp = await client.post("/connectors/shopify/sync", headers=headers, json={
-        "entity": "invoices",   # not a valid SyncEntity → rejected at the schema layer
+        "entity": "widgets",   # not a valid SyncEntity → rejected at the schema layer
         "access_token": "tok",
     })
     assert resp.status_code == 422

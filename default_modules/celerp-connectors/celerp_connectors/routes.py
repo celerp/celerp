@@ -53,11 +53,13 @@ class ConnectorInfo(BaseModel):
     name: str
     display_name: str
     supported_entities: list[SyncEntity]
+    direction: str
 
 
 class SyncResponse(BaseModel):
     connector: str
     entity: SyncEntity
+    direction: str
     created: int
     updated: int
     skipped: int
@@ -76,6 +78,7 @@ async def list_connectors(
             name=c.name,
             display_name=c.display_name,
             supported_entities=c.supported_entities,
+            direction=c.direction.value,
         )
         for c in connectors.all_connectors()
     ]
@@ -120,6 +123,7 @@ async def trigger_sync(
     return SyncResponse(
         connector=connector_name,
         entity=result.entity,
+        direction=result.direction.value,
         created=result.created,
         updated=result.updated,
         skipped=result.skipped,

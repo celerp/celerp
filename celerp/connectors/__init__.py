@@ -6,8 +6,10 @@ from celerp.connectors.base import (
     ConnectorContext,
     SyncResult,
     SyncEntity,
+    SyncDirection,
     SyncFrequency,
     ConnectorCategory,
+    entity_allowed,
 )
 
 __all__ = [
@@ -17,6 +19,8 @@ __all__ = [
     "ConnectorContext",
     "SyncResult",
     "SyncEntity",
+    "SyncDirection",
     "SyncFrequency",
     "ConnectorCategory",
+    "entity_allowed",
 ]

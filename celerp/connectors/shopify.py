@@ -28,6 +28,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    SyncDirection,
     SyncEntity,
     SyncResult,
 )
@@ -58,6 +59,7 @@ class ShopifyConnector(ConnectorBase):
     display_name = "Shopify"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.WEBSITE
+    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -244,6 +246,122 @@ class ShopifyConnector(ConnectorBase):
                 errors.append(f"Customer {customer.get('id')}: {exc}")
 
         result.errors = errors or None
+        return result
+
+    # -- Outbound: Inventory push ----------------------------------------------
+
+    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Push Celerp stock levels -> Shopify inventory levels."""
+        result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            items = await _upsert.list_items_with_external_id(ctx.company_id, platform="shopify")
+        except Exception as exc:
+            result.errors = [f"Failed to load inventory: {exc}"]
+            return result
+
+        async with RateLimitedClient() as client:
+            for item in items:
+                variant_id = item.get("shopify_variant_id")
+                location_id = item.get("shopify_location_id")
+                if not variant_id or not location_id:
+                    result.skipped += 1
+                    continue
+                try:
+                    resp = await client.post(
+                        f"{_base_url(ctx)}/inventory_levels/set.json",
+                        headers=_headers(ctx),
+                        json={
+                            "location_id": location_id,
+                            "inventory_item_id": variant_id,
+                            "available": int(item.get("quantity", 0)),
+                        },
+                    )
+                    resp.raise_for_status()
+                    result.updated += 1
+                except Exception as exc:
+                    errors.append(f"Item {item.get('sku')}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "shopify.sync_inventory_out company=%s updated=%d skipped=%d errors=%d",
+            ctx.company_id, result.updated, result.skipped, len(errors),
+        )
+        return result
+
+    # -- Outbound: Products push -----------------------------------------------
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
+        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+
+        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            items = await _upsert.list_items_modified_since_last_sync(ctx.company_id, platform="shopify")
+        except Exception as exc:
+            result.errors = [f"Failed to load items: {exc}"]
+            return result
+
+        async with RateLimitedClient() as client:
+            for item in items:
+                product_id = item.get("shopify_product_id")
+                if not product_id:
+                    result.skipped += 1
+                    continue
+                try:
+                    payload: dict = {"product": {}}
+                    if item.get("name"):
+                        payload["product"]["title"] = item["name"]
+                    if item.get("description"):
+                        payload["product"]["body_html"] = item["description"]
+                    if item.get("sale_price") is not None:
+                        payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
+
+                    # Push images
+                    files: list[dict] = item.get("files") or []
+                    image_payload = build_platform_image_payload(files)
+                    if image_payload["hero_url"]:
+                        payload["product"]["images"] = [{"src": image_payload["hero_url"]}] + [
+                            {"src": u} for u in image_payload["additional_urls"]
+                        ]
+
+                    resp = await client.put(
+                        f"{_base_url(ctx)}/products/{product_id}.json",
+                        headers=_headers(ctx),
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+
+                    # Push certificate metafields (separate calls per metafield)
+                    cert_payload = build_platform_cert_payload(files)
+                    for tag_key, certs in cert_payload.items():
+                        try:
+                            mf_resp = await client.post(
+                                f"{_base_url(ctx)}/products/{product_id}/metafields.json",
+                                headers=_headers(ctx),
+                                json={"metafield": {
+                                    "namespace": "custom",
+                                    "key": tag_key,
+                                    "value": json.dumps(certs),
+                                    "type": "json",
+                                }},
+                            )
+                            mf_resp.raise_for_status()
+                        except Exception as mf_exc:
+                            log.warning("shopify: metafield push failed product=%s tag=%s: %s", product_id, tag_key, mf_exc)
+
+                    result.updated += 1
+                except Exception as exc:
+                    errors.append(f"Product {product_id}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "shopify.sync_products_out company=%s updated=%d skipped=%d errors=%d",
+            ctx.company_id, result.updated, result.skipped, len(errors),
+        )
         return result
 
 

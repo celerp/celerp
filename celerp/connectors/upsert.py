@@ -52,3 +52,25 @@ async def upsert_contact_from_xero(company_id: str, contact: dict) -> str:
 async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_woocommerce(company_id, customer)
+
+
+# -- Outbound: read the Celerp-side list of records to push ---------------------
+
+async def list_items_with_external_id(company_id: str, platform: str) -> list:
+    from celerp_inventory import services as items_svc
+    return await items_svc.list_items_with_external_id(company_id, platform=platform)
+
+
+async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list:
+    from celerp_inventory import services as items_svc
+    return await items_svc.list_items_modified_since_last_sync(company_id, platform=platform)
+
+
+async def list_unsynced_invoices(company_id: str, platform: str) -> list:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.list_unsynced_invoices(company_id, platform=platform)
+
+
+async def mark_doc_pushed(company_id: str, entity_id: str, platform: str, external_id: str, entity: str = "invoice") -> None:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.mark_doc_pushed(company_id, entity_id, platform, external_id, entity=entity)
