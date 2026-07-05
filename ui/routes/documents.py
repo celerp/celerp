@@ -103,6 +103,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "entity_id": item.get("entity_id") or item.get("id") or None,
         "allow_splitting": meta["allow_splitting"],
         "batch_no": item.get("batch_no") or None,
+        "location_name": item.get("location_name") or None,
         "category": item.get("category") or None,
         "cost_price": item.get("cost_price") or None,
         "wholesale_price": item.get("wholesale_price") or None,
@@ -113,6 +114,36 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "qty_is_weight": meta["qty_is_weight"],
         "qty_is_pieces": meta["qty_is_pieces"],
     }
+
+
+def _consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[dict]:
+    """For a forward sales doc, collapse multiple physical lots of the same SKU into a
+    single option when the product is splittable (fungible): the option binds to the
+    pick-order-first lot (FIFO/FEFO/LIFO per the effective method) and shows aggregate
+    on-hand, so selling by SKU/description no longer forces a lot chooser and fulfillment
+    draws it down by the right method. Non-splittable SKUs (serialized/unique) keep one
+    option PER lot so the user picks the exact physical item. First-appearance order.
+    """
+    from celerp.services.pick import _sorted_inventory, resolve_pick_method
+    by_sku: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for it in items:
+        sku = str(it.get("sku") or "")
+        if sku not in by_sku:
+            by_sku[sku] = []
+            order.append(sku)
+        by_sku[sku].append(it)
+    out: list[dict] = []
+    for sku in order:
+        group = by_sku[sku]
+        if len(group) == 1 or not all(g.get("allow_splitting") for g in group):
+            out.extend(group)  # unique / non-splittable -> keep each lot (labeled)
+            continue
+        method = resolve_pick_method(group[0], company_settings)
+        rep = dict(_sorted_inventory(group, method)[0])  # bind the pick-first lot
+        rep["quantity"] = sum(float(g.get("quantity") or 0) for g in group)  # aggregate on-hand
+        out.append(rep)
+    return out
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -1376,6 +1407,10 @@ def setup_routes(app):
             _unit_map = build_unit_map(await api.get_units(token))
         except Exception:
             _unit_map = {}
+        try:
+            _company_settings = (await api.get_company(token)).get("settings") or {}
+        except Exception:
+            _company_settings = {}
 
         def _extract(item: dict) -> dict:
             return _picker_item(item, resolve_price(item, price_list), _unit_map)
@@ -1399,12 +1434,15 @@ def setup_routes(app):
             if items:
                 return JSONResponse(_extract(items[0]))
 
-            # Exact SKU: may map to multiple lots -> chooser.
+            # Exact SKU: forward sales consolidate splittable lots into one option (the
+            # pick-order-first lot); non-splittable / credit notes keep per-lot -> chooser.
             sku_params = ({"sku": code, "limit": 20, "status": "sold"} if is_credit_note
                           else {"sku": code, "limit": 20})
             sku_items = await _first(sku_params)
             if not sku_items and is_credit_note:
                 sku_items = await _first({"sku": code, "limit": 20})
+            if not is_credit_note:
+                sku_items = _consolidate_sales_lots(sku_items, _company_settings)
             if len(sku_items) > 1:
                 return JSONResponse(_ambiguous(code, sku_items))
             if sku_items:
@@ -1442,6 +1480,13 @@ def setup_routes(app):
 
         try:
             if is_credit_note:
+                _company_settings = {}
+            else:
+                try:
+                    _company_settings = (await api.get_company(token)).get("settings") or {}
+                except Exception:
+                    _company_settings = {}
+            if is_credit_note:
                 # Credit notes: search sold items first, then active, merge (sold first)
                 resp_sold = await api.list_items(token, {"q": q, "limit": 10, "status": "sold"})
                 sold = resp_sold.get("items", []) if isinstance(resp_sold, dict) else resp_sold
@@ -1460,6 +1505,8 @@ def setup_routes(app):
             else:
                 resp = await api.list_items(token, {"q": q, "limit": 10})
                 items = resp.get("items", []) if isinstance(resp, dict) else resp
+                # Forward sales: collapse splittable lots of a SKU into one option.
+                items = _consolidate_sales_lots(items, _company_settings)
                 return _J([_extract(i) for i in items])
         except Exception:
             return _J([])

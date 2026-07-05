@@ -485,6 +485,7 @@
   "field.tooltip.purchase_name": "The name your supplier uses for this item. Appears on purchase orders.",
   "field.tooltip.purchase_sku": "Your supplier's SKU or part number for this item. Used on purchase orders.",
   "field.tooltip.purchase_unit": "The unit your supplier sells in (e.g. box, roll, kg). May differ from your sell unit.",
+  "field.tooltip.pick_method": "Which physical lot to draw down first when selling: FIFO (oldest received), FEFO (soonest to expire), or LIFO (newest). 'Default' uses the company setting. LIFO is US-GAAP only (not permitted under IFRS).",
   "field.tooltip.quantity": "The current stock quantity, measured in the sell unit.",
   "field.tooltip.reorder_point": "When on-hand falls to or below this level, the item is flagged for reordering. Leave blank or 0 to disable.",
   "field.tooltip.reorder_qty": "Suggested quantity to order when below the reorder point, in the purchase unit. Feeds draft purchase orders.",

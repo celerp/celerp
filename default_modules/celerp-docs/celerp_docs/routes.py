@@ -1838,6 +1838,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "tax_codes", "hs_code", "weight", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
+                "allow_splitting", "pick_method",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
@@ -3089,6 +3090,56 @@ def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict
         )
 
 
+async def _plan_span_draws(session, company_id, primary_proj, needed: float, exclude: set):
+    """Plan a cross-lot draw of ``needed`` units for a splittable SKU.
+
+    Consumes the line's bound (primary) lot first - so the doc line's own parcel is
+    always marked fulfilled - then draws the shortfall from the SKU's other available
+    lots in the effective pick order (FIFO/FEFO/LIFO, resolved from the item's
+    pick_method / company inventory_method). COGS is each drawn lot's own cost
+    (specific identification by lot), so the order yields FIFO-cost / LIFO-cost.
+
+    Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
+    SKU's total available stock (minus already-committed lots) is still short.
+    """
+    from celerp.services.pick import resolve_pick_method, _sorted_inventory
+    from celerp.models.company import Company
+    sku = str(primary_proj.state.get("sku") or "").strip()
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
+    method = resolve_pick_method(primary_proj.state, company_settings)
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    lots = [r for r in rows
+            if str(r.state.get("sku") or "").strip() == sku
+            and (r.state.get("status") or "available") == "available"
+            and float(r.state.get("quantity") or 0) > 1e-9
+            and r.entity_id not in exclude]
+    by_id = {l.entity_id: l for l in lots}
+    if primary_proj.entity_id not in by_id:
+        return None
+    if sum(float(l.state.get("quantity") or 0) for l in lots) + 1e-9 < needed:
+        return None  # truly short across all lots
+
+    def _d(p):
+        return {"entity_id": p.entity_id,
+                "created_at": p.created_at.isoformat() if p.created_at else "",
+                "expires_at": p.state.get("expires_at")}
+    others = [l for l in lots if l.entity_id != primary_proj.entity_id]
+    ordered_ids = [primary_proj.entity_id] + [d["entity_id"] for d in _sorted_inventory([_d(o) for o in others], method)]
+
+    draws, remaining = [], needed
+    for eid in ordered_ids:
+        if remaining <= 1e-9:
+            break
+        lot = by_id[eid]
+        avail = float(lot.state.get("quantity") or 0)
+        take = min(remaining, avail)
+        draws.append((lot, take, abs(take - avail) <= 1e-9))
+        remaining -= take
+    return draws
+
+
 @router.post("/{entity_id}/fulfill-lines")
 async def fulfill_lines(
     entity_id: str,
@@ -3134,6 +3185,7 @@ async def fulfill_lines(
     service_eids: set[str] = set()  # service lines: rendered, not picked from stock
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
+    span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
@@ -3156,6 +3208,28 @@ async def fulfill_lines(
         line_qty = line_qty_by_eid.get(item_eid, 0.0)
         available = float(item_proj.state.get("quantity", 0))
         if line_qty > available + 1e-9:
+            # Cross-lot spanning: a splittable product can draw the shortfall from other
+            # lots of the same SKU (bound lot first, then FIFO/FEFO/LIFO). Each drawn lot
+            # is fulfilled at its own cost (specific identification by lot).
+            if item_proj.state.get("allow_splitting") is True:
+                _draws = await _plan_span_draws(
+                    session, company_id, item_proj, line_qty,
+                    exclude=set(to_fulfill) | span_consumed,
+                )
+                if _draws is not None:
+                    for _lot, _take, _full in _draws:
+                        _leid = _lot.entity_id
+                        fetched[_leid] = _lot
+                        to_fulfill.append(_leid)
+                        span_consumed.add(_leid)
+                        if not _full:
+                            _lsb = _lot.state.get("sell_by")
+                            split_plan[_leid] = {
+                                "child_qty": _take,
+                                "child_weight": _take if is_weight_unit(_lsb, _unit_map) else None,
+                                "child_pieces": _take if is_pieces_unit(_lsb, _unit_map) else None,
+                            }
+                    continue
             blocked.append(
                 f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
             )

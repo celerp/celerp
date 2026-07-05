@@ -9495,6 +9495,49 @@ class TestReorderPurchaseLineConversion:
         assert 'placeholder="2"' not in html
 
 
+class TestCatalogConsolidation:
+    """Forward-sales catalog: splittable lots of a SKU collapse to one option bound to the
+    pick-order-first lot; non-splittable lots stay per-lot so the exact one is selectable."""
+
+    def test_splittable_lots_consolidate_fifo_binds_oldest(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:new", "quantity": 40, "allow_splitting": True, "created_at": "2026-02-01"},
+            {"sku": "W", "entity_id": "item:old", "quantity": 60, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {"inventory_method": "fifo"})
+        assert len(out) == 1
+        assert out[0]["entity_id"] == "item:old"   # FIFO -> oldest lot bound
+        assert out[0]["quantity"] == 100           # aggregate on-hand shown
+
+    def test_lifo_binds_newest_lot(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:new", "quantity": 40, "allow_splitting": True, "created_at": "2026-02-01"},
+            {"sku": "W", "entity_id": "item:old", "quantity": 60, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {"inventory_method": "lifo"})
+        assert len(out) == 1 and out[0]["entity_id"] == "item:new"
+
+    def test_non_splittable_kept_per_lot(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "quantity": 1, "allow_splitting": False, "batch_no": "A"},
+            {"sku": "DIA", "entity_id": "item:b", "quantity": 1, "allow_splitting": False, "batch_no": "B"},
+        ]
+        out = _consolidate_sales_lots(items, {})
+        assert len(out) == 2  # each unique lot stays selectable
+
+    def test_distinct_skus_grouped_independently(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:1", "quantity": 5, "allow_splitting": True, "created_at": "2026-01-01"},
+            {"sku": "X", "entity_id": "item:2", "quantity": 3, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {})
+        assert {o["sku"] for o in out} == {"W", "X"} and len(out) == 2
+
+
 class TestReorderPlaceholderHelper:
     """The shared reorder-cell placeholder helper used by the edit/display/patch
     re-render endpoints, so the grey suggestion stays visible instantly after Escape

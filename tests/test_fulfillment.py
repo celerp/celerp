@@ -103,6 +103,43 @@ class TestPickAlgorithm:
         assert result.picks[1].cost_price == 2.0  # expires Jun 01
         assert result.picks[1].pick_qty == 3
 
+    def test_lifo_newest_first(self):
+        line_items = [{"sku": "SKU-A", "quantity": 15}]
+        inventory = [
+            self._inv("SKU-A", 10, created_at="2026-01-05", cost_price=2.0),
+            self._inv("SKU-A", 10, created_at="2026-01-01", cost_price=1.5),
+            self._inv("SKU-A", 10, created_at="2026-01-10", cost_price=3.0),
+        ]
+        result = compute_pick_plan(line_items, inventory, strategy="lifo")
+        assert result.strategy == "lifo"
+        # Newest batch (Jan 10) first (full 10), then next-newest (Jan 05) for remaining 5.
+        assert result.picks[0].cost_price == 3.0 and result.picks[0].pick_qty == 10
+        assert result.picks[1].cost_price == 2.0 and result.picks[1].pick_qty == 5
+        # COGS = specific cost of the lots drawn (10*3.0 + 5*2.0 = 40).
+        assert sum(p.pick_qty * p.cost_price for p in result.picks) == 40.0
+
+    def test_explicit_strategy_overrides_auto_detect(self):
+        # Inventory HAS an expiry (would auto-detect FEFO), but an explicit FIFO wins.
+        line_items = [{"sku": "SKU-A", "quantity": 5}]
+        inventory = [
+            self._inv("SKU-A", 5, created_at="2026-01-01", expires_at="2026-09-01", cost_price=1.0),
+            self._inv("SKU-A", 5, created_at="2026-01-02", expires_at="2026-03-01", cost_price=2.0),
+        ]
+        result = compute_pick_plan(line_items, inventory, strategy="fifo")
+        assert result.strategy == "fifo"
+        assert result.picks[0].cost_price == 1.0  # oldest received, not soonest-expiry
+
+    def test_resolve_pick_method(self):
+        from celerp.services.pick import resolve_pick_method
+        # Item override wins over company default.
+        assert resolve_pick_method({"pick_method": "lifo"}, {"inventory_method": "fifo"}) == "lifo"
+        # "default"/blank item -> company default.
+        assert resolve_pick_method({"pick_method": "default"}, {"inventory_method": "fefo"}) == "fefo"
+        assert resolve_pick_method({}, {"inventory_method": "lifo"}) == "lifo"
+        # Nothing set -> fifo. Invalid values ignored.
+        assert resolve_pick_method({}, {}) == "fifo"
+        assert resolve_pick_method({"pick_method": "bogus"}, {}) == "fifo"
+
     def test_sku_exact_match(self):
         line_items = [{"sku": "SKU-A", "quantity": 5}]
         inventory = [
@@ -1376,3 +1413,37 @@ async def test_fulfill_whole_draw_secondary_equal_ok(client, auth):
     fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [item_id]})
     assert fr.status_code == 200, fr.text
+
+
+@pytest.mark.asyncio
+async def test_fulfill_spans_across_lots_specific_id_cogs(client, session, auth, _setup_ids):
+    """Cross-lot spanning: a splittable line whose qty exceeds its bound lot draws the
+    shortfall from another lot of the same SKU (bound lot first, then FIFO). Both lots
+    are consumed and COGS is each lot's own cost (specific identification by lot)."""
+    h = auth["headers"]
+    sku = f"SPAN-{uuid.uuid4().hex[:6]}"
+    ra = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 60,
+                           "sell_by": "piece", "cost_total": 60.0, "allow_splitting": True})
+    assert ra.status_code == 200, ra.text
+    lot_a = ra.json()["id"]
+    rb = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 40,
+                           "sell_by": "piece", "cost_total": 80.0, "allow_splitting": True})
+    assert rb.status_code == 200, rb.text
+    lot_b = rb.json()["id"]
+
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 100, "unit_price": 5.0, "entity_id": lot_a},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=h, json={"line_entity_ids": [lot_a]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+
+    # Both lots consumed by the span (bound lot A + spanned lot B), not just the bound one.
+    assert (await client.get(f"/items/{lot_a}", headers=h)).json()["status"] == "sold"
+    assert (await client.get(f"/items/{lot_b}", headers=h)).json()["status"] == "sold"
+
+    # COGS = specific cost of the drawn lots: 60 (lot A) + 80 (lot B) = 140.
+    led = (await client.get(f"/ledger?entity_id={doc_id}", headers=h)).json()["items"]
+    fulfilled = next((e for e in led if e.get("event_type") == "doc.fulfilled"), None)
+    assert fulfilled is not None
+    assert abs(float(fulfilled["data"].get("total_cogs", 0)) - 140.0) < 1e-6

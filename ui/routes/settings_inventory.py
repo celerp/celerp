@@ -167,12 +167,30 @@ def _reorder_tab(company: dict, saved: bool = False) -> FT:
     _enabled = company.get("reorder_alerts_enabled")
     alerts_enabled = True if _enabled is None else bool(_enabled)
     email_enabled = bool(company.get("reorder_alert_email"))
+    _method = str(company.get("inventory_method") or "fifo").lower()
+    _method_opts = [("fifo", "FIFO - oldest received first"),
+                    ("fefo", "FEFO - soonest to expire first"),
+                    ("lifo", "LIFO - newest received first (US GAAP only)")]
     return Div(
         flash("Settings saved.", "success") if saved else "",
-        H3("Reorder alerts", cls="settings-section-title"),
-        P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
-          cls="settings-hint"),
         Form(
+            H3("Stock cutting method", cls="settings-section-title"),
+            P("Which physical lot is drawn down first when you sell. A sale of a splittable "
+              "product spans lots in this order; each lot is costed at its own cost (specific "
+              "identification). An item can override this in its details.", cls="settings-hint"),
+            Div(
+                Label("Default method", For="inventory_method", cls="form-label"),
+                Select(
+                    *[Option(lbl, value=val, selected=(val == _method)) for val, lbl in _method_opts],
+                    name="inventory_method", id="inventory_method", cls="form-input input--narrow",
+                ),
+                cls="form-group",
+            ),
+            P("LIFO is permitted under US GAAP but not under IFRS - use FIFO or FEFO for IFRS reporting.",
+              cls="form-hint"),
+            H3("Reorder alerts", cls="settings-section-title", style="margin-top:1.25rem;"),
+            P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
+              cls="settings-hint"),
             Div(
                 Label(
                     Input(type="checkbox", name="reorder_alerts_enabled", value="1", checked=alerts_enabled),
@@ -527,8 +545,15 @@ def setup_routes(app):
         form = await request.form()
         enabled = str(form.get("reorder_alerts_enabled") or "") in ("1", "on", "true")
         email = str(form.get("reorder_alert_email") or "") in ("1", "on", "true")
+        method = str(form.get("inventory_method") or "fifo").lower()
+        if method not in ("fifo", "fefo", "lifo"):
+            method = "fifo"
         try:
-            await api.patch_company(token, {"reorder_alerts_enabled": enabled, "reorder_alert_email": email})
+            await api.patch_company(token, {
+                "reorder_alerts_enabled": enabled,
+                "reorder_alert_email": email,
+                "inventory_method": method,
+            })
         except APIError:
             pass
         return RedirectResponse("/settings/inventory?tab=reorder&saved=1", status_code=303)
