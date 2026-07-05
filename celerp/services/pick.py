@@ -21,7 +21,6 @@ class PickLine:
     pick_qty: float
     cost_price: float
     action: str          # "full" | "split"
-    split_sku: str = ""  # populated only when action="split"
 
 
 @dataclass
@@ -32,8 +31,14 @@ class PickResult:
 
 
 def _matches_sku(item_sku: str, line_sku: str) -> bool:
-    """Exact match OR child SKU (e.g. 'ITEM-001.1' matches parent 'ITEM-001')."""
-    return item_sku == line_sku or item_sku.startswith(f"{line_sku}.")
+    """Exact match, or a LEGACY digit-suffixed split child ('ITEM-001.1' matches
+    'ITEM-001'). New split children keep the parent SKU, so the suffix case only covers
+    pre-existing '.N' lots; a distinct product like 'ITEM-001.PRO' is NOT matched."""
+    if item_sku == line_sku:
+        return True
+    if item_sku.startswith(f"{line_sku}."):
+        return item_sku[len(line_sku) + 1:].isdigit()
+    return False
 
 
 VALID_PICK_METHODS = ("fifo", "fefo", "lifo")
@@ -153,14 +158,14 @@ def compute_pick_plan(
                 needed -= avail
                 remaining[eid] = 0
             elif allow_split:
-                # Partial pick — split allowed
+                # Partial pick — split off `needed`; the child KEEPS the parent SKU
+                # (same product, distinct lot by barcode/entity_id).
                 picks.append(PickLine(
                     item_id=eid,
                     sku=item.get("sku", ""),
                     pick_qty=needed,
                     cost_price=cost,
                     action="split",
-                    split_sku=f"{item.get('sku', '')}.{_next_child_suffix(item.get('sku', ''), inventory)}",
                 ))
                 remaining[eid] -= needed
                 needed = 0
@@ -170,21 +175,3 @@ def compute_pick_plan(
             unfulfilled.append({"sku": line_sku, "short_qty": round(needed, 6)})
 
     return PickResult(picks=picks, unfulfilled=unfulfilled, strategy=strategy)
-
-
-def _next_child_suffix(parent_sku: str, inventory: list[dict]) -> int:
-    """Determine the next available child suffix number for a parent SKU."""
-    max_suffix = 0
-    prefix = f"{parent_sku}."
-    for item in inventory:
-        item_sku = item.get("sku", "")
-        if item_sku.startswith(prefix):
-            tail = item_sku[len(prefix):]
-            # Only consider direct children (no further dots)
-            if "." not in tail:
-                try:
-                    n = int(tail)
-                    max_suffix = max(max_suffix, n)
-                except ValueError:
-                    pass
-    return max_suffix + 1

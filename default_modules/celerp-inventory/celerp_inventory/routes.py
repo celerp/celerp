@@ -1307,23 +1307,8 @@ async def split_preview(
     weight_decimals = weight_unit_cfg.get("decimals", 2)
 
     if not child_sku:
-        prefix = f"{parent_sku}."
-        existing_res = await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-            )
-        )
-        all_items = existing_res.scalars().all()
-        max_suffix = 0
-        for it in all_items:
-            sku = str(it.state.get("sku", "") or "")
-            if sku.startswith(prefix) and "." not in sku[len(prefix):]:
-                try:
-                    max_suffix = max(max_suffix, int(sku[len(prefix):]))
-                except ValueError:
-                    pass
-        child_sku = f"{prefix}{max_suffix + 1}"
+        # Child keeps the parent SKU (same product; distinct lot by barcode/entity_id).
+        child_sku = parent_sku
 
     weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
 
@@ -1423,18 +1408,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
             )
 
-    # Validate child SKU uniqueness within batch
+    # Split children are the same product as the parent: by default they KEEP the parent
+    # SKU (split-preview pre-fills it) and are distinguished by their own unique barcode /
+    # entity_id. SKUs repeat across lots, so children may share the parent's SKU and each
+    # other's - no uniqueness or parent-difference guard applies.
     child_skus = [c.sku for c in children]
-    if len(child_skus) != len(set(child_skus)):
-        raise HTTPException(status_code=409, detail="Duplicate SKUs within split children")
-
-    # A child must not reuse the parent's SKU (the parent keeps it). Uniqueness of a
-    # child SKU against *other* existing items is no longer enforced - SKUs may repeat
-    # across physical lots; each child gets its own unique barcode from the sequence.
     parent_sku = parent.state.get("sku")
-    for child_sku in child_skus:
-        if child_sku == parent_sku:
-            raise HTTPException(status_code=422, detail=f"Child SKU cannot be the same as the parent SKU '{parent_sku}'. The parent keeps its original SKU.")
 
     # Create child items
     child_eids: list[str] = []
@@ -1732,20 +1711,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
 
-    # Next free child SKU: {parent_sku}.N
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
-    )).scalars().all()
-    prefix = f"{parent_sku}."
-    max_suffix = 0
-    for it in rows:
-        sku = str(it.state.get("sku", "") or "")
-        if sku.startswith(prefix) and "." not in sku[len(prefix):]:
-            try:
-                max_suffix = max(max_suffix, int(sku[len(prefix):]))
-            except ValueError:
-                pass
-    child_sku = f"{prefix}{max_suffix + 1}"
+    # The split child is the same product as the parent: it KEEPS the parent SKU and is
+    # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
+    child_sku = parent_sku
 
     # Cost: proportional by quantity (unit-cost invariant).
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (

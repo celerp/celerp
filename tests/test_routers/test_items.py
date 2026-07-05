@@ -515,16 +515,36 @@ async def test_split_child_sku_may_reuse_existing(client):
 
 
 @pytest.mark.asyncio
-async def test_split_child_sku_cannot_equal_parent(client):
-    """The one remaining split-sku guard: a child may not reuse the PARENT's sku."""
+async def test_split_children_keep_parent_sku(client):
+    """A split child is the same product as the parent, so it now KEEPS the parent SKU
+    (all children can share it) - distinguished by its own unique barcode. Formerly this
+    was forbidden (422); the '.N' suffix is gone."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={"sku": "PARENT-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
-        "children": [{"sku": "PARENT-SKU", "quantity": 4}, {"sku": "NEW-SKU2", "quantity": 4}]
+        "children": [{"sku": "PARENT-SKU", "quantity": 4}, {"sku": "PARENT-SKU", "quantity": 4}]
     }, headers=h)
-    assert r.status_code == 422
+    assert r.status_code == 200, r.text
+    # Both children share the parent SKU but have distinct, unique barcodes.
+    child_ids = [c["id"] for c in r.json()["children"]]
+    kids = [(await client.get(f"/items/{cid}", headers=h)).json() for cid in child_ids]
+    assert all(k["sku"] == "PARENT-SKU" for k in kids)
+    barcodes = [k.get("barcode") for k in kids]
+    assert all(barcodes) and len(set(barcodes)) == len(barcodes)
+
+
+@pytest.mark.asyncio
+async def test_split_preview_suggests_parent_sku(client):
+    """The split preview pre-fills the child SKU as the parent SKU (no '.N' suffix)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "PREV-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    parent_id = r.json()["id"]
+    prev = await client.get(f"/items/{parent_id}/split-preview", headers=h)
+    assert prev.status_code == 200, prev.text
+    assert prev.json()["child_sku"] == "PREV-SKU"
 
 
 @pytest.mark.asyncio
