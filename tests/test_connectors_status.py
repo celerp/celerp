@@ -105,3 +105,18 @@ def test_entitlement_cta_renders_trial_link():
     out = to_xml(_entitlement_cta())
     assert "/settings/cloud" in out
     assert "subscription" in out.lower()
+
+
+# ── H3: broker-supplied OAuth authorize_url validation ────────────────────────
+
+def test_is_safe_authorize_url():
+    """Only an https URL with no tag-breakout chars / non-web scheme is safe to
+    open/inject (guards connector_oauth_redirect against a hostile broker payload)."""
+    from ui.routes.settings_connectors import _is_safe_authorize_url
+    assert _is_safe_authorize_url("https://shop.myshopify.com/admin/oauth/authorize?client_id=x") is True
+    assert _is_safe_authorize_url("") is False
+    assert _is_safe_authorize_url("http://evil.example/oauth") is False        # not https
+    assert _is_safe_authorize_url("javascript:alert(1)") is False              # non-web scheme
+    assert _is_safe_authorize_url("data:text/html,evil") is False              # non-web scheme
+    assert _is_safe_authorize_url("https://x/</script><script>evil()</script>") is False  # tag breakout
+    assert _is_safe_authorize_url("https://x/\x00abc") is False                # control char

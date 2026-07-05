@@ -439,3 +439,30 @@ async def test_proxy_response_preserves_multiple_set_cookie(client, monkeypatch)
     assert any("refresh_token=RRR" in c for c in cookies)
     # content-length is dropped so the relay recomputes it from the (decoded) body.
     assert not any(k.lower() == "content-length" for k, _ in headers)
+
+
+# ── H1: proxy path denylist (client-side relay-trust hardening) ────────────────
+
+@pytest.mark.asyncio
+async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
+    """A remote-proxied request to a destructive local-only route (factory reset) is
+    refused with 403 and nothing is forwarded to the UI server - a compromised broker
+    (even replaying a captured session) cannot trigger a wipe."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+    client._ws = object()  # non-None sentinel; the forward path is never reached
+
+    for path in ("/settings/factory-reset", "/settings/factory-reset/confirm"):
+        sent.clear()
+        await client._handle_proxy_request(
+            {"id": "r1", "method": "POST", "path": path, "query": "", "headers": {}, "body_b64": ""}
+        )
+        assert len(sent) == 1, path
+        payload = sent[0]["payload"]
+        assert payload["status"] == 403
+        assert b"local machine" in _b64.b64decode(payload["body_b64"])
