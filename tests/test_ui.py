@@ -14176,3 +14176,29 @@ def test_compact_pages_shows_full_count_and_last():
     assert _compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
     assert _compact_pages(9, 10) == [1, None, 8, 9, 10]
     assert _compact_pages(10, 10) == [1, None, 9, 10]
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_no_email_toasts_cli_instruction(ui_client):
+    """Self-hosted (no email transport): the forgot-password link surfaces the CLI-reset
+    instruction as a PERSISTENT toast and keeps the user on the login screen - no page
+    takeover, no false 'check your email'."""
+    import ui.routes.auth as _auth
+    with patch.object(_auth._settings, "gateway_token", ""), patch.object(_auth._settings, "smtp_host", ""):
+        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    trig = r.headers.get("HX-Trigger", "")
+    assert "celerpToast" in trig
+    assert "reset-password" in trig          # the CLI command is in the message
+    assert '"persist": true' in trig          # stays until the user dismisses it
+    assert b"check your email" not in r.content.lower() if r.content else True
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_with_email_redirects_to_form(ui_client):
+    """Email-capable install: the HTMX click full-navigates to the email-reset form."""
+    import ui.routes.auth as _auth
+    with patch.object(_auth._settings, "gateway_token", "tok"), patch.object(_auth._settings, "smtp_host", ""):
+        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/forgot-password"
