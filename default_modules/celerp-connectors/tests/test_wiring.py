@@ -126,7 +126,12 @@ async def test_scheduler_reconciles_realtime_config():
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
-    assert run_sync_mock.await_count >= 1
+    # Regression for the "outbound never dispatched" bug: a direction=both connector
+    # must dispatch BOTH inbound entities AND the outbound (*_out) ones it implements.
+    # (Asserting await_count >= 1 — the old check — passed even when outbound was dead.)
+    entities_run = {call.args[2] for call in run_sync_mock.await_args_list}
+    assert {"products", "orders", "contacts"} <= entities_run   # inbound
+    assert "products_out" in entities_run                        # outbound (Shopify pushes products)
 
 
 def _sched_config(**over):

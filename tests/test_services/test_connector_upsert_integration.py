@@ -370,15 +370,22 @@ async def test_invoice_push_writeback_prevents_duplicate(use_test_session, monke
     monkeypatch.setattr("celerp.connectors.quickbooks.RateLimitedClient", lambda *a, **k: client)
 
     ctx = ConnectorContext(company_id=str(cid), access_token="t", store_handle="123456789")
-    result = await QuickBooksConnector().sync_invoices_out(ctx)
-    assert result.created == 1 and not result.errors
+    connector = QuickBooksConnector()
+    first = await connector.sync_invoices_out(ctx)
+    assert first.created == 1 and not first.errors
 
-    # After push: stamped, and no longer a candidate -> a re-run won't create it again.
+    # After push: stamped, and no longer a candidate.
     after = await list_unsynced_invoices(str(cid), "quickbooks")
     assert not any(i["ref_id"] == "INV-100" for i in after)
     st = await session.scalar(text(
         "SELECT state FROM projections WHERE company_id = :c AND entity_id = 'doc:native-1'"), {"c": cid})
     assert st["quickbooks_invoice_id"] == "QB-555"
+
+    # The regression that matters: a SECOND run must NOT create the invoice again.
+    # Without the doc.pushed write-back this POSTs twice → a duplicate invoice in QB.
+    second = await connector.sync_invoices_out(ctx)
+    assert second.created == 0                    # nothing left to push
+    assert client.post.await_count == 1           # exactly one create on the platform, ever
 
 
 @pytest.mark.asyncio
@@ -426,3 +433,52 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
     ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s.myshopify.com")
     await sync_runner.run_sync(_Stub(), ctx, "products")  # since defaults to the watermark
     assert seen["since"] == watermark
+
+
+@pytest.mark.asyncio
+async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatch):
+    """run_sync must route an outbound entity to its *_out method, and the direction
+    gate must BLOCK it when the connector is inbound-only. Regression for both the
+    'outbound never wired' bug and the direction filter."""
+    import contextlib
+
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import (
+        ConnectorBase, ConnectorContext, SyncDirection, SyncEntity, SyncResult,
+    )
+
+    @contextlib.asynccontextmanager
+    async def _ctx():
+        yield session
+    monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
+
+    calls: list[str] = []
+
+    class _Stub(ConnectorBase):
+        name = "stub_out"
+        display_name = "Stub"
+        category = None
+        direction = SyncDirection.BOTH
+        supported_entities = [SyncEntity.PRODUCTS]
+        conflict_strategy: dict = {}
+
+        async def sync_products(self, ctx, since=None):
+            return SyncResult(entity=SyncEntity.PRODUCTS)
+
+        async def sync_orders(self, ctx, since=None):
+            return SyncResult(entity=SyncEntity.ORDERS)
+
+        async def sync_products_out(self, ctx):
+            calls.append("products_out")
+            return SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND, created=1)
+
+    ctx = ConnectorContext(company_id="co-out-1", access_token="t", store_handle="s")
+
+    # direction=both -> the outbound method IS dispatched.
+    r1 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.BOTH)
+    assert calls == ["products_out"] and r1.created == 1
+
+    # direction=inbound -> the outbound entity is BLOCKED (method not called again).
+    r2 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.INBOUND)
+    assert calls == ["products_out"]  # unchanged — the push did not run
+    assert r2.errors and "blocked by direction" in r2.errors[0]
