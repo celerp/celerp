@@ -100,14 +100,13 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
 class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BOTH
+    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
+    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
         SyncEntity.CONTACTS: "merge",
-        SyncEntity.INVOICES: "platform",
     }
 
     # -- Products (Items in QB) ------------------------------------------------
@@ -124,7 +123,7 @@ class QuickBooksConnector(ConnectorBase):
           Item.PurchaseCost     -> item.cost_price
           Item.Id               -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -159,11 +158,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=money(qb_item.get("PurchaseCost")),
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -187,7 +182,7 @@ class QuickBooksConnector(ConnectorBase):
           Invoice.Balance         -> used to determine status
           Invoice.Id              -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -199,11 +194,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for inv in invoices:
             try:
-                created = await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('DocNumber')}: {exc}")
 
@@ -218,7 +209,7 @@ class QuickBooksConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull QuickBooks Customers -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -230,11 +221,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer))
             except Exception as exc:
                 errors.append(f"Customer {customer.get('Id')}: {exc}")
 
@@ -286,6 +273,11 @@ class QuickBooksConnector(ConnectorBase):
                         json=payload,
                     )
                     resp.raise_for_status()
+                    # Write-back: stamp the returned QB invoice id so the next run's
+                    # list_unsynced_invoices skips this doc — never created in QB twice.
+                    qb_id = ((resp.json() or {}).get("Invoice") or {}).get("Id")
+                    if qb_id and inv.get("entity_id"):
+                        await _upsert.mark_doc_pushed(ctx.company_id, inv["entity_id"], "quickbooks", qb_id)
                     result.created += 1
                 except Exception as exc:
                     errors.append(f"Invoice {inv.get('ref_id')}: {exc}")

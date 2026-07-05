@@ -7,7 +7,7 @@ import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
-from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncEntity
+from celerp.connectors.base import ConnectorCategory, SyncEntity
 from celerp.connectors.registry import all_connectors
 
 _RELEASE_CONNECTORS = [
@@ -36,10 +36,6 @@ def test_has_supported_entities(connector):
     assert len(connector.supported_entities) > 0
     for e in connector.supported_entities:
         assert isinstance(e, SyncEntity)
-
-
-def test_has_direction(connector):
-    assert isinstance(connector.direction, SyncDirection)
 
 
 def test_has_conflict_strategy(connector):

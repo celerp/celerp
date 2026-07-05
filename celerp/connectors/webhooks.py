@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
+from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.sync_runner import run_sync
 import celerp.connectors as connector_registry
 
@@ -27,7 +27,6 @@ _TOPIC_ENTITY_MAP = {
     "order": "orders",
     "customers": "contacts",
     "customer": "contacts",
-    "inventory_levels": "inventory",
 }
 
 
@@ -47,21 +46,16 @@ def topic_to_entity(topic: str) -> str | None:
 
 
 async def handle_webhook(
-    event: WebhookEvent,
-    ctx: ConnectorContext,
-    direction: SyncDirection = SyncDirection.BOTH,
+    event: WebhookEvent, ctx: ConnectorContext, direction: SyncDirection = SyncDirection.BOTH
 ) -> None:
-    """Handle an incoming webhook event by running a targeted sync.
+    """Handle an incoming webhook event by running a targeted inbound sync.
 
-    Only processes inbound-relevant entities. Respects direction config.
-    """
+    Webhooks are inbound (a platform change -> pull into Celerp); `direction` is the
+    connector's configured direction so an outbound-only config ignores the pull
+    (run_sync enforces the gate)."""
     entity = topic_to_entity(event.topic)
     if not entity:
         log.warning("webhook: unknown topic %s for %s", event.topic, event.platform)
-        return
-
-    if not entity_allowed(entity, direction):
-        log.debug("webhook: %s blocked by direction=%s", entity, direction.value)
         return
 
     try:
@@ -100,12 +94,12 @@ async def dispatch_woocommerce_webhook(raw_body: bytes, signature: str, topic: s
     async with get_session_ctx() as session:
         rows = await session.execute(
             sa.select(
-                ConnectorConfig.company_id, ConnectorConfig.direction, ConnectorConfig.webhook_secret
+                ConnectorConfig.company_id, ConnectorConfig.webhook_secret, ConnectorConfig.direction
             ).where(ConnectorConfig.connector == "woocommerce")
         )
         configs = rows.all()
 
-    for company_id, direction, secret in configs:
+    for company_id, secret, direction in configs:
         if not secret or not connector.validate_webhook(raw_body, signature, secret):
             continue
         ctx = await fetch_context(company_id, "woocommerce")
@@ -116,7 +110,7 @@ async def dispatch_woocommerce_webhook(raw_body: bytes, signature: str, topic: s
         except (ValueError, TypeError):
             data = {}
         event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
-        await handle_webhook(event, ctx, direction=SyncDirection(direction))
+        await handle_webhook(event, ctx, SyncDirection(direction or "both"))
         return True
 
     return False

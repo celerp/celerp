@@ -9,7 +9,7 @@ CelERP relay service and injected at call time via ConnectorContext.
 
 Sync direction:
   - INBOUND: external platform -> Celerp (pull products, orders, contacts)
-  - OUTBOUND: Celerp -> external platform (push invoices, inventory updates)
+  - OUTBOUND: Celerp -> external platform (push items, invoices, inventory)
   - BOTH: bidirectional
 """
 from __future__ import annotations
@@ -49,7 +49,8 @@ class SyncFrequency(str, Enum):
     DAILY = "daily"         # once per day at configured hour
 
 
-# Entity classification for direction filtering
+# Entity classification for direction filtering. Inbound entities are pulled from
+# the platform; the *_out entities are pushed from Celerp to the platform.
 _INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
 
@@ -77,7 +78,7 @@ class ConnectorContext:
 @dataclass
 class SyncResult:
     entity: SyncEntity
-    direction: SyncDirection
+    direction: SyncDirection = SyncDirection.INBOUND
     created: int = 0
     updated: int = 0
     skipped: int = 0
@@ -87,9 +88,18 @@ class SyncResult:
     def ok(self) -> bool:
         return not self.errors
 
+    def record(self, outcome: str) -> None:
+        """Tally a `connector_upsert`/push outcome ("created" | "updated" | "noop")."""
+        if outcome == "created":
+            self.created += 1
+        elif outcome == "updated":
+            self.updated += 1
+        else:
+            self.skipped += 1
+
 
 class ConnectorBase(ABC):
-    """Abstract base for all platform connectors."""
+    """Abstract base for all platform connectors (inbound + outbound)."""
 
     name: str
     display_name: str
@@ -109,8 +119,8 @@ class ConnectorBase(ABC):
         ...
 
     async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Push Celerp inventory levels -> platform. Override if supported."""
-        raise NotImplementedError(f"{self.name} does not support inventory push")
+        """Pull inventory levels from platform -> Celerp. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support inventory sync")
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
@@ -130,7 +140,7 @@ class ConnectorBase(ABC):
 
     # -- Webhook lifecycle (override for e-commerce connectors) ----------------
 
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
+    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None) -> list[str]:
         """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
         return []
 

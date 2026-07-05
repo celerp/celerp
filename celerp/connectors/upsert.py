@@ -9,50 +9,52 @@ light and to respect default-module load order.
 from __future__ import annotations
 
 
-async def upsert_item(company_id: str, item) -> bool:
+async def upsert_item(company_id: str, item) -> str:
     from celerp_inventory import services as items_svc
     return await items_svc.upsert_from_connector(company_id, item)
 
 
-async def upsert_order_from_shopify(company_id: str, order: dict) -> bool:
+async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.upsert_order_from_shopify(company_id, order)
 
 
-async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> bool:
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.upsert_invoice_from_quickbooks(company_id, invoice)
 
 
-async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> bool:
+async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.upsert_invoice_from_xero(company_id, invoice)
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict) -> bool:
+async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.upsert_order_from_woocommerce(company_id, order)
 
 
-async def upsert_contact_from_shopify(company_id: str, customer: dict) -> bool:
+async def upsert_contact_from_shopify(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_shopify(company_id, customer)
 
 
-async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> bool:
+async def upsert_contact_from_quickbooks(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_quickbooks(company_id, customer)
 
 
-async def upsert_contact_from_xero(company_id: str, contact: dict) -> bool:
+async def upsert_contact_from_xero(company_id: str, contact: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_xero(company_id, contact)
 
 
-async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> bool:
+async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_woocommerce(company_id, customer)
 
+
+# -- Outbound: read the Celerp-side list of records to push ---------------------
 
 async def list_items_with_external_id(company_id: str, platform: str) -> list:
     from celerp_inventory import services as items_svc
@@ -67,3 +69,8 @@ async def list_items_modified_since_last_sync(company_id: str, platform: str) ->
 async def list_unsynced_invoices(company_id: str, platform: str) -> list:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.list_unsynced_invoices(company_id, platform=platform)
+
+
+async def mark_doc_pushed(company_id: str, entity_id: str, platform: str, external_id: str, entity: str = "invoice") -> None:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.mark_doc_pushed(company_id, entity_id, platform, external_id, entity=entity)

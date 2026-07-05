@@ -3,7 +3,6 @@
 
 import uuid
 
-from sqlalchemy import text
 
 from celerp.events.engine import emit_event
 
@@ -94,56 +93,42 @@ async def list_items_modified_since_last_sync(company_id: str, platform: str) ->
     return await _items_with_external_id(company_id, platform, require_sync_flag=(platform == "shopify"))
 
 
-async def upsert_from_connector(company_id: str, item) -> bool:
+async def upsert_from_connector(company_id: str, item) -> str:
     """
-    Create an item from a connector payload. Returns True if newly created.
+    Create or update an item from a connector payload. Returns the write outcome:
+    "created", "updated", or "noop" (this exact content was already applied).
 
-    `item` must have: sku, name, idempotency_key (required for dedup).
-    Optional: sale_price, quantity, description.
+    `item` must have: sku, name, idempotency_key (stable per external item).
+    Optional: sale_price, quantity, cost_price, description.
 
     Uses a fresh DB session so the connector does not need to manage
     session lifecycle. Idempotency is enforced at the ledger level.
     """
     from celerp.db import SessionLocal as AsyncSessionLocal
+    from celerp.events.engine import connector_upsert
 
     idem_key = item.idempotency_key
     if not idem_key:
         raise ValueError("idempotency_key required for connector upserts")
 
+    data = {
+        "sku": item.sku,
+        "name": item.name,
+    }
+    if item.sale_price is not None:
+        data["sale_price"] = item.sale_price
+        data["retail_price"] = item.sale_price   # canonical selling-price field
+    if item.quantity:
+        data["quantity"] = item.quantity
+    if getattr(item, "cost_price", None) is not None:
+        data["cost_price"] = item.cost_price     # else margin/COGS/valuation read zero cost
+    if getattr(item, "description", None):
+        data["description"] = item.description
+
     async with AsyncSessionLocal() as session:
-        # Check before emit to distinguish created vs skipped
-        existing = (
-            await session.execute(
-                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
-                {"cid": str(company_id), "k": idem_key},
-            )
-        ).first()
-        if existing:
-            return False
-
-        entity_id = f"item:{uuid.uuid4()}"
-        data = {
-            "sku": item.sku,
-            "name": item.name,
-            "idempotency_key": idem_key,
-        }
-        if item.sale_price is not None:
-            data["sale_price"] = item.sale_price
-        if item.quantity:
-            data["quantity"] = item.quantity
-
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.created",
-            data=data,
-            actor_id=None,
-            location_id=None,
-            source="connector",
-            idempotency_key=idem_key,
-            metadata_={},
+        outcome = await connector_upsert(
+            session, company_id=company_id, entity_type="item",
+            event_type="item.created", idem_key=idem_key, data=data,
         )
         await session.commit()
-        return True
+        return outcome

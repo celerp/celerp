@@ -80,7 +80,7 @@ async def test_shopify_sync_inventory_out_success(shopify, ctx_shopify):
             respx.post("https://test-store.myshopify.com/admin/api/2024-01/inventory_levels/set.json").mock(
                 return_value=httpx.Response(200, json={"inventory_level": {}})
             )
-            result = await shopify.sync_inventory(ctx_shopify)
+            result = await shopify.sync_inventory_out(ctx_shopify)
 
     assert result.updated == 2
     assert result.entity == SyncEntity.INVENTORY
@@ -99,7 +99,7 @@ async def test_shopify_sync_inventory_out_skips_missing_ids(shopify, ctx_shopify
             respx.post("https://test-store.myshopify.com/admin/api/2024-01/inventory_levels/set.json").mock(
                 return_value=httpx.Response(200, json={"inventory_level": {}})
             )
-            result = await shopify.sync_inventory(ctx_shopify)
+            result = await shopify.sync_inventory_out(ctx_shopify)
 
     assert result.skipped == 1
     assert result.updated == 1
@@ -125,7 +125,7 @@ async def test_shopify_sync_inventory_out_error_accumulation(shopify, ctx_shopif
             respx.post("https://test-store.myshopify.com/admin/api/2024-01/inventory_levels/set.json").mock(
                 side_effect=mock_side_effect
             )
-            result = await shopify.sync_inventory(ctx_shopify)
+            result = await shopify.sync_inventory_out(ctx_shopify)
 
     # one error, one success - continues past failure
     assert result.updated == 1

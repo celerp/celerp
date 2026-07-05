@@ -29,6 +29,16 @@ _PING_INTERVAL = 30   # seconds
 _BACKOFF_MAX = 60     # seconds
 
 
+def _shop_key(handle: str | None) -> str:
+    """Normalize a Shopify store handle/shop domain for comparison (strip scheme,
+    trailing slash, and the .myshopify.com suffix), so a token's `store_handle`
+    and a webhook's `shop` compare equal regardless of stored form."""
+    s = (handle or "").strip().lower()
+    for pre in ("https://", "http://"):
+        s = s.removeprefix(pre)
+    return s.rstrip("/").removesuffix(".myshopify.com")
+
+
 class GatewayClient:
     """Persistent outbound WS connection to the Celerp gateway.
 
@@ -49,6 +59,9 @@ class GatewayClient:
         self._stop_event = asyncio.Event()
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
         self._required_tos_version: str = ""
+        # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
+        # (a dropped task = a lost proxy response or webhook sync).
+        self._bg_tasks: set = set()
         # Resolve local server ports for proxy routing.
         # In Electron builds the ports are dynamic; Electron passes them via
         # CELERP_API_PORT / CELERP_UI_PORT env vars so we don't rely on the
@@ -63,6 +76,13 @@ class GatewayClient:
             cfg = read_config() or {}
             self._ui_port = cfg.get("server", {}).get("ui_port", 8080)
             self._api_port = cfg.get("server", {}).get("api_port", 8000)
+
+    def _spawn(self, coro) -> None:
+        """Run a coroutine fire-and-forget while holding a strong reference to the
+        task (discarded on completion) so it can't be garbage-collected mid-run."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -244,13 +264,13 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            asyncio.create_task(self._handle_proxy_request(payload))
+            self._spawn(self._handle_proxy_request(payload))
 
         elif msg_type == "shopify.webhook":
-            asyncio.create_task(self._handle_shopify_webhook(payload))
+            self._spawn(self._handle_shopify_webhook(payload))
 
         elif msg_type == "woocommerce.webhook":
-            asyncio.create_task(self._handle_woocommerce_webhook(payload))
+            self._spawn(self._handle_woocommerce_webhook(payload))
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
@@ -281,14 +301,14 @@ class GatewayClient:
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
-        sync for the affected entity on each company with Shopify configured
-        (idempotency keys dedupe against the reconciliation pass)."""
+        sync for the affected entity on every Shopify-connected company whose store
+        matches the webhook's shop (idempotency keys dedupe against the reconcile pass)."""
         topic = payload.get("topic", "")
+        shop = payload.get("shop", "")
         data = payload.get("data") or {}
         try:
             import sqlalchemy as sa
 
-            from celerp.connectors.base import SyncDirection
             from celerp.connectors.relay_token import fetch_context
             from celerp.connectors.webhooks import WebhookEvent, handle_webhook
             from celerp.db import get_session_ctx
@@ -296,18 +316,25 @@ class GatewayClient:
 
             async with get_session_ctx() as session:
                 rows = await session.execute(
-                    sa.select(ConnectorConfig.company_id, ConnectorConfig.direction).where(
+                    sa.select(ConnectorConfig.company_id).where(
                         ConnectorConfig.connector == "shopify"
                     )
                 )
                 configs = rows.all()
 
             event = WebhookEvent(platform="shopify", topic=topic, payload=data)
-            for company_id, direction in configs:
+            want = _shop_key(shop)
+            for (company_id,) in configs:
                 ctx = await fetch_context(company_id, "shopify")
                 if ctx is None:
                     continue
-                await handle_webhook(event, ctx, direction=SyncDirection(direction))
+                # Guard against a misrouted/stale delivery: only sync when the webhook's
+                # shop matches this instance's connected store. (Companies on an instance
+                # share one instance-level Shopify token, so this matches on the store,
+                # not a specific company — per-company store routing isn't modelled.)
+                if want and _shop_key(ctx.store_handle) != want:
+                    continue
+                await handle_webhook(event, ctx)
         except Exception as exc:
             log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)
 

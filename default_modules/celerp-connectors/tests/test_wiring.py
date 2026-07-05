@@ -60,7 +60,7 @@ async def test_handle_shopify_webhook_triggers_handle_webhook():
 
     sess = MagicMock()
     res = MagicMock()
-    res.all = MagicMock(return_value=[("co-1", "both")])
+    res.all = MagicMock(return_value=[("co-1",)])
     sess.execute = AsyncMock(return_value=res)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
@@ -85,7 +85,7 @@ async def test_handle_shopify_webhook_skips_when_no_token():
 
     sess = MagicMock()
     res = MagicMock()
-    res.all = MagicMock(return_value=[("co-1", "both")])
+    res.all = MagicMock(return_value=[("co-1",)])
     sess.execute = AsyncMock(return_value=res)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
@@ -126,7 +126,12 @@ async def test_scheduler_reconciles_realtime_config():
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
-    assert run_sync_mock.await_count >= 1
+    # Regression for the "outbound never dispatched" bug: a direction=both connector
+    # must dispatch BOTH inbound entities AND the outbound (*_out) ones it implements.
+    # (Asserting await_count >= 1 — the old check — passed even when outbound was dead.)
+    entities_run = {call.args[2] for call in run_sync_mock.await_args_list}
+    assert {"products", "orders", "contacts"} <= entities_run   # inbound
+    assert "products_out" in entities_run                        # outbound (Shopify pushes products)
 
 
 def _sched_config(**over):
@@ -245,3 +250,20 @@ async def test_scheduler_loop_single_company_then_exits():
         with pytest.raises(asyncio.CancelledError):
             await daily_scheduler.scheduler_loop("co-1", token_fetcher=AsyncMock())
     assert check.await_count == 1
+
+
+@pytest.mark.parametrize("connector,expected", [
+    ("shopify", {"products_out", "inventory_out"}),
+    ("woocommerce", {"products_out", "inventory_out"}),
+    ("quickbooks", {"invoices_out"}),
+    ("xero", {"invoices_out"}),
+])
+def test_supported_outbound_entities_are_detected(connector, expected):
+    """Every outbound push a connector implements must be detected so the scheduler
+    dispatches it. Regression: Shopify's inventory push was named `sync_inventory`
+    (not `sync_inventory_out`), so it was classified as the inbound 'inventory' entity
+    and never ran — this would have caught that (shopify would return {'products_out'})."""
+    import celerp.connectors as registry
+    from celerp.connectors.daily_scheduler import _supported_outbound
+
+    assert set(_supported_outbound(registry.get(connector))) == expected

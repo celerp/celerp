@@ -742,7 +742,9 @@ async def test_connector_sync_not_implemented(client, patch_connector_session_to
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
             "entity": "orders", "access_token": "tok",
         })
-    assert resp.status_code == 400
+    # run_sync captures NotImplementedError into a failed result, not an HTTP error.
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
 
 
 @pytest.mark.asyncio
@@ -765,8 +767,9 @@ async def test_connector_sync_generic_exception(client, patch_connector_session_
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
             "entity": "products", "access_token": "tok",
         })
-    assert resp.status_code == 502
-    assert "Connector error" in resp.json()["detail"]
+    # run_sync captures the exception into a failed result, not an HTTP 502.
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
 
 
 # --- Connector sync: contacts and inventory paths ---
@@ -776,7 +779,7 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
     """Sync contacts entity routes to sync_contacts."""
     from unittest.mock import AsyncMock, patch
     import celerp.connectors as conn_module
-    from celerp.connectors.base import SyncResult, SyncDirection, SyncEntity
+    from celerp.connectors.base import SyncResult, SyncEntity
 
     resp = await client.post("/auth/register", json={
         "email": "connector_contacts@test.com", "password": "pw",
@@ -787,7 +790,7 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
         "X-Session-Token": _CONNECTOR_SESSION_TOKEN,
     }
 
-    mock_result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+    mock_result = SyncResult(entity=SyncEntity.CONTACTS)
     connector = conn_module.get("shopify")
     with patch.object(connector, "sync_contacts", new=AsyncMock(return_value=mock_result)):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={

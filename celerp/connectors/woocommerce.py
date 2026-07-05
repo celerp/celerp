@@ -56,12 +56,11 @@ class WooCommerceConnector(ConnectorBase):
     display_name = "WooCommerce"
     category = ConnectorCategory.WEBSITE
     direction = SyncDirection.BOTH
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVENTORY]
+    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     conflict_strategy = {
         "products": "external_wins",
         "orders": "external_wins",
         "contacts": "external_wins",
-        "inventory": "internal_wins",   # stock is pushed out; CelERP is the source
     }
 
     # -- Internal helpers ------------------------------------------------------
@@ -118,12 +117,13 @@ class WooCommerceConnector(ConnectorBase):
         """
         from celerp_inventory.routes import ItemCreate
 
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
+            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
 
         try:
             products = await self._paginate(ctx, "/products", params=params or None)
@@ -131,40 +131,68 @@ class WooCommerceConnector(ConnectorBase):
             result.errors = [f"WooCommerce API error: {exc}"]
             return result
 
+        async def _upsert_item(sku: str, name: str, price, idem: str) -> bool:
+            """Upsert one item and tally the outcome. Returns False on error so the
+            caller skips the follow-up file pull."""
+            item = ItemCreate(sku=sku, name=name, sell_by="piece", sale_price=price, idempotency_key=idem)
+            try:
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
+                return True
+            except Exception as exc:
+                errors.append(f"SKU {sku}: {exc}")
+                return False
+
         for product in products:
             pid = product.get("id")
+            name = product.get("name") or f"WC-{pid}"
+
+            # Variable products are containers; import each variation as its own sellable
+            # item (its own SKU / price), not the price-less parent.
+            if product.get("type") == "variable":
+                try:
+                    variations = await self._paginate(ctx, f"/products/{pid}/variations")
+                except (httpx.HTTPStatusError, ValueError) as exc:
+                    errors.append(f"Product {pid} variations: {exc}")
+                    continue
+                for var in variations:
+                    vid = var.get("id")
+                    var_sku = (var.get("sku") or "").strip() or f"WC-{pid}-{vid}"
+                    opts = " / ".join(
+                        str(a.get("option", "")) for a in (var.get("attributes") or []) if a.get("option")
+                    )
+                    # regular_price is the base (same rule as simple products below);
+                    # fall back to the active price only when regular_price is absent.
+                    var_price = money(var.get("regular_price"))
+                    if var_price is None:
+                        var_price = money(var.get("price"))
+                    if await _upsert_item(var_sku, f"{name} - {opts}" if opts else name,
+                                          var_price, f"woocommerce:{pid}:{vid}"):
+                        # Variations are real items too: pull the variation's own image
+                        # (if any) plus the parent gallery/certs. (idempotent, best-effort)
+                        var_img = var.get("image")
+                        files = {
+                            "images": ([var_img] if var_img and var_img.get("src") else [])
+                            + product.get("images", []),
+                            "meta_data": product.get("meta_data", []),
+                        }
+                        try:
+                            await self._pull_product_files(ctx, files, var_sku)
+                        except Exception as img_exc:
+                            log.warning("woocommerce file pull failed for SKU %s: %s", var_sku, img_exc)
+                continue
+
+            # Simple product: regular_price is the base; fall back to the active price only
+            # when regular_price is genuinely absent (a real 0 = free item is kept).
             sku = (product.get("sku") or "").strip() or f"WC-{pid}"
-            name = product.get("name") or sku
-            # regular_price is the base price; fall back to the active price only
-            # when regular_price is genuinely absent. A real 0 (free item) is kept.
             sell_price = money(product.get("regular_price"))
             if sell_price is None:
                 sell_price = money(product.get("price"))
-
-            idempotency_key = f"woocommerce:{pid}"
-
-            item = ItemCreate(
-                sku=sku,
-                name=name,
-                sell_by="piece",
-                sale_price=sell_price,
-                idempotency_key=idempotency_key,
-            )
-
-            try:
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
-            except Exception as exc:
-                errors.append(f"SKU {sku}: {exc}")
-                continue
-            # Pull images and certificates after upsert (idempotent, best-effort)
-            try:
-                await self._pull_product_files(ctx, product, sku)
-            except Exception as img_exc:
-                log.warning("woocommerce file pull failed for SKU %s: %s", sku, img_exc)
+            if await _upsert_item(sku, name, sell_price, f"woocommerce:{pid}"):
+                # Pull images/certs after upsert (idempotent, best-effort)
+                try:
+                    await self._pull_product_files(ctx, product, sku)
+                except Exception as img_exc:
+                    log.warning("woocommerce file pull failed for SKU %s: %s", sku, img_exc)
 
         result.errors = errors or None
         log.info(
@@ -228,6 +256,70 @@ class WooCommerceConnector(ConnectorBase):
 
             await session.commit()
 
+    # -- Orders ----------------------------------------------------------------
+
+    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull WooCommerce orders -> Celerp documents."""
+        result = SyncResult(entity=SyncEntity.ORDERS)
+        errors: list[str] = []
+
+        params: dict = {}
+        if since:
+            params["modified_after"] = since.isoformat()
+            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
+
+        try:
+            orders = await self._paginate(ctx, "/orders", params=params or None)
+        except (httpx.HTTPStatusError, ValueError) as exc:
+            result.errors = [f"WooCommerce API error: {exc}"]
+            return result
+
+        for order in orders:
+            try:
+                result.record(await _upsert.upsert_order_from_woocommerce(ctx.company_id, order))
+            except Exception as exc:
+                msg = f"Order {order.get('id')}: {exc}"
+                log.warning("woocommerce.sync_orders error: %s", msg)
+                errors.append(msg)
+
+        result.errors = errors or None
+        log.info(
+            "woocommerce.sync_orders company=%s created=%d skipped=%d",
+            ctx.company_id, result.created, result.skipped,
+        )
+        return result
+
+    # -- Contacts --------------------------------------------------------------
+
+    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull WooCommerce customers -> Celerp contacts."""
+        result = SyncResult(entity=SyncEntity.CONTACTS)
+        errors: list[str] = []
+
+        params: dict = {}
+        if since:
+            params["modified_after"] = since.isoformat()
+            params["dates_are_gmt"] = "true"  # our watermark is UTC; make Woo interpret it as UTC
+
+        try:
+            customers = await self._paginate(ctx, "/customers", params=params or None)
+        except (httpx.HTTPStatusError, ValueError) as exc:
+            result.errors = [f"WooCommerce API error: {exc}"]
+            return result
+
+        for customer in customers:
+            try:
+                result.record(await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer))
+            except Exception as exc:
+                errors.append(f"Customer {customer.get('id')}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "woocommerce.sync_contacts company=%s created=%d skipped=%d",
+            ctx.company_id, result.created, result.skipped,
+        )
+        return result
+
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp item updates (images + certs) -> WooCommerce products."""
         from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
@@ -284,76 +376,6 @@ class WooCommerceConnector(ConnectorBase):
         )
         return result
 
-    # -- Orders ----------------------------------------------------------------
-
-    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Pull WooCommerce orders -> Celerp documents."""
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
-        errors: list[str] = []
-
-        params: dict = {}
-        if since:
-            params["modified_after"] = since.isoformat()
-
-        try:
-            orders = await self._paginate(ctx, "/orders", params=params or None)
-        except (httpx.HTTPStatusError, ValueError) as exc:
-            result.errors = [f"WooCommerce API error: {exc}"]
-            return result
-
-        for order in orders:
-            try:
-                created = await _upsert.upsert_order_from_woocommerce(ctx.company_id, order)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
-            except Exception as exc:
-                msg = f"Order {order.get('id')}: {exc}"
-                log.warning("woocommerce.sync_orders error: %s", msg)
-                errors.append(msg)
-
-        result.errors = errors or None
-        log.info(
-            "woocommerce.sync_orders company=%s created=%d skipped=%d",
-            ctx.company_id, result.created, result.skipped,
-        )
-        return result
-
-    # -- Contacts --------------------------------------------------------------
-
-    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Pull WooCommerce customers -> Celerp contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
-        errors: list[str] = []
-
-        params: dict = {}
-        if since:
-            params["modified_after"] = since.isoformat()
-
-        try:
-            customers = await self._paginate(ctx, "/customers", params=params or None)
-        except (httpx.HTTPStatusError, ValueError) as exc:
-            result.errors = [f"WooCommerce API error: {exc}"]
-            return result
-
-        for customer in customers:
-            try:
-                created = await _upsert.upsert_contact_from_woocommerce(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
-            except Exception as exc:
-                errors.append(f"Customer {customer.get('id')}: {exc}")
-
-        result.errors = errors or None
-        log.info(
-            "woocommerce.sync_contacts company=%s created=%d skipped=%d",
-            ctx.company_id, result.created, result.skipped,
-        )
-        return result
-
     # -- Outbound: Inventory push ----------------------------------------------
 
     async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
@@ -399,16 +421,11 @@ class WooCommerceConnector(ConnectorBase):
 
     # -- Webhook lifecycle -----------------------------------------------------
 
-    _INBOUND_TOPICS = [
+    _WEBHOOK_TOPICS = [
         "product.created", "product.updated", "product.deleted",
         "order.created", "order.updated",
         "customer.created", "customer.updated",
     ]
-
-    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
-        if direction == SyncDirection.OUTBOUND:
-            return []
-        return self._INBOUND_TOPICS
 
     async def register_webhooks(
         self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
@@ -422,9 +439,8 @@ class WooCommerceConnector(ConnectorBase):
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         ids: list[str] = []
-        topics = self.webhook_topics_for_direction(self.direction)
         async with RateLimitedClient() as client:
-            for topic in topics:
+            for topic in self._WEBHOOK_TOPICS:
                 body = {
                     "name": f"CelERP {topic}",
                     "topic": topic,
@@ -439,12 +455,3 @@ class WooCommerceConnector(ConnectorBase):
                 else:
                     log.warning("woocommerce.register_webhook topic=%s status=%d", topic, resp.status_code)
         return ids
-
-    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
-        base_url = _base_url(ctx)
-        auth = _auth(ctx)
-        async with RateLimitedClient() as client:
-            for wid in webhook_ids:
-                resp = await client.delete(f"{base_url}/webhooks/{wid}", auth=auth, params={"force": "true"})
-                if resp.status_code not in (200, 204):
-                    log.warning("woocommerce.deregister_webhook id=%s status=%d", wid, resp.status_code)

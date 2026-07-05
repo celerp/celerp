@@ -16,10 +16,27 @@ from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncFrequency
+from celerp.connectors.base import SyncDirection
 from celerp.models.connector_config import ConnectorConfig
 
 log = logging.getLogger(__name__)
+
+# Outbound entity -> connector method. A connector "supports" an outbound entity when it
+# overrides the base (which raises NotImplementedError); we only dispatch those, so the
+# scheduler never emits a failed run for a push a connector doesn't implement.
+_OUTBOUND_ENTITY_METHODS = {
+    "products_out": "sync_products_out",
+    "invoices_out": "sync_invoices_out",
+    "inventory_out": "sync_inventory_out",
+}
+
+
+def _supported_outbound(connector) -> list[str]:
+    from celerp.connectors.base import ConnectorBase
+    return [
+        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
+        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
+    ]
 
 _CHECK_INTERVAL_SECONDS = 3600  # check every hour
 _MIN_HOURS_BETWEEN_SYNCS = 23
@@ -81,8 +98,7 @@ async def check_and_run_daily_syncs(
             )
             continue
 
-        direction = SyncDirection(config.direction)
-        log.info("daily_scheduler: running %s (direction=%s)", config.connector, direction.value)
+        log.info("daily_scheduler: running %s", config.connector)
 
         try:
             ctx = await token_fetcher(company_id, config.connector)
@@ -90,16 +106,29 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
             continue
 
-        # Run sync for all supported entities respecting direction
-        for entity_enum in connector.supported_entities:
+        # Sync every supported entity, honouring the configured direction: inbound
+        # entities pull from the platform; outbound (*_out) entities push back the ones
+        # the connector actually implements. run_sync enforces the direction gate too.
+        direction = SyncDirection(config.direction)
+        entities = [e.value for e in connector.supported_entities]
+        if direction in (SyncDirection.BOTH, SyncDirection.OUTBOUND):
+            entities += _supported_outbound(connector)
+        entity_results = []
+        for entity in entities:
             try:
-                await run_sync(connector, ctx, entity_enum.value, direction=direction)
+                entity_results.append(await run_sync(connector, ctx, entity, direction=direction))
             except Exception as exc:
-                log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity_enum.value, exc)
+                log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity, exc)
+
+        # Only mark the connector synced (advancing the daily clock) if at least one
+        # entity made progress. On a total failure (e.g. a transient outage) we leave
+        # last_daily_sync_at unset, so the connector stays "due" and retries at the next
+        # tick that lands on its configured hour (the next day, or sooner on app restart).
+        if not any((r.created or r.updated or not r.errors) for r in entity_results):
+            log.warning("daily_scheduler: all entities failed for %s — will retry when next due", config.connector)
+            continue
 
         synced.append(config.connector)
-
-        # Update last_daily_sync_at only after actually running
         async with get_session_ctx() as session:
             await session.execute(
                 sa.update(ConnectorConfig)

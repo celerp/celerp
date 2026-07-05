@@ -53,14 +53,13 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BOTH
+    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
+    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
         SyncEntity.CONTACTS: "merge",
-        SyncEntity.INVOICES: "platform",
     }
 
     # -- Internal helpers ------------------------------------------------------
@@ -108,7 +107,7 @@ class XeroConnector(ConnectorBase):
           Item.PurchaseDetails.UnitPrice -> item.cost_price
           Item.ItemID        -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -136,11 +135,7 @@ class XeroConnector(ConnectorBase):
                     cost_price=money((xero_item.get("PurchaseDetails") or {}).get("UnitPrice")),
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert.upsert_item(ctx.company_id, item)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_item(ctx.company_id, item))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -164,7 +159,7 @@ class XeroConnector(ConnectorBase):
           Invoice.Status         -> doc.status (PAID->paid, AUTHORISED->final, DRAFT->draft)
           Invoice.InvoiceID      -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -178,11 +173,7 @@ class XeroConnector(ConnectorBase):
                 result.skipped += 1
                 continue
             try:
-                created = await _upsert.upsert_invoice_from_xero(ctx.company_id, inv)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('InvoiceNumber')}: {exc}")
 
@@ -197,7 +188,7 @@ class XeroConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Xero Contacts -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -208,11 +199,7 @@ class XeroConnector(ConnectorBase):
 
         for contact in contacts:
             try:
-                created = await _upsert.upsert_contact_from_xero(ctx.company_id, contact)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_xero(ctx.company_id, contact))
             except Exception as exc:
                 errors.append(f"Contact {contact.get('ContactID')}: {exc}")
 
@@ -259,6 +246,11 @@ class XeroConnector(ConnectorBase):
                         json=payload,
                     )
                     resp.raise_for_status()
+                    # Write-back: stamp the returned Xero InvoiceID so the next run's
+                    # list_unsynced_invoices skips this doc — never created in Xero twice.
+                    xero_id = ((resp.json() or {}).get("Invoices") or [{}])[0].get("InvoiceID")
+                    if xero_id and inv.get("entity_id"):
+                        await _upsert.mark_doc_pushed(ctx.company_id, inv["entity_id"], "xero", xero_id)
                     result.created += 1
                 except Exception as exc:
                     errors.append(f"Invoice {inv.get('ref_id')}: {exc}")

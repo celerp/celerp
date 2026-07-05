@@ -58,8 +58,8 @@ class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
-    direction = SyncDirection.BOTH
     category = ConnectorCategory.WEBSITE
+    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -99,7 +99,7 @@ class ShopifyConnector(ConnectorBase):
         """
         from celerp_inventory.routes import ItemCreate
 
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
 
         try:
@@ -132,11 +132,7 @@ class ShopifyConnector(ConnectorBase):
                 )
 
                 try:
-                    created = await _upsert.upsert_item(ctx.company_id, item)
-                    if created:
-                        result.created += 1
-                    else:
-                        result.skipped += 1
+                    result.record(await _upsert.upsert_item(ctx.company_id, item))
                 except Exception as exc:
                     errors.append(f"SKU {sku}: {exc}")
                     continue
@@ -203,7 +199,7 @@ class ShopifyConnector(ConnectorBase):
           financial_status            -> doc status (paid -> closed, pending -> open)
           order.id                    -> idempotency_key
         """
-        result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
         try:
@@ -217,11 +213,7 @@ class ShopifyConnector(ConnectorBase):
 
         for order in orders:
             try:
-                created = await _upsert.upsert_order_from_shopify(ctx.company_id, order)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order))
             except Exception as exc:
                 msg = f"Order {order.get('name')}: {exc}"
                 log.warning("shopify.sync_orders error: %s", msg)
@@ -238,7 +230,7 @@ class ShopifyConnector(ConnectorBase):
 
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull Shopify customers -> Celerp CRM contacts."""
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
+        result = SyncResult(entity=SyncEntity.CONTACTS)
         errors: list[str] = []
 
         try:
@@ -249,11 +241,7 @@ class ShopifyConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert.upsert_contact_from_shopify(ctx.company_id, customer)
-                if created:
-                    result.created += 1
-                else:
-                    result.skipped += 1
+                result.record(await _upsert.upsert_contact_from_shopify(ctx.company_id, customer))
             except Exception as exc:
                 errors.append(f"Customer {customer.get('id')}: {exc}")
 
@@ -262,8 +250,13 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Outbound: Inventory push ----------------------------------------------
 
-    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Push Celerp stock levels -> Shopify inventory levels."""
+    async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp stock levels -> Shopify inventory levels (outbound).
+
+        Named *_out so it is classified as an outbound entity and actually gets
+        dispatched by the scheduler; as `sync_inventory` it was mis-typed as the
+        inbound 'inventory' entity and never ran (Shopify has no inbound inventory
+        pull — stock arrives via product variants)."""
         result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
 
@@ -375,47 +368,6 @@ class ShopifyConnector(ConnectorBase):
             ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
-
-    # -- Webhook lifecycle -----------------------------------------------------
-
-    _INBOUND_TOPICS = [
-        "products/create", "products/update", "products/delete",
-        "orders/create", "orders/updated",
-        "inventory_levels/update",
-        "customers/create", "customers/update",
-    ]
-
-    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
-        if direction == SyncDirection.OUTBOUND:
-            return []
-        return self._INBOUND_TOPICS
-
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
-        """Register Shopify webhooks. Returns list of webhook IDs."""
-        base = _base_url(ctx)
-        ids: list[str] = []
-        topics = self.webhook_topics_for_direction(self.direction)
-        async with RateLimitedClient() as client:
-            for topic in topics:
-                resp = await client.post(
-                    f"{base}/webhooks.json",
-                    headers=_headers(ctx),
-                    json={"webhook": {"topic": topic, "address": webhook_url, "format": "json"}},
-                )
-                if resp.status_code in (200, 201):
-                    wh = resp.json().get("webhook", {})
-                    ids.append(str(wh.get("id", "")))
-                else:
-                    log.warning("shopify.register_webhook topic=%s status=%d", topic, resp.status_code)
-        return ids
-
-    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
-        base = _base_url(ctx)
-        async with RateLimitedClient() as client:
-            for wid in webhook_ids:
-                resp = await client.delete(f"{base}/webhooks/{wid}.json", headers=_headers(ctx))
-                if resp.status_code not in (200, 204):
-                    log.warning("shopify.deregister_webhook id=%s status=%d", wid, resp.status_code)
 
 
 # -- Pagination helper ---------------------------------------------------------

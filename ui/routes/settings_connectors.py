@@ -17,7 +17,7 @@ from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
 from ui.routes.settings import _check_role, _token
 
-from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncFrequency
+from celerp.connectors.base import ConnectorCategory, SyncFrequency
 
 log = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def _last_sync_info(run) -> FT:
 
 
 def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
-    """Three-option direction toggle: Inbound / Outbound / Both."""
+    """Three-option sync direction toggle: Inbound / Outbound / Both."""
     options = [
         ("inbound", t("connectors.dir_inbound", lang, default="Inbound")),
         ("outbound", t("connectors.dir_outbound", lang, default="Outbound")),
@@ -176,10 +176,11 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -> dict:
+async def _fetch_access_token(relay_url: str, platform: str) -> dict:
     """Fetch decrypted access token from relay for a platform."""
     import os
     import httpx
+    from celerp.gateway.state import relay_session_headers
     if not relay_url.startswith("https://"):
         if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
             raise RuntimeError("Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.")
@@ -187,7 +188,7 @@ async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.get(
                 f"{relay_url}/tokens/{platform}/access-token",
-                params={"instance_id": instance_id},
+                headers=relay_session_headers(),
             )
             if r.status_code == 404:
                 raise RuntimeError(f"No {platform} connection found. Complete the OAuth flow first.")
@@ -269,7 +270,6 @@ async def _ensure_connector_config(company_id: str, connector: str, category: st
     config = ConnectorConfig(
         company_id=company_id,
         connector=connector,
-        direction=SyncDirection.BOTH.value,
         sync_frequency=default_freq,
     )
     try:
@@ -303,21 +303,30 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
 
 
+_BG_TASKS: set = set()
+
+
+def _spawn(coro) -> None:
+    """Fire-and-forget a coroutine while holding a strong reference to the task
+    (discarded on completion) so the event loop can't garbage-collect it mid-run."""
+    import asyncio
+
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
 async def _kickoff_connector_sync(iid: str, platform: str) -> None:
     """Fetch the live token and start a background sync of all supported entities.
     Raises on setup failure (bad token, unknown connector); per-entity errors are captured
     in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
-    import asyncio
-
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.registry import get as get_connector
     from celerp.connectors.sync_runner import run_sync
     from ui.config import RELAY_URL
 
     connector = get_connector(platform)
-    config = await _get_connector_config(iid, platform)
-    direction = SyncDirection(config.direction) if config else SyncDirection.BOTH
-    token_data = await _fetch_access_token(RELAY_URL, iid, platform)
+    token_data = await _fetch_access_token(RELAY_URL, platform)
     ctx = ConnectorContext(
         company_id=iid,
         access_token=token_data["access_token"],
@@ -327,11 +336,11 @@ async def _kickoff_connector_sync(iid: str, platform: str) -> None:
     async def _do_sync():
         for entity_enum in connector.supported_entities:
             try:
-                await run_sync(connector, ctx, entity_enum.value, direction=direction)
-            except Exception:
-                pass
+                await run_sync(connector, ctx, entity_enum.value)
+            except Exception as exc:
+                log.warning("connector sync %s/%s failed: %s", platform, entity_enum.value, exc)
 
-    asyncio.create_task(_do_sync())
+    _spawn(_do_sync())
 
 
 async def _autosync_once(iid: str, platform: str) -> None:
@@ -437,14 +446,14 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         r = runs[e]
         running = getattr(r, "finished_at", None) is None
         when = t("connectors.syncing", lang) if running else relative_time(r.finished_at.isoformat())
-        counts = "" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
+        counts = "…" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
         errs = list(getattr(r, "errors", None) or [])
         rows.append(Tr(
             Td(_ENTITY_LABELS.get(e, e)),
             Td(when),
             Td(_status_badge_for("running" if running else r.status, lang)),
             Td(counts, cls="cell--number"),
-            Td(str(len(errs)) if errs else "", cls="cell--number", title="; ".join(errs) if errs else ""),
+            Td(str(len(errs)) if errs else "--", cls="cell--number", title="; ".join(errs) if errs else ""),
             cls="data-row",
         ))
     return Table(
@@ -480,7 +489,6 @@ def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
     full-page detail route."""
     cid = c["id"]
     category = c.get("category", "website")
-    direction = config.direction if config else SyncDirection.BOTH.value
     frequency = config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
 
     sync_btn = Button(
@@ -498,7 +506,7 @@ def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
         hx_confirm=t("connectors.disconnect_confirm", lang),
         hx_swap="none",
     )
-    config_rows = [_direction_toggle(cid, direction, lang)]
+    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
     if category == ConnectorCategory.ACCOUNTING.value:
         config_rows.append(_frequency_select(cid, frequency, lang))
 
@@ -530,7 +538,6 @@ def _connector_card(
     description = c.get("description", "")
     entities = c.get("entities", [])
 
-    direction = config.direction if config else SyncDirection.BOTH.value
     frequency = config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
 
     # ── Status badge ──────────────────────────────────────────────────────────
@@ -558,7 +565,7 @@ def _connector_card(
     connected_details = Span()
     if connected:
         sync_info = _last_sync_info(last_run)
-        dir_row = _direction_toggle(cid, direction, lang)
+        dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
             Div(
@@ -728,10 +735,9 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     # OAuth) so the merchant's data appears without a manual step - the activation moment.
     # Idempotent: run_sync's in-progress row + concurrency guard prevent re-triggering on
     # re-render, and once any run exists this branch no longer fires.
-    import asyncio
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            asyncio.create_task(_autosync_once(iid, c["id"]))
+            _spawn(_autosync_once(iid, c["id"]))
 
     # Group by category, labelled by what the sync does for the customer
     group_labels = {
@@ -810,53 +816,17 @@ def setup_routes(app):
         if not url:
             return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
 
-        # Return script that opens the URL; card stays as-is (user returns after OAuth)
-        return Script(f"window.open({url!r}, '_blank', 'noopener');")
-
-    @app.post("/settings/connectors/{platform}/direction")
-    async def connector_set_direction(request: Request, platform: str):
-        """HTMX: update sync direction for a connector."""
-        token = _token(request)
-        if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
-            return r
-        if (err := _validate_platform(platform)):
-            return err
-
-        from celerp.config import ensure_instance_id
-        from celerp.db import get_session_ctx
-        from celerp.models.connector_config import ConnectorConfig
-        from ui.config import RELAY_URL
-        from ui.i18n import get_lang
-        import sqlalchemy as sa
-
-        iid = ensure_instance_id()
-        lang = get_lang(request)
-        form = await request.form()
-        direction = form.get("direction", "both")
-
-        if direction not in ("inbound", "outbound", "both"):
-            direction = "both"
-
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(
-                    ConnectorConfig.company_id == iid,
-                    ConnectorConfig.connector == platform,
-                )
-                .values(direction=direction)
-            )
-            await session.commit()
-
-        # Re-render the card
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
-        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        config = await _get_connector_config(iid, platform)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
-                              config=config, lang=lang)
+        # Open the authorize URL in a new tab AND show an on-screen next step + fallback
+        # link — so nothing is silently lost if the popup is blocked (GDR: users must
+        # always know what comes next and have a visible way forward).
+        return Div(
+            Script(f"window.open({url!r}, '_blank', 'noopener');"),
+            Span(t("connectors.authorize_opened", lang,
+                   default="Opening authorization in a new tab — complete it there, then return here."),
+                 cls="flash flash--info"),
+            A(t("connectors.authorize_link", lang, default="If nothing opened, click here to authorize"),
+              href=url, target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
+        )
 
     @app.post("/settings/connectors/{platform}/frequency")
     async def connector_set_frequency(request: Request, platform: str):
@@ -902,6 +872,49 @@ def setup_routes(app):
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
                               config=config, lang=lang)
 
+    @app.post("/settings/connectors/{platform}/direction")
+    async def connector_set_direction(request: Request, platform: str):
+        """HTMX: update sync direction (inbound / outbound / both) for a connector."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := _check_role(request, "admin")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+
+        from celerp.config import ensure_instance_id
+        from celerp.db import get_session_ctx
+        from celerp.models.connector_config import ConnectorConfig
+        from ui.config import RELAY_URL
+        from ui.i18n import get_lang
+        import sqlalchemy as sa
+
+        iid = ensure_instance_id()
+        lang = get_lang(request)
+        form = await request.form()
+        direction = form.get("direction", "both")
+        if direction not in ("inbound", "outbound", "both"):
+            direction = "both"
+
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.update(ConnectorConfig)
+                .where(
+                    ConnectorConfig.company_id == iid,
+                    ConnectorConfig.connector == platform,
+                )
+                .values(direction=direction)
+            )
+            await session.commit()
+
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        last_runs = await _get_last_runs(iid)
+        config = await _get_connector_config(iid, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
+                              config=config, lang=lang)
+
     @app.delete("/settings/connectors/{platform}/disconnect")
     async def connector_disconnect(request: Request, platform: str):
         """HTMX: disconnect a connector by deleting its tokens on relay."""
@@ -921,11 +934,12 @@ def setup_routes(app):
         iid = ensure_instance_id()
         lang = get_lang(request)
 
+        from celerp.gateway.state import relay_session_headers
         try:
             async with httpx.AsyncClient(timeout=5.0) as c:
                 r = await c.delete(
                     f"{RELAY_URL}/tokens/{platform}",
-                    params={"instance_id": iid},
+                    headers=relay_session_headers(),
                 )
         except Exception as exc:
             return Div(
@@ -1098,20 +1112,51 @@ def setup_routes(app):
                     cls="connector-card",
                 )
 
+        # Validate the credentials against the store BEFORE storing them, so a bad
+        # key/secret/URL fails here with a clear message instead of silently failing on
+        # the first background sync.
+        if platform == "woocommerce":
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as c:
+                    probe = await c.get(
+                        f"{store_url}/wp-json/wc/v3/products",
+                        params={"per_page": 1}, auth=(consumer_key, consumer_secret),
+                    )
+                if probe.status_code == 401:
+                    raise RuntimeError("store rejected the consumer key/secret (401)")
+                probe.raise_for_status()
+            except Exception as exc:
+                return Div(
+                    Span(t("connectors.connect_check_failed", lang,
+                           default=f"Could not connect to the store: {exc}"), cls="flash flash--warning"),
+                    id=f"connector-card-{platform}", cls="connector-card",
+                )
+
+        from celerp.gateway.state import relay_session_headers
         try:
             async with httpx.AsyncClient(timeout=5.0) as c:
                 r = await c.post(
                     f"{RELAY_URL}/tokens/{platform}",
                     json={
-                        "instance_id": iid,
                         "consumer_key": consumer_key,
                         "consumer_secret": consumer_secret,
                         "store_url": store_url or None,
                     },
+                    headers=relay_session_headers(),
                 )
         except Exception as exc:
             return Div(
                 Span(f"✗ {exc}", cls="flash flash--warning"),
+                id=f"connector-card-{platform}",
+                cls="connector-card",
+            )
+
+        if r.status_code != 200:
+            # Surface a failed store rather than silently rendering "connected".
+            return Div(
+                Span(t("connectors.connect_failed", lang,
+                       default=f"Could not store credentials (relay returned {r.status_code}). Please retry."),
+                     cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )

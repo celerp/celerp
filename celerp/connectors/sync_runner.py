@@ -53,7 +53,10 @@ async def _last_success_watermark(company_id: str, connector: str, entity: str):
                     SyncRun.status == "success",
                 )
             )
-    except Exception:
+    except Exception as exc:
+        # A read failure degrades to a full re-pull (safe, dup-safe via idempotency
+        # keys) — but say so rather than silently widening every sync.
+        log.warning("Could not read sync watermark for %s.%s: %s — full pull", connector, entity, exc)
         return None
 
 

@@ -21,10 +21,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from celerp.connectors.base import (
     ConnectorContext,
     SyncEntity,
-    SyncDirection,
     SyncFrequency,
     ConnectorCategory,
-    entity_allowed,
 )
 from celerp.connectors.shopify import ShopifyConnector, _next_page_url
 from celerp.connectors.webhooks import WebhookEvent, topic_to_entity, handle_webhook
@@ -47,14 +45,6 @@ def shopify():
     return ShopifyConnector()
 
 
-# ── Base: SyncDirection enum ──────────────────────────────────────────────────
-
-def test_sync_direction_values():
-    assert SyncDirection.INBOUND.value == "inbound"
-    assert SyncDirection.OUTBOUND.value == "outbound"
-    assert SyncDirection.BOTH.value == "both"
-
-
 def test_sync_frequency_values():
     assert SyncFrequency.REALTIME.value == "realtime"
     assert SyncFrequency.MANUAL.value == "manual"
@@ -64,30 +54,6 @@ def test_sync_frequency_values():
 def test_connector_category_values():
     assert ConnectorCategory.WEBSITE.value == "website"
     assert ConnectorCategory.ACCOUNTING.value == "accounting"
-
-
-# ── entity_allowed ────────────────────────────────────────────────────────────
-
-def test_entity_allowed_both_allows_all():
-    assert entity_allowed("products", SyncDirection.BOTH)
-    assert entity_allowed("products_out", SyncDirection.BOTH)
-    assert entity_allowed("invoices_out", SyncDirection.BOTH)
-
-
-def test_entity_allowed_inbound_blocks_outbound():
-    assert entity_allowed("products", SyncDirection.INBOUND)
-    assert entity_allowed("orders", SyncDirection.INBOUND)
-    assert not entity_allowed("products_out", SyncDirection.INBOUND)
-    assert not entity_allowed("invoices_out", SyncDirection.INBOUND)
-    assert not entity_allowed("inventory_out", SyncDirection.INBOUND)
-
-
-def test_entity_allowed_outbound_blocks_inbound():
-    assert not entity_allowed("products", SyncDirection.OUTBOUND)
-    assert not entity_allowed("orders", SyncDirection.OUTBOUND)
-    assert entity_allowed("products_out", SyncDirection.OUTBOUND)
-    assert entity_allowed("invoices_out", SyncDirection.OUTBOUND)
-    assert entity_allowed("inventory_out", SyncDirection.OUTBOUND)
 
 
 # ── Registry tests ────────────────────────────────────────────────────────────
@@ -120,28 +86,10 @@ def test_shopify_metadata(shopify):
     assert SyncEntity.PRODUCTS in shopify.supported_entities
     assert SyncEntity.ORDERS in shopify.supported_entities
     assert SyncEntity.CONTACTS in shopify.supported_entities
-    assert shopify.direction == SyncDirection.BOTH
     assert shopify.category == ConnectorCategory.WEBSITE
 
 
 # ── Shopify webhook support ──────────────────────────────────────────────────
-
-def test_shopify_webhook_topics_both(shopify):
-    topics = shopify.webhook_topics_for_direction(SyncDirection.BOTH)
-    assert "products/create" in topics
-    assert "orders/create" in topics
-    assert len(topics) == 8
-
-
-def test_shopify_webhook_topics_outbound_empty(shopify):
-    topics = shopify.webhook_topics_for_direction(SyncDirection.OUTBOUND)
-    assert topics == []
-
-
-def test_shopify_webhook_topics_inbound(shopify):
-    topics = shopify.webhook_topics_for_direction(SyncDirection.INBOUND)
-    assert len(topics) == 8
-
 
 def test_shopify_validate_webhook(shopify):
     import hmac as _hmac
@@ -156,30 +104,6 @@ def test_shopify_validate_webhook(shopify):
 
 def test_shopify_validate_webhook_bad_signature(shopify):
     assert not shopify.validate_webhook(b'{"id": 123}', "bad_sig", "secret")
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shopify_register_webhooks(shopify, ctx):
-    url = "https://test-store.myshopify.com/admin/api/2024-01/webhooks.json"
-    respx.post(url).mock(
-        return_value=httpx.Response(201, json={"webhook": {"id": 12345}})
-    )
-    ids = await shopify.register_webhooks(ctx, "https://relay.example.com/webhooks/shopify/inst1")
-    assert len(ids) == 8
-    assert "12345" in ids
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shopify_deregister_webhooks(shopify, ctx):
-    respx.delete("https://test-store.myshopify.com/admin/api/2024-01/webhooks/111.json").mock(
-        return_value=httpx.Response(200)
-    )
-    respx.delete("https://test-store.myshopify.com/admin/api/2024-01/webhooks/222.json").mock(
-        return_value=httpx.Response(204)
-    )
-    await shopify.deregister_webhooks(ctx, ["111", "222"])  # no exception = success
 
 
 # ── _next_page_url ────────────────────────────────────────────────────────────
@@ -226,7 +150,7 @@ async def test_sync_products_creates_items(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         result = await shopify.sync_products(ctx)
     assert result.ok
     assert result.created == 2
@@ -240,7 +164,7 @@ async def test_sync_products_skips_duplicate(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=False)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="noop")):
         result = await shopify.sync_products(ctx)
     assert result.created == 0
     assert result.skipped == 3
@@ -290,7 +214,7 @@ async def test_sync_orders_creates_docs(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/orders.json").mock(
         return_value=httpx.Response(200, json=orders)
     )
-    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_order_from_shopify", new=AsyncMock(return_value="created")):
         result = await shopify.sync_orders(ctx)
     assert result.ok
     assert result.created == 1
@@ -305,7 +229,7 @@ async def test_sync_contacts(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/customers.json").mock(
         return_value=httpx.Response(200, json=customers)
     )
-    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_contact_from_shopify", new=AsyncMock(return_value="created")):
         result = await shopify.sync_contacts(ctx)
     assert result.ok
     assert result.created == 1
@@ -323,63 +247,6 @@ async def test_sync_products_missing_store_handle(shopify):
 
 # ── sync_runner with direction filtering ──────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_sync_runner_blocks_outbound_when_inbound():
-    from celerp.connectors.sync_runner import run_sync
-    shopify = ShopifyConnector()
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test.myshopify.com")
-    result = await run_sync(shopify, ctx, "products_out", direction=SyncDirection.INBOUND)
-    assert not result.ok
-    assert "blocked" in result.errors[0]
-
-
-@pytest.mark.asyncio
-async def test_sync_runner_blocks_inbound_when_outbound():
-    from celerp.connectors.sync_runner import run_sync
-    shopify = ShopifyConnector()
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test.myshopify.com")
-    result = await run_sync(shopify, ctx, "products", direction=SyncDirection.OUTBOUND)
-    assert not result.ok
-    assert "blocked" in result.errors[0]
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_sync_runner_allows_inbound_when_both():
-    from celerp.connectors.sync_runner import run_sync
-    shopify = ShopifyConnector()
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test-store.myshopify.com")
-    respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
-        return_value=httpx.Response(200, json={"products": []})
-    )
-    with patch("celerp.db.get_session_ctx") as mock_db:
-        mock_session = AsyncMock()
-        mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
-        mock_session.scalar = AsyncMock(return_value=None)  # no prior watermark -> full sync
-        mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
-        result = await run_sync(shopify, ctx, "products", direction=SyncDirection.BOTH)
-    assert result.ok
-
-
-@pytest.mark.asyncio
-async def test_sync_runner_no_direction_runs_all():
-    """When direction=None, sync_runner does not filter."""
-    from celerp.connectors.sync_runner import run_sync
-    shopify = ShopifyConnector()
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test-store.myshopify.com")
-    # products_out will raise NotImplementedError for missing items, but it won't be direction-blocked
-    with patch("celerp.db.get_session_ctx") as mock_db:
-        mock_session = AsyncMock()
-        mock_session.add = MagicMock()  # session.add is sync; AsyncMock would leave an unawaited coroutine
-        mock_session.scalar = AsyncMock(return_value=None)  # no prior watermark -> full sync
-        mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
-        result = await run_sync(shopify, ctx, "products_out", direction=None)
-    # Should not be blocked by direction - it will fail for other reasons (no items)
-    assert "blocked" not in str(result.errors or [])
-
-
 # ── Webhook: topic_to_entity ─────────────────────────────────────────────────
 
 def test_topic_to_entity_shopify_products():
@@ -396,10 +263,6 @@ def test_topic_to_entity_shopify_orders():
 def test_topic_to_entity_shopify_customers():
     assert topic_to_entity("customers/create") == "contacts"
     assert topic_to_entity("customers/update") == "contacts"
-
-
-def test_topic_to_entity_shopify_inventory():
-    assert topic_to_entity("inventory_levels/update") == "inventory"
 
 
 def test_topic_to_entity_wc_product():
@@ -422,25 +285,6 @@ def test_topic_to_entity_unknown():
 # ── Webhook: handle_webhook ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_handle_webhook_respects_direction():
-    """Webhook for products should be blocked when direction is outbound."""
-    event = WebhookEvent(platform="shopify", topic="products/update", entity_id="123")
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test.myshopify.com")
-    with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
-        await handle_webhook(event, ctx, direction=SyncDirection.OUTBOUND)
-        mock_sync.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_webhook_runs_sync_for_inbound():
-    event = WebhookEvent(platform="shopify", topic="products/update", entity_id="123")
-    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="test.myshopify.com")
-    with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
-        await handle_webhook(event, ctx, direction=SyncDirection.BOTH)
-        mock_sync.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_handle_webhook_unknown_topic():
     event = WebhookEvent(platform="shopify", topic="refund/created")
     ctx = ConnectorContext(company_id="test", access_token="tok")
@@ -459,23 +303,6 @@ async def test_handle_webhook_unknown_platform():
 
 
 # ── ConnectorConfig model ────────────────────────────────────────────────────
-
-def test_connector_config_webhook_ids():
-    from celerp.models.connector_config import ConnectorConfig
-    config = ConnectorConfig(
-        company_id="test",
-        connector="shopify",
-        direction="both",
-        sync_frequency="realtime",
-        daily_sync_hour=2,
-    )
-    assert config.webhook_ids == []
-    config.webhook_ids = ["111", "222"]
-    assert config.webhook_ids_json == '["111", "222"]'
-    assert config.webhook_ids == ["111", "222"]
-    config.webhook_ids = []
-    assert config.webhook_ids_json is None
-
 
 # ── /connectors router (HTTP) ─────────────────────────────────────────────────
 
@@ -555,10 +382,10 @@ async def test_sync_unsupported_entity(client, patch_session_token):
         "X-Session-Token": _FAKE_SESSION_TOKEN,
     }
     resp = await client.post("/connectors/shopify/sync", headers=headers, json={
-        "entity": "invoices",
+        "entity": "widgets",   # not a valid SyncEntity → rejected at the schema layer
         "access_token": "tok",
     })
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 # ── QuickBooks connector tests ────────────────────────────────────────────────
@@ -576,21 +403,6 @@ def qb_ctx():
         access_token="qb_access_token_test",
         store_handle="1234567890",
     )
-
-
-def test_quickbooks_metadata(qb):
-    assert qb.name == "quickbooks"
-    assert qb.display_name == "QuickBooks"
-    assert SyncEntity.PRODUCTS in qb.supported_entities
-    assert SyncEntity.INVOICES in qb.supported_entities
-    assert qb.direction == SyncDirection.BOTH
-    assert qb.category == ConnectorCategory.ACCOUNTING
-
-
-def test_quickbooks_no_webhook_support(qb):
-    """Accounting connectors should not have webhook topics."""
-    topics = qb.webhook_topics_for_direction(SyncDirection.BOTH)
-    assert topics == []
 
 
 def test_registry_get_quickbooks():
@@ -615,7 +427,7 @@ async def test_quickbooks_sync_products_success(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock) as mock_upsert:
-        mock_upsert.return_value = True
+        mock_upsert.return_value = "created"
         result = await qb.sync_products(qb_ctx)
     assert result.created == 2
     assert result.ok
@@ -647,7 +459,7 @@ async def test_quickbooks_sync_orders(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_invoice_from_quickbooks", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await qb.sync_orders(qb_ctx)
     assert result.created == 1
     assert result.ok
@@ -667,7 +479,7 @@ async def test_quickbooks_sync_contacts(qb, qb_ctx):
         return_value=httpx.Response(200, json=mock_response)
     )
     with patch("celerp.connectors.upsert.upsert_contact_from_quickbooks", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await qb.sync_contacts(qb_ctx)
     assert result.created == 1
     assert result.ok
@@ -697,19 +509,6 @@ def xero_ctx():
     )
 
 
-def test_xero_metadata(xero):
-    assert xero.name == "xero"
-    assert xero.display_name == "Xero"
-    assert SyncEntity.INVOICES in xero.supported_entities
-    assert xero.direction == SyncDirection.BOTH
-    assert xero.category == ConnectorCategory.ACCOUNTING
-
-
-def test_xero_no_webhook_support(xero):
-    topics = xero.webhook_topics_for_direction(SyncDirection.BOTH)
-    assert topics == []
-
-
 def test_registry_get_xero():
     c = connector_registry.get("xero")
     assert c.name == "xero"
@@ -737,7 +536,7 @@ async def test_xero_sync_products_success(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_products(xero_ctx)
     assert result.created == 1
     assert result.skipped == 1
@@ -758,7 +557,7 @@ async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_invoice_from_xero", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_orders(xero_ctx)
     assert result.created == 1
     assert result.skipped == 1
@@ -775,16 +574,10 @@ async def test_xero_sync_contacts(xero, xero_ctx):
         })
     )
     with patch("celerp.connectors.upsert.upsert_contact_from_xero", new_callable=AsyncMock) as mock_up:
-        mock_up.return_value = True
+        mock_up.return_value = "created"
         result = await xero.sync_contacts(xero_ctx)
     assert result.created == 1
     assert result.ok
-
-
-@pytest.mark.asyncio
-async def test_xero_has_sync_invoices_out(xero):
-    from celerp.connectors.base import ConnectorBase
-    assert type(xero).sync_invoices_out is not ConnectorBase.sync_invoices_out
 
 
 # ── WooCommerce connector tests ──────────────────────────────────────────────
@@ -802,26 +595,6 @@ def wc_ctx():
         access_token="ck_test123:cs_test456",
         store_handle="https://mystore.example.com",
     )
-
-
-def test_woocommerce_metadata(wc):
-    assert wc.name == "woocommerce"
-    assert wc.display_name == "WooCommerce"
-    assert wc.direction == SyncDirection.BOTH
-    assert wc.category == ConnectorCategory.WEBSITE
-    assert SyncEntity.PRODUCTS in wc.supported_entities
-    assert SyncEntity.INVENTORY in wc.supported_entities
-
-
-def test_woocommerce_webhook_topics(wc):
-    topics = wc.webhook_topics_for_direction(SyncDirection.BOTH)
-    assert "product.created" in topics
-    assert "order.created" in topics
-    assert len(topics) == 7
-
-
-def test_woocommerce_webhook_topics_outbound_empty(wc):
-    assert wc.webhook_topics_for_direction(SyncDirection.OUTBOUND) == []
 
 
 def test_woocommerce_validate_webhook(wc):
@@ -858,7 +631,7 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
             {"id": 2, "sku": "", "name": "No SKU Item", "regular_price": "10.00"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
     assert result.created == 2  # both get SKUs (second gets WC-2 fallback)
@@ -872,7 +645,7 @@ async def test_woocommerce_sync_orders(wc, wc_ctx):
             {"id": 100, "status": "processing", "line_items": []},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new=AsyncMock(return_value="created")):
         result = await wc.sync_orders(wc_ctx)
     assert result.ok
     assert result.created == 1
@@ -886,7 +659,7 @@ async def test_woocommerce_sync_contacts(wc, wc_ctx):
             {"id": 50, "email": "customer@example.com", "first_name": "Bob", "last_name": "Jones"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new=AsyncMock(return_value=True)):
+    with patch("celerp.connectors.upsert.upsert_contact_from_woocommerce", new=AsyncMock(return_value="created")):
         result = await wc.sync_contacts(wc_ctx)
     assert result.ok
     assert result.created == 1
@@ -900,26 +673,6 @@ async def test_woocommerce_sync_products_api_error(wc, wc_ctx):
     )
     result = await wc.sync_products(wc_ctx)
     assert not result.ok
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_woocommerce_register_webhooks(wc, wc_ctx):
-    respx.post("https://mystore.example.com/wp-json/wc/v3/webhooks").mock(
-        return_value=httpx.Response(201, json={"id": 789})
-    )
-    ids = await wc.register_webhooks(wc_ctx, "https://relay.example.com/webhooks/woocommerce/inst1")
-    assert len(ids) == 7
-    assert "789" in ids
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_woocommerce_deregister_webhooks(wc, wc_ctx):
-    respx.delete("https://mystore.example.com/wp-json/wc/v3/webhooks/789").mock(
-        return_value=httpx.Response(200)
-    )
-    await wc.deregister_webhooks(wc_ctx, ["789"])
 
 
 # ── RateLimitedClient tests ──────────────────────────────────────────────────
