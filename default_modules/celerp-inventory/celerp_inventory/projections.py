@@ -145,6 +145,18 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
+        # `pieces` is canonical under attributes["pieces"] (like item.updated normalizes). Some
+        # producers put it TOP-LEVEL in the create payload — POST /items via extra="allow", CIF
+        # imports, the UI CSV/XLSX builder. Relocate it so storage is uniform regardless of path,
+        # and so a snapshot self-heals any item that was stored top-level historically.
+        if "pieces" in current:
+            _pieces_val = current.pop("pieces")
+            _attrs = dict(current.get("attributes") or {})
+            if _pieces_val is None:
+                _attrs.pop("pieces", None)
+            else:
+                _attrs.setdefault("pieces", _pieces_val)  # never clobber an explicit attributes.pieces
+            current["attributes"] = _attrs
         current.setdefault("status", "available")
         current.setdefault("inventory_type", "stocked")
         # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)

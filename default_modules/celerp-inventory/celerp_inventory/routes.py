@@ -2058,6 +2058,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     for p in source_projections:
         all_attr_keys.update((p.state.get("attributes") or {}).keys())
     all_attr_keys -= _EXPIRY_ATTR_KEYS
+    # `pieces` may live TOP-LEVEL (imports / POST /items) rather than under attributes, so the loop
+    # above misses it. Add it whenever any source has a piece count so it's resolved (summed) below.
+    if any(_read_pieces(p.state) is not None for p in source_projections):
+        all_attr_keys.add("pieces")
 
     # Classify the merged category's fields by their SCHEMA type, not by the shape of their values.
     # A merge must NEVER sum a field or invent a value. Only genuinely numeric-typed fields
@@ -2079,7 +2083,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             # a number (int/float/str are equivalent). If every source has pieces set → the merged
             # item's pieces is the sum; if any source has it unset, the true total is unknowable, so
             # the merged item carries NO pieces. See issue #197.
-            coerced = [_num_pieces((p.state.get("attributes") or {}).get("pieces")) for p in source_projections]
+            coerced = [_num_pieces(_read_pieces(p.state)) for p in source_projections]
             if coerced and all(v is not None for v in coerced):
                 total = sum(coerced, Decimal(0))
                 resolved_attrs["pieces"] = int(total) if total == total.to_integral_value() else float(total)
