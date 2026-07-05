@@ -250,8 +250,13 @@ class ShopifyConnector(ConnectorBase):
 
     # -- Outbound: Inventory push ----------------------------------------------
 
-    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Push Celerp stock levels -> Shopify inventory levels."""
+    async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp stock levels -> Shopify inventory levels (outbound).
+
+        Named *_out so it is classified as an outbound entity and actually gets
+        dispatched by the scheduler; as `sync_inventory` it was mis-typed as the
+        inbound 'inventory' entity and never ran (Shopify has no inbound inventory
+        pull — stock arrives via product variants)."""
         result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
 

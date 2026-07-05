@@ -250,3 +250,20 @@ async def test_scheduler_loop_single_company_then_exits():
         with pytest.raises(asyncio.CancelledError):
             await daily_scheduler.scheduler_loop("co-1", token_fetcher=AsyncMock())
     assert check.await_count == 1
+
+
+@pytest.mark.parametrize("connector,expected", [
+    ("shopify", {"products_out", "inventory_out"}),
+    ("woocommerce", {"products_out", "inventory_out"}),
+    ("quickbooks", {"invoices_out"}),
+    ("xero", {"invoices_out"}),
+])
+def test_supported_outbound_entities_are_detected(connector, expected):
+    """Every outbound push a connector implements must be detected so the scheduler
+    dispatches it. Regression: Shopify's inventory push was named `sync_inventory`
+    (not `sync_inventory_out`), so it was classified as the inbound 'inventory' entity
+    and never ran — this would have caught that (shopify would return {'products_out'})."""
+    import celerp.connectors as registry
+    from celerp.connectors.daily_scheduler import _supported_outbound
+
+    assert set(_supported_outbound(registry.get(connector))) == expected
