@@ -1577,12 +1577,28 @@ function _bulkImmediate(url,extraName,extraValue){
   htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
     .then(function(){form.remove();},function(){form.remove();});
 }
+function _liveMergeMeta(id){
+  // The SKU/name shown here must reflect the CURRENT value: an inline edit changes the
+  // cell without re-selecting the row, so the meta snapshotted at select time (and kept
+  // in sessionStorage) goes stale. Read the live row when it is on the page; fall back to
+  // the stored snapshot only for selected rows not currently rendered (other pages).
+  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+  if(cb){
+    var tr=cb.closest('tr');
+    var skuCell=tr&&tr.querySelector('[data-col="sku"]');
+    var nameCell=tr&&tr.querySelector('[data-col="name"]');
+    return {sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
+            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()};
+  }
+  var m=CelerpSelection.all()[id]||{};
+  return {sku:m.sku||'',name:m.name||''};
+}
 function _populateMergeTargets(){
   var sel=document.getElementById('merge-target-select');
   if(!sel) return;
   var all=CelerpSelection.all();
   Object.keys(all).forEach(function(id){
-    var meta=all[id];
+    var meta=_liveMergeMeta(id);
     var opt=document.createElement('option');
     opt.value=id;
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');
