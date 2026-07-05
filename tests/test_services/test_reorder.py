@@ -28,6 +28,25 @@ from celerp.services.reorder import (
 
 # ── Pure predicate ────────────────────────────────────────────────────────────
 
+def test_scan_due_gating():
+    """The daily loop runs at most once per company per day, at the configured UTC hour."""
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta, timezone
+    from celerp.services.reorder import _scan_due, _SCAN_HOUR_UTC
+    at_hour = datetime(2026, 7, 5, _SCAN_HOUR_UTC, 0, tzinfo=timezone.utc)
+    off_hour = at_hour.replace(hour=(_SCAN_HOUR_UTC + 1) % 24)
+    # Wrong hour -> never due.
+    assert _scan_due(SimpleNamespace(settings={}), off_hour) is False
+    # Right hour, never scanned -> due.
+    assert _scan_due(SimpleNamespace(settings={}), at_hour) is True
+    # Right hour but scanned <23h ago -> not due (debounce).
+    recent = (at_hour - timedelta(hours=2)).isoformat()
+    assert _scan_due(SimpleNamespace(settings={"reorder_last_scan_at": recent}), at_hour) is False
+    # Right hour, scanned >23h ago -> due again.
+    old = (at_hour - timedelta(hours=25)).isoformat()
+    assert _scan_due(SimpleNamespace(settings={"reorder_last_scan_at": old}), at_hour) is True
+
+
 def test_new_fields_in_default_schema():
     from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA
     keys = {f["key"] for f in DEFAULT_ITEM_SCHEMA}

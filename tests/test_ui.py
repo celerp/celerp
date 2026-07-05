@@ -9538,6 +9538,68 @@ class TestCatalogConsolidation:
         assert {o["sku"] for o in out} == {"W", "X"} and len(out) == 2
 
 
+class TestCatalogConsolidationEndpoint:
+    """The forward-sales catalog endpoints consolidate splittable lots into one option
+    (bound to the pick-order-first lot) and keep non-splittable lots per-lot."""
+
+    _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
+
+    @pytest.mark.asyncio
+    async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
+        items = [
+            {"sku": "W", "entity_id": "item:new", "name": "W", "quantity": 40, "allow_splitting": True,
+             "created_at": "2026-02-01", "sell_by": "piece"},
+            {"sku": "W", "entity_id": "item:old", "name": "W", "quantity": 60, "allow_splitting": True,
+             "created_at": "2026-01-01", "sell_by": "piece"},
+        ]
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1                          # collapsed to one option
+        assert data[0]["entity_id"] == "item:old"      # FIFO -> oldest lot bound
+
+    @pytest.mark.asyncio
+    async def test_catalog_search_keeps_non_splittable_per_lot(self, ui_client):
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False,
+             "batch_no": "A", "sell_by": "piece"},
+            {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False,
+             "batch_no": "B", "sell_by": "piece"},
+        ]
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
+        assert r.status_code == 200
+        assert len(r.json()) == 2                       # each unique lot stays selectable
+
+    @pytest.mark.asyncio
+    async def test_catalog_lookup_ambiguous_for_non_splittable_sku(self, ui_client):
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
+            {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
+        ]
+
+        async def _list(_t, params):
+            return {"items": items if params.get("sku") == "DIA" else []}
+
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
+        ):
+            r = await ui_client.get("/docs/catalog-lookup?sku=DIA", cookies=_authed())
+        assert r.status_code == 200
+        assert r.json().get("ambiguous") is True        # non-splittable -> chooser
+
+
 class TestReorderPlaceholderHelper:
     """The shared reorder-cell placeholder helper used by the edit/display/patch
     re-render endpoints, so the grey suggestion stays visible instantly after Escape

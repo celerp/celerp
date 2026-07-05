@@ -20,7 +20,6 @@ import math
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
