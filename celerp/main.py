@@ -254,6 +254,12 @@ async def lifespan(_app: FastAPI):
     from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
     connector_sched_task = asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher))
 
+    # Reorder low-stock alert scheduler: a daily per-company scan that notifies
+    # once per dip when items reach their reorder point (no-op for companies with
+    # alerts disabled or no reorder points set).
+    from celerp.services.reorder import reorder_alert_loop
+    reorder_alert_task = asyncio.create_task(reorder_alert_loop())
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -264,6 +270,7 @@ async def lifespan(_app: FastAPI):
     cleanup_task.cancel()
     jti_cleanup_task.cancel()
     connector_sched_task.cancel()
+    reorder_alert_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

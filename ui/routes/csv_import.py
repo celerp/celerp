@@ -1164,7 +1164,7 @@ def _fix_errors_panel(
                 fill_widget,
                 Button(t("btn.apply"),
                     type="button",
-                    onclick=f"csvFillColumn('{col}')",
+                    onclick=f"csvFillColumn({json.dumps(col)})",
                     cls="btn btn--secondary btn--xs",
                 ),
                 cls="csv-fill-bar",

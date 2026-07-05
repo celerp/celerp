@@ -738,6 +738,61 @@ async def create_doc(
     return {"event_id": entry.id, "id": entity_id}
 
 
+class ReorderDraftPOBody(BaseModel):
+    item_ids: list[str]
+    idempotency_key: str | None = None
+
+
+@router.post("/reorder/draft-po")
+async def draft_reorder_po(
+    payload: ReorderDraftPOBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a draft purchase_order from selected (low-stock) items.
+
+    Per item the line qty is its stored ``reorder_qty`` (or the velocity suggestion
+    when blank), converted from sell units into the purchase unit via
+    ``purchase_conversion_factor``. The PO is created supplier-less in v1 - the user
+    picks the vendor on the draft. This is the reorder-list -> PO payoff.
+    """
+    from celerp.services.reorder import suggest_reorder
+    if not payload.item_ids:
+        raise HTTPException(status_code=422, detail="No items selected")
+    lines: list[LineItem] = []
+    for eid in payload.item_ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if row is None or row.entity_type != "item":
+            continue
+        st = row.state or {}
+        factor = float(st.get("purchase_conversion_factor") or 1) or 1
+        base_qty = float(st.get("reorder_qty") or 0)
+        if base_qty <= 0:
+            sugg = await suggest_reorder(session, company_id, eid)
+            base_qty = float(sugg.get("reorder_qty") or 0)
+        po_qty = round(base_qty / factor, 4) if base_qty else 0
+        lines.append(LineItem(
+            item_id=eid,
+            sku=st.get("sku"),
+            name=st.get("name"),
+            description=st.get("name"),
+            quantity=po_qty,
+            unit=st.get("purchase_unit") or st.get("sell_by"),
+            sell_by=st.get("purchase_unit") or st.get("sell_by"),
+            unit_price=float(st.get("cost_price") or 0),
+        ))
+    if not lines:
+        raise HTTPException(status_code=422, detail="Selected items are not stockable")
+    doc_payload = DocCreatePayload(
+        doc_type="purchase_order",
+        purchase_kind="inventory",
+        line_items=lines,
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+    )
+    return await create_doc(doc_payload, company_id=company_id, user=user, session=session)
+
+
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
@@ -1773,6 +1828,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "bill":
         bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
 
+    # Received parcels each get a fresh sequential barcode so every physical lot is
+    # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
+    # actually holds. Single DB scan; incremented in-memory per created parcel,
+    # mirroring the split path.
+    from celerp_inventory.routes import _next_seq as _inv_next_seq
+    _recv_barcode_seq = await _inv_next_seq(session, company_id)
+
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
@@ -1843,8 +1905,15 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 _v = _doc_val or _payload_val
                 if _v:
                     item_data[_f] = _v
-            # Resolve conversion factor: doc line overrides sku_ref
-            conversion = doc_line_conversion.get(_sku.strip()) or sku_conversion_map.get(_sku.strip()) or 1
+            # Resolve conversion factor: prefer the item_id-keyed factor (specific
+            # lot/template) when the line carries item_id, then doc-line override,
+            # then sku factor, then 1.
+            conversion = (
+                (item_conversion_map.get(it.item_id) if it.item_id else None)
+                or doc_line_conversion.get(_sku.strip())
+                or sku_conversion_map.get(_sku.strip())
+                or 1
+            )
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": _sku,
@@ -1852,6 +1921,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
             })
+            # Fresh sequential barcode per physical lot (unique + scannable).
+            item_data["barcode"] = str(_recv_barcode_seq).zfill(6)
+            _recv_barcode_seq += 1
             if it.cost_price is not None:
                 # Emit cost_total when quantity is known (cost_total is the primitive)
                 _recv_qty = float(it.quantity_received) * conversion
@@ -3463,6 +3535,10 @@ async def revert_lines(
 class ReturnReceivedItem(BaseModel):
     sku: str
     quantity: float
+    # Optional: bind the return to a specific physical lot. Under non-unique SKU a
+    # credit-note line may carry item_id; when present it is authoritative (else the
+    # documented LIFO-by-sku tiebreak applies).
+    item_id: str | None = None
 
 
 class ReceiveReturnPayload(BaseModel):
@@ -3534,8 +3610,10 @@ async def receive_return(
             Projection.entity_type == "item",
         )
     )).scalars().all()
+    item_by_id: dict[str, dict] = {}
     for r in item_rows:
         flat = _flatten_item(r.state, r.entity_id)
+        item_by_id[r.entity_id] = flat
         if str(flat.get("status") or "").lower() == "sold" and flat.get("sku") in all_skus:
             sold_map.setdefault(flat["sku"], []).append(flat)
     # LIFO: most recently created first
@@ -3567,9 +3645,16 @@ async def receive_return(
     })
 
     for it in payload.items:
-        # Sold inventory record is the preferred source (has cost_price + all attributes).
-        # Fall back to invoice line item data when no sold record exists (e.g. pre-fulfillment items).
-        ref = sold_map[it.sku][0] if it.sku in sold_map else {}
+        # Prefer the exact physical lot when the credit-note line carries an item_id
+        # (SKUs can repeat across lots, so item_id/barcode is the authoritative bind).
+        # Else fall back to the documented LIFO-by-sku tiebreak (most-recent sold lot),
+        # then to the invoice line item data when no sold record exists.
+        if it.item_id and it.item_id in item_by_id:
+            ref = item_by_id[it.item_id]
+        elif it.sku in sold_map:
+            ref = sold_map[it.sku][0]
+        else:
+            ref = {}
         li_fallback = original_line_map.get(it.sku, {})
 
         # Collect any extra dynamic price keys from ref (e.g. wholesale_price, retail_price, vip_price, ...)
@@ -4111,11 +4196,20 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
 
 
 async def _resolve_barcode(session, company_id, code: str):
-    """Resolve a scanned code to an item: exact barcode first, then exact SKU. None if no match."""
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
-    hit = next((r for r in rows if str(r.state.get("barcode") or "") == code), None)
-    return hit or next((r for r in rows if str(r.state.get("sku") or "") == code), None)
+    """Resolve a scanned code to a single item via the canonical resolver.
+
+    Barcode (unique) wins; an exact SKU may map to N physical lots. When a SKU is
+    ambiguous we do NOT silently pick a lot - we 409 so the caller scans a barcode
+    or picks a lot. Returns the single matching item, or None if no match.
+    """
+    from celerp_inventory.routes import resolve_item_by_code
+    res = await resolve_item_by_code(session, company_id, code)
+    if res.ambiguous:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot.",
+        )
+    return res.one
 
 
 def _normalize_line_item_ids(lines: list) -> None:

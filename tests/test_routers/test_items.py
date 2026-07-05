@@ -362,15 +362,18 @@ async def test_carat_rejects_excess_decimals(client):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_sku_rejected(client):
-    """Creating two items with the same SKU must return 409."""
+async def test_duplicate_sku_allowed(client):
+    """Intentional contract change (2026-06-17 sku/batch plan): SKU is a product-type
+    that may repeat across physical lots. Creating two items with the same SKU now
+    SUCCEEDS; lot identity is carried by entity_id/barcode instead."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r1 = await client.post("/items", json={"sku": "DUP-1", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r1.status_code == 200
     r2 = await client.post("/items", json={"sku": "DUP-1", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
-    assert r2.status_code == 409
-    assert "DUP-1" in r2.text
+    assert r2.status_code == 200
+    # Two distinct physical lots, same sku, distinct entity ids.
+    assert r1.json()["id"] != r2.json()["id"]
 
 
 @pytest.mark.asyncio
@@ -497,17 +500,31 @@ async def test_split_qty_exceeds_parent_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_split_child_sku_must_be_unique(client):
-    """Split child with existing SKU must be rejected."""
+async def test_split_child_sku_may_reuse_existing(client):
+    """A split child reusing another item's SKU now SUCCEEDS (sku may repeat across
+    lots); each child still gets its own unique barcode from the sequence."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     await client.post("/items", json={"sku": "EXISTING-SKU", "name": "X", "quantity": 1, "sell_by": "piece"}, headers=h)
-    r = await client.post("/items", json={"sku": "SP-EXIST", "name": "Y", "quantity": 10, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"sku": "SP-EXIST", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "EXISTING-SKU", "quantity": 4}, {"sku": "NEW-SKU", "quantity": 4}]
     }, headers=h)
-    assert r.status_code == 409
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_split_child_sku_cannot_equal_parent(client):
+    """The one remaining split-sku guard: a child may not reuse the PARENT's sku."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "PARENT-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    parent_id = r.json()["id"]
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "PARENT-SKU", "quantity": 4}, {"sku": "NEW-SKU2", "quantity": 4}]
+    }, headers=h)
+    assert r.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -524,14 +541,19 @@ async def test_split_respects_unit_decimals(client):
 
 
 @pytest.mark.asyncio
-async def test_patch_sku_to_existing_rejected(client):
-    """Changing SKU to an existing one must return 409."""
+async def test_patch_sku_to_existing_allowed(client):
+    """Patching an item's SKU to one another item already uses now SUCCEEDS (sku may
+    repeat); but changing barcode to an existing barcode still 409s."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "ORIG-A", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
-    r = await client.post("/items", json={"sku": "ORIG-B", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
+    ra = await client.post("/items", json={"sku": "ORIG-A", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "700001"}, headers=h)
+    item_a_id = ra.json()["id"]
+    r = await client.post("/items", json={"sku": "ORIG-B", "name": "B", "quantity": 1, "sell_by": "piece", "barcode": "700002"}, headers=h)
     item_b_id = r.json()["id"]
     r = await client.patch(f"/items/{item_b_id}", json={"fields_changed": {"sku": {"new": "ORIG-A"}}}, headers=h)
+    assert r.status_code == 200
+    # Barcode uniqueness is still enforced on patch.
+    r = await client.patch(f"/items/{item_b_id}", json={"fields_changed": {"barcode": {"new": "700001"}}}, headers=h)
     assert r.status_code == 409
 
 
@@ -1652,6 +1674,54 @@ async def test_new_item_barcode_copies_sku(client):
     assert item.get("barcode") is not None, "barcode should be auto-assigned"
     assert item["barcode"] == item["sku"], f"barcode {item['barcode']!r} should equal SKU {item['sku']!r}"
     assert item["barcode"].isdigit(), "barcode must be digits-only"
+
+
+# ---------------------------------------------------------------------------
+# SKU / batch separation (2026-06-17 plan) + reorder fields (2026-07-05 plan)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_numeric_duplicate_sku_gets_distinct_barcode(client):
+    """Two items with the same numeric SKU and no explicit barcode: the second must
+    NOT 409 on the auto-copied barcode; it gets a distinct sequential barcode."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r1 = await client.post("/items", json={"sku": "5000", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r1.status_code == 200
+    r2 = await client.post("/items", json={"sku": "5000", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r2.status_code == 200, r2.text
+    i1 = (await client.get(f"/items/{r1.json()['id']}", headers=h)).json()
+    i2 = (await client.get(f"/items/{r2.json()['id']}", headers=h)).json()
+    assert i1["barcode"] == "5000"
+    assert i2.get("barcode") and i2["barcode"] != i1["barcode"]
+    assert i2["barcode"].isdigit()
+
+
+@pytest.mark.asyncio
+async def test_batch_no_and_reorder_fields_round_trip(client):
+    """batch_no + reorder_point + reorder_qty are additive state fields: absent is
+    accepted, and set values round-trip via patch."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "RT-1", "name": "A", "quantity": 3, "sell_by": "piece"}, headers=h)
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("batch_no") in (None, "")
+    r = await client.patch(f"/items/{item_id}", json={"fields_changed": {
+        "batch_no": {"new": "LOT-42"},
+        "reorder_point": {"new": 10},
+        "reorder_qty": {"new": 24},
+    }}, headers=h)
+    assert r.status_code == 200, r.text
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("batch_no") == "LOT-42"
+    assert float(item.get("reorder_point")) == 10
+    assert float(item.get("reorder_qty")) == 24
+
+
+# The canonical resolver + its ambiguous-SKU behaviour on live scan paths are
+# covered in tests/test_services/test_resolver.py (unit) and the audit/list scan
+# tests in default_modules/celerp-docs/tests/test_audits.py.
 
 
 @pytest.mark.asyncio

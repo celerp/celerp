@@ -67,16 +67,53 @@ async def scan_batch(payload: ScanBatchBody, company_id=Depends(get_current_comp
     return {"created": created}
 
 
+def _item_actions(entity_type: str) -> list[str]:
+    actions = ["count"]
+    if entity_type == "item":
+        actions += ["transfer", "reserve", "memo_add", "mfg_consume"]
+    return actions
+
+
 @router.get("/resolve/{code}")
 async def resolve_scan(code: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    rows = (await session.execute(select(Projection).where(Projection.company_id == company_id))).scalars().all()
-    for row in rows:
-        st = row.state
-        if row.entity_id == code or st.get("sku") == code or st.get("barcode") == code:
-            actions = ["count"]
-            if row.entity_type == "item":
-                actions += ["transfer", "reserve", "memo_add", "mfg_consume"]
-            return {"id": row.entity_id, "entity_type": row.entity_type, "state": st, "available_actions": actions}
+    """Resolve a scanned/typed code to one item, a chooser (ambiguous SKU), or a
+    non-item entity (direct entity_id scan).
+
+    Barcode (unique) wins; an exact SKU may map to N physical lots. When a SKU is
+    ambiguous, return a self-sufficient chooser: each candidate carries batch_no,
+    location and on-hand so the user can pick a lot even when barcode is blank
+    (received parcels often have none).
+    """
+    from celerp.models.company import Location
+    from celerp_inventory.routes import resolve_item_by_code
+
+    res = await resolve_item_by_code(session, company_id, code)
+    if res.ambiguous:
+        loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+        loc_map = {str(r.id): r.name for r in loc_rows}
+        candidates = []
+        for r in res.matches:
+            st = r.state or {}
+            lid = st.get("location_id")
+            candidates.append({
+                "id": r.entity_id,
+                "sku": st.get("sku"),
+                "name": st.get("name"),
+                "batch_no": st.get("batch_no"),
+                "barcode": st.get("barcode"),
+                "location_id": lid,
+                "location_name": loc_map.get(str(lid)) if lid else None,
+                "quantity": float(st.get("quantity", 0) or 0),
+            })
+        return {"ambiguous": True, "kind": "sku", "code": code, "candidates": candidates}
+
+    row = res.one
+    if row is None:
+        # Non-item entities (scanning a doc/list/etc.) resolve by exact entity_id.
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": code})
+    if row is not None:
+        return {"id": row.entity_id, "entity_type": row.entity_type, "state": row.state,
+                "available_actions": _item_actions(row.entity_type)}
     raise HTTPException(status_code=404, detail="Code not found")
 
 

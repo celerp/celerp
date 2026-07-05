@@ -369,6 +369,7 @@ def _parse_params(request: Request) -> dict:
         "inventory_type": q.get("inventory_type", ""),
         "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
         "source": q.get("source", ""),  # connector source filter (e.g. ?source=shopify)
+        "filter": q.get("filter", ""),  # semantic filter (e.g. ?filter=low_stock)
         # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
         "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
@@ -380,7 +381,7 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "source", "filter", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     for akey, aval in (p.get("attr_filters") or {}).items():
@@ -457,6 +458,8 @@ async def _inventory_content(
             params["location_id"] = p["location_id"]
         if p.get("source"):
             params["source"] = p["source"]
+        if p.get("filter"):
+            params["filter"] = p["filter"]
         for akey, aval in (p.get("attr_filters") or {}).items():
             if aval:
                 params[f"attr.{akey}"] = aval
@@ -4540,7 +4543,8 @@ _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
     "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "barcode",
-    "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name",
+    "batch_no", "hs_code", "location_name", "short_description", "reorder_point",
+    "reorder_qty", "purchase_sku", "purchase_name",
     "purchase_unit", "purchase_conversion_factor",
 })
 

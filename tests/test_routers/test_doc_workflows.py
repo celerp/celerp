@@ -1455,8 +1455,10 @@ async def test_receive_goods_inherits_sku_attributes(client, session):
     # Dynamic attributes are flattened to top-level by the GET endpoint
     assert new_item.get("color") == "red", f"attributes.color not inherited: {new_item}"
     assert new_item.get("shape") == "round", f"attributes.shape not inherited: {new_item}"
-    # Barcode must NOT be copied (unique per physical item)
-    assert not new_item.get("barcode"), f"barcode must not be inherited, got: {new_item.get('barcode')}"
+    # Barcode is NOT copied from the template (unique per physical lot); each received
+    # parcel instead gets its own fresh, scannable sequential barcode (2026-06-17 §8.1).
+    assert new_item.get("barcode"), "received parcel should get a fresh barcode"
+    assert new_item["barcode"] != "1234567890", "template barcode must not be inherited"
 
 
 @pytest.mark.asyncio

@@ -219,7 +219,8 @@ async def switch_company(token: str, company_id: str) -> tuple[str, str]:
 def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
-    for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email"):
+    for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
+              "reorder_alerts_enabled", "reorder_alert_email"):
         if k not in data:
             data[k] = settings.get(k)
     # Expose dashboard preferences at top level
@@ -238,7 +239,8 @@ async def get_company(token: str) -> dict:
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""
-    _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email"}
+    _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
+                        "reorder_alerts_enabled", "reorder_alert_email"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}

@@ -309,6 +309,7 @@ async def list_items(
     inventory_type: str | None = None,
     location_id: str | None = None,
     source: str | None = None,
+    filter: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -318,7 +319,10 @@ async def list_items(
             Pass "all" to skip status filtering entirely.
             Default (None): exclude sold + archived from results.
     category: exact category to filter on.
+    filter: semantic filter. "low_stock" keeps only items at or below their
+            reorder point (see celerp.services.reorder.is_below_reorder).
     """
+    from celerp.services.reorder import is_below_reorder
     from celerp.models.company import Company, Location
     from celerp.services.field_schema import get_effective_field_schema
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
@@ -401,6 +405,11 @@ async def list_items(
 
     if barcode:
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
+
+    # Semantic "low stock" filter: at or below reorder point (backs the dashboard
+    # cards' /inventory?filter=low_stock link and the reorder alert action_url).
+    if filter == "low_stock":
+        result = [r for r in result if is_below_reorder(r)]
 
     if q:
         # Support comma-separated OR queries (e.g. from barcode scanner multi-scan)
@@ -715,6 +724,21 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return filtered[0]
 
 
+@router.get("/{entity_id}/reorder-suggestion")
+async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Suggested reorder_point / reorder_qty from trailing outbound velocity.
+
+    Read-only assist for the item detail / bulk dialog - the stored fields stay the
+    single source of truth. Returns nulls when there is no outbound history (never
+    a fabricated number). See celerp.services.reorder.suggest_reorder.
+    """
+    from celerp.services.reorder import suggest_reorder
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return await suggest_reorder(session, company_id, entity_id)
+
+
 async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
     """Return the next integer in the shared SKU/barcode sequence for a company.
 
@@ -741,6 +765,57 @@ async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
     _MAX_SEQ_DIGITS = 9  # excludes EAN-13/GTIN-14 imported barcodes
     all_vals = list(sku_vals) + [v for v in barcode_vals if v and len(v) <= _MAX_SEQ_DIGITS]
     return max((int(v) for v in all_vals if v and str(v).isdigit()), default=0) + 1
+
+
+class ResolveResult:
+    """Result of resolving a scanned/typed code to item(s).
+
+    ``kind`` is "barcode" (matched a unique physical-lot barcode), "sku" (matched
+    a product-type SKU, which may map to N physical lots), or "none". ``matches``
+    is the list of matching item Projections (0, 1, or - for sku - N).
+    ``ambiguous`` is True only when a SKU matched more than one lot: the caller
+    must disambiguate (scan a barcode or pick a lot), never silently pick one.
+    """
+    __slots__ = ("kind", "matches")
+
+    def __init__(self, kind: str, matches: list):
+        self.kind = kind
+        self.matches = matches
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.kind == "sku" and len(self.matches) > 1
+
+    @property
+    def one(self):
+        """The single match, or None when there are zero or (ambiguously) many."""
+        return self.matches[0] if len(self.matches) == 1 else None
+
+
+async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
+    """Canonical code -> item(s) resolver. Barcode (unique) wins; SKU may be N.
+
+    This is the single disambiguation rule shared by every scan/lookup surface so
+    they behave identically: an exact barcode match resolves to one physical lot;
+    otherwise an exact SKU match may resolve to many lots (the caller then either
+    acts on a single match, or - when ``ambiguous`` - asks the user to pick).
+    """
+    code = (code or "").strip()
+    if not code:
+        return ResolveResult("none", [])
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    barcode_matches = [r for r in rows if str((r.state or {}).get("barcode") or "") == code]
+    if barcode_matches:
+        return ResolveResult("barcode", barcode_matches)
+    sku_matches = [r for r in rows if str((r.state or {}).get("sku") or "") == code]
+    if sku_matches:
+        return ResolveResult("sku", sku_matches)
+    return ResolveResult("none", [])
 
 
 @router.post("")
@@ -773,20 +848,26 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if not payload.sku:
         payload = payload.model_copy(update={"sku": str(await _next_seq(session, company_id)).zfill(6)})
 
-    # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric
+    # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
+    # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
+    # if another item already uses that barcode (e.g. a second item deliberately
+    # sharing a numeric SKU), assign a fresh sequential barcode instead so the
+    # duplicate-SKU create does not 409 on barcode. Single-SKU behaviour is
+    # unchanged (the first/only item still gets barcode == sku).
     if payload.barcode is None and payload.sku.isdigit():
-        payload = payload.model_copy(update={"barcode": payload.sku})
+        clash = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.state["barcode"].as_string() == payload.sku,
+            )
+        )).scalars().first()
+        new_barcode = str(await _next_seq(session, company_id)).zfill(6) if clash else payload.sku
+        payload = payload.model_copy(update={"barcode": new_barcode})
 
-    # SKU uniqueness
-    existing_sku = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-            Projection.state["sku"].as_string() == payload.sku,
-        )
-    )).scalars().first()
-    if existing_sku:
-        raise HTTPException(status_code=409, detail=f"SKU '{payload.sku}' already exists")
+    # SKU uniqueness is intentionally NOT enforced: `sku` is a product-type that may
+    # repeat across physical lots. Physical-lot uniqueness is carried by `barcode`
+    # (below) and the immutable `entity_id`. See the 2026-06-17 sku/batch plan.
 
     # Barcode uniqueness
     if payload.barcode:
@@ -923,20 +1004,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                             "new": int(round(new_qty)),
                         }
 
-    # Validate SKU uniqueness if changing
-    if "sku" in changed_keys:
-        new_sku = (payload.fields_changed["sku"] or {}).get("new")
-        if new_sku:
-            existing_sku = (await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                    Projection.state["sku"].as_string() == new_sku,
-                    Projection.entity_id != entity_id,
-                )
-            )).scalars().first()
-            if existing_sku:
-                raise HTTPException(status_code=409, detail=f"SKU '{new_sku}' already exists")
+    # SKU uniqueness is intentionally NOT enforced on patch: `sku` is a product-type
+    # that may repeat across physical lots (barcode/entity_id carry lot identity).
 
     # Validate barcode format + uniqueness if changing
     if "barcode" in changed_keys:
@@ -1359,20 +1428,13 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if len(child_skus) != len(set(child_skus)):
         raise HTTPException(status_code=409, detail="Duplicate SKUs within split children")
 
-    # Validate child SKUs against existing items
+    # A child must not reuse the parent's SKU (the parent keeps it). Uniqueness of a
+    # child SKU against *other* existing items is no longer enforced - SKUs may repeat
+    # across physical lots; each child gets its own unique barcode from the sequence.
     parent_sku = parent.state.get("sku")
     for child_sku in child_skus:
         if child_sku == parent_sku:
             raise HTTPException(status_code=422, detail=f"Child SKU cannot be the same as the parent SKU '{parent_sku}'. The parent keeps its original SKU.")
-        existing = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.state["sku"].as_string() == child_sku,
-            )
-        )).scalars().first()
-        if existing:
-            raise HTTPException(status_code=409, detail=f"SKU '{child_sku}' already exists")
 
     # Create child items
     child_eids: list[str] = []
@@ -1810,16 +1872,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_sell_by not in _transform_unit_map:
         raise HTTPException(status_code=422, detail=f"Unknown unit '{payload.child_sell_by}'")
 
-    # Check child SKU uniqueness
-    existing = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-            Projection.state["sku"].as_string() == payload.child_sku,
-        )
-    )).scalars().first()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"SKU '{payload.child_sku}' already exists")
+    # Child SKU uniqueness against existing items is no longer enforced - SKUs may
+    # repeat across physical lots; lot identity is carried by barcode / entity_id.
 
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})

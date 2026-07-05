@@ -4,7 +4,7 @@
 """Notification model - generic in-app notifications.
 
 Supports company-wide (user_id=None) and per-user notifications.
-Categories: ai, backup, system, subscription, import, connector.
+Categories: ai, backup, system, subscription, import, connector, inventory.
 """
 
 from __future__ import annotations

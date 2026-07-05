@@ -13,6 +13,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
 from ui.routes.settings import _check_role, _token
@@ -142,7 +143,7 @@ def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
                 label,
                 cls=f"btn btn--xs {active}",
                 hx_post=f"/settings/connectors/{cid}/direction",
-                hx_vals=f'{{"direction": "{val}"}}',
+                hx_vals=hx_vals({"direction": val}),
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
             )

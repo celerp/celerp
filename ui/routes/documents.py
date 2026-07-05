@@ -102,6 +102,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "hs_code": item.get("hs_code") or None,
         "entity_id": item.get("entity_id") or item.get("id") or None,
         "allow_splitting": meta["allow_splitting"],
+        "batch_no": item.get("batch_no") or None,
         "category": item.get("category") or None,
         "cost_price": item.get("cost_price") or None,
         "wholesale_price": item.get("wholesale_price") or None,
@@ -1249,25 +1250,41 @@ def setup_routes(app):
         def _extract(item: dict) -> dict:
             return _picker_item(item, resolve_price(item, price_list), _unit_map)
 
+        async def _first(params: dict) -> list:
+            resp = await api.list_items(token, params)
+            return resp.get("items", []) if isinstance(resp, dict) else resp
+
+        def _ambiguous(code: str, items: list) -> dict:
+            # SKU maps to N physical lots - hand back a chooser instead of silently
+            # picking items[0]. Candidates carry batch_no/entity_id so the user picks a lot.
+            return {"ambiguous": True, "code": code, "candidates": [_extract(i) for i in items]}
+
         try:
-            if is_credit_note:
-                # Credit notes: sold items first (returns), then active fallback
-                for params in ({"sku": code, "limit": 1, "status": "sold"},
-                               {"barcode": code, "limit": 1, "status": "sold"},
-                               {"sku": code, "limit": 1},
-                               {"barcode": code, "limit": 1}):
-                    resp = await api.list_items(token, params)
-                    items = resp.get("items", []) if isinstance(resp, dict) else resp
-                    if items:
-                        return JSONResponse(_extract(items[0]))
-            else:
-                for params in ({"sku": code, "limit": 1},
-                               {"barcode": code, "limit": 1},
-                               {"q": code, "limit": 1}):
-                    resp = await api.list_items(token, params)
-                    items = resp.get("items", []) if isinstance(resp, dict) else resp
-                    if items:
-                        return JSONResponse(_extract(items[0]))
+            # Barcode (unique physical lot) always wins and is unambiguous.
+            barcode_status = ({"barcode": code, "limit": 1, "status": "sold"} if is_credit_note
+                              else {"barcode": code, "limit": 1})
+            items = await _first(barcode_status)
+            if not items and is_credit_note:
+                items = await _first({"barcode": code, "limit": 1})
+            if items:
+                return JSONResponse(_extract(items[0]))
+
+            # Exact SKU: may map to multiple lots -> chooser.
+            sku_params = ({"sku": code, "limit": 20, "status": "sold"} if is_credit_note
+                          else {"sku": code, "limit": 20})
+            sku_items = await _first(sku_params)
+            if not sku_items and is_credit_note:
+                sku_items = await _first({"sku": code, "limit": 20})
+            if len(sku_items) > 1:
+                return JSONResponse(_ambiguous(code, sku_items))
+            if sku_items:
+                return JSONResponse(_extract(sku_items[0]))
+
+            # Fuzzy fallback (non-credit-note only, mirrors prior behaviour).
+            if not is_credit_note:
+                q_items = await _first({"q": code, "limit": 1})
+                if q_items:
+                    return JSONResponse(_extract(q_items[0]))
         except Exception:
             pass
         return JSONResponse({})
@@ -1300,10 +1317,12 @@ def setup_routes(app):
                 sold = resp_sold.get("items", []) if isinstance(resp_sold, dict) else resp_sold
                 resp_active = await api.list_items(token, {"q": q, "limit": 10})
                 active = resp_active.get("items", []) if isinstance(resp_active, dict) else resp_active
+                # Dedup by physical lot (entity_id), NOT by sku: several lots can share
+                # one sku and each is a distinct, separately-selectable return candidate.
                 seen = set()
                 items = []
                 for item in sold + active:
-                    key = item.get("sku") or item.get("entity_id")
+                    key = item.get("entity_id") or item.get("id") or item.get("sku")
                     if key and key not in seen:
                         seen.add(key)
                         items.append(item)
@@ -1450,18 +1469,23 @@ def setup_routes(app):
             except ValueError:
                 tax_rate = 0
 
-            # Resolve SKU against inventory catalog
+            # Resolve against the catalog: barcode (unique) binds directly; an exact
+            # SKU matching multiple physical lots is flagged for attention rather than
+            # silently bound to the first lot (SKUs can repeat across lots).
             catalog_item: dict = {}
+            row_ambiguous = False
             if sku:
                 try:
-                    resp = await api.list_items(token, {"sku": sku, "limit": 1})
+                    resp = await api.list_items(token, {"barcode": sku, "limit": 1})
                     items = resp.get("items", []) if isinstance(resp, dict) else resp
                     if items:
                         catalog_item = items[0]
                     else:
-                        resp = await api.list_items(token, {"barcode": sku, "limit": 1})
+                        resp = await api.list_items(token, {"sku": sku, "limit": 20})
                         items = resp.get("items", []) if isinstance(resp, dict) else resp
-                        if items:
+                        if len(items) > 1:
+                            row_ambiguous = True
+                        elif items:
                             catalog_item = items[0]
                 except Exception:
                     pass
@@ -1479,6 +1503,7 @@ def setup_routes(app):
                 "account_code": account_code,
                 "entity_id": catalog_item.get("entity_id") or "",
                 "allow_splitting": bool(catalog_item.get("allow_splitting")),
+                "ambiguous": row_ambiguous,
             }
             new_lines.append(line)
 

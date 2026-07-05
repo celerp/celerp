@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY
 
 # Human-readable labels for vertical tag groups in the category library
@@ -56,6 +56,7 @@ def _inventory_tabs(active: str, lang: str = "en") -> FT:
         ("locations", t("settings.tab_locations", lang)),
         ("categories", t("settings.tab_categories", lang)),
         ("units", "Units"),
+        ("reorder", "Reorder"),
         ("bulk-attach", t("settings.tab_bulk_attach", lang)),
         ("import-history", t("settings.tab_import_history", lang)),
     ]
@@ -161,6 +162,39 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
     )
 
 
+def _reorder_tab(company: dict, saved: bool = False) -> FT:
+    """Reorder-alert preferences: enable the daily low-stock digest and opt into email."""
+    _enabled = company.get("reorder_alerts_enabled")
+    alerts_enabled = True if _enabled is None else bool(_enabled)
+    email_enabled = bool(company.get("reorder_alert_email"))
+    return Div(
+        flash("Settings saved.", "success") if saved else "",
+        H3("Reorder alerts", cls="settings-section-title"),
+        P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
+          cls="settings-hint"),
+        Form(
+            Div(
+                Label(
+                    Input(type="checkbox", name="reorder_alerts_enabled", value="1", checked=alerts_enabled),
+                    Span(" Notify me when items reach their reorder point"),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="reorder_alert_email", value="1", checked=email_enabled),
+                    Span(" Also email the daily low-stock digest to the account owner"),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ),
+            Button("Save", type="submit", cls="btn btn--primary"),
+            method="post", action="/settings/inventory/reorder", cls="settings-card",
+        ),
+        P("Set a reorder point per item in its details, or in bulk from the inventory list. "
+          "Items at or below their reorder point appear under Inventory - Low stock.", cls="form-hint"),
+    )
 
 
 def _categories_tab(
@@ -442,6 +476,7 @@ def setup_routes(app):
                 cat_display_names = {}
                 vert_categories, vert_presets = [], []
             units = await api.get_units(token) if tab == "units" else []
+            company = await api.get_company(token) if tab == "reorder" else {}
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -449,6 +484,7 @@ def setup_routes(app):
             cat_display_names = {}
             vert_categories, vert_presets = [], []
             units = []
+            company = {}
 
         lang = get_lang(request)
 
@@ -458,6 +494,8 @@ def setup_routes(app):
             content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
         elif tab == "units":
             content = _units_tab(units, from_import=from_import)
+        elif tab == "reorder":
+            content = _reorder_tab(company, saved=request.query_params.get("saved") == "1")
         elif tab == "bulk-attach":
             content = _bulk_attach_tab()
         elif tab == "import-history":
@@ -476,6 +514,24 @@ def setup_routes(app):
             lang=lang,
             request=request,
         )
+
+    # ── Reorder alerts ────────────────────────────────────────────────
+
+    @app.post("/settings/inventory/reorder")
+    async def settings_inventory_reorder_save(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := _check_role(request, "manager")):
+            return r
+        form = await request.form()
+        enabled = str(form.get("reorder_alerts_enabled") or "") in ("1", "on", "true")
+        email = str(form.get("reorder_alert_email") or "") in ("1", "on", "true")
+        try:
+            await api.patch_company(token, {"reorder_alerts_enabled": enabled, "reorder_alert_email": email})
+        except APIError:
+            pass
+        return RedirectResponse("/settings/inventory?tab=reorder&saved=1", status_code=303)
 
     # ── Units CRUD ────────────────────────────────────────────────────
 
