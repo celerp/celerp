@@ -1875,14 +1875,7 @@ function celerpPrintLabel(entityId, templateId) {
             )
         # Reorder fields: carry the velocity suggestion as a grey placeholder while editing
         # an empty field (a hint only - it is never submitted, so the stored value is unaffected).
-        _placeholder = None
-        if field in ("reorder_point", "reorder_qty") and str(item.get(field) or "").strip() in ("", "0"):
-            try:
-                _sugg = await api.get_reorder_suggestion(token, entity_id)
-                _sv = _sugg.get(field)
-                _placeholder = str(_sv) if _sv not in (None, "") else None
-            except Exception:
-                _placeholder = None
+        _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=label_map, placeholder=_placeholder)
@@ -1930,10 +1923,12 @@ function celerpPrintLabel(entityId, templateId) {
             company = await api.get_company(token)
             currency = (company or {}).get("currency") or "USD"
             return _render_virtual_total_cell(entity_id, field, unit_price, qty, currency)
+        # Reorder fields: keep the grey suggestion visible instantly on Escape (empty field).
+        _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map)
+                            label_map=label_map, placeholder=_placeholder)
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
@@ -2360,10 +2355,12 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        # Reorder fields: if saved empty, re-show the grey suggestion immediately.
+        _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map)
+                            label_map=label_map, placeholder=_placeholder)
 
     # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
 
@@ -4838,6 +4835,19 @@ async def _inject_reorder_hints(token: str, item: dict) -> None:
         v = sugg.get(k)
         if v not in (None, ""):
             item[f"_{k}_hint"] = str(v)
+
+
+async def _reorder_placeholder(token: str, entity_id: str, field: str, value) -> str | None:
+    """Grey-placeholder string for a single reorder cell: the velocity suggestion when the
+    field is empty/zero, else None. Used by the edit/display/patch re-render endpoints so the
+    suggestion stays visible instantly after Escape or an empty save. Never raises."""
+    if field not in ("reorder_point", "reorder_qty") or str(value or "").strip() not in ("", "0"):
+        return None
+    try:
+        sv = (await api.get_reorder_suggestion(token, entity_id)).get(field)
+    except Exception:
+        return None
+    return str(sv) if sv not in (None, "") else None
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:

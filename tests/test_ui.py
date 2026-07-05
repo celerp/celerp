@@ -9495,6 +9495,32 @@ class TestReorderPurchaseLineConversion:
         assert 'placeholder="2"' not in html
 
 
+class TestReorderPlaceholderHelper:
+    """The shared reorder-cell placeholder helper used by the edit/display/patch
+    re-render endpoints, so the grey suggestion stays visible instantly after Escape
+    or an empty save."""
+
+    @pytest.mark.asyncio
+    async def test_placeholder_only_for_empty_reorder_fields(self):
+        from ui.routes.inventory import _reorder_placeholder
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            # Empty / zero reorder field -> show the suggestion.
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", "") == "24"
+            assert await _reorder_placeholder("t", "item:a", "reorder_point", "0") == "7"
+            # A real stored value -> no placeholder (shows the value instead).
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", 30) is None
+            # Non-reorder fields never get a suggestion (and skip the API call).
+            assert await _reorder_placeholder("t", "item:a", "sku", "") is None
+
+    @pytest.mark.asyncio
+    async def test_placeholder_none_when_no_history(self):
+        from ui.routes.inventory import _reorder_placeholder
+        sugg = AsyncMock(return_value={"reorder_point": None, "reorder_qty": None})
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", "") is None
+
+
 class TestSendToPurchaseOrder:
     """Send-to Purchase Order on the inventory bulk toolbar (/api/items/send-to):
     purchase-side reorder lines, new + existing draft PO, and target search."""
