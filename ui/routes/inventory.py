@@ -1347,6 +1347,8 @@ def setup_routes(app):
         units_list = units_resp if isinstance(units_resp, list) else []
         unit_names = [u["name"] for u in units_list]
         units_map = {u["name"]: u for u in units_list}
+        # Attach reorder velocity-suggestion hints (grey placeholder for empty reorder fields).
+        await _inject_reorder_hints(token, item)
         detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
         return base_shell(
@@ -1871,9 +1873,19 @@ function celerpPrintLabel(entityId, templateId) {
                 ),
                 cls="cell cell--editing",
             )
+        # Reorder fields: carry the velocity suggestion as a grey placeholder while editing
+        # an empty field (a hint only - it is never submitted, so the stored value is unaffected).
+        _placeholder = None
+        if field in ("reorder_point", "reorder_qty") and str(item.get(field) or "").strip() in ("", "0"):
+            try:
+                _sugg = await api.get_reorder_suggestion(token, entity_id)
+                _sv = _sugg.get(field)
+                _placeholder = str(_sv) if _sv not in (None, "") else None
+            except Exception:
+                _placeholder = None
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             label_map=label_map)
+                             label_map=label_map, placeholder=_placeholder)
 
     @app.get("/api/items/{entity_id}/field/{field}/display")
     async def field_display_cell(request: Request, entity_id: str, field: str):
@@ -4792,7 +4804,40 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             return renderer
         renderers[vk] = _make_total_renderer()
 
+    # Reorder fields: show the velocity suggestion as a grey placeholder when empty.
+    # The hint string is injected onto the row (`_<field>_hint`) only on the single-item
+    # detail view; elsewhere (list/edit re-render) it is absent, so the cell renders as a
+    # plain number cell - byte-identical to the default. The suggestion is display-only.
+    for _rk in ("reorder_point", "reorder_qty"):
+        if _rk in schema_keys:
+            def _make_reorder(rk=_rk):
+                def renderer(entity_id: str, row: dict) -> FT:
+                    return display_cell(
+                        entity_id=entity_id, field=rk, value=row.get(rk, ""),
+                        cell_type="number", placeholder=row.get(f"_{rk}_hint"),
+                    )
+                return renderer
+            renderers[_rk] = _make_reorder()
+
     return renderers
+
+
+async def _inject_reorder_hints(token: str, item: dict) -> None:
+    """Attach velocity-suggestion hint strings for EMPTY reorder fields, so the item
+    detail can show them as a grey placeholder. Mutates `item` in place; best-effort
+    (never raises). Only fetched when a field is actually unset (no wasted calls)."""
+    need = [k for k in ("reorder_point", "reorder_qty")
+            if str(item.get(k) or "").strip() in ("", "0")]
+    if not need:
+        return
+    try:
+        sugg = await api.get_reorder_suggestion(token, item.get("entity_id") or item.get("id") or "")
+    except Exception:
+        return
+    for k in need:
+        v = sugg.get(k)
+        if v not in (None, ""):
+            item[f"_{k}_hint"] = str(v)
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:

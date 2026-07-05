@@ -474,6 +474,13 @@ async def get_item(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/items/{entity_id}")).json()
 
 
+async def get_reorder_suggestion(token: str, entity_id: str) -> dict:
+    """Velocity-based reorder suggestion: {reorder_point, reorder_qty} (sell units),
+    values None when there is no outbound history. Read-only display hint."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/reorder-suggestion")).json()
+
+
 async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
     """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format.
 

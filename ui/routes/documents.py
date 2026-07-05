@@ -503,14 +503,38 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
     return line_items
 
 
-def _reorder_po_line(item: dict) -> dict:
+def _to_purchase_qty(sell_qty: float, factor: float, decimals: int | None) -> float:
+    """Convert a sell-unit quantity into purchase units, rounded UP to the purchase
+    unit's precision.
+
+    reorder_qty / velocity are in sell units; a PO line is in purchase units, so we
+    divide by ``purchase_conversion_factor`` (= sell units per purchase unit). We ceil
+    to the purchase unit's ``decimals`` because you cannot order a fraction of an
+    indivisible purchase unit (a box); a divisible unit (kg, decimals>0) keeps its
+    precision. ``decimals=None`` falls back to a plain 4-dp round.
+    """
+    import math
+    if sell_qty <= 0:
+        return 0
+    raw = sell_qty / (factor or 1)
+    if decimals is None:
+        return round(raw, 4)
+    q = 10 ** int(decimals)
+    return math.ceil(raw * q) / q
+
+
+def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
     """Map an inventory item to a purchase-order line for reordering.
 
-    Purchase-side (mirrors _line_items_from_inventory but for buying): line qty is
-    the item's reorder_qty converted from sell units into the purchase unit via
-    purchase_conversion_factor; when reorder_qty is unset the qty comes in BLANK (0)
-    for the user to fill on the draft (never a fabricated number). Price is the item
-    cost, unit is the purchase unit.
+    Purchase-side (mirrors _line_items_from_inventory but for buying):
+    - quantity = reorder_qty (sell units) converted to the purchase unit via
+      purchase_conversion_factor and ceil'd to the purchase unit's precision; BLANK (0)
+      when reorder_qty is unset (never a fabricated number - the qty field then shows
+      the velocity suggestion as a placeholder instead).
+    - unit_price = cost per PURCHASE unit = cost_price (per sell unit) x factor, so the
+      PO total is the real money owed (qty_purchase x price_purchase == sell_qty x cost).
+    - carries the purchase_* fields + item_id so PO -> Bill -> receive reads back the
+      same factor and restocks exactly reorder_qty sell units.
     """
     sku = item.get("sku", "")
     name = item.get("name", "")
@@ -522,29 +546,91 @@ def _reorder_po_line(item: dict) -> dict:
         reorder_qty = float(item.get("reorder_qty") or 0)
     except (TypeError, ValueError):
         reorder_qty = 0.0
-    qty = round(reorder_qty / factor, 4) if reorder_qty > 0 else 0
+    try:
+        cost = float(item.get("cost_price") or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    qty = _to_purchase_qty(reorder_qty, factor, unit_decimals) if reorder_qty > 0 else 0
     unit = item.get("purchase_unit") or item.get("sell_by") or "piece"
+    eid = item.get("entity_id") or item.get("id") or ""
     return {
         "description": f"{sku} - {name}" if sku else name,
         "quantity": qty,
-        "unit_price": float(item.get("cost_price") or 0),
+        "unit_price": round(cost * factor, 4),   # cost per purchase unit
         "unit": unit,
         "sell_by": unit,
         "sku": sku,
-        "entity_id": item.get("entity_id") or item.get("id") or "",
+        "purchase_sku": item.get("purchase_sku") or None,
+        "purchase_name": item.get("purchase_name") or None,
+        "purchase_unit": item.get("purchase_unit") or None,
+        "purchase_conversion_factor": factor,
+        "entity_id": eid,
     }
 
 
 async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> list[dict]:
-    """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line)."""
+    """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line).
+
+    Loads the company unit map once so each line's qty is ceil'd to its purchase
+    unit's precision.
+    """
+    from celerp.services.units import build_unit_map
+    try:
+        unit_map = build_unit_map(await api.get_units(token))
+    except Exception:
+        unit_map = {}
     lines = []
     for eid in entity_ids:
         try:
             item = await api.get_item(token, eid)
         except APIError:
             continue
-        lines.append(_reorder_po_line(item))
+        pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
+        decimals = (unit_map.get(pu) or {}).get("decimals")
+        lines.append(_reorder_po_line(item, unit_decimals=decimals))
     return lines
+
+
+async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
+    """Per-line grey qty placeholder for a DRAFT purchase order: the item's velocity
+    suggestion converted to purchase units (see _to_purchase_qty). Only for lines that
+    carry an item_id and whose qty is blank/zero. Best-effort; empty on any failure.
+    Display-only guidance - never stored.
+    """
+    from celerp.services.units import build_unit_map
+    out: dict[str, str] = {}
+    lines = doc.get("line_items") or []
+    targets = []
+    for li in lines:
+        eid = li.get("entity_id") or li.get("item_id") or ""
+        try:
+            blank = not float(li.get("quantity") or 0)
+        except (TypeError, ValueError):
+            blank = True
+        if eid and blank:
+            targets.append(eid)
+    if not targets:
+        return out
+    try:
+        unit_map = build_unit_map(await api.get_units(token))
+    except Exception:
+        unit_map = {}
+    for eid in targets:
+        try:
+            item = await api.get_item(token, eid)
+            sugg = await api.get_reorder_suggestion(token, eid)
+        except Exception:
+            continue
+        sv = sugg.get("reorder_qty")
+        if sv in (None, ""):
+            continue
+        factor = float(item.get("purchase_conversion_factor") or 1) or 1
+        pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
+        decimals = (unit_map.get(pu) or {}).get("decimals")
+        q = _to_purchase_qty(float(sv), factor, decimals)
+        if q:
+            out[eid] = f"{q:g}"
+    return out
 
 
 async def _company_doc_taxes(token: str) -> list[dict]:
@@ -2004,10 +2090,14 @@ celerpUpdateBulkAlloc();
                     item_meta_map[eid] = item_measure_meta(item, _unit_map)
             except Exception:
                 pass
+        # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
+        line_suggestions: dict[str, str] = {}
+        if doc_type == "purchase_order" and status == "draft":
+            line_suggestions = await _po_line_suggestions(token, doc)
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -5125,7 +5215,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5731,8 +5821,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # Static qty once counting (the system figure is On hand) — no input on a locked line.
                 cells.append(Td(f"{float(qty):g}" if qty else "--", cls="col-qty"))
             else:
-                _qty_input = Input(type="number", value=str(qty), step="any",
-                                   data_name="quantity", **{"data-qty-measure": _qty_measure},
+                # Draft PO reorder line: an empty qty shows the converted velocity suggestion as
+                # a grey placeholder (hint only, never submitted). Tightly gated so every other
+                # doc type / line is byte-identical (value=str(qty), no placeholder).
+                _qty_str = str(qty)
+                _qty_ph: dict = {}
+                if doc_type == "purchase_order" and not float(qty or 0):
+                    _hint = (line_suggestions or {}).get(li_entity_id)
+                    if _hint:
+                        _qty_str = ""
+                        _qty_ph = {"placeholder": _hint}
+                _qty_input = Input(type="number", value=_qty_str, step="any",
+                                   data_name="quantity", **{"data-qty-measure": _qty_measure}, **_qty_ph,
                                    oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
                                    onblur="celerpQtyBlur(this); celerpAutoSave()",
                                    disabled=bool(_qty_disabled),

@@ -9415,6 +9415,86 @@ _SETTINGS_MOCKS_UNITS = {
 }
 
 
+class TestReorderPurchaseLineConversion:
+    """Pure conversion math for a reorder PO line (sell units -> purchase units)."""
+
+    def test_to_purchase_qty_ceils_to_unit_precision(self):
+        from ui.routes.documents import _to_purchase_qty
+        # Indivisible purchase unit (decimals 0): round UP to whole units.
+        assert _to_purchase_qty(24, 12, 0) == 2      # exact
+        assert _to_purchase_qty(25, 12, 0) == 3      # 2.08 -> 3 whole boxes
+        # Divisible purchase unit keeps its precision.
+        assert _to_purchase_qty(2500, 1000, 3) == 2.5
+        # No decimals known -> plain round; zero/blank -> 0.
+        assert _to_purchase_qty(24, 12, None) == 2.0
+        assert _to_purchase_qty(0, 12, 0) == 0
+
+    def test_reorder_po_line_converts_qty_and_price(self):
+        from ui.routes.documents import _reorder_po_line
+        item = {"entity_id": "item:x", "sku": "W", "name": "Widget", "sell_by": "piece",
+                "purchase_unit": "box", "purchase_conversion_factor": 12,
+                "reorder_qty": 24, "cost_price": 10}
+        line = _reorder_po_line(item, unit_decimals=0)
+        assert line["quantity"] == 2          # 24 sell / 12 = 2 boxes
+        assert line["unit_price"] == 120       # cost 10/sell-unit x 12 = 120/box
+        assert line["unit"] == "box"
+        assert line["purchase_conversion_factor"] == 12
+        assert line["entity_id"] == "item:x"
+        # PO line total == the real money = reorder_qty(sell) x cost_price(sell).
+        assert line["quantity"] * line["unit_price"] == 24 * 10
+
+    def test_reorder_po_line_blank_when_unset(self):
+        from ui.routes.documents import _reorder_po_line
+        line = _reorder_po_line({"entity_id": "item:y", "sku": "Z", "name": "Z",
+                                 "purchase_conversion_factor": 12, "cost_price": 10}, unit_decimals=0)
+        assert line["quantity"] == 0  # never fabricated; placeholder shows the suggestion
+
+    @pytest.mark.asyncio
+    async def test_po_line_suggestions_converts_and_gates(self):
+        """Per-line PO qty placeholder = velocity suggestion / factor, ceil'd; only for
+        blank lines with an item_id."""
+        from ui.routes.documents import _po_line_suggestions
+        doc = {"line_items": [
+            {"entity_id": "item:a", "quantity": 0},   # blank -> suggest
+            {"entity_id": "item:b", "quantity": 5},   # already has qty -> skip
+        ]}
+
+        async def _get_item(_t, eid):
+            return {"entity_id": eid, "purchase_conversion_factor": 12, "purchase_unit": "box", "sell_by": "piece"}
+
+        async def _get_sugg(_t, eid):
+            return {"reorder_point": 7, "reorder_qty": 24}
+
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=_get_item)),
+            patch("ui.api_client.get_reorder_suggestion", new=AsyncMock(side_effect=_get_sugg)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[{"name": "box", "decimals": 0}])),
+        ):
+            out = await _po_line_suggestions("tok", doc)
+        assert out == {"item:a": "2"}  # 24 sell / 12 = 2 boxes; item:b skipped (has qty)
+
+    def test_doc_detail_po_draft_qty_shows_placeholder(self):
+        """A draft-PO reorder line renders an EMPTY qty input carrying the grey suggestion
+        placeholder; the value is not prefilled (so nothing is auto-saved)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {"doc_type": "purchase_order", "status": "draft", "entity_id": "doc:PO-1", "ref_id": "PO-1",
+               "line_items": [{"entity_id": "item:a", "sku": "W", "description": "W", "quantity": 0, "unit_price": 120}],
+               "total": 0, "subtotal": 0}
+        html = to_xml(_doc_detail(doc, line_suggestions={"item:a": "2"}, item_meta_map={}))
+        assert 'placeholder="2"' in html
+
+    def test_doc_detail_non_po_qty_unchanged(self):
+        """Non-PO docs never get a qty placeholder (byte-identical qty input)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {"doc_type": "invoice", "status": "draft", "entity_id": "doc:INV-1", "ref_id": "INV-1",
+               "line_items": [{"entity_id": "item:a", "sku": "W", "description": "W", "quantity": 0, "unit_price": 5}],
+               "total": 0, "subtotal": 0}
+        html = to_xml(_doc_detail(doc, line_suggestions={"item:a": "2"}, item_meta_map={}))
+        assert 'placeholder="2"' not in html
+
+
 class TestSendToPurchaseOrder:
     """Send-to Purchase Order on the inventory bulk toolbar (/api/items/send-to):
     purchase-side reorder lines, new + existing draft PO, and target search."""
@@ -9424,12 +9504,15 @@ class TestSendToPurchaseOrder:
         "sell_by": "piece", "purchase_unit": "box", "purchase_conversion_factor": 12,
         "reorder_qty": 24, "cost_price": 10, "attributes": {},
     }
+    _UNITS = [{"name": "box", "label": "Box", "decimals": 0, "unit_type": "count"},
+              {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
 
     @pytest.mark.asyncio
     async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
         mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
             r = await ui_client.post(
@@ -9445,9 +9528,9 @@ class TestSendToPurchaseOrder:
         assert payload["purchase_kind"] == "inventory"
         assert "doc_taxes" not in payload  # purchasing, not a sales doc
         line = payload["line_items"][0]
-        assert line["quantity"] == 2       # reorder_qty 24 / conversion 12
-        assert line["unit_price"] == 10    # cost, not retail
-        assert line["unit"] == "box"       # purchase unit, not sell unit
+        assert line["quantity"] == 2        # reorder_qty 24 / conversion 12
+        assert line["unit_price"] == 120    # cost per PURCHASE unit = 10 x 12
+        assert line["unit"] == "box"        # purchase unit, not sell unit
 
     @pytest.mark.asyncio
     async def test_send_to_new_po_blank_qty_when_reorder_unset(self, ui_client):
@@ -9456,6 +9539,7 @@ class TestSendToPurchaseOrder:
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.create_doc", new=mock_create),
         ):
             r = await ui_client.post(
@@ -9473,6 +9557,7 @@ class TestSendToPurchaseOrder:
         existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing)),
             patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": "e1"})) as mock_patch,
         ):
