@@ -46,33 +46,7 @@ async def test_reorder_suggestion_endpoint_no_history(client):
     assert r.json() == {"reorder_point": None, "reorder_qty": None}
 
 
-@pytest.mark.asyncio
-async def test_draft_reorder_po(client):
-    token = await _token(client)
-    h = {"Authorization": f"Bearer {token}"}
-    # reorder_qty 24 sell-units / conversion 12 = 2 purchase units per line.
-    a = await client.post("/items", json={"sku": "PO-A", "name": "A", "quantity": 1, "sell_by": "piece",
-                                          "reorder_point": 10, "reorder_qty": 24, "purchase_conversion_factor": 12}, headers=h)
-    b = await client.post("/items", json={"sku": "PO-B", "name": "B", "quantity": 1, "sell_by": "piece",
-                                          "reorder_point": 10, "reorder_qty": 12, "purchase_conversion_factor": 12}, headers=h)
-    ids = [a.json()["id"], b.json()["id"]]
-
-    r = await client.post("/docs/reorder/draft-po", json={"item_ids": ids}, headers=h)
-    assert r.status_code == 200, r.text
-    doc_id = r.json()["id"]
-
-    doc = (await client.get(f"/docs/{doc_id}", headers=h)).json()
-    assert doc["doc_type"] == "purchase_order"
-    lines = doc.get("line_items") or []
-    assert len(lines) == 2
-    by_sku = {li["sku"]: li for li in lines}
-    assert by_sku["PO-A"]["quantity"] == 2  # 24 / 12
-    assert by_sku["PO-B"]["quantity"] == 1  # 12 / 12
-
-
-@pytest.mark.asyncio
-async def test_draft_reorder_po_requires_items(client):
-    token = await _token(client)
-    h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/docs/reorder/draft-po", json={"item_ids": []}, headers=h)
-    assert r.status_code == 422
+# The "Draft purchase order" action ships as a Send-to target on the inventory bulk
+# toolbar (peer of Send-to Invoice/List/Consignment Out), not a bespoke endpoint. Its
+# purchase-line building (reorder_qty -> purchase unit, blank when unset) is covered in
+# tests/test_ui.py::TestSendToPurchaseOrder.

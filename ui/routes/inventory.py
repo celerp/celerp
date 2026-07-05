@@ -3319,6 +3319,21 @@ function celerpPrintLabel(entityId, templateId) {
                      "status": d.get("status", "")}
                     for d in items
                 ])
+            elif doc_type == "purchase_order":
+                params = {"doc_type": "purchase_order", "limit": 20}
+                if q:
+                    params["q"] = q
+                else:
+                    params["status"] = "draft"
+                resp = await api.list_docs(token, params)
+                items = resp.get("items", [])
+                items = [d for d in items if d.get("status") in ("draft",)]
+                return JSONResponse([
+                    {"id": d.get("id") or d.get("entity_id", ""),
+                     "label": d.get("ref_id") or d.get("doc_number") or d.get("id", ""),
+                     "status": d.get("status", "")}
+                    for d in items
+                ])
         except APIError:
             pass
         return JSONResponse([])
@@ -3327,7 +3342,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/send-to")
     async def send_to_action(request: Request):
-        from ui.routes.documents import _line_items_from_inventory
+        from ui.routes.documents import _line_items_from_inventory, _reorder_lines_from_inventory
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3363,6 +3378,13 @@ function celerpPrintLabel(entityId, templateId) {
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
                     await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
+                elif doc_type == "purchase_order":
+                    new_lines = await _reorder_lines_from_inventory(token, entity_ids)
+                    doc = await api.get_doc(token, target_id)
+                    combined = (doc.get("line_items") or []) + new_lines
+                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
+                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
@@ -3382,6 +3404,13 @@ function celerpPrintLabel(entityId, templateId) {
                     from ui.routes.documents import _company_doc_taxes
                     doc_taxes = await _company_doc_taxes(token)
                     result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    doc_id = result.get("entity_id") or result.get("id", "")
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
+                elif doc_type == "purchase_order":
+                    # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
+                    # cost price, purchase unit, no sales taxes. Supplier picked on the draft.
+                    line_items = await _reorder_lines_from_inventory(token, entity_ids)
+                    result = await api.create_doc(token, {"doc_type": "purchase_order", "status": "draft", "purchase_kind": "inventory", "line_items": line_items})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
         except APIError as e:

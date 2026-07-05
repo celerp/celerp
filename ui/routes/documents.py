@@ -503,6 +503,50 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
     return line_items
 
 
+def _reorder_po_line(item: dict) -> dict:
+    """Map an inventory item to a purchase-order line for reordering.
+
+    Purchase-side (mirrors _line_items_from_inventory but for buying): line qty is
+    the item's reorder_qty converted from sell units into the purchase unit via
+    purchase_conversion_factor; when reorder_qty is unset the qty comes in BLANK (0)
+    for the user to fill on the draft (never a fabricated number). Price is the item
+    cost, unit is the purchase unit.
+    """
+    sku = item.get("sku", "")
+    name = item.get("name", "")
+    try:
+        factor = float(item.get("purchase_conversion_factor") or 1) or 1
+    except (TypeError, ValueError):
+        factor = 1.0
+    try:
+        reorder_qty = float(item.get("reorder_qty") or 0)
+    except (TypeError, ValueError):
+        reorder_qty = 0.0
+    qty = round(reorder_qty / factor, 4) if reorder_qty > 0 else 0
+    unit = item.get("purchase_unit") or item.get("sell_by") or "piece"
+    return {
+        "description": f"{sku} - {name}" if sku else name,
+        "quantity": qty,
+        "unit_price": float(item.get("cost_price") or 0),
+        "unit": unit,
+        "sell_by": unit,
+        "sku": sku,
+        "entity_id": item.get("entity_id") or item.get("id") or "",
+    }
+
+
+async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> list[dict]:
+    """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line)."""
+    lines = []
+    for eid in entity_ids:
+        try:
+            item = await api.get_item(token, eid)
+        except APIError:
+            continue
+        lines.append(_reorder_po_line(item))
+    return lines
+
+
 async def _company_doc_taxes(token: str) -> list[dict]:
     """Fetch company sales taxes and return them as doc_taxes dicts for new documents."""
     try:

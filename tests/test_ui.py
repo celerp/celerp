@@ -9372,9 +9372,12 @@ class TestBulkActionsPhase6SendTo:
         assert "Invoice" in labels
         assert "List/Quotation" in labels
         assert "Consignment Out" in labels
+        assert "Purchase Order" in labels
         # Memo target must use doc_type=memo (not CRM memo)
         memo_target = next(t for t in targets if t["label"] == "Consignment Out")
         assert memo_target["doc_type"] == "memo"
+        po_target = next(t for t in targets if t["label"] == "Purchase Order")
+        assert po_target["doc_type"] == "purchase_order"
 
     @pytest.mark.asyncio
     async def test_crm_module_does_not_register_send_to_target(self, ui_client):
@@ -9410,6 +9413,90 @@ _SETTINGS_MOCKS_UNITS = {
     "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
     "ui.api_client.get_units": AsyncMock(return_value=_DEFAULT_UNITS_SEED),
 }
+
+
+class TestSendToPurchaseOrder:
+    """Send-to Purchase Order on the inventory bulk toolbar (/api/items/send-to):
+    purchase-side reorder lines, new + existing draft PO, and target search."""
+
+    _PO_ITEM = {
+        "entity_id": "item:po1", "sku": "WIDGET", "name": "Widget",
+        "sell_by": "piece", "purchase_unit": "box", "purchase_conversion_factor": 12,
+        "reorder_qty": 24, "cost_price": 10, "attributes": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
+        mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "doc:PO-001" in r.headers.get("hx-redirect", "")
+        payload = mock_create.call_args[0][1]
+        assert payload["doc_type"] == "purchase_order"
+        assert payload["purchase_kind"] == "inventory"
+        assert "doc_taxes" not in payload  # purchasing, not a sales doc
+        line = payload["line_items"][0]
+        assert line["quantity"] == 2       # reorder_qty 24 / conversion 12
+        assert line["unit_price"] == 10    # cost, not retail
+        assert line["unit"] == "box"       # purchase unit, not sell unit
+
+    @pytest.mark.asyncio
+    async def test_send_to_new_po_blank_qty_when_reorder_unset(self, ui_client):
+        item = dict(self._PO_ITEM)
+        item.pop("reorder_qty")
+        mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        line = mock_create.call_args[0][1]["line_items"][0]
+        assert line["quantity"] == 0  # blank/editable, never a fabricated number
+
+    @pytest.mark.asyncio
+    async def test_send_to_existing_po_appends_lines(self, ui_client):
+        existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing)),
+            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": "e1"})) as mock_patch,
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=doc%3APO-001",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "doc:PO-001" in r.headers.get("hx-redirect", "")
+        patched = mock_patch.call_args[0][2]
+        assert len(patched["line_items"]) == 2  # old + reorder line
+
+    @pytest.mark.asyncio
+    async def test_send_to_search_lists_draft_pos(self, ui_client):
+        pos = [{"id": "doc:PO-001", "ref_id": "PO-001", "status": "draft"}]
+        with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": pos, "total": 1})):
+            r = await ui_client.get(
+                "/api/items/send-to/search?doc_type=purchase_order&q=PO",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"PO-001" in r.content
 
 
 async def _api_headers(client) -> dict:

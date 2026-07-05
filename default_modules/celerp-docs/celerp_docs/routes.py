@@ -738,61 +738,6 @@ async def create_doc(
     return {"event_id": entry.id, "id": entity_id}
 
 
-class ReorderDraftPOBody(BaseModel):
-    item_ids: list[str]
-    idempotency_key: str | None = None
-
-
-@router.post("/reorder/draft-po")
-async def draft_reorder_po(
-    payload: ReorderDraftPOBody,
-    company_id: str = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Create a draft purchase_order from selected (low-stock) items.
-
-    Per item the line qty is its stored ``reorder_qty`` (or the velocity suggestion
-    when blank), converted from sell units into the purchase unit via
-    ``purchase_conversion_factor``. The PO is created supplier-less in v1 - the user
-    picks the vendor on the draft. This is the reorder-list -> PO payoff.
-    """
-    from celerp.services.reorder import suggest_reorder
-    if not payload.item_ids:
-        raise HTTPException(status_code=422, detail="No items selected")
-    lines: list[LineItem] = []
-    for eid in payload.item_ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if row is None or row.entity_type != "item":
-            continue
-        st = row.state or {}
-        factor = float(st.get("purchase_conversion_factor") or 1) or 1
-        base_qty = float(st.get("reorder_qty") or 0)
-        if base_qty <= 0:
-            sugg = await suggest_reorder(session, company_id, eid)
-            base_qty = float(sugg.get("reorder_qty") or 0)
-        po_qty = round(base_qty / factor, 4) if base_qty else 0
-        lines.append(LineItem(
-            item_id=eid,
-            sku=st.get("sku"),
-            name=st.get("name"),
-            description=st.get("name"),
-            quantity=po_qty,
-            unit=st.get("purchase_unit") or st.get("sell_by"),
-            sell_by=st.get("purchase_unit") or st.get("sell_by"),
-            unit_price=float(st.get("cost_price") or 0),
-        ))
-    if not lines:
-        raise HTTPException(status_code=422, detail="Selected items are not stockable")
-    doc_payload = DocCreatePayload(
-        doc_type="purchase_order",
-        purchase_kind="inventory",
-        line_items=lines,
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-    )
-    return await create_doc(doc_payload, company_id=company_id, user=user, session=session)
-
-
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
