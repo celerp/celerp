@@ -5,7 +5,8 @@
 
 Input:  line_items  — from doc, each has {sku, quantity}
         inventory   — available items [{entity_id, sku, quantity, created_at, expires_at, cost_price}]
-Output: pick_plan   — [{item_id, sku, pick_qty, cost_price, action: "full"|"split", split_sku}]
+Output: pick_plan   — [{item_id, sku, pick_qty, cost_price, action: "full"|"split"}]
+                      (a split child keeps the parent SKU; lots differ by barcode/entity_id)
 """
 
 from __future__ import annotations

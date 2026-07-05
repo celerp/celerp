@@ -1719,8 +1719,8 @@ async def test_numeric_duplicate_sku_gets_distinct_barcode(client):
 
 @pytest.mark.asyncio
 async def test_batch_no_and_reorder_fields_round_trip(client):
-    """batch_no + reorder_point + reorder_qty are additive state fields: absent is
-    accepted, and set values round-trip via patch."""
+    """batch_no + reorder_point + reorder_qty + pick_method are additive state fields:
+    absent is accepted, and set values round-trip via patch."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={"sku": "RT-1", "name": "A", "quantity": 3, "sell_by": "piece"}, headers=h)
@@ -1731,12 +1731,14 @@ async def test_batch_no_and_reorder_fields_round_trip(client):
         "batch_no": {"new": "LOT-42"},
         "reorder_point": {"new": 10},
         "reorder_qty": {"new": 24},
+        "pick_method": {"new": "fefo"},
     }}, headers=h)
     assert r.status_code == 200, r.text
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert item.get("batch_no") == "LOT-42"
     assert float(item.get("reorder_point")) == 10
     assert float(item.get("reorder_qty")) == 24
+    assert item.get("pick_method") == "fefo"  # per-item stock-cutting rule persists
 
 
 # The canonical resolver + its ambiguous-SKU behaviour on live scan paths are

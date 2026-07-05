@@ -9581,6 +9581,32 @@ class TestCatalogConsolidationEndpoint:
         assert len(r.json()) == 2                       # each unique lot stays selectable
 
     @pytest.mark.asyncio
+    async def test_credit_note_search_keeps_lots_per_entity(self, ui_client):
+        # Credit notes return a physical lot to reverse into, so several sold lots of one
+        # splittable SKU must each stay separately selectable (deduped by entity_id, NOT
+        # consolidated) — you credit the exact lot the customer returns.
+        sold = [
+            {"sku": "W", "entity_id": "item:l1", "name": "W", "quantity": 40, "allow_splitting": True,
+             "created_at": "2026-02-01", "sell_by": "piece", "status": "sold"},
+            {"sku": "W", "entity_id": "item:l2", "name": "W", "quantity": 60, "allow_splitting": True,
+             "created_at": "2026-01-01", "sell_by": "piece", "status": "sold"},
+        ]
+
+        async def _list(_t, params):
+            return {"items": sold if params.get("status") == "sold" else []}
+
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=W&doc_type=credit_note", cookies=_authed())
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 2                                    # NOT collapsed -> both lots offered
+        assert {d["entity_id"] for d in data} == {"item:l1", "item:l2"}
+
+    @pytest.mark.asyncio
     async def test_catalog_lookup_ambiguous_for_non_splittable_sku(self, ui_client):
         items = [
             {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
@@ -9624,6 +9650,28 @@ class TestReorderPlaceholderHelper:
         sugg = AsyncMock(return_value={"reorder_point": None, "reorder_qty": None})
         with patch("ui.api_client.get_reorder_suggestion", new=sugg):
             assert await _reorder_placeholder("t", "item:a", "reorder_qty", "") is None
+
+    @pytest.mark.asyncio
+    async def test_inject_hints_only_for_empty_fields(self):
+        # The item-detail view gets a grey suggestion hint only for reorder fields left
+        # empty/zero; a stored value is left untouched and no hint key is added.
+        from ui.routes.inventory import _inject_reorder_hints
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        item = {"entity_id": "item:a", "reorder_point": "", "reorder_qty": 30}
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            await _inject_reorder_hints("t", item)
+        assert item["_reorder_point_hint"] == "7"   # empty -> hinted
+        assert "_reorder_qty_hint" not in item      # stored value -> no hint
+
+    @pytest.mark.asyncio
+    async def test_inject_hints_skips_api_when_all_set(self):
+        from ui.routes.inventory import _inject_reorder_hints
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        item = {"entity_id": "item:a", "reorder_point": 5, "reorder_qty": 30}
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            await _inject_reorder_hints("t", item)
+        sugg.assert_not_awaited()                    # no wasted call when nothing is empty
+        assert "_reorder_point_hint" not in item
 
 
 class TestSendToPurchaseOrder:
