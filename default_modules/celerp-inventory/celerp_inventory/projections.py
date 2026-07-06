@@ -19,6 +19,72 @@ _IMAGE_MIME_PREFIXES = ("image/",)
 # is_item_available() is the single source of truth — derive at read time, never store.
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
 
+# ── Core vs attribute partition (single source of truth for the WRITE side) ──────────────────────
+# Keys that live at the TOP LEVEL of item state: identity, quantities, cost bases, lifecycle markers,
+# relationships, files, and system fields. EVERYTHING ELSE is a category attribute and belongs under
+# state["attributes"] — including `pieces`. Per-price-list fields (`*_price` / `*_price_total`) also
+# stay top-level and are matched by suffix in `_is_core_key`.
+#
+# Reads flatten both locations, so top-level vs nested is invisible to normal consumers; only raw-state
+# readers (e.g. merge conflict resolution) care. Normalizing on write keeps storage canonical so those
+# readers stay correct. If a NEW top-level state key is ever added to the projection, add it here too —
+# otherwise it would be misclassified as an attribute and relocated.
+_CORE_ITEM_KEYS: frozenset[str] = frozenset({
+    # the attributes container itself is top-level (holds all category attributes); a field edit may
+    # replace it wholesale via fields_changed["attributes"], so it must NOT be treated as an attribute
+    "attributes",
+    # identity / system
+    "id", "entity_id", "company_id", "sku", "name", "barcode", "category", "status",
+    "created_at", "updated_at", "location_id", "location_name", "idempotency_key",
+    # quantities / measures  (NOTE: `pieces` is intentionally NOT core — it lives under attributes)
+    "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
+    "reserved_quantity", "quantity_fulfilled",
+    # cost bases (per-list *_price fields are matched by suffix, not listed)
+    "cost_total", "cost_price", "cost_base", "cost_landed", "landed_contributions",
+    # reorder / planning
+    "reorder_point", "reorder_qty",
+    # flags / classification
+    "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
+    "is_expired", "expires_at", "landed_cost_kind", "recoverable",
+    # purchase side
+    "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
+    # free-text core fields
+    "short_description", "description", "notes", "hs_code", "batch_no",
+    # relationships / lifecycle markers
+    "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
+    "transformed_from", "transformed_into", "fulfilled_for_docs",
+    # files / media
+    "files", "attachments", "preview_image_id",
+    # other structured internals
+    "recipe", "workflow", "tax_codes",
+})
+
+
+def _is_core_key(key: str) -> bool:
+    """True if `key` stays at the top level of item state (core field or a per-list price field)."""
+    return key in _CORE_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
+
+
+def _normalize_attributes(current: dict) -> None:
+    """Relocate every non-core top-level field into state["attributes"] (in place).
+
+    Category attributes (grade, type, color, …) and `pieces` belong under `attributes`; only core
+    identity/quantity/cost/lifecycle/price fields stay top-level. Some producers put attributes
+    top-level (a field edit, `POST /items` extra fields), which this heals so storage is canonical.
+    A top-level value takes precedence over an existing nested one — it is the freshly written value.
+    """
+    movable = [k for k in current if k != "attributes" and not _is_core_key(k)]
+    if not movable:
+        return
+    attrs = dict(current.get("attributes") or {})
+    for k in movable:
+        val = current.pop(k)
+        if val is None:
+            attrs.pop(k, None)
+        else:
+            attrs[k] = val
+    current["attributes"] = attrs
+
 
 def is_item_available(state: dict) -> bool:
     """Derive availability from status. Single authoritative check — no stored flag."""
@@ -145,18 +211,11 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
-        # `pieces` is canonical under attributes["pieces"] (like item.updated normalizes). Some
-        # producers put it TOP-LEVEL in the create payload — POST /items via extra="allow", CIF
-        # imports, the UI CSV/XLSX builder. Relocate it so storage is uniform regardless of path,
-        # and so a snapshot self-heals any item that was stored top-level historically.
-        if "pieces" in current:
-            _pieces_val = current.pop("pieces")
-            _attrs = dict(current.get("attributes") or {})
-            if _pieces_val is None:
-                _attrs.pop("pieces", None)
-            else:
-                _attrs.setdefault("pieces", _pieces_val)  # never clobber an explicit attributes.pieces
-            current["attributes"] = _attrs
+        # Category attributes (incl. `pieces`) are canonical under attributes["<key>"]. Some producers
+        # put them TOP-LEVEL in the create payload — POST /items via extra="allow", CIF imports — so
+        # relocate every non-core top-level field into `attributes`. This makes storage uniform across
+        # producers and lets a snapshot self-heal any item stored top-level historically.
+        _normalize_attributes(current)
         current.setdefault("status", "available")
         current.setdefault("inventory_type", "stocked")
         # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)
@@ -194,14 +253,26 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     current.pop("cost_price", None)
                 else:  # cost_total
                     current["cost_base"] = round(float(new_val), 2)
-            else:
-                # Clearing any other field (None/"") unsets it — remove the key rather than storing
-                # an empty string or null, so the field reads as truly absent (issue #202).
+            elif _is_core_key(field):
+                # Core / price field — stays TOP-LEVEL. Clearing (None/"") unsets it — remove the key
+                # rather than storing an empty string or null, so it reads as truly absent (issue #202).
                 new_val = change.get("new")
                 if new_val in (None, ""):
                     current.pop(field, None)
                 else:
                     current[field] = new_val
+            else:
+                # Category attribute — canonical under attributes["<field>"], never top-level (like
+                # `pieces`). Clearing removes it from BOTH locations so nothing lingers if the value was
+                # historically stored top-level.
+                new_val = change.get("new")
+                attrs = dict(current.get("attributes") or {})
+                if new_val in (None, ""):
+                    attrs.pop(field, None)
+                else:
+                    attrs[field] = new_val
+                current["attributes"] = attrs
+                current.pop(field, None)
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
     elif event_type == "item.pricing.set":
@@ -295,6 +366,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.patched":
         # CSV upsert: merge data fields into existing state, then re-run migrations
         current.update(data)
+        _normalize_attributes(current)  # keep attributes canonical if the upsert carried them top-level
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
