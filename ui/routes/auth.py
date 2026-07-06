@@ -14,9 +14,11 @@ State machine:
 
 from __future__ import annotations
 
+import json
+
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
@@ -423,11 +425,25 @@ def setup_routes(app):
 
     @app.get("/forgot-password")
     async def forgot_password_page(request: Request):
+        # Email-capable installs (SMTP or the paid relay) get the email-reset form. A
+        # self-hosted install with no email transport resets via the CLI *by design*:
+        # a browser on localhost can't prove machine ownership, but running the CLI does.
+        # Rather than take the user to a full page, we surface the instruction as a
+        # persistent toast and keep them on the login screen (clicked via HTMX).
         has_email = bool(_settings.gateway_token or _settings.smtp_host)
-        return auth_shell(
-            _forgot_password_form() if has_email else _forgot_password_cli(),
-            title="Forgot password - Celerp",
-        )
+        is_htmx = request.headers.get("HX-Request") == "true"
+        if not has_email:
+            if is_htmx:
+                msg = ("To reset your password, open a terminal on this machine and run: "
+                       "celerp reset-password --email you@company.com")
+                return Response("", headers={"HX-Trigger": json.dumps(
+                    {"celerpToast": {"message": msg, "type": "info", "persist": True}})})
+            # Direct URL entry with no JS: send back to login (the link there toasts).
+            return RedirectResponse("/login", status_code=302)
+        if is_htmx:
+            # HTMX click on an email-capable install: full-navigate to render the form.
+            return Response("", headers={"HX-Redirect": "/forgot-password"})
+        return auth_shell(_forgot_password_form(), title="Forgot password - Celerp")
 
     @app.post("/forgot-password")
     async def forgot_password_submit(request: Request):
@@ -508,7 +524,8 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "") -> 
                       placeholder="••••••••", required=True, cls="form-input"),
                 cls="form-group"),
             Button(t("btn.sign_in", lang), type="submit", cls="btn btn--primary btn--full"),
-            P(A(t("auth.forgot_password"), href="/forgot-password", cls="auth-link"), cls="auth-footer-text"),
+            P(A(t("auth.forgot_password"), href="/forgot-password", hx_get="/forgot-password",
+                hx_swap="none", cls="auth-link"), cls="auth-footer-text"),
             method="post", action="/login", cls="auth-form",
         ),
         cls="auth-card",
@@ -787,45 +804,6 @@ def _forgot_password_sent() -> FT:
             A(t("auth.back_to_login"), href="/login", cls="btn btn--primary"),
             cls="text-center mt-md",
         ),
-        cls="auth-card",
-    )
-
-
-def _forgot_password_cli() -> FT:
-    """Forgot-password page for self-hosted installs without email transport."""
-    from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    iid = ensure_instance_id()
-    subscribe_url = build_subscribe_url(iid, "cloud")
-    return Div(
-        Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("page.reset_your_password"), cls="auth-title"),
-            P(t("auth.open_your_terminal_and_run"), cls="auth-subtitle"),
-            cls="auth-header",
-        ),
-        Div(
-            Pre(
-                Code("celerp reset-password --email you@company.com"),
-                cls="auth-code-block",
-            ),
-            P(t("auth.youll_be_prompted_to_enter_a_new_password"), cls="auth-hint"),
-            cls="auth-cli-section",
-        ),
-        Hr(cls="auth-divider"),
-        Div(
-            H3(t("page.want_emailbased_password_resets"), cls="auth-upsell-title"),
-            P(
-                "Celerp Web Access gives you a secure public URL, email workflows, "
-                "automatic backups, and more. Your data stays on your machine - "
-                "we just relay the connection.",
-                cls="auth-upsell-text",
-            ),
-            A(t("auth.subscribe_for_29mo_u2192"), href=subscribe_url, target="_blank",
-              cls="btn btn--accent btn--full"),
-            cls="auth-upsell",
-        ),
-        P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
         cls="auth-card",
     )
 

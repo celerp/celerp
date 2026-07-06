@@ -9372,9 +9372,12 @@ class TestBulkActionsPhase6SendTo:
         assert "Invoice" in labels
         assert "List/Quotation" in labels
         assert "Consignment Out" in labels
+        assert "Purchase Order" in labels
         # Memo target must use doc_type=memo (not CRM memo)
         memo_target = next(t for t in targets if t["label"] == "Consignment Out")
         assert memo_target["doc_type"] == "memo"
+        po_target = next(t for t in targets if t["label"] == "Purchase Order")
+        assert po_target["doc_type"] == "purchase_order"
 
     @pytest.mark.asyncio
     async def test_crm_module_does_not_register_send_to_target(self, ui_client):
@@ -9410,6 +9413,354 @@ _SETTINGS_MOCKS_UNITS = {
     "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
     "ui.api_client.get_units": AsyncMock(return_value=_DEFAULT_UNITS_SEED),
 }
+
+
+class TestReorderPurchaseLineConversion:
+    """Pure conversion math for a reorder PO line (sell units -> purchase units)."""
+
+    def test_to_purchase_qty_ceils_to_unit_precision(self):
+        from ui.routes.documents import _to_purchase_qty
+        # Indivisible purchase unit (decimals 0): round UP to whole units.
+        assert _to_purchase_qty(24, 12, 0) == 2      # exact
+        assert _to_purchase_qty(25, 12, 0) == 3      # 2.08 -> 3 whole boxes
+        # Divisible purchase unit keeps its precision.
+        assert _to_purchase_qty(2500, 1000, 3) == 2.5
+        # No decimals known -> plain round; zero/blank -> 0.
+        assert _to_purchase_qty(24, 12, None) == 2.0
+        assert _to_purchase_qty(0, 12, 0) == 0
+
+    def test_reorder_po_line_converts_qty_and_price(self):
+        from ui.routes.documents import _reorder_po_line
+        item = {"entity_id": "item:x", "sku": "W", "name": "Widget", "sell_by": "piece",
+                "purchase_unit": "box", "purchase_conversion_factor": 12,
+                "reorder_qty": 24, "cost_price": 10}
+        line = _reorder_po_line(item, unit_decimals=0)
+        assert line["quantity"] == 2          # 24 sell / 12 = 2 boxes
+        assert line["unit_price"] == 120       # cost 10/sell-unit x 12 = 120/box
+        assert line["unit"] == "box"
+        assert line["purchase_conversion_factor"] == 12
+        assert line["entity_id"] == "item:x"
+        # PO line total == the real money = reorder_qty(sell) x cost_price(sell).
+        assert line["quantity"] * line["unit_price"] == 24 * 10
+
+    def test_reorder_po_line_blank_when_unset(self):
+        from ui.routes.documents import _reorder_po_line
+        line = _reorder_po_line({"entity_id": "item:y", "sku": "Z", "name": "Z",
+                                 "purchase_conversion_factor": 12, "cost_price": 10}, unit_decimals=0)
+        assert line["quantity"] == 0  # never fabricated; placeholder shows the suggestion
+
+    @pytest.mark.asyncio
+    async def test_po_line_suggestions_converts_and_gates(self):
+        """Per-line PO qty placeholder = velocity suggestion / factor, ceil'd; only for
+        blank lines with an item_id."""
+        from ui.routes.documents import _po_line_suggestions
+        doc = {"line_items": [
+            {"entity_id": "item:a", "quantity": 0},   # blank -> suggest
+            {"entity_id": "item:b", "quantity": 5},   # already has qty -> skip
+        ]}
+
+        async def _get_item(_t, eid):
+            return {"entity_id": eid, "purchase_conversion_factor": 12, "purchase_unit": "box", "sell_by": "piece"}
+
+        async def _get_sugg(_t, eid):
+            return {"reorder_point": 7, "reorder_qty": 24}
+
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=_get_item)),
+            patch("ui.api_client.get_reorder_suggestion", new=AsyncMock(side_effect=_get_sugg)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[{"name": "box", "decimals": 0}])),
+        ):
+            out = await _po_line_suggestions("tok", doc)
+        assert out == {"item:a": "2"}  # 24 sell / 12 = 2 boxes; item:b skipped (has qty)
+
+    def test_doc_detail_po_draft_qty_shows_placeholder(self):
+        """A draft-PO reorder line renders an EMPTY qty input carrying the grey suggestion
+        placeholder; the value is not prefilled (so nothing is auto-saved)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {"doc_type": "purchase_order", "status": "draft", "entity_id": "doc:PO-1", "ref_id": "PO-1",
+               "line_items": [{"entity_id": "item:a", "sku": "W", "description": "W", "quantity": 0, "unit_price": 120}],
+               "total": 0, "subtotal": 0}
+        html = to_xml(_doc_detail(doc, line_suggestions={"item:a": "2"}, item_meta_map={}))
+        assert 'placeholder="2"' in html
+
+    def test_doc_detail_non_po_qty_unchanged(self):
+        """Non-PO docs never get a qty placeholder (byte-identical qty input)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {"doc_type": "invoice", "status": "draft", "entity_id": "doc:INV-1", "ref_id": "INV-1",
+               "line_items": [{"entity_id": "item:a", "sku": "W", "description": "W", "quantity": 0, "unit_price": 5}],
+               "total": 0, "subtotal": 0}
+        html = to_xml(_doc_detail(doc, line_suggestions={"item:a": "2"}, item_meta_map={}))
+        assert 'placeholder="2"' not in html
+
+
+class TestCatalogConsolidation:
+    """Forward-sales catalog: splittable lots of a SKU collapse to one option bound to the
+    pick-order-first lot; non-splittable lots stay per-lot so the exact one is selectable."""
+
+    def test_splittable_lots_consolidate_fifo_binds_oldest(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:new", "quantity": 40, "allow_splitting": True, "created_at": "2026-02-01"},
+            {"sku": "W", "entity_id": "item:old", "quantity": 60, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {"inventory_method": "fifo"})
+        assert len(out) == 1
+        assert out[0]["entity_id"] == "item:old"   # FIFO -> oldest lot bound
+        assert out[0]["quantity"] == 100           # aggregate on-hand shown
+
+    def test_lifo_binds_newest_lot(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:new", "quantity": 40, "allow_splitting": True, "created_at": "2026-02-01"},
+            {"sku": "W", "entity_id": "item:old", "quantity": 60, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {"inventory_method": "lifo"})
+        assert len(out) == 1 and out[0]["entity_id"] == "item:new"
+
+    def test_non_splittable_kept_per_lot(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "quantity": 1, "allow_splitting": False, "batch_no": "A"},
+            {"sku": "DIA", "entity_id": "item:b", "quantity": 1, "allow_splitting": False, "batch_no": "B"},
+        ]
+        out = _consolidate_sales_lots(items, {})
+        assert len(out) == 2  # each unique lot stays selectable
+
+    def test_distinct_skus_grouped_independently(self):
+        from ui.routes.documents import _consolidate_sales_lots
+        items = [
+            {"sku": "W", "entity_id": "item:1", "quantity": 5, "allow_splitting": True, "created_at": "2026-01-01"},
+            {"sku": "X", "entity_id": "item:2", "quantity": 3, "allow_splitting": True, "created_at": "2026-01-01"},
+        ]
+        out = _consolidate_sales_lots(items, {})
+        assert {o["sku"] for o in out} == {"W", "X"} and len(out) == 2
+
+
+class TestCatalogConsolidationEndpoint:
+    """The forward-sales catalog endpoints consolidate splittable lots into one option
+    (bound to the pick-order-first lot) and keep non-splittable lots per-lot."""
+
+    _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
+
+    @pytest.mark.asyncio
+    async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
+        items = [
+            {"sku": "W", "entity_id": "item:new", "name": "W", "quantity": 40, "allow_splitting": True,
+             "created_at": "2026-02-01", "sell_by": "piece"},
+            {"sku": "W", "entity_id": "item:old", "name": "W", "quantity": 60, "allow_splitting": True,
+             "created_at": "2026-01-01", "sell_by": "piece"},
+        ]
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1                          # collapsed to one option
+        assert data[0]["entity_id"] == "item:old"      # FIFO -> oldest lot bound
+
+    @pytest.mark.asyncio
+    async def test_catalog_search_keeps_non_splittable_per_lot(self, ui_client):
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False,
+             "batch_no": "A", "sell_by": "piece"},
+            {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False,
+             "batch_no": "B", "sell_by": "piece"},
+        ]
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
+        assert r.status_code == 200
+        assert len(r.json()) == 2                       # each unique lot stays selectable
+
+    @pytest.mark.asyncio
+    async def test_credit_note_search_keeps_lots_per_entity(self, ui_client):
+        # Credit notes return a physical lot to reverse into, so several sold lots of one
+        # splittable SKU must each stay separately selectable (deduped by entity_id, NOT
+        # consolidated) — you credit the exact lot the customer returns.
+        sold = [
+            {"sku": "W", "entity_id": "item:l1", "name": "W", "quantity": 40, "allow_splitting": True,
+             "created_at": "2026-02-01", "sell_by": "piece", "status": "sold"},
+            {"sku": "W", "entity_id": "item:l2", "name": "W", "quantity": 60, "allow_splitting": True,
+             "created_at": "2026-01-01", "sell_by": "piece", "status": "sold"},
+        ]
+
+        async def _list(_t, params):
+            return {"items": sold if params.get("status") == "sold" else []}
+
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
+        ):
+            r = await ui_client.get("/docs/catalog-search?q=W&doc_type=credit_note", cookies=_authed())
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 2                                    # NOT collapsed -> both lots offered
+        assert {d["entity_id"] for d in data} == {"item:l1", "item:l2"}
+
+    @pytest.mark.asyncio
+    async def test_catalog_lookup_ambiguous_for_non_splittable_sku(self, ui_client):
+        items = [
+            {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
+            {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
+        ]
+
+        async def _list(_t, params):
+            return {"items": items if params.get("sku") == "DIA" else []}
+
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
+        ):
+            r = await ui_client.get("/docs/catalog-lookup?sku=DIA", cookies=_authed())
+        assert r.status_code == 200
+        assert r.json().get("ambiguous") is True        # non-splittable -> chooser
+
+
+class TestReorderPlaceholderHelper:
+    """The shared reorder-cell placeholder helper used by the edit/display/patch
+    re-render endpoints, so the grey suggestion stays visible instantly after Escape
+    or an empty save."""
+
+    @pytest.mark.asyncio
+    async def test_placeholder_only_for_empty_reorder_fields(self):
+        from ui.routes.inventory import _reorder_placeholder
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            # Empty / zero reorder field -> show the suggestion.
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", "") == "24"
+            assert await _reorder_placeholder("t", "item:a", "reorder_point", "0") == "7"
+            # A real stored value -> no placeholder (shows the value instead).
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", 30) is None
+            # Non-reorder fields never get a suggestion (and skip the API call).
+            assert await _reorder_placeholder("t", "item:a", "sku", "") is None
+
+    @pytest.mark.asyncio
+    async def test_placeholder_none_when_no_history(self):
+        from ui.routes.inventory import _reorder_placeholder
+        sugg = AsyncMock(return_value={"reorder_point": None, "reorder_qty": None})
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            assert await _reorder_placeholder("t", "item:a", "reorder_qty", "") is None
+
+    @pytest.mark.asyncio
+    async def test_inject_hints_only_for_empty_fields(self):
+        # The item-detail view gets a grey suggestion hint only for reorder fields left
+        # empty/zero; a stored value is left untouched and no hint key is added.
+        from ui.routes.inventory import _inject_reorder_hints
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        item = {"entity_id": "item:a", "reorder_point": "", "reorder_qty": 30}
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            await _inject_reorder_hints("t", item)
+        assert item["_reorder_point_hint"] == "7"   # empty -> hinted
+        assert "_reorder_qty_hint" not in item      # stored value -> no hint
+
+    @pytest.mark.asyncio
+    async def test_inject_hints_skips_api_when_all_set(self):
+        from ui.routes.inventory import _inject_reorder_hints
+        sugg = AsyncMock(return_value={"reorder_point": 7, "reorder_qty": 24})
+        item = {"entity_id": "item:a", "reorder_point": 5, "reorder_qty": 30}
+        with patch("ui.api_client.get_reorder_suggestion", new=sugg):
+            await _inject_reorder_hints("t", item)
+        sugg.assert_not_awaited()                    # no wasted call when nothing is empty
+        assert "_reorder_point_hint" not in item
+
+
+class TestSendToPurchaseOrder:
+    """Send-to Purchase Order on the inventory bulk toolbar (/api/items/send-to):
+    purchase-side reorder lines, new + existing draft PO, and target search."""
+
+    _PO_ITEM = {
+        "entity_id": "item:po1", "sku": "WIDGET", "name": "Widget",
+        "sell_by": "piece", "purchase_unit": "box", "purchase_conversion_factor": 12,
+        "reorder_qty": 24, "cost_price": 10, "attributes": {},
+    }
+    _UNITS = [{"name": "box", "label": "Box", "decimals": 0, "unit_type": "count"},
+              {"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
+
+    @pytest.mark.asyncio
+    async def test_send_to_new_po_builds_purchase_lines(self, ui_client):
+        mock_create = AsyncMock(return_value={"id": "doc:PO-001"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "doc:PO-001" in r.headers.get("hx-redirect", "")
+        payload = mock_create.call_args[0][1]
+        assert payload["doc_type"] == "purchase_order"
+        assert payload["purchase_kind"] == "inventory"
+        assert "doc_taxes" not in payload  # purchasing, not a sales doc
+        line = payload["line_items"][0]
+        assert line["quantity"] == 2        # reorder_qty 24 / conversion 12
+        assert line["unit_price"] == 120    # cost per PURCHASE unit = 10 x 12
+        assert line["unit"] == "box"        # purchase unit, not sell unit
+
+    @pytest.mark.asyncio
+    async def test_send_to_new_po_blank_qty_when_reorder_unset(self, ui_client):
+        item = dict(self._PO_ITEM)
+        item.pop("reorder_qty")
+        mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        line = mock_create.call_args[0][1]["line_items"][0]
+        assert line["quantity"] == 0  # blank/editable, never a fabricated number
+
+    @pytest.mark.asyncio
+    async def test_send_to_existing_po_appends_lines(self, ui_client):
+        existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}]}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PO_ITEM)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=existing)),
+            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": "e1"})) as mock_patch,
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=doc%3APO-001",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "doc:PO-001" in r.headers.get("hx-redirect", "")
+        patched = mock_patch.call_args[0][2]
+        assert len(patched["line_items"]) == 2  # old + reorder line
+
+    @pytest.mark.asyncio
+    async def test_send_to_search_lists_draft_pos(self, ui_client):
+        pos = [{"id": "doc:PO-001", "ref_id": "PO-001", "status": "draft"}]
+        with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": pos, "total": 1})):
+            r = await ui_client.get(
+                "/api/items/send-to/search?doc_type=purchase_order&q=PO",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"PO-001" in r.content
 
 
 async def _api_headers(client) -> dict:
@@ -11100,8 +11451,8 @@ class TestBugFixesBatch25Mar:
         assert "barcode" in src[src.index("doc_catalog_lookup"):src.index("doc_catalog_lookup") + 1500]
 
     @pytest.mark.asyncio
-    async def test_split_auto_generates_sku(self, ui_client):
-        """Bulk split auto-generates .N suffix SKU."""
+    async def test_split_keeps_parent_sku(self, ui_client):
+        """A bulk-split child keeps the parent SKU — no .N suffix (same product, distinct lot)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11112,11 +11463,13 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.1" in r.content
+        assert b"DEMO-001" in r.content
+        assert b"DEMO-001.1" not in r.content
 
     @pytest.mark.asyncio
-    async def test_split_auto_generates_incremented_sku(self, ui_client):
-        """If .1 exists, next split gets .2."""
+    async def test_split_keeps_parent_sku_even_with_suffixed_sibling(self, ui_client):
+        """Even when a DEMO-001.1 sibling already exists, the split child still keeps the
+        parent SKU — no suffix, no incrementing (the old auto-.N behavior is gone)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [{"sku": "DEMO-001.1"}], "total": 1})),
@@ -11127,11 +11480,12 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.2" in r.content
+        assert b"DEMO-001" in r.content
+        assert b"DEMO-001.2" not in r.content
 
     @pytest.mark.asyncio
-    async def test_split_child_of_child(self, ui_client):
-        """Splitting DEMO-001.1 generates DEMO-001.1.1."""
+    async def test_split_child_of_child_keeps_sku(self, ui_client):
+        """Splitting a child (SKU DEMO-001.1) keeps that SKU — no further .N (DEMO-001.1.1)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001.1", "quantity": 5})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11142,7 +11496,8 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "2",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.1.1" in r.content
+        assert b"DEMO-001.1" in r.content
+        assert b"DEMO-001.1.1" not in r.content
 
 
 # ---------------------------------------------------------------------------
@@ -11260,8 +11615,8 @@ class TestBugFixesBatch25Mar6Bugs:
         children = captured[0]["children"]
         assert len(children) == 1
         assert children[0]["quantity"] == 3.0
-        # Child SKU must not be the original parent SKU
-        assert children[0]["sku"] != "RING-001"
+        # A split child keeps the parent SKU: the UI sends no 'sku' (split_item defaults it).
+        assert "sku" not in children[0]
 
 
 class TestBuildWorkflowVersioning:
@@ -13935,3 +14290,55 @@ def test_compact_pages_shows_full_count_and_last():
     assert _compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
     assert _compact_pages(9, 10) == [1, None, 8, 9, 10]
     assert _compact_pages(10, 10) == [1, None, 9, 10]
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_no_email_toasts_cli_instruction(ui_client):
+    """Self-hosted (no email transport): the forgot-password link surfaces the CLI-reset
+    instruction as a PERSISTENT toast and keeps the user on the login screen - no page
+    takeover, no false 'check your email'."""
+    import ui.routes.auth as _auth
+    with patch.object(_auth._settings, "gateway_token", ""), patch.object(_auth._settings, "smtp_host", ""):
+        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    trig = r.headers.get("HX-Trigger", "")
+    assert "celerpToast" in trig
+    assert "reset-password" in trig          # the CLI command is in the message
+    assert '"persist": true' in trig          # stays until the user dismisses it
+    assert b"check your email" not in r.content.lower() if r.content else True
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_with_email_redirects_to_form(ui_client):
+    """Email-capable install: the HTMX click full-navigates to the email-reset form."""
+    import ui.routes.auth as _auth
+    with patch.object(_auth._settings, "gateway_token", "tok"), patch.object(_auth._settings, "smtp_host", ""):
+        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert r.headers.get("HX-Redirect") == "/forgot-password"
+
+
+@pytest.mark.asyncio
+async def test_split_inline_omits_child_sku(ui_client):
+    """The detail-page split (split-inline) sends children with NO sku, so the backend keeps
+    the parent SKU. Guards the UI writer against re-introducing the '.1' suffix (the bug)."""
+    captured = {}
+
+    async def _capture_split(token, eid, payload):
+        captured["payload"] = payload
+        return {"children": []}
+
+    with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                   "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "piece"})), \
+         patch("ui.api_client.split_item", new=_capture_split):
+        r = await ui_client.post(
+            "/api/items/item:p/split-inline",
+            cookies=_authed(),
+            data={"split_qty": ["3", "2"]},
+        )
+
+    assert r.status_code in (200, 204), r.text
+    assert captured.get("payload"), "split_item was not called"
+    children = captured["payload"]["children"]
+    assert len(children) == 2
+    assert all("sku" not in c for c in children)   # no SKU sent -> backend keeps the parent's

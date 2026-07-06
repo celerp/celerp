@@ -198,7 +198,10 @@ async def test_transform_audit_event(client):
 
 
 @pytest.mark.asyncio
-async def test_transform_child_sku_collision(client):
+async def test_transform_child_sku_may_reuse_existing(client):
+    """Intentional contract change (2026-06-17 sku/batch plan): a transform child may
+    reuse a SKU another item already uses - SKUs are product-types that repeat across
+    physical lots (identity is entity_id/barcode). Formerly a 409; now succeeds."""
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
     # Create an item with SKU "CHILD-SKU" first
@@ -206,7 +209,7 @@ async def test_transform_child_sku_collision(client):
     parent_id = await _seed_item(client, headers, sku="PARENT-2")
 
     r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(child_sku="CHILD-SKU"), headers=headers)
-    assert r.status_code == 409
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.asyncio

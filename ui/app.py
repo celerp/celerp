@@ -58,7 +58,8 @@ from fasthtml.common import *
 from starlette.responses import HTMLResponse
 
 # Public paths that don't require auth
-_PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview"}
+_PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
+           "/forgot-password", "/reset-password"}
 
 def _auth_guard(req: Request):
     """Redirect unauthenticated requests to login/setup before they reach any route."""

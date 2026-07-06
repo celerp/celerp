@@ -13,6 +13,7 @@ from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
+from celerp.services.reorder import is_below_reorder
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -96,7 +97,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
             "items_on_memo": sum(1 for i in active_items if i.state.get("is_on_memo")),
             "items_reserved": sum(1 for i in active_items if float(i.state.get("reserved_quantity", 0) or 0) > 0),
             "items_in_production": sum(1 for i in active_items if i.state.get("is_in_production")),
-            "low_stock_items": sum(1 for i in active_items if float(i.state.get("quantity", 0) or 0) <= 0),
+            "low_stock_items": sum(1 for i in active_items if is_below_reorder(i.state)),
         },
         "sales": {
             "revenue_mtd": revenue_mtd,

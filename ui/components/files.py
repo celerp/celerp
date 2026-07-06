@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
+from ui.components.attrs import hx_vals, esc_attr
 from ui.i18n import t
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
@@ -379,7 +380,7 @@ def _files_section(
                     hx_delete=f"{file_action_base}/{fid}",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
-                    hx_confirm=f"{t('action.delete_file')}: {fname}?",
+                    hx_confirm=f"{t('action.delete_file')}: {esc_attr(fname)}?",
                     cls="btn btn--ghost btn--xs",
                     title=t("action.delete_file"),
                 ) if not no_delete else Span(),
@@ -398,7 +399,7 @@ def _files_section(
             hx_get=f"{base_url}/_section",
             hx_target=f"#files-section-{sid}",
             hx_swap="outerHTML",
-            hx_vals=f'{{"sort_dir":"{next_sort}","page":"1","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}","search":"{search}"}}',
+            hx_vals=hx_vals({"sort_dir": next_sort, "page": "1", "tag_filter": tag_filter, "date_from": date_from, "date_to": date_to, "search": search}),
             cls="sort-link",
             style="white-space:nowrap;",
         ),
@@ -448,7 +449,7 @@ def _files_section(
                     hx_get=f"{base_url}/_section",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
-                    hx_vals=f'{{"page":"{pg}","sort_dir":"{sort_dir}","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}","search":"{search}"}}',
+                    hx_vals=hx_vals({"page": str(pg), "sort_dir": sort_dir, "tag_filter": tag_filter, "date_from": date_from, "date_to": date_to, "search": search}),
                 )
             )
         pagination = Div(*pager_items, cls="pagination", style="margin-top:8px;display:flex;gap:4px;")

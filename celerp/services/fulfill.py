@@ -93,7 +93,7 @@ async def execute_fulfill(
                 entity_type="item",
                 event_type="item.created",
                 data={
-                    "sku": pick.split_sku,
+                    "sku": pick.sku,   # child keeps the parent SKU (distinct lot by entity_id)
                     "name": pick.sku,
                     "quantity": pick.pick_qty,
                 },
@@ -142,7 +142,7 @@ async def execute_fulfill(
             )
             fulfilled_items.append({
                 "item_id": child_eid,
-                "sku": pick.split_sku,
+                "sku": pick.sku,
                 "quantity": pick.pick_qty,
                 "action": "split",
                 "split_from": pick.item_id,

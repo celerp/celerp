@@ -766,9 +766,16 @@ def editable_cell(
     allow_custom: bool = False,
     restore_url: str | None = None,
     label_map: dict | None = None,
+    placeholder: str | None = None,
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
-    label_map: optional {slug: display_name} - if set, select renders option labels from map."""
+    label_map: optional {slug: display_name} - if set, select renders option labels from map.
+    placeholder: optional grey hint text for empty number/text inputs (e.g. a suggested value).
+                 It is a hint only - never submitted - so the stored value is unaffected."""
+    # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
+    # so it can never be saved: HTML placeholder is shown only while the input is empty and
+    # is never part of the submitted form data.
+    _ph = {"placeholder": str(placeholder)} if placeholder not in (None, "") else {}
     display_val = str(value) if value is not None else ""
     if cell_type == "number" and display_val:
         display_val = _normalize_number_str(display_val)
@@ -842,7 +849,7 @@ def editable_cell(
         step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
-            **swap,
+            **swap, **_ph,
             hx_trigger="blur delay:200ms",
             cls="cell-input cell-input--number",
             autofocus=True,
@@ -879,7 +886,7 @@ def editable_cell(
     else:
         input_el = Input(
             type="text", name="value", value=display_val,
-            **swap,
+            **swap, **_ph,
             hx_trigger="blur delay:200ms",
             cls="cell-input",
             autofocus=True,
@@ -943,19 +950,28 @@ def display_cell(
     link_href: str | None = None,
     edit_url: str | None = None,
     label_map: dict | None = None,
+    placeholder: str | None = None,
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
     link_href: if set, renders cell value as a clickable hyperlink (e.g. SKU -> detail page).
     edit_url: custom HTMX GET URL for editing this cell. Overrides the default
               ``/api/items/{entity_id}/field/{field}/edit`` pattern.
-    label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name."""
+    label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name.
+    placeholder: optional grey hint shown ONLY when the cell is empty (e.g. a suggested
+                 reorder value). It is display-only guidance, never a stored value; the cell
+                 stays click-to-edit and saving still uses whatever the user types."""
     display_value = label_map.get(value, value) if label_map and value is not None else value
     # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
     # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
     if _is_mixed(value):
         display_value = MIXED_VALUE
     inner = _display_val(display_value, cell_type, currency)
+    # Empty cell + a suggestion -> show it greyed (a hint, not a stored value). The
+    # edit trigger below is unchanged, so the cell stays fully editable.
+    if placeholder not in (None, "") and (value is None or str(value).strip() in ("", EMPTY)):
+        inner = Span(str(placeholder), cls="cell-suggestion", style="color:#9aa0a6;",
+                     title="Suggested value - click to set")
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
     _safe_id = entity_id.replace(":", "-")
     _safe_field = re.sub(r"[^A-Za-z0-9_-]", "_", field)
@@ -1561,12 +1577,28 @@ function _bulkImmediate(url,extraName,extraValue){
   htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
     .then(function(){form.remove();},function(){form.remove();});
 }
+function _liveMergeMeta(id){
+  // The SKU/name shown here must reflect the CURRENT value: an inline edit changes the
+  // cell without re-selecting the row, so the meta snapshotted at select time (and kept
+  // in sessionStorage) goes stale. Read the live row when it is on the page; fall back to
+  // the stored snapshot only for selected rows not currently rendered (other pages).
+  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+  if(cb){
+    var tr=cb.closest('tr');
+    var skuCell=tr&&tr.querySelector('[data-col="sku"]');
+    var nameCell=tr&&tr.querySelector('[data-col="name"]');
+    return {sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
+            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()};
+  }
+  var m=CelerpSelection.all()[id]||{};
+  return {sku:m.sku||'',name:m.name||''};
+}
 function _populateMergeTargets(){
   var sel=document.getElementById('merge-target-select');
   if(!sel) return;
   var all=CelerpSelection.all();
   Object.keys(all).forEach(function(id){
-    var meta=all[id];
+    var meta=_liveMergeMeta(id);
     var opt=document.createElement('option');
     opt.value=id;
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');

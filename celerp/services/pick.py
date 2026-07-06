@@ -5,7 +5,8 @@
 
 Input:  line_items  — from doc, each has {sku, quantity}
         inventory   — available items [{entity_id, sku, quantity, created_at, expires_at, cost_price}]
-Output: pick_plan   — [{item_id, sku, pick_qty, cost_price, action: "full"|"split", split_sku}]
+Output: pick_plan   — [{item_id, sku, pick_qty, cost_price, action: "full"|"split"}]
+                      (a split child keeps the parent SKU; lots differ by barcode/entity_id)
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ class PickLine:
     pick_qty: float
     cost_price: float
     action: str          # "full" | "split"
-    split_sku: str = ""  # populated only when action="split"
 
 
 @dataclass
@@ -32,24 +32,61 @@ class PickResult:
 
 
 def _matches_sku(item_sku: str, line_sku: str) -> bool:
-    """Exact match OR child SKU (e.g. 'ITEM-001.1' matches parent 'ITEM-001')."""
-    return item_sku == line_sku or item_sku.startswith(f"{line_sku}.")
+    """Exact match, or a LEGACY digit-suffixed split child ('ITEM-001.1' matches
+    'ITEM-001'). New split children keep the parent SKU, so the suffix case only covers
+    pre-existing '.N' lots; a distinct product like 'ITEM-001.PRO' is NOT matched."""
+    if item_sku == line_sku:
+        return True
+    if item_sku.startswith(f"{line_sku}."):
+        return item_sku[len(line_sku) + 1:].isdigit()
+    return False
+
+
+VALID_PICK_METHODS = ("fifo", "fefo", "lifo")
 
 
 def _detect_strategy(inventory: list[dict]) -> str:
-    """FEFO if any item has expires_at, otherwise FIFO."""
+    """FEFO if any item has expires_at, otherwise FIFO. Used as the auto fallback
+    when no explicit strategy is configured."""
     return "fefo" if any(item.get("expires_at") for item in inventory) else "fifo"
 
 
-def _sort_key(item: dict, strategy: str):
+def resolve_pick_method(item_state: dict | None, company_settings: dict | None) -> str:
+    """Effective stock-cutting order for a product: the item's own ``pick_method``
+    (when set and not "default"), else the company ``inventory_method``, else "fifo".
+
+    This decides only the DRAW ORDER across lots (which physical lots are consumed
+    first). COGS is always the actual cost of the specific lots drawn (specific
+    identification by lot), so the order naturally yields FIFO-cost / LIFO-cost.
+    """
+    item_state = item_state or {}
+    company_settings = company_settings or {}
+    for candidate in (item_state.get("pick_method"), company_settings.get("inventory_method")):
+        c = str(candidate or "").strip().lower()
+        if c in VALID_PICK_METHODS:
+            return c
+    return "fifo"
+
+
+def _sorted_inventory(inventory: list[dict], strategy: str) -> list[dict]:
+    """Order lots for draw-down by the chosen strategy.
+
+    - fifo: oldest received first (created_at ascending)
+    - lifo: newest received first (created_at descending)
+    - fefo: soonest to expire first (expires_at ascending, created_at tiebreak);
+      lots with no expiry fall to the end, so FEFO degrades to FIFO when nothing expires
+    """
+    if strategy == "lifo":
+        return sorted(inventory, key=lambda it: it.get("created_at") or "", reverse=True)
     if strategy == "fefo":
-        return item.get("expires_at") or "9999-99-99", item.get("created_at") or ""
-    return item.get("created_at") or ""
+        return sorted(inventory, key=lambda it: (it.get("expires_at") or "9999-99-99", it.get("created_at") or ""))
+    return sorted(inventory, key=lambda it: it.get("created_at") or "")  # fifo
 
 
 def compute_pick_plan(
     line_items: list[dict],
     inventory: list[dict],
+    strategy: str | None = None,
 ) -> PickResult:
     """Compute a pick plan for the given line items against available inventory.
 
@@ -59,17 +96,19 @@ def compute_pick_plan(
         line_items: [{sku, quantity, sell_by?, ...}] from the document.
         inventory:  [{entity_id, sku, quantity, created_at, expires_at, cost_price}]
                     Only items with quantity > 0 should be passed.
+        strategy:   explicit draw order ("fifo"|"fefo"|"lifo"); when None, auto-detect
+                    (FEFO if anything expires, else FIFO).
 
     Returns:
         PickResult with picks, unfulfilled shortfalls, and strategy used.
     """
-    strategy = _detect_strategy(inventory)
+    strategy = strategy if strategy in VALID_PICK_METHODS else _detect_strategy(inventory)
 
     # Build a mutable copy of inventory keyed by entity_id for tracking remaining qty
     remaining: dict[str, float] = {item["entity_id"]: float(item.get("quantity") or 0) for item in inventory}
 
     # Pre-sort inventory once
-    sorted_inv = sorted(inventory, key=lambda it: _sort_key(it, strategy))
+    sorted_inv = _sorted_inventory(inventory, strategy)
 
     picks: list[PickLine] = []
     unfulfilled: list[dict[str, Any]] = []
@@ -120,14 +159,14 @@ def compute_pick_plan(
                 needed -= avail
                 remaining[eid] = 0
             elif allow_split:
-                # Partial pick — split allowed
+                # Partial pick — split off `needed`; the child KEEPS the parent SKU
+                # (same product, distinct lot by barcode/entity_id).
                 picks.append(PickLine(
                     item_id=eid,
                     sku=item.get("sku", ""),
                     pick_qty=needed,
                     cost_price=cost,
                     action="split",
-                    split_sku=f"{item.get('sku', '')}.{_next_child_suffix(item.get('sku', ''), inventory)}",
                 ))
                 remaining[eid] -= needed
                 needed = 0
@@ -137,21 +176,3 @@ def compute_pick_plan(
             unfulfilled.append({"sku": line_sku, "short_qty": round(needed, 6)})
 
     return PickResult(picks=picks, unfulfilled=unfulfilled, strategy=strategy)
-
-
-def _next_child_suffix(parent_sku: str, inventory: list[dict]) -> int:
-    """Determine the next available child suffix number for a parent SKU."""
-    max_suffix = 0
-    prefix = f"{parent_sku}."
-    for item in inventory:
-        item_sku = item.get("sku", "")
-        if item_sku.startswith(prefix):
-            tail = item_sku[len(prefix):]
-            # Only consider direct children (no further dots)
-            if "." not in tail:
-                try:
-                    n = int(tail)
-                    max_suffix = max(max_suffix, n)
-                except ValueError:
-                    pass
-    return max_suffix + 1

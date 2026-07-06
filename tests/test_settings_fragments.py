@@ -207,30 +207,9 @@ def test_value_prop_no_cloud_service_language():
     assert "we store your data" not in text
 
 
-# ---------------------------------------------------------------------------
-# Forgot-password context-aware page
-# ---------------------------------------------------------------------------
-
-def test_forgot_password_cli_page_no_email_transport():
-    """When no email transport is configured, forgot-password shows CLI instructions."""
-    from ui.routes.auth import _forgot_password_cli
-    from fasthtml.common import to_xml
-    html = to_xml(_forgot_password_cli())
-    assert "celerp reset-password" in html
-    assert "Want email-based password resets?" in html
-    assert "$29/mo" in html
-    assert "Back to login" in html
-
-
-def test_forgot_password_cli_page_has_subscribe_link():
-    """CLI forgot-password page includes subscribe link with instance_id."""
-    from ui.routes.auth import _forgot_password_cli
-    from fasthtml.common import to_xml
-    html = to_xml(_forgot_password_cli())
-    # Order-independent: the link must point at /subscribe and carry the instance_id,
-    # regardless of where attribution/UTM params sit in the query string.
-    assert "celerp.com/subscribe?" in html
-    assert "instance_id=" in html
+# The forgot-password no-email path is now a persistent CLI-instruction toast on the
+# login screen (not a full CLI page). It is covered in tests/test_ui.py
+# ::test_forgot_password_no_email_toasts_cli_instruction.
 
 
 def test_forgot_password_email_form_exists():

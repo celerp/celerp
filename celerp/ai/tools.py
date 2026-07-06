@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
+from celerp.services.reorder import is_below_reorder
 
 
 @dataclass
@@ -61,7 +62,7 @@ async def _dashboard_kpis(session: AsyncSession, company_id: uuid.UUID, **_) -> 
     return {
         "total_items": len(items),
         "inventory_value": round(sum(float(i.state.get("total_cost", 0) or 0) for i in items), 2),
-        "low_stock_items": sum(1 for i in items if float(i.state.get("quantity", 0) or 0) <= 0),
+        "low_stock_items": sum(1 for i in items if is_below_reorder(i.state)),
         "ar_outstanding": round(
             sum(
                 float(d.state.get("amount_outstanding", 0) or 0)
@@ -75,12 +76,12 @@ async def _dashboard_kpis(session: AsyncSession, company_id: uuid.UUID, **_) -> 
 async def _low_stock_items(
     session: AsyncSession, company_id: uuid.UUID, limit: int = 20, **_,
 ) -> dict:
-    """List items with zero or negative quantity."""
+    """List items at or below their reorder point."""
     items = await _projections(session, company_id, "item")
     low = sorted(
         [
             {"sku": r.state.get("sku"), "name": r.state.get("name"), "quantity": r.state.get("quantity", 0)}
-            for r in items if float(r.state.get("quantity", 0) or 0) <= 0
+            for r in items if is_below_reorder(r.state)
         ],
         key=lambda x: float(x["quantity"] or 0),
     )
@@ -263,7 +264,7 @@ TOOLS: dict[str, ToolDef] = {
     t.name: t
     for t in [
         ToolDef("dashboard_kpis", "Return high-level KPIs: inventory value, AR outstanding, low stock count, active deals.", [], _dashboard_kpis),
-        ToolDef("low_stock_items", "List items with zero or negative quantity. Param: limit (default 20).", ["limit"], _low_stock_items),
+        ToolDef("low_stock_items", "List items at or below their reorder point (defaults to zero/negative quantity for items without a reorder point set). Param: limit (default 20).", ["limit"], _low_stock_items),
         ToolDef("outstanding_invoices", "List unpaid invoices. Param: limit (default 20).", ["limit"], _outstanding_invoices),
         ToolDef("top_items_by_value", "List items ranked by total inventory value. Param: limit (default 10).", ["limit"], _top_items_by_value),
         ToolDef("active_deals_summary", "Summarise the CRM pipeline - open deals by stage with count and total value.", [], _active_deals_summary),

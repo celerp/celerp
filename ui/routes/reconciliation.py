@@ -12,6 +12,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header
 from ui.components.table import fmt_money, EMPTY, add_new_option
 from ui.config import get_token as _token
@@ -139,7 +140,7 @@ def _match_picker(session_id: str, line_id: str, unmatched_entries: list[dict], 
             Td(
                 Button(t("acct.match"),
                     hx_post=f"/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm",
-                    hx_vals=f'{{"je_id": "{e["je_id"]}"}}',
+                    hx_vals=hx_vals({"je_id": e["je_id"]}),
                     hx_target=f"#stmt-line-{line_id}",
                     hx_swap="outerHTML",
                     cls="btn btn--xs btn--primary",

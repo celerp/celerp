@@ -13,6 +13,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
@@ -1965,7 +1966,7 @@ def setup_routes(app):
                     hx_post="/settings/cloud-send-otp",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
-                    hx_vals=f'{{"claim_email": "{email}"}}',
+                    hx_vals=hx_vals({"claim_email": email}),
                 ),
                 Button(t("btn.back_to_settings"),
                     type="button",

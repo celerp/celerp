@@ -65,7 +65,7 @@ _IDLE_LOGOUT_JS = ("""
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
-function celerpToast(message, type) {
+function celerpToast(message, type, persist) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
   var toast = document.createElement('div');
@@ -78,7 +78,9 @@ function celerpToast(message, type) {
   toast.appendChild(close);
   container.appendChild(toast);
   requestAnimationFrame(function() { toast.classList.add('toast--visible'); });
-  setTimeout(function() { _dismissToast(toast); }, 6000);
+  // Persistent toasts (e.g. an instruction the user must read/copy) stay until the ×
+  // is clicked; the rest auto-dismiss after 6s.
+  if (!persist) setTimeout(function() { _dismissToast(toast); }, 6000);
 }
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
@@ -89,7 +91,7 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error');
+    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;

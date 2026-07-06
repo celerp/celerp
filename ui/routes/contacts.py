@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
 from datetime import date, datetime, timezone as _tz
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -13,6 +14,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
@@ -96,7 +98,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
                 Button(
                     "×",
                     hx_post=f"/contacts/{contact_id}/tags/remove",
-                    hx_vals=f'{{"tag": "{tag}"}}',
+                    hx_vals=hx_vals({"tag": tag}),
                     hx_target="#contact-tags",
                     hx_swap="outerHTML",
                     cls="tag-remove",
@@ -801,11 +803,11 @@ def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, 
     fetch('/crm/contacts/bulk/delete', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: ['{cid}']}})
+      body: JSON.stringify({{contact_ids: [{_json.dumps(cid)}]}})
     }}).then(function(r){{ return r.json(); }}).then(function(d){{
       if (d.deleted !== undefined) {{
         sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = '{back_href}';
+        window.location.href = {_json.dumps(back_href)};
       }} else {{
         alert(d.detail || 'Delete failed.');
       }}
@@ -1474,7 +1476,7 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm",
-                           onclick=f"htmx.ajax('GET','/contacts/{contact_id}/addresses/section','#addresses-section',{{swap:'outerHTML'}})"),
+                           onclick=f"htmx.ajax('GET',{_json.dumps(f'/contacts/{contact_id}/addresses/section')},'#addresses-section',{{swap:'outerHTML'}})"),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/addresses/{address_id}",

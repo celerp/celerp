@@ -170,8 +170,16 @@ class GatewayClient:
         # message, so the default 1 MiB frame cap silently broke bulk uploads (a ZIP
         # body > ~750 KB overflowed the frame → connection drop → relay 504). 160 MiB
         # covers a ~100 MB body (≈134 MB base64) with margin.
+        # Pin the gateway WS to HTTP/1.1 (never offer h2 in the TLS ALPN) so the relay
+        # host can be re-fronted by an edge/CDN without a new build ever negotiating h2.
+        # Only for wss:// - a plaintext ws:// (local/dev) takes no TLS context.
+        _ssl_ctx = None
+        if self._url.startswith("wss://"):
+            import ssl as _ssl
+            _ssl_ctx = _ssl.create_default_context()
+            _ssl_ctx.set_alpn_protocols(["http/1.1"])
         async with websockets.connect(
-            self._url, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
+            self._url, ssl=_ssl_ctx, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
         ) as ws:
             self._ws = ws
             # Read current TOS version from config
@@ -387,6 +395,26 @@ class GatewayClient:
                     "status": 200,
                     "headers": [["content-type", "text/event-stream"], ["cache-control", "no-cache"]],
                     "body_b64": base64.b64encode(b"data: {}\n\n").decode(),
+                },
+            })
+            return
+
+        # Never proxy a remote request to destructive local-only operations. Remote access
+        # serves the normal authenticated UI, but a wipe must require genuine local origin so
+        # a compromised broker (even replaying a captured session) cannot trigger it. Account
+        # setup is intentionally NOT blocked here - a headless cloud instance is provisioned
+        # through this same proxy, so blocking it would break cloud onboarding.
+        _local_only_paths = ("/settings/factory-reset",)
+        if any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in _local_only_paths):
+            await self._send(self._ws, {
+                "type": "http.response",
+                "payload": {
+                    "id": request_id,
+                    "status": 403,
+                    "headers": [["content-type", "application/json"]],
+                    "body_b64": base64.b64encode(
+                        b'{"detail":"This action must be performed on the local machine."}'
+                    ).decode(),
                 },
             })
             return

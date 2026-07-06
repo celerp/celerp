@@ -130,6 +130,52 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
     assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})).status_code == 404
 
 
+# --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
+
+@pytest.mark.asyncio
+async def test_audit_duplicate_sku_distinct_lots_survive_and_scan_binds_lot(client):
+    """The single biggest audit-side footgun of non-unique SKU: two same-sku,
+    distinct-item lots must stay TWO audit lines keyed on item_id (never merged by
+    sku). A scanned barcode checks off exactly its lot; the shared sku is ambiguous
+    (409), never a silent check-off; and Adjust emits two independent quantity
+    changes (no double-count, no loss)."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "SH", loc=loc, qty=5, cost_total=50, barcode="3501")
+    b = await _item(client, t, "SH", loc=loc, qty=7, cost_total=70, barcode="3502")
+    audit = (await _audit(client, t, loc))["id"]
+
+    # Draft manifest: two distinct lines, same sku, keyed on item_id.
+    lines = (await _state(client, t, audit))["line_items"]
+    assert len([l for l in lines if l["sku"] == "SH"]) == 2
+    assert {l["item_id"] for l in lines} == {a, b}
+
+    await _finalize(client, t, audit)
+    fin_lines = (await _state(client, t, audit))["line_items"]
+    # STILL two lines after finalize (dedup keys on item_id, not sku).
+    assert {l["item_id"] for l in fin_lines} == {a, b}
+    on_hand = {l["item_id"]: l["on_hand"] for l in fin_lines}
+    assert on_hand[a] == 5.0 and on_hand[b] == 7.0  # each froze its own on-hand
+
+    # Scan lot B's barcode -> only B checked off, A untouched.
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "3502"})).status_code == 200
+    audited = {l["item_id"]: l.get("audited_at") for l in (await _state(client, t, audit))["line_items"]}
+    assert audited[b] is not None and audited[a] is None
+
+    # Scanning/typing the shared SKU is ambiguous -> 409, never a silent check-off.
+    rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "SH"})
+    assert rej.status_code == 409 and "sku" in rej.json()["detail"].lower()
+
+    # Count each lot independently, then Adjust: two independent quantity changes.
+    assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 4})).status_code == 200
+    assert (await client.patch(f"/lists/{audit}/line/{b}", headers=_h(t), json={"counted_qty": 9})).status_code == 200
+    r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
+    assert r.status_code == 200, r.text
+    assert r.json()["adjusted"] == 2  # both lots adjusted, neither dropped nor merged
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["quantity"] == 4
+    assert (await client.get(f"/items/{b}", headers=_h(t))).json()["quantity"] == 9
+
+
 # --- count -> adjust (vs LIVE qty) -> undo + JE ----------------------------
 
 @pytest.mark.asyncio

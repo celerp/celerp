@@ -94,6 +94,40 @@ const LOG_DIR = path.join(DATA_DIR, "logs");
 const MODULE_DIR = path.join(DATA_DIR, "modules");
 const CONFIG_PATH = path.join(DATA_DIR, "celerp-config.json");
 const PYTHON_CONFIG_PATH = path.join(DATA_DIR, "config.toml");
+const PG_PASSWORD_PATH = path.join(DATA_DIR, "pg-password");
+
+/** Read the persisted per-install bundled-Postgres password, or null if absent. */
+function _readStoredDbPassword() {
+  try {
+    const pw = fs.readFileSync(PG_PASSWORD_PATH, "utf8").trim();
+    return pw || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Effective password for the bundled Postgres cluster (loopback-only).
+ * - Stored per-install secret if present (new installs).
+ * - First boot with no cluster yet (no PG_VERSION): mint + persist a random
+ *   password BEFORE initdb sets it. Called first while building the DATABASE_URL,
+ *   so the URL, EmbeddedPostgres config, and initdb all agree.
+ * - Existing clusters initialised before per-install passwords (PG_VERSION present,
+ *   no stored file): keep the legacy "celerp" and are never migrated (zero risk;
+ *   loopback-only either way).
+ */
+function getBundledDbPassword() {
+  const stored = _readStoredDbPassword();
+  if (stored) return stored;
+  const firstBoot = !fs.existsSync(path.join(PG_DATA_DIR, "PG_VERSION"));
+  if (firstBoot) {
+    const pw = require("crypto").randomBytes(24).toString("hex");
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(PG_PASSWORD_PATH, pw, { mode: 0o600 });
+    return pw;
+  }
+  return "celerp";
+}
 
 // Default modules shipped with the binary (in app resources/default_modules/).
 // Seeded into MODULE_DIR on first boot and refreshed from the bundle on upgrade.
@@ -208,7 +242,7 @@ function pythonBin() {
 // Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
 // (same args/auth so the cluster is identical and .start() can connect), but with
 // stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
-async function initialisePostgresWindows() {
+async function initialisePostgresWindows(password) {
   const logPath = path.join(LOG_DIR, "initdb-win.log");
   const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
   // The platform package's "exports" blocks require.resolve of its package.json, so
@@ -218,7 +252,7 @@ async function initialisePostgresWindows() {
     "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
   const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
-  fs.writeFileSync(pwfile, "celerp\n");
+  fs.writeFileSync(pwfile, `${password}\n`);
   const out = fs.openSync(logPath, "a");
   try {
     await new Promise((resolve, reject) => {
@@ -250,10 +284,11 @@ async function startPostgres(dbPort) {
     EmbeddedPostgres = (await import("embedded-postgres")).default;
   }
 
+  const dbPassword = getBundledDbPassword();
   pgInstance = new EmbeddedPostgres({
     databaseDir: PG_DATA_DIR,
     user: "celerp",
-    password: "celerp",
+    password: dbPassword,
     port: dbPort,
     persistent: true,  // data survives across app restarts
   });
@@ -269,7 +304,7 @@ async function startPostgres(dbPort) {
     // initialise() leaves initdb's stderr unread, which deadlocks initdb on
     // Windows (tiny pipe buffer). Both paths run only when PG_VERSION is absent.
     await (process.platform === "win32"
-      ? initialisePostgresWindows()
+      ? initialisePostgresWindows(dbPassword)
       : pgInstance.initialise());
   }
   await pgInstance.start();
@@ -588,7 +623,7 @@ function resolveDatabaseConfig(dbPort, cfg) {
     return { url: cfg.external_db_url, useBundledPg: false, gracePeriod: inGrace && !flags.external_db };
   }
   return {
-    url: `postgresql+asyncpg://celerp:celerp@localhost:${dbPort}/celerp`,
+    url: `postgresql+asyncpg://celerp:${getBundledDbPassword()}@localhost:${dbPort}/celerp`,
     useBundledPg: true,
     gracePeriod: false,
   };
@@ -884,6 +919,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,   // preload only uses contextBridge/ipcRenderer, so this is safe
     },
     show: false,
   });
@@ -910,13 +946,21 @@ function createWindow() {
     `).catch(() => {}); // ignore if page is being navigated away
   });
 
-  // Open external links in the default browser, not in the app
+  // Open external links in the default browser, not in the app. Validate the scheme
+  // first so a hostile link can never hand file:/javascript: to the OS via openExternal.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(`http://127.0.0.1:${uiPort}`)) {
-      shell.openExternal(url);
-      return { action: "deny" };
-    }
-    return { action: "allow" };
+    if (url.startsWith(`http://127.0.0.1:${uiPort}`)) return { action: "allow" };
+    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  // The app frame only ever loads the local UI (or the bundled loading file). Any
+  // attempt to navigate the top frame elsewhere is blocked; real external links go
+  // out to the OS browser (validated scheme), never inside the app.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith(`http://127.0.0.1:${uiPort}`) || url.startsWith("file://")) return;
+    event.preventDefault();
+    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
   });
 
   // On macOS, hide the window instead of destroying it when the user clicks
