@@ -11451,8 +11451,8 @@ class TestBugFixesBatch25Mar:
         assert "barcode" in src[src.index("doc_catalog_lookup"):src.index("doc_catalog_lookup") + 1500]
 
     @pytest.mark.asyncio
-    async def test_split_auto_generates_sku(self, ui_client):
-        """Bulk split auto-generates .N suffix SKU."""
+    async def test_split_keeps_parent_sku(self, ui_client):
+        """A bulk-split child keeps the parent SKU — no .N suffix (same product, distinct lot)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11463,11 +11463,13 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.1" in r.content
+        assert b"DEMO-001" in r.content
+        assert b"DEMO-001.1" not in r.content
 
     @pytest.mark.asyncio
-    async def test_split_auto_generates_incremented_sku(self, ui_client):
-        """If .1 exists, next split gets .2."""
+    async def test_split_keeps_parent_sku_even_with_suffixed_sibling(self, ui_client):
+        """Even when a DEMO-001.1 sibling already exists, the split child still keeps the
+        parent SKU — no suffix, no incrementing (the old auto-.N behavior is gone)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001", "quantity": 10})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [{"sku": "DEMO-001.1"}], "total": 1})),
@@ -11478,11 +11480,12 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.2" in r.content
+        assert b"DEMO-001" in r.content
+        assert b"DEMO-001.2" not in r.content
 
     @pytest.mark.asyncio
-    async def test_split_child_of_child(self, ui_client):
-        """Splitting DEMO-001.1 generates DEMO-001.1.1."""
+    async def test_split_child_of_child_keeps_sku(self, ui_client):
+        """Splitting a child (SKU DEMO-001.1) keeps that SKU — no further .N (DEMO-001.1.1)."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "DEMO-001.1", "quantity": 5})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11493,7 +11496,8 @@ class TestBugFixesBatch25Mar:
                 "split_qty": "2",
             }, cookies=_authed())
         assert r.status_code == 200
-        assert b"DEMO-001.1.1" in r.content
+        assert b"DEMO-001.1" in r.content
+        assert b"DEMO-001.1.1" not in r.content
 
 
 # ---------------------------------------------------------------------------
@@ -11611,8 +11615,8 @@ class TestBugFixesBatch25Mar6Bugs:
         children = captured[0]["children"]
         assert len(children) == 1
         assert children[0]["quantity"] == 3.0
-        # Child SKU must not be the original parent SKU
-        assert children[0]["sku"] != "RING-001"
+        # A split child keeps the parent SKU: the UI sends no 'sku' (split_item defaults it).
+        assert "sku" not in children[0]
 
 
 class TestBuildWorkflowVersioning:
