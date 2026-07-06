@@ -60,6 +60,25 @@ def _read_pieces(state: dict) -> float | None:
     return float(raw) if raw not in (None, "") else None
 
 
+def _has_attr(state: dict, key: str) -> bool:
+    """True if `key` is present as an attribute in EITHER storage location (top-level or attributes).
+
+    Category attributes can live top-level (a field edit / POST /items keeps them there — only
+    `pieces`/cost are normalized into `attributes`) or nested under `attributes` (create payload /
+    import). Consumers must treat both as the same attribute."""
+    return key in state or key in (state.get("attributes") or {})
+
+
+def _read_attr(state: dict, key: str):
+    """Read an attribute from top-level OR attributes (single source of truth for reads).
+
+    Top-level wins when present (that is where a field edit stores it); otherwise fall back to the
+    nested `attributes` dict."""
+    if key in state:
+        return state[key]
+    return (state.get("attributes") or {}).get(key)
+
+
 def _num_pieces(raw) -> Decimal | None:
     """Coerce a stored `pieces` value (int / float / numeric str) to a Decimal.
 
@@ -2093,11 +2112,24 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # system value. Keying off the value shape (as before) misclassified custom attributes whose
     # values merely look numeric (free fields, or selects with numeric options) and silently dropped
     # them instead of showing "Mixed".
-    from celerp.services.field_schema import get_effective_field_schema, MIXED_VALUE
+    from celerp.services.field_schema import get_effective_field_schema, MIXED_VALUE, _BASE_FIELDS
     _merge_category = (next(iter(categories), "") or "").strip() or None
     _schema = await get_effective_field_schema(session, company_id, category=_merge_category)
     _dropdown_keys = {f["key"] for f in _schema if f.get("type") in ("select", "status")}
     _numeric_keys = {f["key"] for f in _schema if f.get("type") in ("number", "money", "rate")}
+    # A schema-defined category attribute (e.g. `type`, `grade`, `color`) may be stored TOP-LEVEL
+    # rather than under `attributes` — a field edit / POST /items keeps it there (only `pieces`/cost
+    # are normalized). The attributes-only scan above misses those keys, so the value is silently
+    # DROPPED on merge (no `Mixed` on conflict, and the shared value lost when sources agree). Add
+    # every schema attribute key so each is resolved below via a top-level-OR-`attributes` read.
+    # Base/core fields (quantity, weight, status, …) and price columns are handled separately and
+    # must NOT be treated as attributes.
+    _base_field_keys = frozenset(f["key"] for f in _BASE_FIELDS)
+    _schema_attr_keys = {
+        f["key"] for f in _schema
+        if f["key"] not in _base_field_keys and not f["key"].endswith("_price")
+    }
+    all_attr_keys |= (_schema_attr_keys - _EXPIRY_ATTR_KEYS)
 
     resolved_attrs: dict = {}
     for key in all_attr_keys:
@@ -2113,8 +2145,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 resolved_attrs["pieces"] = int(total) if total == total.to_integral_value() else float(total)
             # else: at least one source lacks pieces → omit the key (no value)
             continue
-        # Collect raw attribute values (preserve original type for numeric fields)
-        raw_values = [(p.state.get("attributes") or {}).get(key) for p in source_projections if key in (p.state.get("attributes") or {})]
+        # Collect raw attribute values (preserve original type for numeric fields). Read from
+        # top-level OR `attributes` so a field-edited value (top-level) is seen just like a nested
+        # one — this is what makes conflicts resolve to "Mixed" and agreements keep their value.
+        raw_values = [_read_attr(p.state, key) for p in source_projections if _has_attr(p.state, key)]
+        if not raw_values:
+            continue  # no source carries this attribute in either location → nothing to resolve
         str_values = [str(v) for v in raw_values]
         unique_str_vals = set(str_values)
         if len(unique_str_vals) == 1:
