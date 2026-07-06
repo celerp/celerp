@@ -14312,3 +14312,29 @@ async def test_forgot_password_with_email_redirects_to_form(ui_client):
         r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert r.headers.get("HX-Redirect") == "/forgot-password"
+
+
+@pytest.mark.asyncio
+async def test_split_inline_omits_child_sku(ui_client):
+    """The detail-page split (split-inline) sends children with NO sku, so the backend keeps
+    the parent SKU. Guards the UI writer against re-introducing the '.1' suffix (the bug)."""
+    captured = {}
+
+    async def _capture_split(token, eid, payload):
+        captured["payload"] = payload
+        return {"children": []}
+
+    with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                   "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "piece"})), \
+         patch("ui.api_client.split_item", new=_capture_split):
+        r = await ui_client.post(
+            "/api/items/item:p/split-inline",
+            cookies=_authed(),
+            data={"split_qty": ["3", "2"]},
+        )
+
+    assert r.status_code in (200, 204), r.text
+    assert captured.get("payload"), "split_item was not called"
+    children = captured["payload"]["children"]
+    assert len(children) == 2
+    assert all("sku" not in c for c in children)   # no SKU sent -> backend keeps the parent's

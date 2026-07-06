@@ -2771,14 +2771,14 @@ function celerpPrintLabel(entityId, templateId) {
         redirect_qs = f"?q={target_sku}" if target_sku else ""
         return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
 
-    # ── Bulk split (simplified single-qty) ───────────────────────────────
-
-    async def _next_split_sku(token: str, parent_sku: str, exclude: set[str] | None = None) -> str:
-        """Find next available child SKU suffix for splitting.
+    async def _next_transform_sku(token: str, parent_sku: str) -> str:
+        """Suggest a fresh child SKU for a TRANSFORM (a new, distinct product derived from
+        the parent) as the next available ``{parent_sku}.N``. User-editable in the form.
 
         DEMO-RGH-001 -> DEMO-RGH-001.1, DEMO-RGH-001.2, ...
         DEMO-RGH-001.1 -> DEMO-RGH-001.1.1, DEMO-RGH-001.1.2, ...
-        exclude: set of SKUs already allocated in this batch (not yet committed to DB).
+
+        (Splitting does NOT use this — a split child keeps the parent SKU; see split_item.)
         """
         prefix = f"{parent_sku}."
         try:
@@ -2796,16 +2796,6 @@ function celerpPrintLabel(entityId, templateId) {
                         taken.add(int(suffix_part))
                     except ValueError:
                         pass
-        # Also exclude in-batch allocations
-        if exclude:
-            for s in exclude:
-                if s.startswith(prefix):
-                    suffix_part = s[len(prefix):]
-                    if "." not in suffix_part:
-                        try:
-                            taken.add(int(suffix_part))
-                        except ValueError:
-                            pass
         n = 1
         while n in taken:
             n += 1
@@ -3045,9 +3035,10 @@ function celerpPrintLabel(entityId, templateId) {
 
         orig_sku = str(item.get("sku", "") or "")
 
-        # Child SKU: from preview form or auto-generate
+        # Child SKU: honour an explicit override from the preview form; otherwise omit it
+        # so split_item keeps the parent SKU (a split child is the same product).
         child_sku_input = str(form.get("child_sku", "")).strip()
-        child_sku = child_sku_input if child_sku_input else await _next_split_sku(token, orig_sku)
+        child_sku = child_sku_input or orig_sku   # display value for the message / filter below
 
         # Optional weight/pieces overrides from preview form
         def _opt_float(key: str) -> float | None:
@@ -3071,7 +3062,9 @@ function celerpPrintLabel(entityId, templateId) {
             if parent_pieces_val is not None and child_pieces >= parent_pieces_val:
                 return Div(P(f"Child pieces ({int(child_pieces)}) must be less than parent pieces ({int(parent_pieces_val)}).", cls="flash flash--warning"), id="bulk-action-result")
 
-        child: dict = {"sku": child_sku, "quantity": split_qty}
+        child: dict = {"quantity": split_qty}
+        if child_sku_input:
+            child["sku"] = child_sku_input
         if child_weight is not None:
             child["weight"] = child_weight
         if child_pieces is not None:
@@ -3131,7 +3124,7 @@ function celerpPrintLabel(entityId, templateId) {
 
         categories = await api.list_item_categories(token)
 
-        child_sku = await _next_split_sku(token, item.get("sku", ""))
+        child_sku = await _next_transform_sku(token, item.get("sku", ""))
 
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
 
@@ -3676,7 +3669,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return Div(Span(t("inv.invalid_json_body"), cls="flash flash--error"), id="item-action-error")
         else:
             form = await request.form()
-            # Simple format: comma-separated quantities (auto-generate SKUs)
+            # Simple format: comma-separated quantities (children keep the parent SKU)
             parts_raw = str(form.get("parts", "")).strip()
             if parts_raw:
                 try:
@@ -3685,25 +3678,10 @@ function celerpPrintLabel(entityId, templateId) {
                     return Div(Span(t("inv.invalid_quantities_use_commaseparated_numbers"), cls="flash flash--error"), id="item-action-error")
                 if len(quantities) < 1:
                     return Div(Span(t("inv.enter_at_least_one_split_quantity"), cls="flash flash--error"), id="item-action-error")
-                # All quantities become new child items; the parent's quantity is reduced by the total.
-                # Find current max suffix for auto-generating SKUs
-                prefix = f"{orig_sku}."
-                try:
-                    resp = await api.list_items(token, {"q": orig_sku, "limit": 200, "status": "all"})
-                    existing_items = resp.get("items", []) if isinstance(resp, dict) else resp
-                except Exception:
-                    existing_items = []
-                max_suffix = 0
-                for it in existing_items:
-                    sku = str(it.get("sku", ""))
-                    if sku.startswith(prefix) and "." not in sku[len(prefix):]:
-                        try:
-                            max_suffix = max(max_suffix, int(sku[len(prefix):]))
-                        except ValueError:
-                            pass
-                children = []
-                for i, qty in enumerate(quantities, start=1):
-                    children.append({"sku": f"{prefix}{max_suffix + i}", "quantity": qty})
+                # All quantities become new child items; the parent's quantity is reduced by
+                # the total. Split children keep the parent SKU (same product), so send only
+                # the qty and let split_item default the SKU.
+                children = [{"quantity": qty} for qty in quantities]
             else:
                 return Div(Span(t("inv.enter_commaseparated_quantities_eg_321"), cls="flash flash--error"), id="item-action-error")
         if len(children) < 1:
@@ -3717,7 +3695,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/split-inline")
     async def item_split_inline(request: Request, entity_id: str):
-        """Detail page split: one or more children, auto-SKU, redirect to exact filtered inventory."""
+        """Detail page split: one or more children (each keeps the parent SKU), redirect to exact filtered inventory."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3745,13 +3723,11 @@ function celerpPrintLabel(entityId, templateId) {
         # Optional complement fields (one value per row; may be empty)
         comp_weights  = form.getlist("split_weight")
         comp_pieces_l = form.getlist("split_pieces")
-        # Auto-generate sequential SKUs for each child
+        # Split children keep the parent SKU (same product; a distinct lot by barcode /
+        # entity_id) — omit the SKU and let split_item resolve it to the parent's.
         children: list[dict] = []
-        used_skus: set[str] = set()
         for idx, qty in enumerate(children_qtys):
-            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
-            used_skus.add(child_sku)
-            child: dict = {"sku": child_sku, "quantity": qty}
+            child: dict = {"quantity": qty}
             # Attach complement if provided for this row
             if is_pieces_unit(sell_by, _default_umap) and idx < len(comp_weights):
                 raw_w = (comp_weights[idx] or "").strip()
@@ -3772,8 +3748,7 @@ function celerpPrintLabel(entityId, templateId) {
             await api.split_item(token, entity_id, {"children": children})
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
-        child_skus = [c["sku"] for c in children]
-        return _split_redirect(orig_sku, child_skus)
+        return _split_redirect(orig_sku, [])   # children share the parent SKU
 
     def _split_redirect(orig_sku: str, child_skus: list[str]) -> Response:
         """Build the HX-Redirect response after a successful split."""
@@ -3795,7 +3770,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/batch-split")
     async def item_batch_split(request: Request, entity_id: str):
-        """Batch split: N identical children of the same qty, auto-SKU, redirect to filtered inventory."""
+        """Batch split: N identical children of the same qty (each keeps the parent SKU), redirect to filtered inventory."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3833,15 +3808,12 @@ function celerpPrintLabel(entityId, templateId) {
                 complement = float(raw_comp)
             except (ValueError, TypeError):
                 pass
-        used_skus: set[str] = set()
         children: list[dict] = []
         sell_by = item.get("sell_by") or "piece"
         from celerp.services.units import DEFAULT_UNITS
         _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
         for _ in range(batch_count):
-            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
-            used_skus.add(child_sku)
-            child: dict = {"sku": child_sku, "quantity": batch_qty}
+            child: dict = {"quantity": batch_qty}   # keeps the parent SKU (split_item default)
             if complement is not None:
                 _apply_complement(child, sell_by, complement, _default_umap)
             children.append(child)
@@ -3849,7 +3821,7 @@ function celerpPrintLabel(entityId, templateId) {
             await api.split_item(token, entity_id, {"children": children})
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
-        return _split_redirect(orig_sku, [c["sku"] for c in children])
+        return _split_redirect(orig_sku, [])   # children share the parent SKU
 
     @app.post("/api/items/merge")
     async def item_merge(request: Request):

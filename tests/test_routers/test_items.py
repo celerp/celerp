@@ -500,6 +500,49 @@ async def test_split_qty_exceeds_parent_rejected(client):
 
 
 @pytest.mark.asyncio
+async def test_split_child_omitted_sku_keeps_parent_sku(client):
+    """A split child that sends NO sku keeps the parent SKU — same product, distinct lot by
+    barcode/entity_id, no '.1' suffix. This is the single source of truth: the inventory UI
+    now omits the child SKU and split_item defaults it to the parent's (mirroring the
+    fulfillment path, test_fulfillment: "child keeps the parent SKU (no '.1')")."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "1000", "name": "Parcel", "quantity": 10,
+                                          "sell_by": "piece", "category": "gem"}, headers=h)
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"quantity": 3}, {"quantity": 2}],   # no sku → keeps parent SKU
+    }, headers=h)
+    assert r.status_code == 200
+    children = r.json()["children"]
+    assert len(children) == 2
+    for c in children:
+        cr = await client.get(f"/items/{c['id']}", headers=h)
+        assert cr.status_code == 200
+        assert cr.json()["sku"] == "1000"   # parent SKU verbatim — no ".1"
+
+
+@pytest.mark.asyncio
+async def test_split_child_explicit_sku_is_honored(client):
+    """An explicit child-SKU override is still honored (SKUs may repeat across lots, so a
+    caller may name the child differently)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "2000", "name": "Parcel", "quantity": 10,
+                                          "sell_by": "piece", "category": "gem"}, headers=h)
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "CUSTOM-CHILD", "quantity": 3}],
+    }, headers=h)
+    assert r.status_code == 200
+    cid = r.json()["children"][0]["id"]
+    cr = await client.get(f"/items/{cid}", headers=h)
+    assert cr.json()["sku"] == "CUSTOM-CHILD"
+
+
+@pytest.mark.asyncio
 async def test_split_child_sku_may_reuse_existing(client):
     """A split child reusing another item's SKU now SUCCEEDS (sku may repeat across
     lots); each child still gets its own unique barcode from the sequence."""

@@ -223,7 +223,7 @@ class TransferBody(BaseModel):
 
 
 class SplitChild(BaseModel):
-    sku: str
+    sku: str | None = None    # omitted → keeps the parent SKU (resolved in split_item)
     quantity: float
     weight: float | None = None
     pieces: int | None = None   # complement for weight-unit items (independent of weight)
@@ -1408,12 +1408,13 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
             )
 
-    # Split children are the same product as the parent: by default they KEEP the parent
-    # SKU (split-preview pre-fills it) and are distinguished by their own unique barcode /
-    # entity_id. SKUs repeat across lots, so children may share the parent's SKU and each
-    # other's - no uniqueness or parent-difference guard applies.
-    child_skus = [c.sku for c in children]
+    # A split child is the SAME product as its parent, so it keeps the parent SKU unless
+    # the caller explicitly names a different one — this is the single source of truth for
+    # that rule (split_preview only *suggests* it; the UI sends no SKU). Lots are told apart
+    # by their own unique barcode / entity_id; SKUs repeat across lots, so children may
+    # share the parent's SKU and each other's — no uniqueness or parent-difference guard.
     parent_sku = parent.state.get("sku")
+    child_skus = [c.sku or parent_sku for c in children]
 
     # Create child items
     child_eids: list[str] = []
@@ -1449,8 +1450,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
         }
         child_data.update({
-            "sku": child.sku,
-            "name": parent.state.get("name", child.sku),
+            "sku": child_skus[i],
+            "name": parent.state.get("name", child_skus[i]),
             "quantity": child.quantity,
             "status": "available",
             "attributes": {**parent_attrs, **child.attributes},
@@ -1672,8 +1673,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                           child_pieces: int | None = None) -> tuple[str, str]:
     """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
 
-    The child (SKU ``{parent_sku}.N``) is the split-off portion; the mother keeps
-    the remainder under its original SKU. Cost splits proportionally by quantity.
+    The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
+    and is the split-off portion; the mother keeps the remainder. Cost splits
+    proportionally by quantity.
     Weight and pieces come ONLY from the explicit args — no proportional fallback,
     no auto-derivation; the mother keeps ``parent - child`` for each.
 
