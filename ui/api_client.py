@@ -182,12 +182,23 @@ async def change_password(token: str, current_password: str, new_password: str) 
         return r.json()["detail"]
 
 
-async def register(company_name: str, email: str, name: str, password: str) -> tuple[str, str]:
+async def setup_code_required() -> bool:
+    """True if this (headless) install requires a setup code to create the first admin."""
+    async with _anon_api_client(timeout=5.0) as c:
+        r = await c.get("/auth/bootstrap-status")
+        if r.is_error:
+            return False
+        return r.json().get("setup_code_required", False)
+
+
+async def register(company_name: str, email: str, name: str, password: str,
+                   setup_code: str | None = None) -> tuple[str, str]:
     """Returns (access_token, refresh_token)."""
+    payload = {"company_name": company_name, "email": email, "name": name, "password": password}
+    if setup_code:
+        payload["setup_code"] = setup_code
     async with _anon_api_client() as c:
-        r = _raise(await c.post("/auth/register", json={
-            "company_name": company_name, "email": email, "name": name, "password": password,
-        }))
+        r = _raise(await c.post("/auth/register", json=payload))
         data = r.json()
         return data["access_token"], data["refresh_token"]
 
