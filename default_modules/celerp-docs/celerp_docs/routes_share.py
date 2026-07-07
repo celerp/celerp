@@ -286,7 +286,10 @@ async def create_share_link(
 
     token = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
-    return {"token": token, "url": _share_url(token)}
+    # `url` is the accept/import router (kept for compatibility); `view_url` is the
+    # direct branded read-only view — the link to hand a customer (same as the send
+    # email uses). Falls back to the accept URL when not cloud-connected.
+    return {"token": token, "url": _share_url(token), "view_url": public_view_url(token)}
 
 
 @router.delete("/docs/{entity_id}/share")

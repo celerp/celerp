@@ -3368,6 +3368,7 @@ celerpUpdateBulkAlloc();
     def _share_modal_body(entity_id: str, share_url: str) -> FT:
         body_id = f"share-body-{entity_id.replace(':', '-')}"
         return Div(
+            P(t("doc.share_hint"), cls="form-hint"),
             Input(type="text", value=share_url, readonly=True, onclick="this.select()",
                   cls="form-input", id=f"share-url-{entity_id.replace(':', '-')}"),
             Div(
@@ -3375,9 +3376,18 @@ celerpUpdateBulkAlloc();
                        cls="btn btn--secondary btn--sm"),
                 A(t("doc.open"), href=share_url, target="_blank", cls="btn btn--secondary btn--sm"),
                 Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
-                       hx_target=f"#{body_id}", hx_swap="innerHTML", cls="btn btn--ghost btn--sm"),
+                       hx_target=f"#{body_id}", hx_swap="innerHTML",
+                       hx_confirm=t("doc.share_revoke_confirm"), cls="btn btn--ghost btn--sm"),
                 cls="modal-dialog__actions",
             ),
+        )
+
+    def _share_revoked_body(entity_id: str) -> FT:
+        body_id = f"share-body-{entity_id.replace(':', '-')}"
+        return Div(
+            P(t("doc.share_revoked"), cls="form-hint"),
+            Button(t("doc.create_share_link"), type="button", hx_post=f"/docs/{entity_id}/share",
+                   hx_target=f"#{body_id}", hx_swap="innerHTML", cls="btn btn--secondary btn--sm"),
         )
 
     @app.post("/docs/{entity_id}/share")
@@ -3388,7 +3398,8 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             result = await api.create_share_link(token, entity_id)
-            share_url = result.get("url") or result.get("token", "")
+            # The direct branded view is the link to hand a customer (same as the send email).
+            share_url = result.get("view_url") or result.get("url") or result.get("token", "")
             return _share_modal_body(entity_id, share_url)
         except APIError as e:
             return _action_error(str(e.detail))
@@ -3401,7 +3412,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             await api.revoke_share_link(token, entity_id)
-            return P(t("doc.share_revoked"), cls="form-hint")
+            return _share_revoked_body(entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
 
@@ -5592,7 +5603,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        hx_post=f"/docs/{entity_id}/share",
                        hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
                        hx_on__after_request=f"if(event.detail.successful)document.getElementById('{_share_modal_id}').showModal()",
-                       cls="btn btn--secondary", title=t("btn.share")),
+                       cls="btn btn--secondary"),
             )
             action_btns_left.append(
                 Dialog(

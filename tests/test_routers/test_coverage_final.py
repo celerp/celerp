@@ -343,7 +343,9 @@ async def test_share_import_doc_http_404(client):
     mock_response.status_code = 404
     exc = httpx.HTTPStatusError("not found", request=MagicMock(), response=mock_response)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -366,7 +368,9 @@ async def test_share_import_doc_http_502(client):
     mock_response.status_code = 503
     exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=mock_response)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -384,7 +388,9 @@ async def test_share_import_doc_network_error(client):
     """GET /docs/import when network fails → 502 (lines 209-210)."""
     tok = await _reg(client)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
