@@ -187,3 +187,83 @@ async def test_alert_disabled_setting_is_noop(session):
     await ProjectionEngine.rebuild(session)
     assert await run_reorder_scan(session, co) is None
     assert await _notif_count(session, co.id) == 0
+
+
+# ── Proactive alerts: expiring, overdue, combined digest ──────────────────────
+
+async def _emit_doc(session, cid, eid, event_type, data):
+    await emit_event(
+        session, company_id=cid, entity_id=eid, entity_type="doc",
+        event_type=event_type, data=data, actor_id=None, location_id=None,
+        source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_expiring_alert_and_rearm(session):
+    from datetime import date, timedelta
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "ExpCo")
+    soon = (date.today() + timedelta(days=10)).isoformat()
+    await _emit(session, co.id, "item:e", "item.created", {"sku": "E", "name": "Milk", "quantity": 5, "expires_at": soon})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None and "Expiring soon" in n.body and "Milk" in n.body
+    assert await run_all_alerts(session, co) is None  # idempotent
+
+    await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 0})
+    await ProjectionEngine.rebuild(session)
+    assert await run_all_alerts(session, co) is None
+    assert co.settings.get("expiring_alerted_ids") == []  # re-armed
+
+    await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 5})
+    await ProjectionEngine.rebuild(session)
+    assert await run_all_alerts(session, co) is not None
+
+
+@pytest.mark.asyncio
+async def test_overdue_invoice_alert(session):
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "OvdCo")
+    await _emit_doc(session, co.id, "doc:i1", "doc.created", {
+        "doc_type": "invoice", "ref_id": "INV-1", "total": 100.0,
+        "due_date": "2020-01-01", "status": "awaiting_payment"})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None and "Overdue invoices" in n.body and "INV-1" in n.body
+    assert await run_all_alerts(session, co) is None  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_combined_digest_is_one_notification(session):
+    from datetime import date, timedelta
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "AllCo")
+    await _emit(session, co.id, "item:lo", "item.created", {"sku": "L", "name": "Low", "quantity": 2, "reorder_point": 5})
+    soon = (date.today() + timedelta(days=5)).isoformat()
+    await _emit(session, co.id, "item:ex", "item.created", {"sku": "X", "name": "Exp", "quantity": 9, "expires_at": soon})
+    await _emit_doc(session, co.id, "doc:i", "doc.created", {
+        "doc_type": "invoice", "ref_id": "INV-9", "total": 50.0,
+        "due_date": "2020-01-01", "status": "awaiting_payment"})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None
+    assert await _notif_count(session, co.id) == 1  # ONE combined digest
+    assert "Low stock" in n.body and "Expiring soon" in n.body and "Overdue invoices" in n.body
+
+
+@pytest.mark.asyncio
+async def test_disabled_check_is_skipped(session):
+    from datetime import date, timedelta
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "DisCo")
+    co.settings = {"expiring_alerts_enabled": False}
+    session.add(co)
+    await session.flush()
+    soon = (date.today() + timedelta(days=5)).isoformat()
+    await _emit(session, co.id, "item:e", "item.created", {"sku": "E", "name": "Exp", "quantity": 5, "expires_at": soon})
+    await ProjectionEngine.rebuild(session)
+    assert await run_all_alerts(session, co) is None  # only expiring would fire; it's off
