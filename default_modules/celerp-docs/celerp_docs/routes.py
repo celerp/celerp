@@ -2673,7 +2673,8 @@ async def create_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
-    ref_id = payload.ref_id or next_doc_ref(company, "list")
+    from celerp_docs.sequences import list_sequence_key
+    ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
     entity_id = f"list:{ref_id}"
 
     # Uniqueness check

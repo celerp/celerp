@@ -72,10 +72,10 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             manager=True),),
         scan_finalized="count",
     ),
-    # "shipping": ListBehavior(label="Shipping", money=False, extra_columns=("packed",),
-    #     finalize_label="Pack", finalize_milestone="packed_at",
-    #     terminal=(TerminalAction("ship", "Ship", "shipped"),), scan_finalized="pack"),
-    #   ^ Phase 4 proof: adding shipping is this row + a print template + a ship body. Nothing else.
+    "delivery_note": ListBehavior(
+        label="Delivery Note", money=False, finalize_label="Issue",
+        finalize_milestone="issued_at", terminal=(), scan_finalized="noop",
+    ),
 }
 
 LIST_TYPES: tuple[str, ...] = tuple(LIST_BEHAVIOR.keys())

@@ -23,7 +23,18 @@ _PREFIX_BY_DOC_TYPE = {
     "subscription_po": "SUBP",
     "production_order": "PRD",
     "audit": "AUD",
+    "delivery_note": "SHIP",
 }
+
+
+# List types that get their own numbering counter; every other list shares LST.
+_LIST_PREFIX_KEYS = {"delivery_note"}
+
+
+def list_sequence_key(list_type: str | None) -> str:
+    """Numbering key for a list: delivery notes get their own SHIP counter; every
+    other list type shares the generic LST counter (unchanged)."""
+    return list_type if list_type in _LIST_PREFIX_KEYS else "list"
 
 # Default pattern for all new companies
 DEFAULT_PATTERN = "{PREFIX}-{YY}{MM}-{####}"
