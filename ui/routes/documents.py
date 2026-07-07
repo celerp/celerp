@@ -1004,7 +1004,7 @@ def _doc_print_view(doc: dict) -> FT:
             Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
             Div(Table(*totals_rows), cls="dp-totals"),
             Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
-            Div(NotStr(f'Powered by <a href="https://celerp.com" style="color:#aaa;text-decoration:none;">celerp.com</a>  ·  {doc_number}'), cls="dp-footer"),
+            Div(NotStr('Powered by <a href="https://celerp.com" style="color:#aaa;text-decoration:none;">celerp.com</a>  ·  '), doc_number, cls="dp-footer"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )
@@ -3365,6 +3365,21 @@ celerpUpdateBulkAlloc();
         except Exception:
             return JSONResponse([])
 
+    def _share_modal_body(entity_id: str, share_url: str) -> FT:
+        body_id = f"share-body-{entity_id.replace(':', '-')}"
+        return Div(
+            Input(type="text", value=share_url, readonly=True, onclick="this.select()",
+                  cls="form-input", id=f"share-url-{entity_id.replace(':', '-')}"),
+            Div(
+                Button(t("btn.copy"), type="button", data_copy_text=share_url,
+                       cls="btn btn--secondary btn--sm"),
+                A(t("doc.open"), href=share_url, target="_blank", cls="btn btn--secondary btn--sm"),
+                Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
+                       hx_target=f"#{body_id}", hx_swap="innerHTML", cls="btn btn--ghost btn--sm"),
+                cls="modal-dialog__actions",
+            ),
+        )
+
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
         token = _token(request)
@@ -3374,14 +3389,19 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_share_link(token, entity_id)
             share_url = result.get("url") or result.get("token", "")
-            return Span(
-                Input(type="text", value=share_url, readonly=True,
-                      cls="form-input form-input--inline share-url-input",
-                      onclick="this.select()"),
-                " ",
-                A(t("doc.open"), href=share_url, target="_blank", cls="btn btn--secondary btn--xs"),
-                cls="share-result",
-            )
+            return _share_modal_body(entity_id, share_url)
+        except APIError as e:
+            return _action_error(str(e.detail))
+
+    @app.delete("/docs/{entity_id}/share")
+    async def revoke_share_link_route(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _R
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.revoke_share_link(token, entity_id)
+            return P(t("doc.share_revoked"), cls="form-hint")
         except APIError as e:
             return _action_error(str(e.detail))
 
@@ -5561,6 +5581,30 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     ),
                     id=modal_id,
                     cls="modal-dialog",
+                )
+            )
+        # Share: a public read-only link to this document (relay-gated, like Send).
+        if relay_connected:
+            _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
+            _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
+            action_btns_left.append(
+                Button(t("btn.share"), type="button",
+                       hx_post=f"/docs/{entity_id}/share",
+                       hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
+                       hx_on__after_request=f"if(event.detail.successful)document.getElementById('{_share_modal_id}').showModal()",
+                       cls="btn btn--secondary", title=t("btn.share")),
+            )
+            action_btns_left.append(
+                Dialog(
+                    Div(
+                        H3(t("btn.share"), cls="modal-dialog__title"),
+                        Button("✕", type="button",
+                               onclick=f"document.getElementById('{_share_modal_id}').close()",
+                               cls="modal-dialog__close", aria_label="Close"),
+                        cls="modal-dialog__header",
+                    ),
+                    Div(id=_share_body_id, cls="modal-body"),
+                    id=_share_modal_id, cls="modal-dialog",
                 )
             )
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
