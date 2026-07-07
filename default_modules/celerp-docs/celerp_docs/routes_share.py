@@ -273,6 +273,16 @@ async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> st
     return public_view_url(token)
 
 
+async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
+    """Direct "Pay online" link for a send email, when cloud-connected and Stripe is set."""
+    from celerp.services import payments as _pay
+    if not (settings.celerp_public_url or "").strip() or not _pay.payments_enabled():
+        return None
+    token = await get_or_create_share_token(session, company_id, entity_id)
+    base = (settings.celerp_public_url or "").rstrip("/")
+    return f"{base}/pay/{token}"
+
+
 @router.post("/docs/{entity_id}/share")
 async def create_share_link(
     entity_id: str,
@@ -339,7 +349,11 @@ async def view_shared_doc(
     state = row.state
     if row.entity_type == "list":
         return HTMLResponse(_public_list_page(state, token, _share_url(token)), headers=headers)
-    return HTMLResponse(_public_doc_page(state, token, _share_url(token)), headers=headers)
+    pay_url = None
+    from celerp.services import payments as _pay
+    if _pay.payments_enabled() and state.get("doc_type") in ("invoice", "proforma"):
+        pay_url = f"/pay/{token}"
+    return HTMLResponse(_public_doc_page(state, token, _share_url(token), pay_url=pay_url), headers=headers)
 
 
 @public_router.options("/share/{token}")

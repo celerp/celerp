@@ -52,7 +52,7 @@ from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-    settings_contacts, settings_cloud, settings_connectors, notifications, events, stars,
+    settings_contacts, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse

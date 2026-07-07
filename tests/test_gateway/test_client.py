@@ -144,6 +144,22 @@ async def test_unknown_message_type_ignored(client):
     assert gw_state.get_session_token() == ""
 
 
+@pytest.mark.asyncio
+async def test_invoice_payment_dispatched_to_handler(client, monkeypatch):
+    """A Cloud invoice.payment push -> routed to the backup-confirm handler."""
+    import asyncio
+    seen = {}
+
+    async def _handler(payload):
+        seen.update(payload)
+
+    monkeypatch.setattr(client, "_handle_invoice_payment", _handler)
+    await client._dispatch({"type": "invoice.payment", "payload": {
+        "company_id": "c1", "entity_id": "doc:e1", "reference": "pi_9", "amount_minor": 500, "currency": "usd"}})
+    await asyncio.sleep(0)  # let the spawned task run
+    assert seen.get("reference") == "pi_9"
+
+
 # ── ping ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

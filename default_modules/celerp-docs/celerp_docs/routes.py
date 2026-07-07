@@ -875,10 +875,12 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     )
 
     sent_to = payload.sent_to
-    view_url = None
+    view_url = pay_url = None
     if sent_to:
-        from celerp_docs.routes_share import send_view_url
+        from celerp_docs.routes_share import send_pay_url, send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
+        if doc_type in ("invoice", "proforma"):
+            pay_url = await send_pay_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
@@ -891,12 +893,20 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
         subject = f"{doc_type} #{doc_number} from {sender_name}"
-        view_html = (
-            f"<p><a href=\"{view_url}\" style=\"display:inline-block;padding:10px 20px;"
-            f"background:#111;color:#fff;text-decoration:none;border-radius:6px;\">"
-            f"View {doc_type}</a></p>" if view_url else ""
-        )
-        view_text = f"View it online: {view_url}\n\n" if view_url else ""
+        _btn = "display:inline-block;padding:10px 20px;color:#fff;text-decoration:none;border-radius:6px;"
+        _buttons = []
+        if pay_url:
+            _buttons.append(f"<a href=\"{pay_url}\" style=\"{_btn}background:#111;margin-right:8px;\">Pay online</a>")
+        if view_url:
+            _buttons.append(f"<a href=\"{view_url}\" style=\"{_btn}background:#555;\">View {doc_type}</a>")
+        view_html = f"<p>{''.join(_buttons)}</p>" if _buttons else ""
+        view_text = ""
+        if pay_url:
+            view_text += f"Pay online: {pay_url}\n"
+        if view_url:
+            view_text += f"View it online: {view_url}\n"
+        if view_text:
+            view_text += "\n"
         body_html = (
             f"<p>Hi {contact_name},</p>"
             f"<p>Please find your <strong>{doc_type} #{doc_number}</strong> from "
@@ -1246,61 +1256,60 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     return {"deleted": entity_id}
 
 
+async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict, body: dict,
+                            *, source: str, actor_id, idempotency_key: str):
+    """Record a payment against a doc: guard, emit doc.payment.received, post the cash
+    JE, fire the payment lifecycle hook. Shared by the manual route and online payment
+    so a Stripe payment lands identically to a hand-entered one. Caller commits."""
+    if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
+    if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+    outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
+    if outstanding <= 0:
+        raise HTTPException(status_code=409, detail="Invoice already fully paid")
+    from celerp.services.money import to_decimal as _to_d
+    amount = float(body["amount"])
+    # 1-cent tolerance covers display rounding on the final payment.
+    if _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+        raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
+    bank_code = body.get("bank_account")
+    if not bank_code:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    body.setdefault("currency", doc_state.get("currency", "USD"))
+    body["remaining_balance"] = max(0.0, outstanding - amount)
+    payment_index = len(doc_state.get("payments", []))
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
+        data=body, actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_={},
+    )
+    _company = await session.get(Company, company_id)
+    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+    await auto_je.create_for_doc_payment(
+        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+        amount=amount, payment_index=payment_index,
+        bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
+        payment_date=body["payment_date"],
+        base_currency=_base_currency,
+        conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+    )
+    from celerp.modules.slots import fire_lifecycle
+    await fire_lifecycle(
+        "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
+        doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
+    )
+    return entry
+
+
 @router.post("/{entity_id}/payment")
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    # Snapshot scalar values before any flush() to avoid SQLAlchemy lazy-load expiry
-    # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
+    # Snapshot before any flush() to avoid SQLAlchemy lazy-load expiry.
     _doc_state = dict(row.state)
-    _user_id = user.id
-    if _doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
-    if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
-    if outstanding <= 0:
-        raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    # Use Decimal comparison: 1-cent tolerance covers display rounding on the final payment.
-    # New docs will have exact rounded totals so this tolerance only applies to legacy data.
-    from celerp.services.money import to_decimal as _to_d
-    if _to_d(payload.amount) - _to_d(outstanding) > _to_d("0.01"):
-        raise HTTPException(status_code=409, detail=f"Payment {payload.amount} exceeds amount outstanding {outstanding}")
-
-    body = payload.model_dump(exclude_none=True)
-    body.setdefault("currency", _doc_state.get("currency", "USD"))
-    body["remaining_balance"] = max(0.0, outstanding - payload.amount)
-    if not payload.bank_account:
-        raise HTTPException(status_code=422, detail="bank_account is required")
-    bank_code = payload.bank_account
-    # Compute payment_index BEFORE appending (len of current active+voided list = next index)
-    payment_index = len(_doc_state.get("payments", []))
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=_user_id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
-    doc_type = _doc_state.get("doc_type", "invoice")
-    _pay_company = await session.get(Company, company_id)
-    _pay_base_currency = (_pay_company.settings.get("currency", "USD") if _pay_company else "USD")
-    await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
-        amount=payload.amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type=doc_type,
-        payment_date=payload.payment_date,
-        base_currency=_pay_base_currency,
-        conversion_rate=float(_doc_state.get("conversion_rate") or 1),
-    )
-    # Lifecycle hook for modules (e.g. multicurrency FX gain/loss)
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle(
-        "on_doc_payment",
-        session=session,
-        company_id=company_id,
-        user_id=_user_id,
-        doc_id=entity_id,
-        doc=_doc_state,
-        amount=payload.amount,
-        bank_account_code=bank_code,
+    entry = await apply_doc_payment(
+        session, company_id, entity_id, _doc_state, payload.model_dump(exclude_none=True),
+        source="api", actor_id=user.id, idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     await session.commit()
     return {"event_id": entry.id}

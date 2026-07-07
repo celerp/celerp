@@ -231,7 +231,7 @@ def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
     for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
-              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method"):
+              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account"):
         if k not in data:
             data[k] = settings.get(k)
     # Expose dashboard preferences at top level
@@ -251,7 +251,7 @@ async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method"}
+                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}
@@ -1850,6 +1850,22 @@ async def create_share_link(token: str, entity_id: str) -> dict:
 async def revoke_share_link(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/share")).json()
+
+
+async def get_payments_status(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/status")).json()
+
+
+async def start_payments_connect(token: str) -> dict:
+    """Begin Stripe Connect onboarding; returns {url} to redirect the merchant to."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/connect")).json()
+
+
+async def disconnect_payments(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/disconnect")).json()
 
 
 # ---------------------------------------------------------------------------

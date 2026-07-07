@@ -28,7 +28,7 @@ def _esc(s) -> str:
     )
 
 
-def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
+def _public_doc_page(doc: dict, token: str, accept_url: str, pay_url: str | None = None) -> str:
     doc_type = doc.get("doc_type", "document")
     type_label = doc_type.replace("_", " ").title()
     ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("entity_id", "")
@@ -61,14 +61,36 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     tax = _fmt_money(doc.get("tax") or doc.get("tax_amount"), currency)
     total = _fmt_money(doc.get("total") or doc.get("total_amount"), currency)
 
-    # "Accept & import" CTA
+    try:
+        _outstanding = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
+    except (TypeError, ValueError):
+        _outstanding = 0
+
+    # "Pay now" — the primary action for an unpaid invoice on a payment-enabled instance.
+    pay_cta = ""
+    if pay_url and _outstanding > 0:
+        pay_cta = f"""
+    <div class="pay-cta">
+      <p class="pay-lead">Amount due <strong>{_fmt_money(_outstanding, currency)}</strong></p>
+      <a class="btn-pay" href="{_esc(pay_url)}">Pay {_fmt_money(_outstanding, currency)} now</a>
+    </div>"""
+
+    # "Accept & import" — the primary action when there's nothing to pay; a quiet
+    # secondary line when Pay is the hero (the reader is a payer, not a peer importer).
     accept_cta = ""
     if doc_type in ("invoice", "purchase_order", "quotation"):
         verb = "Accept this invoice" if doc_type == "invoice" else (
             "Accept this order" if doc_type == "purchase_order" else "Accept this quote"
         )
         bundle_url = f"/share/{_esc(token)}/bundle"
-        accept_cta = f"""
+        if pay_cta:
+            accept_cta = f"""
+    <div class="accept-secondary">
+      Use Celerp too? <a href="{_esc(accept_url)}">{_esc(verb)}</a>
+      &nbsp;·&nbsp; <a href="{bundle_url}" download>Download bundle (.celerp)</a>
+    </div>"""
+        else:
+            accept_cta = f"""
     <div class="accept-cta">
       <p>Receiving this document? Import it directly into your Celerp account.</p>
       <a class="btn-accept" href="{_esc(accept_url)}">{_esc(verb)}</a>
@@ -77,6 +99,8 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
         &nbsp;·&nbsp; <a href="{bundle_url}" download>Download bundle (.celerp)</a>
       </p>
     </div>"""
+    # Pay is the hero; accept renders beneath it in the existing template slot.
+    accept_cta = pay_cta + accept_cta
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
 
@@ -111,6 +135,13 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     .accept-cta p {{ margin: 0 0 12px; font-size: 15px; color: #1e40af; }}
     .btn-accept {{ display: inline-block; padding: 12px 28px; background: #2563eb; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 15px; }}
     .btn-accept:hover {{ background: #1d4ed8; }}
+    .pay-cta {{ text-align: center; margin: 0; padding: 28px 32px 24px; background: #f0fdf4; border-top: 1px solid #bbf7d0; }}
+    .pay-lead {{ margin: 0 0 14px; font-size: 15px; color: #14532d; }}
+    .pay-lead strong {{ font-size: 20px; }}
+    .btn-pay {{ display: inline-block; padding: 14px 36px; background: #16a34a; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 17px; }}
+    .btn-pay:hover {{ background: #15803d; }}
+    .accept-secondary {{ padding: 14px 32px; text-align: center; font-size: 13px; color: #6b7280; border-top: 1px solid #f3f4f6; }}
+    .accept-secondary a {{ color: #2563eb; text-decoration: none; }}
     .accept-sub {{ margin: 10px 0 0; font-size: 12px; color: #6b7280; }}
     .accept-sub a {{ color: #2563eb; }}
     .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #9ca3af; }}
