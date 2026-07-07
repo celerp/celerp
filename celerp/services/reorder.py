@@ -116,6 +116,19 @@ async def suggest_reorder(
     }
 
 
+def group_by_supplier(items: list[dict]) -> dict[str, list[str]]:
+    """Group item entity_ids by their preferred supplier so a reorder selection can
+    become one draft PO per supplier. Items with no supplier group under '' (the
+    caller renders that as an 'unassigned' draft). Order is preserved per group."""
+    groups: dict[str, list[str]] = {}
+    for it in items:
+        sup = (it.get("preferred_supplier") or "").strip()
+        eid = it.get("entity_id") or it.get("id")
+        if eid:
+            groups.setdefault(sup, []).append(eid)
+    return groups
+
+
 def _digest_body(items: list[dict], limit: int = 5) -> str:
     """First few ``name (on-hand / reorder_point)`` lines for the digest body."""
     lines = []
