@@ -71,11 +71,30 @@ class RegisterRequest(BaseModel):
     email: str
     name: str
     password: str
+    setup_code: str | None = None
 
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+def _setup_code_hash() -> str:
+    """The one-time setup-code hash for a headless install, or '' if none required."""
+    from celerp.config import read_config
+    return read_config().get("auth", {}).get("setup_code_hash", "") or ""
+
+
+def _clear_setup_code() -> None:
+    """Consume the setup code once the first admin exists (one-time)."""
+    from celerp.config import read_config, write_config, config_path
+    cfg = read_config()
+    if cfg.get("auth", {}).pop("setup_code_hash", None) is not None:
+        write_config(cfg)
+    try:
+        (config_path().parent / "setup-code").unlink()
+    except OSError:
+        pass
 
 
 @router.get("/bootstrap-status")
@@ -87,7 +106,7 @@ async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict
     Once any user exists, registration is locked out from the public UI.
     """
     count = (await session.execute(select(User))).scalars().first()
-    return {"bootstrapped": count is not None}
+    return {"bootstrapped": count is not None, "setup_code_required": bool(_setup_code_hash())}
 
 
 @router.post("/register")
@@ -96,6 +115,18 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     existing = (await session.execute(select(User))).scalars().first()
     if existing is not None:
         raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+
+    # Headless installs mint a one-time setup code the operator reads off the box,
+    # so a network-exposed first-admin page can't be claimed by a stranger.
+    required = _setup_code_hash()
+    if required:
+        import hashlib
+        import hmac as _hmac
+        provided = (payload.setup_code or "").strip()
+        if not provided or not _hmac.compare_digest(
+            hashlib.sha256(provided.encode()).hexdigest(), required
+        ):
+            raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
 
     slug = _slugify(payload.company_name)
     company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
@@ -146,6 +177,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         await session.rollback()
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
+
+    if required:
+        _clear_setup_code()
 
     return await _issue_tokens(session, str(user.id), str(company.id), link.role, user.email)
 

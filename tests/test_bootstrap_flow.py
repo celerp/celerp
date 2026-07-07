@@ -29,7 +29,7 @@ from celerp.cli import _config_path, _read_config, _write_config, main
 async def test_bootstrap_status_false_on_empty_db(client):
     r = await client.get("/auth/bootstrap-status")
     assert r.status_code == 200
-    assert r.json() == {"bootstrapped": False}
+    assert r.json()["bootstrapped"] is False
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,7 @@ async def test_register_bootstraps_system(client):
     assert data["refresh_token"]
 
     status = await client.get("/auth/bootstrap-status")
-    assert status.json() == {"bootstrapped": True}
+    assert status.json()["bootstrapped"] is True
 
 
 @pytest.mark.asyncio
