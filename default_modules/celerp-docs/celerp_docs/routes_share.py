@@ -18,11 +18,14 @@ See celerp-cloud/SHARE_ACCEPT_FLOW.md for full spec and all failure states.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import secrets
+import socket
 import uuid as _uuid
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -36,7 +39,9 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.output.share_render import _public_doc_page, _public_list_page, _not_found_page
+from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -46,6 +51,34 @@ public_router = APIRouter()
 
 _TOKEN_BYTES = 32  # 256-bit URL-safe token
 _ACCEPT_BASE = "https://www.celerp.com/accept"
+
+# A bundle arrives from another party — treat it as untrusted input. Cap what we
+# read, accept only known fields, and recompute all money locally rather than
+# trusting the sender's numbers.
+_MAX_BUNDLE_BYTES = 1_000_000
+_MAX_LINE_ITEMS = 1000
+_MAX_STR = 2000
+_MAX_NOTES = 20_000
+_FETCH_TIMEOUT = 10.0
+
+_IMPORTABLE_DOC_TYPES = frozenset({
+    "invoice", "quotation", "proforma", "purchase_order",
+    "credit_note", "bill", "memo", "consignment_in",
+})
+_DOC_STR_FIELDS = frozenset({
+    "doc_type", "ref_id", "doc_number", "issue_date", "due_date", "valid_until",
+    "expected_delivery", "currency", "contact_name", "contact_company_name",
+    "contact_email", "contact_billing_address", "contact_shipping_address",
+    "contact_tax_id", "shipping_attn", "terms", "payment_terms",
+    "discount_type", "carrier", "tracking",
+})
+_LINE_STR_FIELDS = frozenset({
+    "sku", "name", "description", "unit", "sell_by", "weight_unit",
+    "hs_code", "account_code", "tax_code",
+})
+_LINE_NUM_FIELDS = frozenset({
+    "quantity", "unit_price", "pieces", "weight", "tax_rate", "discount_pct",
+})
 
 
 def _share_url(token: str) -> str:
@@ -58,8 +91,187 @@ def _share_url(token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Untrusted-input guards (SSRF, size caps, field whitelist + money recompute)
+# ---------------------------------------------------------------------------
+
+def _blocked_ip(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+async def _validate_public_src(src: str) -> str:
+    """Return a cleaned https base URL, or raise if it is not a safe public host.
+
+    The recipient's instance fetches this URL server-side, so an unvalidated `src`
+    is an SSRF vector — require https and reject any host that resolves to a
+    private, loopback, link-local, or reserved address.
+    """
+    cleaned = (src or "").rstrip("/")
+    parsed = urlparse(cleaned)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Sender URL must be https")
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            parsed.hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Sender URL could not be resolved")
+    if any(_blocked_ip(info[4][0]) for info in infos):
+        raise HTTPException(status_code=400, detail="Sender URL is not a public address")
+    return cleaned
+
+
+async def _read_body_capped(request: Request, limit: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail="Bundle too large")
+    return bytes(body)
+
+
+def _num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _str(v, limit: int = _MAX_STR) -> str | None:
+    if v is None:
+        return None
+    return str(v)[:limit]
+
+
+def _sanitize_taxes(raw) -> list[TaxApplication]:
+    if not isinstance(raw, list):
+        return []
+    out: list[TaxApplication] = []
+    for t in raw[:20]:
+        if not isinstance(t, dict):
+            continue
+        out.append(TaxApplication(
+            code=str(t.get("code") or "")[:64],
+            rate=_num(t.get("rate")),
+            amount=0.0,  # recomputed below — never trust the sender's amount
+            order=int(_num(t.get("order"))),
+            is_compound=bool(t.get("is_compound")),
+            label=str(t.get("label") or "")[:64],
+        ))
+    return out
+
+
+def _sanitize_bundle_doc(doc: dict) -> dict:
+    """Rebuild a doc from an allowlist and recompute every monetary value locally.
+
+    Nothing from the sender's bundle is trusted for money or status: line totals,
+    subtotal, tax, and total are all derived here from quantity × price so a
+    tampered bundle can never misstate the figures the recipient sees.
+    """
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=422, detail="Bundle document is malformed")
+    doc_type = str(doc.get("doc_type") or "").strip()
+    if doc_type not in _IMPORTABLE_DOC_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported document type in bundle")
+
+    currency = _str(doc.get("currency"), 8) or "USD"
+    out: dict = {}
+    for k in _DOC_STR_FIELDS:
+        val = _str(doc.get(k), _MAX_STR)
+        if val is not None:
+            out[k] = val
+    out["notes"] = _str(doc.get("notes"), _MAX_NOTES) or ""
+    out["currency"] = currency
+    out["discount"] = _num(doc.get("discount"))
+    out["shipping"] = _num(doc.get("shipping"))
+
+    raw_lines = doc.get("line_items")
+    if not isinstance(raw_lines, list):
+        raw_lines = []
+    if len(raw_lines) > _MAX_LINE_ITEMS:
+        raise HTTPException(status_code=422, detail="Too many line items in bundle")
+
+    lines: list[dict] = []
+    subtotal_d = to_decimal(0)
+    line_tax_d = to_decimal(0)
+    for raw in raw_lines:
+        if not isinstance(raw, dict):
+            continue
+        line: dict = {}
+        for k in _LINE_STR_FIELDS:
+            val = _str(raw.get(k), _MAX_STR)
+            if val is not None:
+                line[k] = val
+        for k in _LINE_NUM_FIELDS:
+            if k in raw:
+                line[k] = _num(raw.get(k))
+        base = to_decimal(line.get("quantity", 0)) * to_decimal(line.get("unit_price", 0))
+        disc_pct = to_decimal(line.get("discount_pct", 0))
+        if disc_pct:
+            base = base * (to_decimal(1) - disc_pct / 100)
+        lt = round_money(base, currency)
+        line["line_total"] = to_stored_float(lt)
+        subtotal_d += lt
+        taxes = _sanitize_taxes(raw.get("taxes"))
+        if taxes:
+            resolved = compute_tax_amounts(taxes, to_stored_float(lt), currency)
+            line["taxes"] = [t.model_dump() for t in resolved]
+            line_tax_d += sum(to_decimal(t.amount) for t in resolved)
+        lines.append(line)
+    out["line_items"] = lines
+
+    subtotal_d = subtotal_d - round_money(out["discount"], currency)
+    doc_taxes = _sanitize_taxes(doc.get("doc_taxes"))
+    if doc_taxes:
+        resolved = compute_tax_amounts(doc_taxes, to_stored_float(subtotal_d), currency)
+        out["doc_taxes"] = [t.model_dump() for t in resolved]
+        tax_d = sum(to_decimal(t.amount) for t in resolved) + line_tax_d
+    else:
+        tax_d = line_tax_d
+    shipping_d = round_money(out["shipping"], currency)
+    out["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
+    out["tax"] = to_stored_float(round_money(tax_d, currency))
+    out["total"] = to_stored_float(round_money(subtotal_d + tax_d + shipping_d, currency))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Authenticated endpoints
 # ---------------------------------------------------------------------------
+
+async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> str:
+    """Return the entity's existing share token, or mint one. Caller commits."""
+    existing = await session.execute(
+        select(DocShareToken).where(
+            DocShareToken.company_id == company_id,
+            DocShareToken.entity_id == entity_id,
+        )
+    )
+    row = existing.scalar_one_or_none()
+    if row:
+        return row.token
+    token = secrets.token_urlsafe(_TOKEN_BYTES)
+    session.add(DocShareToken(company_id=company_id, entity_id=entity_id, token=token))
+    return token
+
+
+def public_view_url(token: str) -> str | None:
+    """Direct link to the branded read-only view, or None if not cloud-connected."""
+    base = (settings.celerp_public_url or "").rstrip("/")
+    return f"{base}/share/{token}" if base else None
+
+
+async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
+    """View link to embed in a send email — mints a token only when cloud-connected
+    (the branded view is only reachable then). Caller commits."""
+    if not (settings.celerp_public_url or "").strip():
+        return None
+    token = await get_or_create_share_token(session, company_id, entity_id)
+    return public_view_url(token)
+
 
 @router.post("/docs/{entity_id}/share")
 async def create_share_link(
@@ -72,18 +284,7 @@ async def create_share_link(
     if row is None or row.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    existing = await session.execute(
-        select(DocShareToken).where(
-            DocShareToken.company_id == company_id,
-            DocShareToken.entity_id == entity_id,
-        )
-    )
-    token_row = existing.scalar_one_or_none()
-    if token_row:
-        return {"token": token_row.token, "url": _share_url(token_row.token)}
-
-    token = secrets.token_urlsafe(_TOKEN_BYTES)
-    session.add(DocShareToken(company_id=company_id, entity_id=entity_id, token=token))
+    token = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
     return {"token": token, "url": _share_url(token)}
 
@@ -197,14 +398,18 @@ async def import_shared_doc(
     Called by celerp.com/accept after probing that both instances are reachable.
     The doc is stored with status='received' — not auto-booked. Recipient reviews first.
     """
-    src_clean = src.rstrip("/")
+    src_clean = await _validate_public_src(src)
     fetch_url = f"{src_clean}/share/{token}/bundle"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=False) as client:
             r = await client.get(fetch_url)
             r.raise_for_status()
-            bundle = r.json()
+            if len(r.content) > _MAX_BUNDLE_BYTES:
+                raise HTTPException(status_code=413, detail="Bundle too large")
+            bundle = json.loads(r.content)
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(status_code=404, detail="Share link not found on sender's instance")
@@ -227,20 +432,27 @@ async def import_bundle_upload(
     Used when p2p fetch is unavailable (sender on private network).
     Accepts: application/json body OR multipart/form-data with field 'bundle'.
     """
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > 2 * _MAX_BUNDLE_BYTES:
+        raise HTTPException(status_code=413, detail="Bundle too large")
+
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         form = await request.form()
         file = form.get("bundle")
         if file is None:
             raise HTTPException(status_code=422, detail="Missing 'bundle' field in multipart form")
-        raw = await file.read()
+        raw = await file.read(_MAX_BUNDLE_BYTES + 1)
+        if len(raw) > _MAX_BUNDLE_BYTES:
+            raise HTTPException(status_code=413, detail="Bundle too large")
         try:
             bundle = json.loads(raw)
         except Exception:
             raise HTTPException(status_code=422, detail="Bundle file is not valid JSON")
     else:
+        raw = await _read_body_capped(request, _MAX_BUNDLE_BYTES)
         try:
-            bundle = await request.json()
+            bundle = json.loads(raw)
         except Exception:
             raise HTTPException(status_code=422, detail="Request body is not valid JSON")
 
@@ -260,12 +472,14 @@ async def _import_bundle(
     src: str | None,
 ) -> Response:
     """Import a .celerp bundle dict as a received doc. Returns a redirect to the doc."""
+    if not isinstance(bundle, dict):
+        raise HTTPException(status_code=422, detail="Bundle is malformed")
     doc = bundle.get("doc") or {}
     if not doc:
         raise HTTPException(status_code=422, detail="Bundle contains no document data")
 
-    # Strip sender-specific keys that would conflict locally
-    inbound = {k: v for k, v in doc.items() if k not in ("entity_id", "company_id")}
+    # Accept only known fields and recompute money locally — never trust the bundle.
+    inbound = _sanitize_bundle_doc(doc)
     if token:
         inbound["source_share_token"] = token
     if src:

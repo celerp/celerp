@@ -873,10 +873,15 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
+
+    sent_to = payload.sent_to
+    view_url = None
+    if sent_to:
+        from celerp_docs.routes_share import send_view_url
+        view_url = await send_view_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
-    sent_to = payload.sent_to
     if sent_to:
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
         total = row.state.get("total", 0)
@@ -886,11 +891,18 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
         subject = f"{doc_type} #{doc_number} from {sender_name}"
+        view_html = (
+            f"<p><a href=\"{view_url}\" style=\"display:inline-block;padding:10px 20px;"
+            f"background:#111;color:#fff;text-decoration:none;border-radius:6px;\">"
+            f"View {doc_type}</a></p>" if view_url else ""
+        )
+        view_text = f"View it online: {view_url}\n\n" if view_url else ""
         body_html = (
             f"<p>Hi {contact_name},</p>"
             f"<p>Please find your <strong>{doc_type} #{doc_number}</strong> from "
             f"<strong>{sender_name}</strong>.</p>"
             f"<p>Amount: <strong>{currency} {total}</strong></p>"
+            f"{view_html}"
             f"<p style='color:#888;font-size:13px;'>Questions about this document? "
             f"Reply to this email and we'll get back to you.</p>"
         )
@@ -898,6 +910,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             f"Hi {contact_name},\n\n"
             f"Please find your {doc_type} #{doc_number} from {sender_name}.\n"
             f"Amount: {currency} {total}\n\n"
+            f"{view_text}"
             f"Questions? Reply to this email."
         )
         from celerp.services.email import send_email

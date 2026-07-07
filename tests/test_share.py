@@ -433,3 +433,170 @@ async def test_import_bundle_sets_status_received(client: AsyncClient):
     assert r.status_code == 302
     r2 = await client.get(r.headers["location"], headers=_h(tok))
     assert r2.json()["status"] == "received"
+
+
+# ---------------------------------------------------------------------------
+# Import hardening: untrusted-bundle handling
+# ---------------------------------------------------------------------------
+
+async def _import(client: AsyncClient, tok: str, doc: dict):
+    return await client.post(
+        "/docs/import-bundle",
+        json={"version": 1, "doc": doc},
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncClient):
+    tok = await _token(client)
+    r = await _import(client, tok, {
+        "doc_type": "invoice",
+        "total": 0.01,                 # tampered
+        "subtotal": 0.01,
+        "injected_field": "x",
+        "amount_paid": 999.0,
+        "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 500.0, "line_total": 0.01}],
+    })
+    assert r.status_code == 302
+    doc = (await client.get(r.headers["location"], headers=_h(tok))).json()
+    assert doc["total"] == 1000.0           # recomputed from qty*price, not trusted
+    assert doc["subtotal"] == 1000.0
+    assert doc["amount_paid"] == 0.0
+    assert "injected_field" not in doc
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_unsupported_doc_type(client: AsyncClient):
+    tok = await _token(client)
+    r = await _import(client, tok, {"doc_type": "totally_unknown", "total": 100.0})
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_too_many_line_items(client: AsyncClient):
+    tok = await _token(client)
+    r = await _import(client, tok, {
+        "doc_type": "invoice",
+        "line_items": [{"description": "x", "quantity": 1, "unit_price": 1} for _ in range(1001)],
+    })
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_oversized_json_body(client: AsyncClient):
+    tok = await _token(client)
+    big = {"version": 1, "doc": {"doc_type": "invoice", "notes": "A" * 1_100_000}}
+    import json as _json
+    r = await client.post(
+        "/docs/import-bundle",
+        content=_json.dumps(big).encode(),
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 413
+
+
+def test_doc_detail_shows_share_button_only_when_relay_connected():
+    """The Share action + its modal appear only when cloud-connected (like Send)."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _doc_detail
+
+    doc = {
+        "entity_id": "doc:x1", "id": "doc:x1", "doc_type": "invoice", "status": "draft",
+        "currency": "USD", "total": 100.0,
+        "line_items": [{"description": "W", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+    }
+    on = to_xml(_doc_detail(doc, relay_connected=True))
+    assert "share-modal-doc-x1" in on
+    assert "/docs/doc:x1/share" in on
+
+    off = to_xml(_doc_detail(doc, relay_connected=False))
+    assert "share-modal-doc-x1" not in off
+
+
+def test_print_view_escapes_injected_html():
+    """Document strings (incl. the doc number in the footer) must be HTML-escaped
+    when rendered, so an imported doc can't smuggle markup into the print view."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _doc_print_view
+
+    html = to_xml(_doc_print_view({
+        "doc_type": "invoice",
+        "doc_number": "<script>alert(1)</script>",
+        "contact_name": "<img src=x onerror=alert(2)>",
+        "currency": "USD",
+        "total": 10.0,
+        "line_items": [{"description": "<b>bad</b>", "quantity": 1, "unit_price": 10.0}],
+    }))
+    assert "<script>alert(1)</script>" not in html
+    assert "<img src=x onerror=alert(2)>" not in html
+    assert "&lt;script&gt;" in html
+
+
+@pytest.mark.asyncio
+async def test_import_src_rejects_non_https(client: AsyncClient):
+    tok = await _token(client)
+    r = await client.get("/docs/import?src=http://evil.example.com&token=abc", headers=_h(tok))
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_import_src_rejects_private_and_metadata_hosts(client: AsyncClient):
+    tok = await _token(client)
+    for host in ("https://127.0.0.1", "https://10.0.0.1", "https://169.254.169.254", "https://192.168.1.1"):
+        r = await client.get(f"/docs/import?src={host}&token=abc", headers=_h(tok))
+        assert r.status_code == 400, host
+
+
+# ---------------------------------------------------------------------------
+# Send email carries a view link when cloud-connected
+# ---------------------------------------------------------------------------
+
+async def _capture_send(monkeypatch):
+    import asyncio
+    captured: dict = {}
+    done = asyncio.Event()
+
+    async def _fake(to, subject, body_html, body_text="", **kw):
+        captured.update(to=to, html=body_html, text=body_text)
+        done.set()
+        return True
+
+    monkeypatch.setattr("celerp.services.email.send_email", _fake)
+    return captured, done
+
+
+@pytest.mark.asyncio
+async def test_send_email_includes_view_link_when_cloud_connected(client: AsyncClient, monkeypatch):
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    assert f"https://acme.celerp.com/share/{token}" in captured["html"]
+    assert f"https://acme.celerp.com/share/{token}" in captured["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, monkeypatch):
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert "/share/" not in captured["html"]
