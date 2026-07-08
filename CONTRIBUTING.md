@@ -58,8 +58,37 @@ celerp upgrade    # pip install --upgrade celerp + migrate
 | `--force` | off | Overwrite existing config |
 | `--yes` / `-y` | off | Skip the `--force` wipe confirmation (non-interactive) |
 | `--no-start` | off | Set up, then exit WITHOUT launching servers (service-managed/headless) |
+| `--embedded` | off | Force the bundled PostgreSQL even if a server is reachable (cannot combine with `--db-url`) |
+| `--no-embedded` | off | Never fall back to the bundled PostgreSQL; require an external server |
 
 To change ports after init, edit `~/.config/celerp/config.toml` directly.
+
+### External vs embedded PostgreSQL
+
+`celerp init` picks the database automatically, and **an existing server always wins**:
+
+1. `--db-url` given → that external server (no detection).
+2. else a PostgreSQL server reachable on `localhost:5432` → use it (as root, init
+   provisions the role/database via `sudo -u postgres psql`; otherwise it prints the
+   `CREATE USER`/`CREATE DATABASE` to run).
+3. else the **bundled** PostgreSQL — a self-contained cluster under
+   `~/.config/celerp/pgdata`, started from binaries shipped in the `pgserver` wheel. No
+   `sudo`, no system service. Available on CPython 3.10–3.12 for Linux x86_64, macOS, and
+   Windows x64; elsewhere init asks you to install PostgreSQL.
+
+Override the detection with `--embedded` / `--no-embedded`. The chosen mode is written to
+`config.toml` as `[database] embedded = true|<absent>` and preserved across `--force`
+re-inits, so an external install never silently switches to the bundled cluster.
+
+**Moving bundled data to an external server** (e.g. outgrowing single-machine): dump from
+the bundled cluster and restore into the target, using the bundled tools so versions match.
+
+```bash
+BIN=$(celerp status >/dev/null; python -c "from celerp import embedded_pg; print(embedded_pg.bin_dir())")
+"$BIN/pg_dump" "$(python -c "from celerp import embedded_pg,pathlib; from celerp.config import config_path; print(embedded_pg.ensure_cluster(config_path().parent).replace('+asyncpg',''))")" \
+  | psql "postgresql://celerp:celerp@newhost:5432/celerp"
+celerp init --force --db-url "postgresql+asyncpg://celerp:celerp@newhost:5432/celerp"
+```
 
 ### Run as a service (systemd)
 
@@ -68,16 +97,23 @@ flow). For a headless box where a process manager owns the lifecycle, set up wit
 `--no-start` and let systemd run `celerp start`:
 
 ```bash
-# First boot: provision DB + migrations + config, then exit (do not block).
+# First boot against a system PostgreSQL: provision DB + migrations + config, then
+# exit (do not block). Run as root so init can create the role/database.
 sudo celerp init --no-start \
   --db-url "postgresql+asyncpg://celerp:<password>@localhost:5432/celerp" \
   --api-port 8000 --ui-port 8080
 ```
 
+Prefer the bundled database? Drop `--db-url` (and the `sudo` — the bundled cluster needs
+neither) and run `celerp init --no-start` as the service user. The cluster then lives under
+that user's `~/.config/celerp/pgdata`, and the systemd unit needs no `postgresql.service`
+dependency.
+
 ```ini
 # /etc/systemd/system/celerp.service
 [Unit]
 Description=Celerp
+# Drop the postgresql.service dependency line when using the bundled database.
 After=network.target postgresql.service
 
 [Service]

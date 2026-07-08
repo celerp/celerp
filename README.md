@@ -49,6 +49,10 @@ celerp init        # sets up the database and launches Celerp
 Open **http://localhost:8080**. Done.
 Your office can securely access the system at your IP address :8080.
 
+No PostgreSQL to install: `celerp init` uses your existing PostgreSQL server if one is
+running, and otherwise starts a self-contained bundled database — no `sudo`, no system
+service. Point it at a specific server with `celerp init --db-url postgresql+asyncpg://…`.
+
 Running headless or under a process manager? Use `celerp init --no-start` to set up
 without launching, then have your service run `celerp start` — see
 [Run as a service (systemd)](CONTRIBUTING.md#run-as-a-service-systemd).
@@ -117,8 +121,12 @@ git clone git@github.com:celerp/celerp.git
 cd celerp
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-sudo celerp init   # creates DB, runs migrations, starts servers
+celerp init   # creates DB, runs migrations, starts servers
 ```
+
+`celerp init` boots a bundled PostgreSQL when no server is running, so no `sudo` and no
+system Postgres are required. To develop against your own server instead, pass
+`--db-url postgresql+asyncpg://…`.
 
 Open **http://localhost:8080**. Run tests with `pytest tests/`.
 
