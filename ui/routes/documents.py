@@ -2089,9 +2089,12 @@ celerpUpdateBulkAlloc();
             pass
         # Check relay connection for Send button visibility
         _relay_connected: bool = False
+        _share_enabled: bool = False
         try:
             _relay_status = await api.get_relay_status(token)
             _relay_connected = bool(_relay_status.get("connected"))
+            # Share needs the public URL that serves the link, not just a live tunnel.
+            _share_enabled = bool(_relay_status.get("public_url"))
         except Exception:
             pass
         status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
@@ -2144,7 +2147,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -4089,16 +4092,20 @@ celerpUpdateBulkAlloc();
             _list_locations = (await api.get_locations(token)).get("items", [])
         except APIError:
             _list_locations = []
+        _list_relay = False
+        _list_share = False
         try:
-            _list_relay = bool((await api.get_relay_status(token)).get("connected"))
+            _ls_status = await api.get_relay_status(token)
+            _list_relay = bool(_ls_status.get("connected"))
+            _list_share = bool(_ls_status.get("public_url"))
         except Exception:
-            _list_relay = False
+            pass
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request),
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
-                        relay_connected=_list_relay),
+                        relay_connected=_list_relay, share_enabled=_list_share),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -5293,7 +5300,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5524,6 +5531,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         not suppress_doc_actions
         and ((not is_list and doc_type not in NO_SEND_DOC_TYPES) or _list_sendable)
     )
+    # Share is independent of Send's status gates: any customer-facing document or list
+    # can be shared for viewing (a paid invoice is a receipt). Supplier/inbound docs
+    # (bills, POs, consignment-in) are never shared. Gated on a reachable cloud public
+    # URL — NOT merely "connected" — because the link is served at that URL; without it
+    # the link would be dead.
+    _can_share = (
+        share_enabled and not suppress_doc_actions
+        and (is_list or doc_type not in NO_SEND_DOC_TYPES)
+    )
     if _can_send:
         # Send via relay - modal popup, only when relay connected and status allows it
         _send_ok = (status == _LF and not _list_sent) if is_list else (status not in NO_SEND_STATUSES)
@@ -5594,30 +5610,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cls="modal-dialog",
                 )
             )
-        # Share: a public read-only link to this document (relay-gated, like Send).
-        if relay_connected:
-            _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
-            _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
-            action_btns_left.append(
-                Button(t("btn.share"), type="button",
-                       hx_post=f"/docs/{entity_id}/share",
-                       hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
-                       hx_on__after_request=f"if(event.detail.successful)document.getElementById('{_share_modal_id}').showModal()",
-                       cls="btn btn--secondary"),
-            )
-            action_btns_left.append(
-                Dialog(
-                    Div(
-                        H3(t("btn.share"), cls="modal-dialog__title"),
-                        Button("✕", type="button",
-                               onclick=f"document.getElementById('{_share_modal_id}').close()",
-                               cls="modal-dialog__close", aria_label="Close"),
-                        cls="modal-dialog__header",
-                    ),
-                    Div(id=_share_body_id, cls="modal-body"),
-                    id=_share_modal_id, cls="modal-dialog",
-                )
-            )
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:
@@ -5632,6 +5624,34 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
+    # Share: a public read-only link (customer-facing docs + lists; never supplier docs).
+    if _can_share:
+        import json as _json
+        _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
+        _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
+        _fail_js = _json.dumps(t("doc.share_failed"))
+        action_btns_left.append(
+            Button(t("btn.share"), type="button",
+                   hx_post=f"/docs/{entity_id}/share",
+                   hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
+                   hx_on__after_request=(
+                       f"if(event.detail.successful){{document.getElementById('{_share_modal_id}').showModal()}}"
+                       f"else{{window.celerpToast&&celerpToast({_fail_js},'error')}}"),
+                   cls="btn btn--secondary"),
+        )
+        action_btns_left.append(
+            Dialog(
+                Div(
+                    H3(t("btn.share"), cls="modal-dialog__title"),
+                    Button("✕", type="button",
+                           onclick=f"document.getElementById('{_share_modal_id}').close()",
+                           cls="modal-dialog__close", aria_label="Close"),
+                    cls="modal-dialog__header",
+                ),
+                Div(id=_share_body_id, cls="modal-body"),
+                id=_share_modal_id, cls="modal-dialog",
+            )
+        )
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
     if not suppress_pdf:
         _print_href = f"/lists/{entity_id}/print" if is_list else f"/docs/{entity_id}/print"

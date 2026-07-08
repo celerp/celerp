@@ -498,22 +498,49 @@ async def test_import_rejects_oversized_json_body(client: AsyncClient):
     assert r.status_code == 413
 
 
-def test_doc_detail_shows_share_button_only_when_relay_connected():
-    """The Share action + its modal appear only when cloud-connected (like Send)."""
+def _detail_xml(doc: dict, **kw) -> str:
     from fasthtml.common import to_xml
     from ui.routes.documents import _doc_detail
+    return to_xml(_doc_detail(doc, **kw))
 
-    doc = {
-        "entity_id": "doc:x1", "id": "doc:x1", "doc_type": "invoice", "status": "draft",
+
+def _invoice(status: str = "draft", doc_type: str = "invoice") -> dict:
+    return {
+        "entity_id": "doc:x1", "id": "doc:x1", "doc_type": doc_type, "status": status,
         "currency": "USD", "total": 100.0,
         "line_items": [{"description": "W", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     }
-    on = to_xml(_doc_detail(doc, relay_connected=True))
+
+
+def test_doc_detail_shows_share_button_only_when_share_enabled():
+    """Share appears only when the cloud gives a reachable public URL (share_enabled),
+    NOT merely when the tunnel is 'connected' — the link is served at that URL."""
+    on = _detail_xml(_invoice(), share_enabled=True)
     assert "share-modal-doc-x1" in on
     assert "/docs/doc:x1/share" in on
 
-    off = to_xml(_doc_detail(doc, relay_connected=False))
-    assert "share-modal-doc-x1" not in off
+    assert "share-modal-doc-x1" not in _detail_xml(_invoice(), share_enabled=False)
+
+
+def test_share_hidden_when_connected_but_no_public_url():
+    """The bug this guards: connected tunnel but no public URL yet (e.g. tos_required
+    / mid-activation) must NOT show a Share button that would copy a dead link."""
+    xml = _detail_xml(_invoice(), relay_connected=True, share_enabled=False)
+    assert "share-modal-doc-x1" not in xml
+
+
+def test_supplier_docs_are_not_shareable():
+    """Inbound/supplier docs (bill, purchase_order, consignment_in) never get Share."""
+    for dt in ("bill", "purchase_order", "consignment_in"):
+        xml = _detail_xml(_invoice(status="sent", doc_type=dt), share_enabled=True)
+        assert "share-modal-doc-x1" not in xml, dt
+    # A customer-facing invoice does.
+    assert "share-modal-doc-x1" in _detail_xml(_invoice(status="sent"), share_enabled=True)
+
+
+def test_paid_invoice_is_still_shareable():
+    """Share isn't gated on send-status: a paid invoice can be shared as a receipt."""
+    assert "share-modal-doc-x1" in _detail_xml(_invoice(status="paid"), share_enabled=True)
 
 
 def test_print_view_escapes_injected_html():
