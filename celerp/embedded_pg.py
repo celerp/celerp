@@ -234,7 +234,9 @@ def ensure_cluster(config_dir: Path) -> str:
     pgdata = pgdata_dir(config_dir)
 
     if not (pgdata / "PG_VERSION").exists():
-        pgdata.mkdir(parents=True, exist_ok=True)
+        # Let initdb create the pgdata leaf itself (its parent exists above).
+        # Pre-creating it trips Windows initdb's ancestor walk ("could not
+        # create directory ...: File exists").
         _initdb(pgdata)
     host, port = _start(pgdata)
     _ensure_app_database(host, port)
