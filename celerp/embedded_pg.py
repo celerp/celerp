@@ -231,6 +231,10 @@ def ensure_cluster(config_dir: Path) -> str:
     """
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve to the canonical long-form path: Windows 8.3 short names in the
+    # location (e.g. C:\Users\RUNNER~1\... from a short-name %TMP%) make
+    # initdb's directory walk fail with "File exists".
+    config_dir = config_dir.resolve()
     pgdata = pgdata_dir(config_dir)
 
     if not (pgdata / "PG_VERSION").exists():
