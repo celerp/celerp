@@ -121,8 +121,8 @@ def _win_port(pgdata: Path) -> int:
     return port
 
 
-def _run(cmd: list[str], fail_hint: str) -> subprocess.CompletedProcess:
-    r = subprocess.run(cmd, capture_output=True, text=True, env=_env())
+def _run(cmd: list[str], fail_hint: str, cwd: str | None = None) -> subprocess.CompletedProcess:
+    r = subprocess.run(cmd, capture_output=True, text=True, env=_env(), cwd=cwd)
     if r.returncode:
         raise RuntimeError(
             f"{fail_hint} (rc={r.returncode})\n"
@@ -142,10 +142,16 @@ def _is_running(pgdata: Path) -> bool:
 def _initdb(pgdata: Path) -> None:
     # libc locale provider: keeps the cluster independent of ICU data at its
     # core; ICU stays available for opt-in per-collation use.
+    #
+    # Relative single-component -D with cwd at the parent: initdb then creates
+    # exactly one directory and never walks the ancestor chain, which
+    # misfires on some Windows environments (GitHub runners error "File
+    # exists" on existing intermediates).
     _run(
-        [_tool("initdb"), "-D", str(pgdata), "-U", "postgres", "-A", "trust",
+        [_tool("initdb"), "-D", pgdata.name, "-U", "postgres", "-A", "trust",
          "-E", "UTF8", "--locale-provider=libc"],
         "embedded PostgreSQL initdb failed",
+        cwd=str(pgdata.parent),
     )
 
 
