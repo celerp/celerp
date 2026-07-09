@@ -27,8 +27,18 @@ pytestmark = [
 
 @pytest.fixture()
 def config_dir(tmp_path, monkeypatch):
-    """Isolate config + cluster under a temp dir; stop the cluster afterwards."""
-    cfg = tmp_path / "celerp"
+    """Isolate config + cluster under a temp dir; stop the cluster afterwards.
+
+    On Windows the cluster lives in a plain mkdtemp instead of pytest's tmp
+    tree: initdb's ancestor walk errors on `pytest-of-*` dirs on GitHub
+    runners ("File exists"), while identical paths work on real Windows.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path as _P
+
+    base = _P(tempfile.mkdtemp(prefix="celerp-emb-")) if os.name == "nt" else tmp_path
+    cfg = base / "celerp"
     monkeypatch.setenv("CELERP_CONFIG", str(cfg / "config.toml"))
     yield cfg
     # Tear down the cluster so no postmaster leaks between tests.
@@ -36,6 +46,8 @@ def config_dir(tmp_path, monkeypatch):
         embedded_pg.wipe(cfg)
     except Exception:
         pass
+    if os.name == "nt":
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def _sync(uri: str) -> str:
