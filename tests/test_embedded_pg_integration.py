@@ -29,15 +29,20 @@ pytestmark = [
 def config_dir(tmp_path, monkeypatch):
     """Isolate config + cluster under a temp dir; stop the cluster afterwards.
 
-    On Windows the cluster lives in a plain mkdtemp instead of pytest's tmp
-    tree: initdb's ancestor walk errors on `pytest-of-*` dirs on GitHub
-    runners ("File exists"), while identical paths work on real Windows.
+    On Windows the cluster lives in a plain mkdtemp — preferring the runner's
+    workspace drive (RUNNER_TEMP) over %TEMP%: GitHub's C: temp volume makes
+    initdb's directory handling fail ("File exists" on existing dirs, then
+    "The current directory is invalid" from cmd.exe), while identical paths
+    work on real Windows.
     """
     import shutil
     import tempfile
     from pathlib import Path as _P
 
-    base = _P(tempfile.mkdtemp(prefix="celerp-emb-")) if os.name == "nt" else tmp_path
+    base = (
+        _P(tempfile.mkdtemp(prefix="celerp-emb-", dir=os.environ.get("RUNNER_TEMP")))
+        if os.name == "nt" else tmp_path
+    )
     cfg = base / "celerp"
     monkeypatch.setenv("CELERP_CONFIG", str(cfg / "config.toml"))
     yield cfg
