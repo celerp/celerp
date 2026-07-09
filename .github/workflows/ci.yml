@@ -125,6 +125,76 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Bundled-PostgreSQL tests: mode resolution (unit) + a real pgserver cluster
+  # (integration). Runs on every platform that ships a pgserver wheel so the
+  # embedded init path is proven on Linux, macOS, and Windows. No Postgres service
+  # and --noconftest: these boot their own cluster and don't need the repo's
+  # testcontainer, which also lets them run on the macOS/Windows runners (no Docker).
+  embedded:
+    name: Embedded PG (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        run: pip install -e ".[dev]"
+      - name: Run embedded-PG unit + integration tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: >
+          pytest tests/test_embedded_pg_modes.py tests/test_embedded_pg_integration.py
+          --noconftest -o addopts="" -p no:cacheprovider --timeout=180 -q
+
+  # Graceful degradation on a platform with no pgserver wheel: `pip install` must
+  # still resolve (the marker drops pgserver), the provider reports unavailable, and
+  # `celerp init` with no server prints guidance rather than a traceback.
+  resolution:
+    name: Resolves without pgserver (py3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install (pgserver marker must exclude 3.13)
+        run: pip install -e .
+      - name: pgserver is absent, provider reports unavailable
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          from celerp import embedded_pg
+          assert importlib.util.find_spec("pgserver") is None, "pgserver should NOT install on 3.13"
+          assert embedded_pg.is_available() is False
+          print("OK: pgserver excluded, provider unavailable")
+          PY
+      - name: init with no server gives guidance, not a traceback
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          CELERP_CONFIG: ${{ runner.temp }}/celerp/config.toml
+        run: |
+          set +e
+          out=$(celerp init --no-start 2>&1); code=$?
+          echo "$out"
+          set -e
+          test $code -ne 0
+          echo "$out" | grep -qi "Install PostgreSQL"
+          ! echo "$out" | grep -qi "Traceback"
+
   # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in
   # CI before; they catch the "require added, build.files not updated" class (v1.2.6)
   # statically, on every PR, with no build.
@@ -150,7 +220,7 @@ jobs:
   # (this job), which passes only when every unit, browser, AND electron job passed.
   test:
     name: Test
-    needs: [shard, browser, electron]
+    needs: [shard, browser, embedded, resolution, electron]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -164,8 +234,16 @@ jobs:
             echo "One or more browser-test shards failed (result: ${{ needs.browser.result }})"
             exit 1
           fi
+          if [ "${{ needs.embedded.result }}" != "success" ]; then
+            echo "One or more embedded-PostgreSQL jobs failed (result: ${{ needs.embedded.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.resolution.result }}" != "success" ]; then
+            echo "The pgserver-less resolution job failed (result: ${{ needs.resolution.result }})"
+            exit 1
+          fi
           if [ "${{ needs.electron.result }}" != "success" ]; then
             echo "Electron unit tests failed (result: ${{ needs.electron.result }})"
             exit 1
           fi
-          echo "All unit, browser, and electron checks passed."
+          echo "All unit, browser, embedded, resolution, and electron checks passed."
