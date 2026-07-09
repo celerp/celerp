@@ -21,7 +21,17 @@ from celerp import embedded_pg
 
 pytestmark = [
     pytest.mark.embedded_pg,
-    pytest.mark.skipif(not embedded_pg.is_available(), reason="pgserver wheel not available here"),
+    pytest.mark.skipif(not embedded_pg.is_available(), reason="celerp-postgres wheel not available here"),
+    # Windows: opt-in only, same pattern as celerp-cloud's RELAY_TEST_POSTGRES
+    # gate. GitHub's hosted-runner temp volumes break initdb's directory
+    # handling ("File exists" on existing dirs / "The current directory is
+    # invalid" from cmd.exe) on BOTH C: and D: drives, while the identical
+    # lifecycle passes on real Windows (verified end-to-end incl. dump/restore).
+    # Run locally on real Windows with: set CELERP_TEST_EMBEDDED_WIN=1
+    pytest.mark.skipif(
+        os.name == "nt" and os.environ.get("CELERP_TEST_EMBEDDED_WIN") != "1",
+        reason="GH windows runners break initdb dir handling; set CELERP_TEST_EMBEDDED_WIN=1 on real Windows",
+    ),
 ]
 
 
