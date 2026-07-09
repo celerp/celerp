@@ -212,11 +212,18 @@ def test_init_post_migration_grants_called(tmp_config):
     )
 
 
+# The external-server tests pass --db-url, which is how the real external
+# consumer (the DigitalOcean droplet) always invokes init. An explicit URL
+# short-circuits mode detection to external, so these exercise the external
+# connect/provision path regardless of whether the bundled DB is installed.
+_EXT_URL = "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp"
+
+
 def test_init_db_connection_failure_no_sudo(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value="connection refused"), \
          patch("os.getuid", return_value=1000):
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--db-url", _EXT_URL])
     assert result.exit_code != 0
     assert "Re-run with sudo" in result.output
     assert "init" in result.output
@@ -231,7 +238,7 @@ def test_init_db_auto_provision_as_root(tmp_config):
          patch(_INIT_PATCHES["post_grants"]), \
          patch(_INIT_PATCHES["start"]):
         mock_test.side_effect = ["connection refused", None]
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--db-url", _EXT_URL])
     assert result.exit_code == 0, result.output
     mock_prov.assert_called_once()
 
@@ -241,7 +248,7 @@ def test_init_db_provision_failure_as_root(tmp_config):
     with patch(_INIT_PATCHES["test_db"], return_value="connection refused"), \
          patch("os.getuid", return_value=0), \
          patch("celerp.cli._provision_db", side_effect=RuntimeError("pg not running")):
-        result = runner.invoke(main, ["init"])
+        result = runner.invoke(main, ["init", "--db-url", _EXT_URL])
     assert result.exit_code != 0
     assert "Provisioning failed" in result.output
 
@@ -441,7 +448,7 @@ def test_init_force_yes_wipes_db_and_files(tmp_config, tmp_path, monkeypatch):
          patch(_INIT_PATCHES["run_migrations"]), \
          patch(_INIT_PATCHES["post_grants"]), \
          patch(_INIT_PATCHES["start"]):
-        result = runner.invoke(main, ["init", "--force", "--yes"])
+        result = runner.invoke(main, ["init", "--force", "--yes", "--db-url", _EXT_URL])
     assert result.exit_code == 0, result.output
     prov.assert_called_once()           # DB wiped
     assert not att.exists() and not ai.exists()   # files removed

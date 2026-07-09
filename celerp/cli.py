@@ -273,6 +273,176 @@ def _test_db(db_url: str) -> str | None:
         return str(e)
 
 
+# ── Database mode resolution (external vs embedded) ────────────────────────────
+#
+# `celerp init` supports two ways to reach Postgres:
+#   external — a PostgreSQL server the user (or the droplet/apt) already runs.
+#   embedded — a self-contained cluster we boot from bundled binaries when the
+#              user has no server. See celerp.embedded_pg.
+# The rule is "an existing server always wins": embedded is only a fallback so
+# a machine with a real Postgres never ends up with two postmasters.
+
+
+def _is_root() -> bool:
+    """True only where we can `sudo -u postgres` to provision (POSIX, uid 0).
+
+    Guarded with hasattr because os.getuid() does not exist on Windows — the old
+    unguarded call raised AttributeError instead of showing guidance there.
+    """
+    return hasattr(os, "getuid") and os.getuid() == 0
+
+
+def _classify_probe(err: str | None) -> str:
+    """Map a connection attempt's outcome to server reachability.
+
+    Returns:
+      "ok"              — connected; server up and the target DB exists.
+      "needs_provision" — server is up but the role/database is missing or auth
+                          failed; external provisioning (root) can fix it.
+      "unreachable"     — nothing is listening (connection refused / timeout).
+
+    "needs_provision" still means a server EXISTS, so init stays in external
+    mode rather than booting an embedded cluster beside it.
+    """
+    if err is None:
+        return "ok"
+    low = err.lower()
+    # Server answered, but the role/db isn't set up yet, or auth was rejected.
+    if (
+        "does not exist" in low
+        or "authentication failed" in low
+        or "no password supplied" in low
+        or "role" in low and "does not exist" in low
+    ):
+        return "needs_provision"
+    # Nothing accepted the connection.
+    return "unreachable"
+
+
+def _resolve_db_mode(
+    *,
+    db_url: str | None,
+    server_reachable: bool | None,
+    provider_available: bool,
+    want_embedded: bool,
+    no_embedded: bool,
+    existing_embedded: bool | None = None,
+) -> tuple[str, str | None]:
+    """Pure decision function for `celerp init`'s database mode.
+
+    Returns (mode, error_kind) where mode is "external" | "embedded" | "error".
+    Kept side-effect-free so the whole branch table can be unit-tested without a
+    database.
+
+    Args:
+      db_url: explicit --db-url; taken at face value (external), never probed.
+      server_reachable: result of probing the default host; None when not probed.
+      provider_available: whether the embedded backend can run here.
+      want_embedded/no_embedded: the --embedded / --no-embedded overrides.
+      existing_embedded: the mode of an already-initialized instance (True/False),
+        or None for a fresh install. On `--force` this PRESERVES the instance's
+        mode so re-initializing an external install (e.g. a droplet) never flips
+        to embedded just because its server was momentarily unreachable.
+
+    Precedence: conflicting-flags → db_url → --embedded → --no-embedded →
+    existing config's mode → probe.
+    """
+    if want_embedded and no_embedded:
+        return ("error", "conflicting_flags")
+    if db_url and want_embedded:
+        # An explicit external URL and "force embedded" are contradictory.
+        return ("error", "db_url_with_embedded")
+    if db_url:
+        return ("external", None)
+    if want_embedded:
+        return ("embedded", None) if provider_available else ("error", "no_provider")
+    if no_embedded:
+        # User requires external. Reachable → use it; otherwise fail with external
+        # guidance rather than silently starting a cluster.
+        return ("external", None) if server_reachable else ("error", "no_server_external_only")
+    if existing_embedded is True:
+        return ("embedded", None) if provider_available else ("error", "no_provider")
+    if existing_embedded is False:
+        return ("external", None)
+    # Fresh install, no overrides: an existing server always wins.
+    if server_reachable:
+        return ("external", None)
+    if provider_available:
+        return ("embedded", None)
+    return ("error", "no_server_no_provider")
+
+
+def _emit_db_error(kind: str, db_url: str) -> None:
+    """Print actionable guidance for a resolve/connect failure (stderr)."""
+    if kind == "conflicting_flags":
+        click.echo("  ✗ --embedded and --no-embedded are mutually exclusive.", err=True)
+        return
+    if kind == "db_url_with_embedded":
+        click.echo(
+            "  ✗ --embedded cannot be combined with --db-url (which selects an "
+            "external server).",
+            err=True,
+        )
+        return
+    if kind == "no_provider":
+        click.echo(
+            f"  ✗ Embedded PostgreSQL is not available on this platform ({sys.platform}).",
+            err=True,
+        )
+        click.echo(
+            "\nInstall PostgreSQL and re-run, or use a supported platform "
+            "(Linux x86_64/arm64 — glibc or musl — or Windows x64).",
+            err=True,
+        )
+        if sys.platform == "darwin":
+            click.echo(
+                "On macOS 26 or newer: pip install celerp-postgres — then re-run "
+                "`celerp init` for the bundled database.",
+                err=True,
+            )
+        return
+    # no_server_external_only / no_server_no_provider: nothing was listening.
+    click.echo(f"  ✗ No PostgreSQL server found at {db_url}.", err=True)
+    if kind == "no_server_external_only":
+        click.echo(
+            "\n--no-embedded was set, so no cluster was started. Install and start "
+            "PostgreSQL, then re-run `celerp init`.",
+            err=True,
+        )
+        return
+    # no_server_no_provider — embedded unavailable AND no server.
+    click.echo(
+        "\nInstall PostgreSQL and start it, then re-run `celerp init` — or use a "
+        "supported platform (Linux x86_64/arm64 — glibc or musl — or Windows x64) "
+        "to get the bundled database automatically.",
+        err=True,
+    )
+    if sys.platform.startswith("linux"):
+        click.echo("  e.g.  sudo apt install postgresql && sudo service postgresql start", err=True)
+
+
+def ensure_database(cfg: dict) -> None:
+    """Boot the embedded cluster for a DB-touching command, if this install uses
+    one, and refresh the connection URI in `cfg` in place.
+
+    No-op for external mode (never imports the embedded provider, so external
+    installs — including every droplet — are unaffected). Idempotent: safe to
+    call from every command that reads cfg["database"]["url"].
+    """
+    db = cfg.get("database", {})
+    if not db.get("embedded"):
+        return
+    from celerp import embedded_pg
+
+    config_dir = _config_path().parent
+    # Re-derive the URI on every boot rather than trusting the stored one: the
+    # unix-socket path lives under a runtime dir that a reboot can relocate.
+    db["url"] = embedded_pg.ensure_cluster(config_dir)
+    bd = embedded_pg.bin_dir()
+    if bd:
+        cfg.setdefault("backup", {}).setdefault("pg_bin_dir", bd)
+
+
 def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
     """Run alembic upgrade head, auto-stamping past any already-applied revisions.
 
@@ -464,6 +634,103 @@ def _reconcile_after_migrate(db_url: str) -> None:
         engine.dispose()
 
 
+def _wipe_attachment_dirs(purge_dirs: list) -> None:
+    """Remove attached-file directories on --force so a re-init is truly fresh."""
+    import shutil
+    for _d in purge_dirs:
+        if _d.exists():
+            shutil.rmtree(_d, ignore_errors=True)
+            click.echo(f"  ✓ Removed {_d.resolve()}")
+
+
+def _init_embedded(cfg: dict, config_dir: "Path", *, force: bool, purge_dirs: list) -> None:
+    """Provision the bundled PostgreSQL cluster and point cfg at it.
+
+    No sudo, no ownership/grant dance: the app connects as the cluster superuser
+    over a unix socket, so it owns every object it creates.
+    """
+    from celerp import embedded_pg
+
+    if force:
+        click.echo("Wiping embedded database for fresh init...")
+        embedded_pg.wipe(config_dir)
+        _wipe_attachment_dirs(purge_dirs)
+        click.echo("  ✓ Database ready (fresh)")
+
+    click.echo("Starting embedded PostgreSQL...")
+    uri = embedded_pg.ensure_cluster(config_dir)
+    cfg["database"]["url"] = uri
+    cfg["database"]["embedded"] = True
+    bd = embedded_pg.bin_dir()
+    if bd:
+        cfg.setdefault("backup", {})["pg_bin_dir"] = bd
+    click.echo(f"  ✓ Using embedded PostgreSQL at {embedded_pg.pgdata_dir(config_dir)}")
+
+
+def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: list) -> None:
+    """Connect to (and, as root, provision) an external PostgreSQL server.
+
+    This is the pre-existing path, preserved verbatim for the droplet/self-hosted
+    contract: explicit --db-url, root auto-provisioning via `sudo -u postgres`,
+    and the same connect-or-guidance flow for non-root.
+    """
+    if force:
+        click.echo("Wiping database for fresh init...")
+        db_url_for_wipe = db_url or _DEFAULT_DB_URL
+        try:
+            _provision_db(db_url_for_wipe, drop_existing=True)
+        except RuntimeError as e:
+            click.echo(f"  ✗ DB wipe failed: {e}", err=True)
+            click.echo("\nEnsure PostgreSQL is running and you have sudo access.", err=True)
+            sys.exit(1)
+        click.echo("  ✓ Database ready (fresh)")
+        _wipe_attachment_dirs(purge_dirs)
+        return
+
+    click.echo("Connecting to database...")
+    err = _test_db(cfg["database"]["url"])
+    if not err:
+        click.echo("  ✓ Database connection OK")
+        return
+    if _is_root():
+        click.echo("  · Could not connect — attempting to provision database...")
+        try:
+            _provision_db(cfg["database"]["url"])
+        except RuntimeError as e:
+            click.echo(f"  ✗ Provisioning failed: {e}", err=True)
+            click.echo("\nEnsure PostgreSQL is installed and running, then retry with sudo.", err=True)
+            sys.exit(1)
+        err = _test_db(cfg["database"]["url"])
+        if err:
+            click.echo(f"  ✗ Still could not connect after provisioning: {err}", err=True)
+            sys.exit(1)
+        click.echo("  ✓ Database connection OK")
+        return
+    # Non-root and the server rejected us. On POSIX, sudo can provision; on
+    # Windows there is no `sudo -u postgres`, so only suggest it where it works.
+    click.echo(f"  ✗ Could not connect: {err}", err=True)
+    import shutil
+    real_bin = shutil.which("celerp") or "celerp"
+    if hasattr(os, "getuid"):
+        click.echo(
+            f"\nRe-run with sudo to have Celerp create the database automatically:\n"
+            f"  sudo {real_bin} init\n"
+            "\nOr create it manually:\n"
+            "  sudo -u postgres psql -c \"CREATE USER celerp WITH PASSWORD 'celerp';\"\n"
+            "  sudo -u postgres psql -c \"CREATE DATABASE celerp OWNER celerp;\"",
+            err=True,
+        )
+    else:
+        click.echo(
+            "\nCreate the database and role on your PostgreSQL server, then re-run "
+            "`celerp init --db-url ...`:\n"
+            "  CREATE USER celerp WITH PASSWORD 'celerp';\n"
+            "  CREATE DATABASE celerp OWNER celerp;",
+            err=True,
+        )
+    sys.exit(1)
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -484,8 +751,23 @@ def main() -> None:
          "WITHOUT launching the servers. For service-managed/headless installs "
          "where a process manager (e.g. systemd) runs `celerp start`.",
 )
-def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start):
-    """Initialize Celerp: write config and run database migrations."""
+@click.option(
+    "--embedded", "want_embedded", is_flag=True,
+    help="Force the bundled PostgreSQL even if a server is reachable. "
+         "Cannot be combined with --db-url.",
+)
+@click.option(
+    "--no-embedded", "no_embedded", is_flag=True,
+    help="Never fall back to the bundled PostgreSQL; require an external server.",
+)
+def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, want_embedded, no_embedded):
+    """Initialize Celerp: write config and run database migrations.
+
+    With no --db-url, init uses an existing PostgreSQL server if one is running,
+    and otherwise boots a self-contained bundled cluster (no sudo, no system
+    service). An existing server always wins; pass --embedded / --no-embedded to
+    override the auto-detection.
+    """
     config_path = _config_path()
 
     if config_path.exists() and not force:
@@ -493,16 +775,49 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start):
         click.echo("Run `celerp migrate` to apply updates, or `celerp init --force` to reconfigure.")
         return
 
+    from celerp import embedded_pg
+
+    # ── Resolve external vs embedded ──────────────────────────────────────────
+    # On --force, config_path exists: preserve the initialized instance's mode so
+    # re-init never flips an external install (e.g. a droplet) to embedded.
+    existing_cfg = _read_config() if config_path.exists() else {}
+    existing_embedded = (
+        bool(existing_cfg.get("database", {}).get("embedded")) if existing_cfg else None
+    )
+    provider_available = embedded_pg.is_available()
+    # Probe the default host only when nothing else determines the mode — an
+    # explicit --db-url/--embedded, or a known existing mode, needs no probe.
+    server_reachable: bool | None = None
+    need_probe = not db_url and not want_embedded and (no_embedded or existing_embedded is None)
+    if need_probe:
+        server_reachable = _classify_probe(_test_db(_DEFAULT_DB_URL)) in ("ok", "needs_provision")
+    mode, error_kind = _resolve_db_mode(
+        db_url=db_url,
+        server_reachable=server_reachable,
+        provider_available=provider_available,
+        want_embedded=want_embedded,
+        no_embedded=no_embedded,
+        existing_embedded=existing_embedded,
+    )
+    if mode == "error":
+        _emit_db_error(error_kind, db_url or _DEFAULT_DB_URL)
+        sys.exit(1)
+
+    config_dir = config_path.parent
+
     if force:
-        # --force is destructive: it drops the database AND removes attached files.
-        # init can run under sudo, so warn (with full paths) and confirm before wiping.
+        # --force is destructive: it wipes the database AND attached files.
+        # init can run under sudo, so warn (with full paths) and confirm first.
         from celerp.config import settings
         _purge_dirs = [
             settings.data_dir / "static" / "attachments",
             settings.data_dir / "ai_uploads",
         ]
         click.echo("⚠  `init --force` permanently WIPES this instance:")
-        click.echo(f"     - database: {db_url or _DEFAULT_DB_URL}")
+        if mode == "embedded":
+            click.echo(f"     - database: embedded cluster at {embedded_pg.pgdata_dir(config_dir)}")
+        else:
+            click.echo(f"     - database: {db_url or _DEFAULT_DB_URL}")
         for _d in _purge_dirs:
             click.echo(f"     - files:    {_d.resolve()}")
         click.echo("   Make sure you have a backup.")
@@ -523,62 +838,10 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start):
         "modules": {"enabled": enabled_modules},
     }
 
-    # --force: drop + recreate the database so the setup wizard appears fresh
-    if force:
-        click.echo("Wiping database for fresh init...")
-        db_url_for_wipe = db_url or _DEFAULT_DB_URL
-        try:
-            _provision_db(db_url_for_wipe, drop_existing=True)
-        except RuntimeError as e:
-            click.echo(f"  ✗ DB wipe failed: {e}", err=True)
-            click.echo(
-                "\nEnsure PostgreSQL is running and you have sudo access.",
-                err=True,
-            )
-            sys.exit(1)
-        click.echo("  ✓ Database ready (fresh)")
-        # Wipe attached files too, so a forced re-init is a truly fresh instance and no
-        # orphaned files remain. Recreated automatically on next boot.
-        import shutil
-        for _d in _purge_dirs:
-            if _d.exists():
-                shutil.rmtree(_d, ignore_errors=True)
-                click.echo(f"  ✓ Removed {_d.resolve()}")
+    if mode == "embedded":
+        _init_embedded(cfg, config_dir, force=force, purge_dirs=_purge_dirs if force else [])
     else:
-        # Test DB connection — auto-provision if running as root
-        click.echo("Connecting to database...")
-        err = _test_db(cfg["database"]["url"])
-        if err:
-            if os.getuid() == 0:
-                click.echo("  · Could not connect — attempting to provision database...")
-                try:
-                    _provision_db(cfg["database"]["url"])
-                except RuntimeError as e:
-                    click.echo(f"  ✗ Provisioning failed: {e}", err=True)
-                    click.echo(
-                        "\nEnsure PostgreSQL is installed and running, then retry with sudo.",
-                        err=True,
-                    )
-                    sys.exit(1)
-                # Verify connection now works
-                err = _test_db(cfg["database"]["url"])
-                if err:
-                    click.echo(f"  ✗ Still could not connect after provisioning: {err}", err=True)
-                    sys.exit(1)
-            else:
-                click.echo(f"  ✗ Could not connect: {err}", err=True)
-                import shutil
-                real_bin = shutil.which("celerp") or "celerp"
-                click.echo(
-                    f"\nRe-run with sudo to have Celerp create the database automatically:\n"
-                    f"  sudo {real_bin} init\n"
-                    "\nOr create it manually:\n"
-                    "  sudo -u postgres psql -c \"CREATE USER celerp WITH PASSWORD 'celerp';\"\n"
-                    "  sudo -u postgres psql -c \"CREATE DATABASE celerp OWNER celerp;\"",
-                    err=True,
-                )
-                sys.exit(1)
-        click.echo("  ✓ Database connection OK")
+        _init_external(cfg, force=force, db_url=db_url, purge_dirs=_purge_dirs if force else [])
 
     # Fix table ownership before migrations (covers tables created by postgres superuser)
     db_url_val = cfg["database"]["url"]
@@ -720,6 +983,7 @@ def reset_password(email: str, password: str) -> None:
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
+    ensure_database(cfg)
     db_url = cfg["database"]["url"]
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
     try:
@@ -748,6 +1012,7 @@ def start():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
+    ensure_database(cfg)
     _start(cfg)
 
 
@@ -761,6 +1026,7 @@ def migrate(db_url):
         if not cfg:
             click.echo("Not initialized. Run `celerp init` first.", err=True)
             sys.exit(1)
+        ensure_database(cfg)
         url = cfg["database"]["url"]
     click.echo("Running migrations...")
     _run_migrations(url)
@@ -780,11 +1046,14 @@ def status():
         click.echo("Run `celerp init` to initialize.")
         return
 
+    is_embedded = cfg.get("database", {}).get("embedded")
+    ensure_database(cfg)
     db_url = cfg["database"]["url"]
     # Mask password in display
     import re
     display_url = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", db_url)
-    click.echo(f"Database: {display_url}")
+    prefix = "embedded (bundled PostgreSQL) — " if is_embedded else ""
+    click.echo(f"Database: {prefix}{display_url}")
 
     err = _test_db(db_url)
     click.echo(f"  DB connection: {'✓ OK' if not err else f'✗ {err}'}")
@@ -831,6 +1100,7 @@ def demo():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
+    ensure_database(cfg)
     env = _config_to_env(cfg)
     pkg_root = Path(__file__).parent.parent
     script = pkg_root / "scripts" / "seed_demo.py"
@@ -853,6 +1123,7 @@ def upgrade():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
+    ensure_database(cfg)
     _run_migrations(cfg["database"]["url"])
     click.echo("✓ Upgrade complete")
 
