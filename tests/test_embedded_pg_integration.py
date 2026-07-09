@@ -130,6 +130,98 @@ def test_backup_find_pg_tool_resolves_bundled(config_dir, monkeypatch):
     assert resolved.startswith(embedded_pg.bin_dir())
 
 
+def test_crash_recovery(config_dir):
+    """kill -9 the postmaster → ensure_cluster recovers (PG's own stale-pidfile
+    handling) → data intact."""
+    import signal
+    import time
+
+    uri = embedded_pg.ensure_cluster(config_dir)
+    engine = create_engine(_sync(uri))
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE crashkeep (v int)"))
+        conn.execute(text("INSERT INTO crashkeep VALUES (7)"))
+    engine.dispose()
+
+    pid = int((embedded_pg.pgdata_dir(config_dir) / "postmaster.pid").read_text().splitlines()[0])
+    os.kill(pid, signal.SIGKILL)
+    time.sleep(1)
+
+    uri2 = embedded_pg.ensure_cluster(config_dir)  # must recover, not raise
+    engine2 = create_engine(_sync(uri2))
+    try:
+        with engine2.connect() as conn:
+            assert conn.execute(text("SELECT v FROM crashkeep")).scalar() == 7
+    finally:
+        engine2.dispose()
+
+
+def test_second_process_no_double_postmaster(config_dir):
+    """ensure_cluster from a second interpreter while running: connects fine and
+    exactly one postmaster serves this pgdata."""
+    import subprocess
+    import sys
+
+    embedded_pg.ensure_cluster(config_dir)
+    code = (
+        "import os; os.environ['CELERP_CONFIG']=r'%s';"
+        "from celerp import embedded_pg;"
+        "from pathlib import Path;"
+        "uri = embedded_pg.ensure_cluster(Path(r'%s'));"
+        "print(uri)" % (os.environ["CELERP_CONFIG"], config_dir)
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    pid_file = embedded_pg.pgdata_dir(config_dir) / "postmaster.pid"
+    assert pid_file.exists()  # still exactly the one cluster
+
+
+def test_backup_roundtrip_via_bundled_tools(config_dir, monkeypatch):
+    """pg_bin_dir wiring proven by USE: dump the embedded DB with the bundled
+    pg_dump and restore it with the bundled pg_restore."""
+    import subprocess
+
+    uri = embedded_pg.ensure_cluster(config_dir)
+    engine = create_engine(_sync(uri))
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE bk (v text)"))
+        conn.execute(text("INSERT INTO bk VALUES ('roundtrip')"))
+    engine.dispose()
+
+    from celerp.config import settings
+    from celerp.services import backup
+
+    monkeypatch.setattr(settings, "pg_bin_dir", embedded_pg.bin_dir())
+    pg_dump = backup._find_pg_tool("pg_dump")
+    pg_restore = backup._find_pg_tool("pg_restore")
+
+    import re
+
+    def _db(u: str, name: str) -> str:
+        # swap ONLY the database path segment — the socket dir also contains
+        # the string "celerp" (/tmp/celerp-pg-<hash>)
+        return re.sub(r"/celerp(\?|$)", rf"/{name}\1", u, count=1)
+
+    dump = config_dir / "bk.dump"
+    sync = _sync(uri)
+    r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", sync],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    engine = create_engine(_db(sync, "postgres"), isolation_level="AUTOCOMMIT")
+    with engine.connect() as conn:
+        conn.execute(text("CREATE DATABASE bkrestore"))
+    engine.dispose()
+    r = subprocess.run([pg_restore, "-d", _db(sync, "bkrestore"), str(dump)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    engine = create_engine(_db(sync, "bkrestore"))
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT v FROM bk")).scalar() == "roundtrip"
+    finally:
+        engine.dispose()
+
+
 # ── CLI-level (real cluster, migrations mocked for speed) ──────────────────────
 
 def test_init_embedded_writes_marker_and_boots(config_dir):

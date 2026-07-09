@@ -25,12 +25,13 @@ Third-party components included in packaged desktop builds are governed by their
 own license files; see licenses/.
 
 Bundled PostgreSQL (pip distribution): on supported platforms the pip package
-declares a dependency on `pgserver`, whose wheels embed PostgreSQL server binaries
-so `celerp init` can run a self-contained database with no separate install.
-PostgreSQL is distributed under the PostgreSQL License (a permissive OSI-approved
-license); its full text and copyright notice ship inside the pgserver wheel. These
-binaries are used unmodified and only when no external PostgreSQL server is
-configured. `pgserver` itself is licensed by its upstream author; see
-https://github.com/orm011/pgserver.
+declares a dependency on `celerp-postgres` (MIT), whose wheels embed PostgreSQL
+server binaries and client tools so `celerp init` can run a self-contained
+database with no separate install. PostgreSQL is distributed under the PostgreSQL
+License (a permissive OSI-approved license); its full text and copyright notice
+ship inside the celerp-postgres wheels, which repackage binaries built by the
+theseus-rs/postgresql-binaries project. These binaries are used unmodified and
+only when no external PostgreSQL server is configured. See
+https://github.com/celerp/celerp-postgres.
 
 For commercial, OEM, or white-label inquiries: https://celerp.com

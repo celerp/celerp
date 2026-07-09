@@ -71,10 +71,12 @@ To change ports after init, edit `~/.config/celerp/config.toml` directly.
 2. else a PostgreSQL server reachable on `localhost:5432` → use it (as root, init
    provisions the role/database via `sudo -u postgres psql`; otherwise it prints the
    `CREATE USER`/`CREATE DATABASE` to run).
-3. else the **bundled** PostgreSQL — a self-contained cluster under
-   `~/.config/celerp/pgdata`, started from binaries shipped in the `pgserver` wheel. No
-   `sudo`, no system service. Available on CPython 3.10–3.12 for Linux x86_64, macOS, and
-   Windows x64; elsewhere init asks you to install PostgreSQL.
+3. else the **bundled** PostgreSQL 17 — a self-contained cluster under
+   `~/.config/celerp/pgdata`, started from binaries shipped in the
+   [`celerp-postgres`](https://github.com/celerp/celerp-postgres) wheel. No `sudo`, no
+   system service. Available on Linux x86_64/arm64 (glibc and musl/Alpine) and Windows
+   x64, any CPython; on macOS 26+ opt in with `pip install celerp-postgres`. Elsewhere
+   init asks you to install PostgreSQL.
 
 Override the detection with `--embedded` / `--no-embedded`. The chosen mode is written to
 `config.toml` as `[database] embedded = true|<absent>` and preserved across `--force`

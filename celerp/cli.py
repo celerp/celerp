@@ -386,16 +386,20 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         return
     if kind == "no_provider":
         click.echo(
-            "  ✗ Embedded PostgreSQL is not available on this platform "
-            f"(Python {sys.version_info.major}.{sys.version_info.minor}, "
-            f"{sys.platform}).",
+            f"  ✗ Embedded PostgreSQL is not available on this platform ({sys.platform}).",
             err=True,
         )
         click.echo(
-            "\nInstall PostgreSQL and re-run, or use a supported Python "
-            "(CPython 3.10–3.12 on Linux x86_64, macOS, or Windows x64).",
+            "\nInstall PostgreSQL and re-run, or use a supported platform "
+            "(Linux x86_64/arm64 — glibc or musl — or Windows x64).",
             err=True,
         )
+        if sys.platform == "darwin":
+            click.echo(
+                "On macOS 26 or newer: pip install celerp-postgres — then re-run "
+                "`celerp init` for the bundled database.",
+                err=True,
+            )
         return
     # no_server_external_only / no_server_no_provider: nothing was listening.
     click.echo(f"  ✗ No PostgreSQL server found at {db_url}.", err=True)
@@ -409,8 +413,8 @@ def _emit_db_error(kind: str, db_url: str) -> None:
     # no_server_no_provider — embedded unavailable AND no server.
     click.echo(
         "\nInstall PostgreSQL and start it, then re-run `celerp init` — or use a "
-        "supported Python (CPython 3.10–3.12 on Linux x86_64, macOS, or Windows "
-        "x64) to get the bundled database automatically.",
+        "supported platform (Linux x86_64/arm64 — glibc or musl — or Windows x64) "
+        "to get the bundled database automatically.",
         err=True,
     )
     if sys.platform.startswith("linux"):

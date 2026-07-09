@@ -161,11 +161,11 @@ def test_is_root_true_as_uid_0(monkeypatch):
 
 # ── error messaging ───────────────────────────────────────────────────────────
 
-def test_no_provider_message_names_supported_python(capsys):
+def test_no_provider_message_names_supported_platforms(capsys):
     _emit_db_error("no_provider", "postgresql://x/y")
     err = capsys.readouterr().err
     assert "not available on this platform" in err
-    assert "3.10" in err  # names the supported Python range
+    assert "x86_64/arm64" in err  # names the supported platform set
 
 
 def test_no_server_no_provider_message_suggests_install(capsys):
