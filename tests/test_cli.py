@@ -374,6 +374,9 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep", side_effect=fake_sleep),
+        # readiness probing is not under test here, and its sleeps would
+        # consume fake_sleep's budget before the supervisor loop runs
+        patch("celerp.cli._wait_ready"),
         patch("signal.signal"),
     ):
         with pytest.raises(SystemExit) as exc:
@@ -414,6 +417,7 @@ def test_start_exits_without_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep"),
+        patch("celerp.cli._wait_ready"),  # not under test; would spin on closed ports
         patch("signal.signal"),
     ):
         with pytest.raises(SystemExit) as exc:
@@ -465,6 +469,49 @@ def test_init_force_aborts_on_no_keeps_everything(tmp_config, tmp_path, monkeypa
     prov.assert_not_called()            # DB not wiped
     stop.assert_not_called()
     assert att.exists() and ai.exists() # files kept
+
+
+# ── _wait_ready ───────────────────────────────────────────────────────────────
+
+def test_wait_ready_announces_when_port_opens(capsys):
+    """The ready line appears only once the port actually accepts connections."""
+    import socket
+    import threading
+    import time as _time
+
+    from celerp.cli import _wait_ready
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    def _listen_later():
+        _time.sleep(0.6)
+        srv.listen(1)
+
+    t = threading.Thread(target=_listen_later)
+    t.start()
+    _wait_ready({"UI ": (FakeProc(), port)}, timeout=10)
+    t.join()
+    srv.close()
+    out = capsys.readouterr().out
+    assert "✓ UI  ready → http://localhost:" in out
+
+
+def test_wait_ready_skips_dead_process(capsys):
+    """A crashed server never gets a ready line (the supervisor reports it)."""
+    from celerp.cli import _wait_ready
+
+    class DeadProc:
+        def poll(self):
+            return 1
+
+    _wait_ready({"API": (DeadProc(), 1)}, timeout=2)
+    assert "ready" not in capsys.readouterr().out
 
 
 # ── `python -m celerp` module entrypoint ────────────────────────────────────

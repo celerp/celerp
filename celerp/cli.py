@@ -897,6 +897,33 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     _start(cfg)
 
 
+def _wait_ready(servers: dict, timeout: float = 180.0) -> None:
+    """Print '✓ ready → URL' for each server as its port starts accepting
+    connections. Returns early for a server whose process dies (the supervisor
+    loop reports the crash); after `timeout` prints a still-starting note
+    rather than blocking forever on a very slow machine."""
+    import socket
+
+    pending = dict(servers)
+    deadline = time.time() + timeout
+    while pending and time.time() < deadline:
+        for name, (proc, port) in list(pending.items()):
+            if proc.poll() is not None:
+                del pending[name]  # crashed — supervisor loop reports it
+                continue
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                    pass
+            except OSError:
+                continue
+            click.echo(f"  ✓ {name} ready → http://localhost:{port}")
+            del pending[name]
+        if pending:
+            time.sleep(0.3)
+    for name, (_proc, port) in pending.items():
+        click.echo(f"  … {name} is still starting on port {port} — hang tight.")
+
+
 def _start(cfg: dict) -> None:
     """Launch API and UI servers and block until one exits or Ctrl+C.
 
@@ -928,12 +955,17 @@ def _start(cfg: dict) -> None:
     ui_port = cfg["server"]["ui_port"]
 
     click.echo("Starting Celerp...")
-    click.echo(f"  API → http://localhost:{api_port}")
-    click.echo(f"  UI  → http://localhost:{ui_port}")
-    click.echo("Press Ctrl+C to stop.\n")
+    click.echo(f"  API starting on port {api_port} ...")
+    click.echo(f"  UI  starting on port {ui_port} ...")
 
     api_proc = _spawn_api(env, api_port)
     ui_proc = _spawn_ui(env, ui_port)
+
+    # Announce each server only once it actually accepts connections — printing
+    # the URLs up front sent users to a dead localhost:8080 while the UI was
+    # still importing modules.
+    _wait_ready({"API": (api_proc, api_port), "UI ": (ui_proc, ui_port)})
+    click.echo("Press Ctrl+C to stop.\n")
 
     def _shutdown(sig, frame):
         click.echo("\nShutting down...")
