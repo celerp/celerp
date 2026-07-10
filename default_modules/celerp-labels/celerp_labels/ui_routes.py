@@ -404,7 +404,10 @@ def _field_row_compact(
             f'<input type="hidden" name="fields[{idx}][type]" value="{ftype}" class="fld-type">'
             f'<input type="hidden" name="fields[{idx}][x]" value="{x_val}" class="fld-x">'
             f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
-            f'<input type="hidden" name="fields[{idx}][fontSize]" value="{font_size}" class="fld-fs">'
+            f'<input type="number" name="fields[{idx}][fontSize]" value="{font_size}" class="form-input form-input--sm fld-fs"'
+            f' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"'
+            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};width:60px;"'
+            f' oninput="labelEditorUpdatePreview()">'
             f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
             f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
             f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
@@ -583,7 +586,7 @@ def _editor_panel(
       currentVal = k;
       display.value = v || '';
       if (hiddenIn) hiddenIn.value = k;
-      // Sync fld-type, fld-label, and fld-bh visibility in the parent row
+      // Sync fld-type, fld-label, and the fld-fs / fld-bh control visibility in the parent row
       var row = wrapper.closest('.field-row-compact');
       if (row) {{
         var typeIn = row.querySelector('.fld-type');
@@ -591,6 +594,8 @@ def _editor_panel(
         if (typeIn) typeIn.value = ft;
         var labelIn = row.querySelector('.fld-label');
         if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
+        var fsIn = row.querySelector('.fld-fs');
+        if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
         var bhIn = row.querySelector('.fld-bh');
         if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
       }}
@@ -665,7 +670,9 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">' +
+        '<input type="number" name="fields[' + idx + '][fontSize]" value="" class="form-input form-input--sm fld-fs"' +
+        ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
+        ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
         '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
         ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
@@ -782,7 +789,8 @@ def _editor_panel(
       }} else if (ftype === 'barcode_text') {{
         block.className = 'label-field-block label-field-block--barcode-text';
         block.style.fontFamily = 'monospace';
-        block.style.fontSize = '11px';
+        // Honor a chosen font size; keep the 11px default when none is set.
+        block.style.fontSize = (fsEl && fsEl.value !== '') ? (scaledFs + 'px') : '11px';
         block.textContent = sample;
       }} else if (ftype === 'qr') {{
         block.className = 'label-field-block label-field-block--qr';
@@ -1055,12 +1063,18 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
                 bc_w = max(20.0, min(w_mm - left_mm - 2.0, 30.0))
                 field_lines.append(_barcode_img_tag(val, module_height=bc_height, wrap_style=pos, width_mm=bc_w))
             elif ftype == "barcode_text":
-                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human">{val}</span></div>')
+                fs = f.get("fontSize")
+                span_style = f' style="font-size:{float(fs)}pt;"' if fs not in (None, "") else ""
+                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{val}</span></div>')
             elif ftype == "qr":
                 field_lines.append(_qr_img_tag(val, wrap_style=pos))
             else:
+                # Honor the designer's per-field font size (points) when set; otherwise the
+                # label-item default applies, so existing labels look exactly as before.
+                fs = f.get("fontSize")
+                fs_style = f"font-size:{float(fs)}pt;" if fs not in (None, "") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(f'<div class="label-field" style="{pos}">{display}</div>')
+                field_lines.append(f'<div class="label-field" style="{pos}{fs_style}">{display}</div>')
         label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
 
     html = f"""<!DOCTYPE html>
