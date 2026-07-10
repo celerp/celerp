@@ -374,6 +374,9 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep", side_effect=fake_sleep),
+        # readiness probing is not under test here, and its sleeps would
+        # consume fake_sleep's budget before the supervisor loop runs
+        patch("celerp.cli._wait_ready"),
         patch("signal.signal"),
     ):
         with pytest.raises(SystemExit) as exc:
@@ -414,6 +417,7 @@ def test_start_exits_without_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep"),
+        patch("celerp.cli._wait_ready"),  # not under test; would spin on closed ports
         patch("signal.signal"),
     ):
         with pytest.raises(SystemExit) as exc:
