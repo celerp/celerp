@@ -197,7 +197,7 @@ async def cloud_disconnect() -> dict:
 async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
     """Apply a gateway token in the API process: persist config, start WS client."""
     import asyncio
-    from celerp.config import settings as _s, read_config, write_config
+    from celerp.config import settings as _s, persist_cloud_settings
     from celerp.gateway import client as _gw
 
     _s.gateway_token = token
@@ -210,18 +210,13 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
         _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
 
     try:
-        cfg = read_config()
-        if cfg:
-            cloud = cfg.setdefault("cloud", {})
-            cloud["token"] = token
-            cloud["instance_id"] = iid
-            if public_url:
-                cloud["public_url"] = public_url
-            if tos_version:
-                cloud["tos_version"] = tos_version
-            if _s.backup_encryption_key:
-                cloud["backup_encryption_key"] = _s.backup_encryption_key
-            write_config(cfg)
+        persist_cloud_settings(
+            token=token,
+            instance_id=iid,
+            public_url=public_url,
+            tos_version=tos_version,
+            backup_encryption_key=_s.backup_encryption_key,
+        )
     except Exception:
         pass
 
@@ -250,11 +245,11 @@ async def cloud_activate_api() -> dict:
     from celerp.config import settings as _s, ensure_instance_id
 
     iid = ensure_instance_id()
-    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
+    from celerp.gateway.state import activate_payload, relay_http_url as _rhu; relay_base = _rhu()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+            r = await c.post(f"{relay_base}/auth/activate", json=activate_payload(iid))
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}
     except httpx.TimeoutException:
@@ -453,8 +448,9 @@ async def cloud_claim_api(payload: dict) -> dict:
 
     # Claim succeeded — activate immediately (same process, same iid)
     try:
+        from celerp.gateway.state import activate_payload
         async with httpx.AsyncClient(timeout=10.0) as ac:
-            act_resp = await ac.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+            act_resp = await ac.post(f"{relay_base}/auth/activate", json=activate_payload(iid))
         if act_resp.status_code == 200:
             act_data = act_resp.json()
             token = act_data["gateway_token"]

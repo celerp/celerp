@@ -118,17 +118,29 @@ def ensure_instance_id() -> str:
     iid = str(_uuid.uuid4())
     settings.gateway_instance_id = iid
 
-    # Persist to config.toml if it exists (best-effort; silently skip on error)
+    # Persist to config.toml, creating it when missing - the id must survive
+    # restarts (best-effort; silently skip on error)
     try:
-        cfg = read_config()
-        if cfg:
-            cloud = cfg.setdefault("cloud", {})
-            cloud["instance_id"] = iid
-            write_config(cfg)
+        persist_cloud_settings(instance_id=iid)
     except Exception:
         pass
 
     return iid
+
+
+def persist_cloud_settings(**values: str) -> None:
+    """Write the given [cloud] settings into config.toml.
+
+    Creates the file when it does not exist yet (first boot of a packaged
+    install), so identity, token, and backup key survive restarts. Falsy
+    values are skipped, never erased.
+    """
+    cfg = read_config()
+    cloud = cfg.setdefault("cloud", {})
+    for key, value in values.items():
+        if value:
+            cloud[key] = value
+    write_config(cfg)
 
 
 def load_cloud_config() -> None:
