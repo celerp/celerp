@@ -119,27 +119,33 @@ async def test_public_share_view_contains_branding(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_contains_accept_cta(client: AsyncClient):
-    """Invoice share pages must have the Accept & import CTA."""
+async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient):
+    """The page is the sender's document, not a Celerp pitch: import and
+    download live as small footer links, and the old prominent CTA (giant
+    Accept button, signup pitch) stays gone."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok, "invoice")
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
-    assert "Accept this invoice" in r.text
+    assert "Import into Celerp" in r.text
     assert f"/accept?token={token}" in r.text
+    assert f"/share/{token}/bundle" in r.text
+    assert "Accept this" not in r.text
+    assert "Sign up free" not in r.text
+    assert "btn-accept" not in r.text
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_no_accept_cta_for_memo(client: AsyncClient):
-    """Memos have no Accept CTA."""
+async def test_public_share_view_no_import_link_for_memo(client: AsyncClient):
+    """Memos are not importable, so their footer has no import link."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok, "memo")
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
     assert r.status_code == 200
-    assert "Accept this" not in r.text
+    assert "Import into Celerp" not in r.text
 
 
 @pytest.mark.asyncio
@@ -332,14 +338,15 @@ async def test_list_public_view_renders_html(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_public_view_has_accept_cta(client: AsyncClient):
+async def test_list_public_view_has_quiet_import_link(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
-    assert "Accept this list" in r.text
+    assert "Import into Celerp" in r.text
     assert "Powered by Celerp" in r.text
+    assert "btn-accept" not in r.text
 
 
 @pytest.mark.asyncio
@@ -688,16 +695,50 @@ async def test_share_status_unknown_doc_404s(client: AsyncClient):
     assert r.status_code == 404
 
 
+def test_share_active_rule():
+    """The single rule every public endpoint gates on: revoked wins over
+    everything; otherwise the link lives strictly until its expiry instant."""
+    from datetime import datetime, timedelta, timezone
+    from celerp.models.share import DocShareToken
+    from celerp_docs.routes_share import _share_active
+
+    now = datetime.now(timezone.utc)
+    row = lambda **kw: DocShareToken(token="t", entity_id="doc:x", **kw)
+
+    assert _share_active(row(revoked_at=None, expires_at=None)) is True
+    assert _share_active(row(revoked_at=None, expires_at=now + timedelta(days=1))) is True
+    assert _share_active(row(revoked_at=None, expires_at=now - timedelta(seconds=1))) is False
+    # Exactly at the expiry instant the link is already off (strict >)
+    assert _share_active(row(revoked_at=None, expires_at=now)) is False
+    # Revoked beats a future expiry
+    assert _share_active(row(revoked_at=now, expires_at=now + timedelta(days=365))) is False
+
+
 @pytest.mark.asyncio
 async def test_share_expiry_validation(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/share",
-                          json={"expires_at": "not-a-date"}, headers=_h(tok))
-    assert r.status_code == 422
-    r = await client.post(f"/docs/{entity_id}/share",
-                          json={"expires_at": "2000-01-01"}, headers=_h(tok))
-    assert r.status_code == 422
+    for bad in ("not-a-date", "2026-02-30", "2099-12-31T10:00:00", "2000-01-01"):
+        r = await client.post(f"/docs/{entity_id}/share",
+                              json={"expires_at": bad}, headers=_h(tok))
+        assert r.status_code == 422, f"{bad!r} should be rejected"
+    # Nothing above may have activated the link
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_share_expiring_today_is_live_through_end_of_day(client: AsyncClient):
+    """The chosen date is inclusive: the link works until end of that day UTC."""
+    from datetime import datetime, timezone
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    today = datetime.now(timezone.utc).date().isoformat()
+    created = (await client.post(f"/docs/{entity_id}/share",
+                                 json={"expires_at": today}, headers=_h(tok))).json()
+    assert created["active"] is True
+    assert created["expires_at"] == today
+    assert (await client.get(f"/share/{created['token']}")).status_code == 200
 
 
 @pytest.mark.asyncio

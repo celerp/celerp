@@ -61,22 +61,18 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     tax = _fmt_money(doc.get("tax") or doc.get("tax_amount"), currency)
     total = _fmt_money(doc.get("total") or doc.get("total_amount"), currency)
 
-    # "Accept & import" CTA
-    accept_cta = ""
+    # Import stays a quiet footer link: the page is the sender's document, not
+    # a Celerp pitch. It only means something to recipients who also run
+    # Celerp; everyone else just views or prints. The signup path for new
+    # users lives on the accept page itself, one click away.
+    footer_links = ""
     if doc_type in ("invoice", "purchase_order", "quotation"):
-        verb = "Accept this invoice" if doc_type == "invoice" else (
-            "Accept this order" if doc_type == "purchase_order" else "Accept this quote"
-        )
         bundle_url = f"/share/{_esc(token)}/bundle"
-        accept_cta = f"""
-    <div class="accept-cta">
-      <p>Receiving this document? Import it directly into your Celerp account.</p>
-      <a class="btn-accept" href="{_esc(accept_url)}">{_esc(verb)}</a>
-      <p class="accept-sub">
-        No account? <a href="https://www.celerp.com" target="_blank">Sign up free</a> — your document will be pre-loaded.
-        &nbsp;·&nbsp; <a href="{bundle_url}" download>Download bundle (.celerp)</a>
-      </p>
-    </div>"""
+        footer_links = (
+            f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
+            f' &nbsp;·&nbsp; <a href="{bundle_url}" download>Download (.celerp)</a>'
+            " &nbsp;·&nbsp; "
+        )
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
 
@@ -107,17 +103,11 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     .num {{ text-align: right; }}
     .totals-row {{ font-weight: 600; border-top: 2px solid #e5e7eb; }}
     .doc-notes {{ padding: 0 32px 16px; font-size: 14px; color: #374151; white-space: pre-wrap; }}
-    .accept-cta {{ margin: 0; padding: 24px 32px; background: #eff6ff; border-top: 1px solid #bfdbfe; text-align: center; }}
-    .accept-cta p {{ margin: 0 0 12px; font-size: 15px; color: #1e40af; }}
-    .btn-accept {{ display: inline-block; padding: 12px 28px; background: #2563eb; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 15px; }}
-    .btn-accept:hover {{ background: #1d4ed8; }}
-    .accept-sub {{ margin: 10px 0 0; font-size: 12px; color: #6b7280; }}
-    .accept-sub a {{ color: #2563eb; }}
     .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #9ca3af; }}
     .doc-brand a {{ color: #9ca3af; text-decoration: none; }}
     .doc-brand a:hover {{ text-decoration: underline; }}
     @media print {{
-      .accept-cta {{ display: none; }}
+      .doc-brand {{ display: none; }}
       body {{ background: #fff; padding: 0; }}
       .doc-wrap {{ box-shadow: none; }}
     }}
@@ -154,9 +144,8 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
       </table>
     </div>
     {notes_html}
-    {accept_cta}
     <div class="doc-brand">
-      <a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp · Opensource Business Software for AI Transformations</a>
+      {footer_links}<a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>
     </div>
   </div>
 </body>
@@ -200,14 +189,13 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
         label = f"Discount ({discount}%)" if discount_type == "percentage" else "Discount"
         discount_row = f'<tr><td colspan="4" class="num">{_esc(label)}</td><td class="num">- {discount_amount}</td></tr>'
 
-    accept_cta = f"""
-    <div class="accept-cta">
-      <p>Want to place this order or import it into your system?</p>
-      <a class="btn-accept" href="{_esc(accept_url)}">Accept this list</a>
-      <p class="accept-sub">
-        No account? <a href="https://www.celerp.com" target="_blank">Sign up free</a> — your document will be pre-loaded.
-      </p>
-    </div>"""
+    # Same quiet-footer treatment as documents: import is a small utility link
+    # for recipients who run Celerp, not a pitch on the sender's page.
+    footer_links = (
+        f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
+        f' &nbsp;·&nbsp; <a href="/share/{_esc(token)}/bundle" download>Download (.celerp)</a>'
+        " &nbsp;·&nbsp; "
+    )
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
     valid_until_html = (
@@ -242,17 +230,11 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
     .num {{ text-align: right; }}
     .totals-row {{ font-weight: 600; border-top: 2px solid #e5e7eb; }}
     .doc-notes {{ padding: 0 32px 16px; font-size: 14px; color: #374151; white-space: pre-wrap; }}
-    .accept-cta {{ margin: 0; padding: 24px 32px; background: #f0fdf4; border-top: 1px solid #bbf7d0; text-align: center; }}
-    .accept-cta p {{ margin: 0 0 12px; font-size: 15px; color: #166534; }}
-    .btn-accept {{ display: inline-block; padding: 12px 28px; background: #16a34a; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 15px; }}
-    .btn-accept:hover {{ background: #15803d; }}
-    .accept-sub {{ margin: 10px 0 0; font-size: 12px; color: #6b7280; }}
-    .accept-sub a {{ color: #16a34a; }}
     .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #9ca3af; }}
     .doc-brand a {{ color: #9ca3af; text-decoration: none; }}
     .doc-brand a:hover {{ text-decoration: underline; }}
     @media print {{
-      .accept-cta {{ display: none; }}
+      .doc-brand {{ display: none; }}
       body {{ background: #fff; padding: 0; }}
       .doc-wrap {{ box-shadow: none; }}
     }}
@@ -289,9 +271,8 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
       </table>
     </div>
     {notes_html}
-    {accept_cta}
     <div class="doc-brand">
-      <a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp · Opensource Business Software for AI Transformations</a>
+      {footer_links}<a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>
     </div>
   </div>
 </body>

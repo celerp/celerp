@@ -243,8 +243,6 @@ a:hover { text-decoration: underline; }
 .btn--danger:hover { background: var(--c-red-dark); text-decoration: none; color: #fff; }
 .btn--outline.btn--danger { background: transparent; color: var(--c-red); border-color: var(--c-red); }
 .btn--outline.btn--danger:hover { background: var(--c-red); color: #fff; }
-.btn--success { background: var(--c-green); color: #fff; border-color: var(--c-green-dark); }
-.btn--success:hover { background: var(--c-green-dark); text-decoration: none; color: #fff; }
 .btn--full { width: 100%; }
 .btn--xs { padding: 3px 8px; font-size: 11px; }
 

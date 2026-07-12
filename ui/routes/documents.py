@@ -3428,7 +3428,7 @@ celerpUpdateBulkAlloc();
             action = Button(t("btn.share"), type="button", hx_post=f"/docs/{entity_id}/share",
                             hx_include=f"#{expiry_id}",
                             hx_target=f"#{body_id}", hx_swap="innerHTML",
-                            cls="btn btn--success btn--sm share-panel__action")
+                            cls="btn btn--primary btn--sm share-panel__action")
         # One container for both states: a Form here would pick up the generic
         # .modal-dialog form column layout and break the row.
         controls = Div(expiry, dot, action, cls="share-controls")

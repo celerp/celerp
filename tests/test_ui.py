@@ -11028,6 +11028,24 @@ class TestDocumentsOverhaul:
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
+    async def test_share_panel_forwards_expiry_date(self, ui_client):
+        """The modal's date picker value reaches the API on Share; an empty
+        picker forwards None (no expiry)."""
+        _status = {"active": True, "revoked": False, "expired": False,
+                   "token": "AbCdEfGhIjKl", "view_url": "https://x.celerp.com/share/AbCdEfGhIjKl",
+                   "url": "", "expires_at": "2099-12-31"}
+        with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
+            r = await ui_client.post("/docs/doc:INV-001/share",
+                                     data={"expires_at": "2099-12-31"}, cookies=_authed())
+        assert r.status_code == 200
+        assert mock_create.call_args[0][2] == "2099-12-31"
+
+        with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
+            await ui_client.post("/docs/doc:INV-001/share",
+                                 data={"expires_at": ""}, cookies=_authed())
+        assert mock_create.call_args[0][2] is None
+
+    @pytest.mark.asyncio
     async def test_send_action_with_email(self, ui_client):
         """POST send action with sent_to calls api.send_doc with email data."""
         with patch("ui.api_client.send_doc", new=AsyncMock(return_value={})) as mock_send:
