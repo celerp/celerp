@@ -624,7 +624,7 @@ async def _capture_send(monkeypatch):
     async def _fake(to, subject, body_html, body_text="", **kw):
         captured.update(to=to, html=body_html, text=body_text)
         done.set()
-        return True
+        return True, "test transport"
 
     monkeypatch.setattr("celerp.services.email.send_email", _fake)
     return captured, done
@@ -646,6 +646,62 @@ async def test_send_email_includes_view_link_when_cloud_connected(client: AsyncC
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
     assert f"https://acme.celerp.com/share/{token}" in captured["html"]
     assert f"https://acme.celerp.com/share/{token}" in captured["text"]
+
+
+async def _capture_receipt(monkeypatch, ok: bool, detail: str):
+    """Patch the transport + notification service; return captured call + event."""
+    import asyncio
+    calls: dict = {}
+    done = asyncio.Event()
+
+    async def _fake_send(*a, **kw):
+        return ok, detail
+
+    async def _fake_create(session, company_id, category, title, body, **kw):
+        calls.update(company_id=company_id, category=category, title=title, body=body, **kw)
+        done.set()
+
+    monkeypatch.setattr("celerp.services.email.send_email", _fake_send)
+    monkeypatch.setattr("celerp.notifications.service.create", _fake_create)
+    return calls, done
+
+
+@pytest.mark.asyncio
+async def test_send_doc_success_creates_bell_notification(client: AsyncClient, monkeypatch):
+    """A verified delivery drops an 'Email delivered to <addr>' notification
+    (the bell badge counts unread rows, so this is what lights it up)."""
+    import asyncio
+    calls, done = await _capture_receipt(monkeypatch, True, "delivered via Celerp relay")
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert calls["category"] == "email"
+    assert calls["title"] == "Email delivered to cust@x.com"
+    assert "cust@x.com" in calls["body"]
+    assert calls["priority"] == "low"
+    assert calls["action_url"] == f"/docs/{entity_id}"
+
+
+@pytest.mark.asyncio
+async def test_send_doc_failure_creates_failure_notification(client: AsyncClient, monkeypatch):
+    """A refused send (e.g. relay quota) surfaces the reason in a high-priority
+    notification instead of vanishing silently."""
+    import asyncio
+    calls, done = await _capture_receipt(monkeypatch, False, "Monthly email quota (500) reached. Upgrade your plan for more.")
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert calls["title"] == "Email to cust@x.com failed"
+    assert "quota" in calls["body"]
+    assert calls["priority"] == "high"
 
 
 @pytest.mark.asyncio

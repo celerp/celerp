@@ -1801,6 +1801,15 @@ celerpUpdateBulkAlloc();
                 contact_shipping_addresses = [a for a in (contact.get("addresses") or []) if a.get("address_type") == "shipping"]
             except Exception:
                 pass
+        # The Bill To block and the send modal prefill from the contact's email
+        # even when the doc already carries a name (docs created before email
+        # was stored on the state have the name but not the email).
+        if cid and not doc.get("contact_email"):
+            try:
+                _c = _resolved_contact or await api.get_contact(token, cid)
+                doc["contact_email"] = _c.get("email") or ""
+            except Exception:
+                pass
         # Backward compat: migrate contact_address → contact_billing_address
         if not doc.get("contact_billing_address") and doc.get("contact_address"):
             doc["contact_billing_address"] = doc["contact_address"]
@@ -7404,7 +7413,7 @@ async function celerpCsvImport(input, entityId) {{
         Div(Div(t("doc.company"), cls="form-label"), _cell("contact_company_name", doc.get("contact_company_name") or "--"), cls="form-group"),
         Div(Div(t("doc.address"), cls="form-label"), _cell("contact_billing_address", doc.get("contact_billing_address") or doc.get("contact_address")), cls="form-group"),
         Div(Div(t("doc.phone"), cls="form-label"), _cell("contact_phone", doc.get("contact_phone")), cls="form-group"),
-        Div(Div(t("doc.email"), cls="form-label"), P(doc.get("contact_email") or "--", cls="meta-value"), cls="form-group"),
+        Div(Div(t("doc.email"), cls="form-label"), _cell("contact_email", doc.get("contact_email")), cls="form-group"),
         Div(Div(t("doc.tax_id"), cls="form-label"), _cell("contact_tax_id", doc.get("contact_tax_id")), cls="form-group"),
         Hr(cls="section-divider"),
     ]

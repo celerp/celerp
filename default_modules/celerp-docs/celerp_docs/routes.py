@@ -867,6 +867,40 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return {"event_id": entry.id}
 
 
+def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str, **send_kwargs) -> None:
+    """Send in the background, then drop a bell notification with the outcome.
+
+    The route's session is gone by the time the send resolves, so the receipt
+    is written in its own session. Delivery is verified: send_email only
+    reports ok when a transport actually accepted the message."""
+    import uuid as _uuid_mod
+
+    async def _run() -> None:
+        from celerp.db import SessionLocal
+        from celerp.notifications import service as notif_service
+        from celerp.services.email import send_email
+        ok, detail = await send_email(**send_kwargs)
+        cid = company_id if isinstance(company_id, _uuid_mod.UUID) else _uuid_mod.UUID(str(company_id))
+        try:
+            async with SessionLocal() as s:
+                if ok:
+                    await notif_service.create(
+                        s, cid, "email", f"Email delivered to {sent_to}",
+                        f"{doc_label} was emailed to {sent_to}.",
+                        action_url=action_url, priority="low")
+                else:
+                    await notif_service.create(
+                        s, cid, "email", f"Email to {sent_to} failed",
+                        f"{doc_label} could not be delivered: {detail}",
+                        action_url=action_url, priority="high")
+                await s.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Email receipt notification failed for %s", sent_to)
+
+    asyncio.create_task(_run())
+
+
 @router.post("/{entity_id}/send")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -923,11 +957,11 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             f"{view_text}"
             f"Questions? Reply to this email."
         )
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(
-            sent_to, subject, body_html, body_text=body_text,
+        _email_with_receipt(
+            company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
+            to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
             cc=payload.cc or "", bcc=payload.bcc or "",
-        ))
+        )
 
     return {"event_id": entry.id}
 
@@ -4601,9 +4635,10 @@ async def send_list(
         html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
                 f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
         text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(payload.sent_to, subject, html, body_text=text,
-                                       cc=payload.cc or "", bcc=payload.bcc or ""))
+        _email_with_receipt(
+            company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
+            to=payload.sent_to, subject=subject, body_html=html, body_text=text,
+            cc=payload.cc or "", bcc=payload.bcc or "")
     return {"ok": True}
 
 

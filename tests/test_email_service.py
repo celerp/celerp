@@ -1,7 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for celerp.services.email — gateway relay, SMTP fallback, silent skip."""
+"""Tests for celerp.services.email — relay HTTP first (verified), SMTP fallback, skip.
+
+The relay path is a synchronous POST to the relay's /email/send; a 200 is the
+delivery verification callers surface in the notification bell. The old
+gateway-WS path fired an email.send frame the relay never handled, so these
+tests pin the HTTP transport specifically.
+"""
 
 from __future__ import annotations
 
@@ -9,71 +15,126 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+_HEADERS = {"X-Session-Token": "sess-tok", "X-Instance-ID": "inst-1"}
+_NO_SESSION = {"X-Session-Token": "", "X-Instance-ID": "inst-1"}
+
+
+def _mock_httpx(status=200, detail=None):
+    """AsyncClient factory mock whose post() returns the given status."""
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json = MagicMock(return_value={"detail": detail} if detail else {"sent": True})
+    client = MagicMock()
+    client.post = AsyncMock(return_value=resp)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=ctx), client
+
+
+_SMTP_SETTINGS = {
+    "celerp.config.settings.smtp_host": "smtp.example.com",
+    "celerp.config.settings.smtp_port": 587,
+    "celerp.config.settings.smtp_user": "user",
+    "celerp.config.settings.smtp_password": "pass",
+    "celerp.config.settings.smtp_from": "noreply@example.com",
+    "celerp.config.settings.smtp_tls": True,
+}
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _smtp_configured(overrides: dict | None = None):
+    """Apply the standard SMTP settings patches (plus per-test overrides)."""
+    with contextlib.ExitStack() as stack:
+        for k, v in {**_SMTP_SETTINGS, **(overrides or {})}.items():
+            stack.enter_context(patch(k, v))
+        yield
+
 
 @pytest.mark.asyncio
-async def test_send_email_via_gateway_success():
-    """Sends via gateway when gateway_token is set and client is connected."""
-    mock_gw = MagicMock()
-    mock_gw.send_message = AsyncMock(return_value=None)
-
+async def test_send_email_via_relay_success():
+    """Cloud-connected: POSTs to the relay's /email/send and reports verified delivery."""
+    factory, client = _mock_httpx(200)
     with (
         patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.client.get_client", return_value=mock_gw),
+        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>", "Hi")
+        ok, detail = await email_mod.send_email(
+            "user@example.com", "Hello", "<p>Hi</p>", "Hi",
+            reply_to="support@acme.com", cc="a@x.com", bcc="b@x.com",
+        )
 
-    assert result is True
-    mock_gw.send_message.assert_called_once()
-    call_args = mock_gw.send_message.call_args
-    assert call_args[0][0] == "email.send"
-    payload = call_args[1]["payload"]
+    assert ok is True
+    assert "relay" in detail
+    url = client.post.call_args[0][0]
+    assert url == "https://relay.test/email/send"
+    assert client.post.call_args[1]["headers"]["X-Session-Token"] == "sess-tok"
+    payload = client.post.call_args[1]["json"]
     assert payload["to"] == "user@example.com"
     assert payload["subject"] == "Hello"
+    assert payload["reply_to"] == "support@acme.com"
+    assert payload["cc"] == "a@x.com"
+    assert payload["bcc"] == "b@x.com"
 
 
 @pytest.mark.asyncio
-async def test_send_email_gateway_none_falls_back_to_smtp():
-    """When gateway client returns None (not connected), falls back to SMTP."""
+async def test_send_email_relay_quota_error_surfaces_detail():
+    """A relay refusal (quota/plan) with no SMTP fallback returns the reason,
+    which lands in the failure notification."""
+    factory, _ = _mock_httpx(402, detail="Monthly email quota (500) reached. Upgrade your plan for more.")
     with (
         patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.client.get_client", return_value=None),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", "user"),
-        patch("celerp.config.settings.smtp_password", "pass"),
-        patch("celerp.config.settings.smtp_from", "noreply@example.com"),
-        patch("celerp.config.settings.smtp_tls", True),
+        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+        patch("celerp.config.settings.smtp_host", ""),
+    ):
+        from celerp.services import email as email_mod
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+
+    assert ok is False
+    assert "quota" in detail
+
+
+@pytest.mark.asyncio
+async def test_send_email_relay_unreachable_falls_back_to_smtp():
+    """Relay network failure falls back to SMTP when configured."""
+    factory, client = _mock_httpx(200)
+    client.post.side_effect = ConnectionError("relay down")
+    with (
+        patch("celerp.config.settings.gateway_token", "tok123"),
+        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(return_value=None)) as mock_smtp,
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
-    assert result is True
+    assert ok is True
+    assert "SMTP" in detail
     mock_smtp.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_send_email_gateway_error_falls_back_to_smtp():
-    """Gateway send_message raising an exception falls back to SMTP."""
-    mock_gw = MagicMock()
-    mock_gw.send_message = AsyncMock(side_effect=RuntimeError("ws closed"))
-
+async def test_send_email_no_cloud_session_falls_back_to_smtp():
+    """Gateway token set but no live session (relay not connected) → SMTP."""
     with (
         patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.client.get_client", return_value=mock_gw),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", ""),
-        patch("celerp.config.settings.smtp_password", ""),
-        patch("celerp.config.settings.smtp_from", "noreply@example.com"),
-        patch("celerp.config.settings.smtp_tls", True),
+        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_NO_SESSION)),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(return_value=None)) as mock_smtp,
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+        ok, _ = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
-    assert result is True
+    assert ok is True
     mock_smtp.assert_called_once()
 
 
@@ -82,51 +143,44 @@ async def test_send_email_smtp_only_success():
     """No gateway token, SMTP configured → sends via SMTP."""
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", "user"),
-        patch("celerp.config.settings.smtp_password", "pass"),
-        patch("celerp.config.settings.smtp_from", "noreply@example.com"),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(return_value=None)) as mock_smtp,
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>", "Hi plain")
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>", "Hi plain")
 
-    assert result is True
+    assert ok is True
+    assert "SMTP" in detail
     mock_smtp.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_send_email_smtp_error_returns_false():
-    """SMTP send raising an exception returns False (does not raise)."""
+    """SMTP send raising an exception returns (False, reason) - never raises."""
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", "user"),
-        patch("celerp.config.settings.smtp_password", "pass"),
-        patch("celerp.config.settings.smtp_from", "noreply@example.com"),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(side_effect=ConnectionRefusedError("no smtp"))),
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
-    assert result is False
+    assert ok is False
+    assert "SMTP" in detail
 
 
 @pytest.mark.asyncio
 async def test_send_email_neither_configured_returns_false():
-    """No gateway token, no SMTP host → returns False silently."""
+    """No gateway token, no SMTP host → (False, actionable reason)."""
     with (
         patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.settings.smtp_host", ""),
     ):
         from celerp.services import email as email_mod
-        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
-    assert result is False
+    assert ok is False
+    assert "relay" in detail or "SMTP" in detail
 
 
 @pytest.mark.asyncio
@@ -139,13 +193,8 @@ async def test_smtp_from_header_uses_from_name():
 
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", ""),
-        patch("celerp.config.settings.smtp_password", ""),
-        patch("celerp.config.settings.smtp_from", "noreply@acme.com"),
-        patch("celerp.config.settings.smtp_from_name", "Acme ERP"),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured({"celerp.config.settings.smtp_from": "noreply@acme.com",
+                          "celerp.config.settings.smtp_from_name": "Acme ERP"}),
         patch("aiosmtplib.send", new=AsyncMock(side_effect=_mock_send)),
     ):
         from celerp.services import email as email_mod
@@ -165,13 +214,8 @@ async def test_smtp_from_header_special_chars_in_name():
 
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", ""),
-        patch("celerp.config.settings.smtp_password", ""),
-        patch("celerp.config.settings.smtp_from", "noreply@acme.com"),
-        patch("celerp.config.settings.smtp_from_name", 'Acme, "ERP"'),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured({"celerp.config.settings.smtp_from": "noreply@acme.com",
+                          "celerp.config.settings.smtp_from_name": 'Acme, "ERP"'}),
         patch("aiosmtplib.send", new=AsyncMock(side_effect=_mock_send)),
     ):
         from celerp.services import email as email_mod
@@ -193,13 +237,7 @@ async def test_smtp_reply_to_header_set_when_provided():
 
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", ""),
-        patch("celerp.config.settings.smtp_password", ""),
-        patch("celerp.config.settings.smtp_from", "noreply@acme.com"),
-        patch("celerp.config.settings.smtp_from_name", "Acme ERP"),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(side_effect=_mock_send)),
     ):
         from celerp.services import email as email_mod
@@ -220,35 +258,10 @@ async def test_smtp_no_reply_to_when_not_provided():
 
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.smtp_port", 587),
-        patch("celerp.config.settings.smtp_user", ""),
-        patch("celerp.config.settings.smtp_password", ""),
-        patch("celerp.config.settings.smtp_from", "noreply@acme.com"),
-        patch("celerp.config.settings.smtp_from_name", "Acme ERP"),
-        patch("celerp.config.settings.smtp_tls", True),
+        _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(side_effect=_mock_send)),
     ):
         from celerp.services import email as email_mod
         await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
     assert captured["reply_to"] is None
-
-
-@pytest.mark.asyncio
-async def test_gateway_payload_includes_reply_to():
-    """Gateway relay path must forward reply_to in the email.send payload."""
-    mock_gw = MagicMock()
-    mock_gw.send_message = AsyncMock(return_value=None)
-
-    with (
-        patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.client.get_client", return_value=mock_gw),
-    ):
-        from celerp.services import email as email_mod
-        await email_mod.send_email(
-            "user@example.com", "Hello", "<p>Hi</p>", reply_to="support@acme.com"
-        )
-
-    payload = mock_gw.send_message.call_args[1]["payload"]
-    assert payload["reply_to"] == "support@acme.com"

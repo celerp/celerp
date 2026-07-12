@@ -11071,6 +11071,33 @@ class TestDocumentsOverhaul:
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
+    async def test_bill_to_email_is_editable_and_send_modal_prefills_it(self, ui_client):
+        """The Bill To email is an editable cell like its siblings (it used to
+        be the only read-only field), and the send modal prefills the To field
+        with it while staying replaceable."""
+        doc = dict(_BLANK_DOC, contact_email="billing@acme.com", status="sent")
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert "/field/contact_email/edit" in content
+        assert 'name="sent_to" value="billing@acme.com"' in content
+
+    @pytest.mark.asyncio
+    async def test_doc_detail_backfills_email_from_contact(self, ui_client):
+        """Docs that stored a contact name but no email resolve the email from
+        the contact record, so Bill To and the send modal are not blank."""
+        doc = dict(_BLANK_DOC, contact_id="contact:c1", contact_name="ACME Corp")
+        contact = {"name": "ACME Corp", "email": "billing@acme.com", "addresses": []}
+        _relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "billing@acme.com" in r.content.decode()
+
+    @pytest.mark.asyncio
     async def test_share_panel_forwards_expiry_date(self, ui_client):
         """The modal's date picker value reaches the API on Share; an empty
         picker forwards None (no expiry)."""
