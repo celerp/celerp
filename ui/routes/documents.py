@@ -3370,37 +3370,42 @@ celerpUpdateBulkAlloc();
             return JSONResponse([])
 
     def _share_panel(entity_id: str, status: dict) -> FT:
-        """Share modal body. Link + copy indicator while live; below it one
-        control row: auto-revoke date picker, state light, and a single action
-        button - Share when the link is off, Revoke while it is live."""
+        """Share modal body. The document's stable link is always shown (dimmed
+        while off) with a copy indicator; below it one control row: auto-revoke
+        date picker, state light, and a single action button - Share while the
+        link is off, Revoke while it is live."""
         from datetime import date as _d, timedelta as _td
         eid = entity_id.replace(":", "-")
         body_id = f"share-body-{eid}"
-        shared = bool(status.get("shared"))
         active = bool(status.get("active"))
+        expired = bool(status.get("expired"))
         view_url = status.get("view_url") or ""
-        # Unshared links get a sane default lifetime instead of living forever.
-        expires = (status.get("expires_at") or "") if shared else (_d.today() + _td(days=30)).isoformat()
+        # A link about to go live gets a sane default lifetime instead of forever.
+        expires = (status.get("expires_at") or "") if active else (_d.today() + _td(days=30)).isoformat()
 
-        if shared and active:
+        if active:
             dot_cls, dot_tip = "share-dot share-dot--live", t("doc.share_live_tip")
-        elif shared:
+        elif expired:
             dot_cls, dot_tip = "share-dot share-dot--expired", t("doc.share_expired_tip")
         else:
             dot_cls, dot_tip = "share-dot", t("doc.share_off_tip")
 
         url_row = None
-        if shared and active and view_url:
+        if view_url:
             input_id = f"share-url-{eid}"
             url_row = Div(
                 Input(type="text", value=view_url, readonly=True, onclick="this.select()",
                       cls="form-input share-url__input", id=input_id),
                 Button(NotStr(_ICON_COPY), type="button", cls="share-url__copy",
                        title=t("btn.copy"), aria_label=t("btn.copy"),
-                       onclick=(f"navigator.clipboard.writeText(document.getElementById('{input_id}').value);"
-                                "this.classList.add('share-url__copy--done');"
-                                "setTimeout(()=>this.classList.remove('share-url__copy--done'),1500)")),
-                cls="share-url",
+                       # execCommand on the selected input covers plain-HTTP (LAN)
+                       # origins where navigator.clipboard does not exist.
+                       onclick=(f"var i=document.getElementById('{input_id}');i.select();"
+                                "try{document.execCommand('copy')}catch(e){}"
+                                "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value)}"
+                                "var b=this;b.classList.add('share-url__copy--done');"
+                                "setTimeout(function(){b.classList.remove('share-url__copy--done')},1500)")),
+                cls="share-url" + ("" if active else " share-url--off"),
             )
 
         expiry = Label(
@@ -3409,12 +3414,12 @@ celerpUpdateBulkAlloc();
                   cls="form-input share-expiry__input",
                   # While the link is live, changing the date applies it directly.
                   **({"hx_post": f"/docs/{entity_id}/share", "hx_target": f"#{body_id}",
-                      "hx_swap": "innerHTML", "hx_trigger": "change"} if shared else {})),
+                      "hx_swap": "innerHTML", "hx_trigger": "change"} if active else {})),
             cls="share-expiry",
         )
         dot = Span(cls=dot_cls, title=dot_tip)
 
-        if shared:
+        if active:
             controls = Div(
                 expiry, dot,
                 Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
@@ -3432,7 +3437,7 @@ celerpUpdateBulkAlloc();
             )
 
         return Div(
-            P(t("doc.share_hint") if shared and active else t("doc.share_hint_off"), cls="form-hint"),
+            P(t("doc.share_hint") if active else t("doc.share_hint_off"), cls="form-hint"),
             url_row,
             controls,
         )
@@ -3468,8 +3473,7 @@ celerpUpdateBulkAlloc();
             from starlette.responses import Response as _R
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.revoke_share_link(token, entity_id)
-            return _share_panel(entity_id, {"shared": False})
+            return _share_panel(entity_id, await api.revoke_share_link(token, entity_id))
         except APIError as e:
             return _action_error(str(e.detail))
 

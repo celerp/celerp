@@ -32,3 +32,6 @@ class DocShareToken(Base):
     )
     # Auto-revoke: the link stops resolving after this instant. NULL = no expiry.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Manual revoke: set = link is off. The row (and its token) persists so a
+    # document's share URL is stable - sharing again reactivates the same link.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

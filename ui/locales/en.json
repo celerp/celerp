@@ -414,7 +414,7 @@
   "doc.no_valid_quantities_entered": "No valid quantities entered.",
   "doc.share_failed": "Could not load sharing for this document. Please try again.",
   "doc.share_hint": "Anyone with this link can view this document.",
-  "doc.share_hint_off": "Share creates a public link so anyone with it can view this document.",
+  "doc.share_hint_off": "This link goes live when you press Share.",
   "doc.share_live_tip": "Link is live",
   "doc.share_off_tip": "Not shared",
   "doc.share_expired_tip": "Link expired. Share again to reactivate it.",

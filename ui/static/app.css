@@ -2734,6 +2734,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 .share-url__copy:hover { color: var(--c-text); background: var(--c-bg3); }
 .share-url__copy--done, .share-url__copy--done:hover { color: var(--c-green); }
+.share-url--off .share-url__input { opacity: 0.55; }
 .share-controls {
   display: flex;
   align-items: center;
@@ -2746,7 +2747,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   height: 10px;
   border-radius: 50%;
   background: var(--c-border);
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 0%, transparent);
   flex: none;
 }
 .share-dot--live {
@@ -2769,9 +2769,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 .share-expiry__input {
   width: auto;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
-  padding: 6px 10px;
+  padding: 5px 8px;
   letter-spacing: normal;
 }
 

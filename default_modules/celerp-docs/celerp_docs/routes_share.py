@@ -244,7 +244,9 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _share_active(row: DocShareToken) -> bool:
-    """A share link resolves until its expiry instant; no expiry = forever."""
+    """A link resolves while it is not revoked and not past its expiry instant."""
+    if row.revoked_at is not None:
+        return False
     return row.expires_at is None or row.expires_at > datetime.now(timezone.utc)
 
 
@@ -266,12 +268,15 @@ async def _active_share_row(session: AsyncSession, token: str) -> DocShareToken 
 
 
 async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> DocShareToken:
-    """Return the entity's existing share token row, or mint one. Caller commits."""
+    """Return the entity's share token row, minting a deactivated one if none
+    exists. A document's link is stable for its lifetime: activation (Share),
+    deactivation (Revoke) and expiry toggle the same token. Caller commits."""
     row = await _find_share_row(session, company_id, entity_id)
     if row is None:
         row = DocShareToken(
             company_id=company_id, entity_id=entity_id,
             token=secrets.token_urlsafe(_TOKEN_BYTES),
+            revoked_at=datetime.now(timezone.utc),  # born deactivated; Share turns it on
         )
         session.add(row)
     return row
@@ -284,25 +289,30 @@ def public_view_url(token: str) -> str | None:
 
 
 async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
-    """View link to embed in a send email — mints a token only when cloud-connected
-    (the branded view is only reachable then). An expired link is as dead as a
-    revoked one, so it yields None rather than a URL that 404s. Caller commits."""
+    """View link to embed in a send email — only when cloud-connected (the
+    branded view is only reachable then). Sending IS an explicit share, so a
+    revoked link is reactivated; an expired one yields None rather than a URL
+    that 404s. Caller commits."""
     if not (settings.celerp_public_url or "").strip():
         return None
     row = await get_or_create_share_token(session, company_id, entity_id)
+    row.revoked_at = None
     if not _share_active(row):
         return None
     return public_view_url(row.token)
 
 
 def _share_status(row: DocShareToken | None) -> dict:
-    """Uniform share-state payload for the UI: create/status/revoke all return it."""
+    """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
-        return {"shared": False, "active": False, "token": None, "url": None,
-                "view_url": None, "expires_at": None}
+        return {"shared": False, "active": False, "revoked": False, "expired": False,
+                "token": None, "url": None, "view_url": None, "expires_at": None}
+    active = _share_active(row)
     return {
-        "shared": True,
-        "active": _share_active(row),
+        "shared": active,
+        "active": active,
+        "revoked": row.revoked_at is not None,
+        "expired": row.revoked_at is None and not active,
         "token": row.token,
         "url": _share_url(row.token),
         "view_url": public_view_url(row.token),
@@ -322,8 +332,15 @@ async def share_status(
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Current share state for a document or list. Never mints a token."""
-    return _share_status(await _find_share_row(session, company_id, entity_id))
+    """Share state for a document or list. Mints the (deactivated) token on
+    first call so the UI always shows the document's stable URL; never
+    activates anything."""
+    row = await session.get(Projection, (company_id, entity_id))
+    if row is None or row.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    share_row = await get_or_create_share_token(session, company_id, entity_id)
+    await session.commit()
+    return _share_status(share_row)
 
 
 @router.post("/docs/{entity_id}/share")
@@ -350,6 +367,7 @@ async def create_share_link(
             raise HTTPException(status_code=422, detail="expires_at must be in the future")
 
     share_row = await get_or_create_share_token(session, company_id, entity_id)
+    share_row.revoked_at = None
     share_row.expires_at = expires
     await session.commit()
     return _share_status(share_row)
@@ -361,19 +379,14 @@ async def revoke_share_link(
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Revoke the share token for a document."""
-    existing = await session.execute(
-        select(DocShareToken).where(
-            DocShareToken.company_id == company_id,
-            DocShareToken.entity_id == entity_id,
-        )
-    )
-    token_row = existing.scalar_one_or_none()
+    """Deactivate the share link immediately. The token row persists so the
+    document keeps its stable URL; Share turns the same link back on."""
+    token_row = await _find_share_row(session, company_id, entity_id)
     if not token_row:
         raise HTTPException(status_code=404, detail="No share link found")
-    await session.delete(token_row)
+    token_row.revoked_at = datetime.now(timezone.utc)
     await session.commit()
-    return {"revoked": True}
+    return _share_status(token_row)
 
 
 # ---------------------------------------------------------------------------

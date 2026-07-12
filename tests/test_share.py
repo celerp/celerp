@@ -194,13 +194,20 @@ async def test_revoke_nonexistent_share_returns_404(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_after_revoke_new_share_generates_new_token(client: AsyncClient):
+async def test_revoke_then_reshare_keeps_stable_url(client: AsyncClient):
+    """A document's link is stable: revoke turns it off, re-share turns the
+    SAME token back on."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
     t1 = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
     await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))
-    t2 = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
-    assert t1 != t2
+    assert (await client.get(f"/share/{t1}")).status_code == 404
+
+    reshared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert reshared["token"] == t1
+    assert reshared["active"] is True
+    assert (await client.get(f"/share/{t1}")).status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -649,28 +656,36 @@ async def _expire_token(session, token: str) -> None:
 
 @pytest.mark.asyncio
 async def test_share_status_lifecycle(client: AsyncClient):
-    """GET /share reports state without minting; create/revoke flip it."""
+    """First GET mints the stable link deactivated; Share activates it, Revoke
+    deactivates it - same token throughout."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
 
     r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
     assert r.status_code == 200
-    assert r.json() == {"shared": False, "active": False, "token": None,
-                        "url": None, "view_url": None, "expires_at": None}
-    # Status must not have minted a token
-    r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
-    assert r.json()["shared"] is False
+    first = r.json()
+    assert first["active"] is False and first["revoked"] is True
+    assert len(first["token"]) == 12
+    # A deactivated link does not resolve publicly
+    assert (await client.get(f"/share/{first['token']}")).status_code == 404
 
     created = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert created["shared"] is True and created["active"] is True
+    assert created["active"] is True and created["revoked"] is False
+    assert created["token"] == first["token"]
 
     status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert status["shared"] is True and status["active"] is True
-    assert status["token"] == created["token"]
+    assert status["active"] is True and status["token"] == first["token"]
 
-    await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))
-    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert status["shared"] is False
+    revoked = (await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert revoked["active"] is False and revoked["revoked"] is True
+    assert revoked["token"] == first["token"]
+
+
+@pytest.mark.asyncio
+async def test_share_status_unknown_doc_404s(client: AsyncClient):
+    tok = await _token(client)
+    r = await client.get("/docs/nonexistent-doc-id/share", headers=_h(tok))
+    assert r.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -714,7 +729,7 @@ async def test_expired_link_is_dead_everywhere(client: AsyncClient, session):
     assert (await client.get(f"/share/{token}")).status_code == 404
     assert (await client.get(f"/share/{token}/bundle")).status_code == 404
     status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
-    assert status["shared"] is True and status["active"] is False
+    assert status["active"] is False and status["expired"] is True
 
 
 @pytest.mark.asyncio

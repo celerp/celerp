@@ -26,10 +26,13 @@ def upgrade() -> None:
     cols = [c["name"] for c in inspect(bind).get_columns("doc_share_tokens")]
     if "expires_at" not in cols:
         op.add_column("doc_share_tokens", sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True))
+    if "revoked_at" not in cols:
+        op.add_column("doc_share_tokens", sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     cols = [c["name"] for c in inspect(bind).get_columns("doc_share_tokens")]
-    if "expires_at" in cols:
-        op.drop_column("doc_share_tokens", "expires_at")
+    for col in ("expires_at", "revoked_at"):
+        if col in cols:
+            op.drop_column("doc_share_tokens", col)
