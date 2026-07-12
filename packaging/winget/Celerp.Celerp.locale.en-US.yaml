@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Celerp.Celerp
+PackageVersion: 1.3.2
+PackageLocale: en-US
+Publisher: Celerp
+PublisherUrl: https://www.celerp.com
+PublisherSupportUrl: https://github.com/celerp/celerp/issues
+PackageName: Celerp
+PackageUrl: https://www.celerp.com
+License: BUSL-1.1
+LicenseUrl: https://github.com/celerp/celerp/blob/main/LICENSE
+Copyright: Copyright (c) Celerp
+ShortDescription: Business management software with inventory, invoicing, purchasing, manufacturing, accounting, and CRM in one local-first app.
+Moniker: celerp
+Tags:
+  - accounting
+  - business
+  - crm
+  - erp
+  - inventory
+  - invoicing
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,28 @@
+name: Winget
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Bumps the Celerp.Celerp package in microsoft/winget-pkgs on each stable
+    # release. The package must already exist upstream; the first submission is
+    # manual (see packaging/winget/README.md). Skips quietly until the
+    # WINGET_TOKEN secret (classic PAT, public_repo scope) is configured.
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: windows-latest
+    steps:
+      - name: Check for token
+        id: token
+        shell: bash
+        run: echo "have=${{ secrets.WINGET_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      - uses: vedantmgoyal2009/winget-releaser@v2
+        if: steps.token.outputs.have == 'true'
+        with:
+          identifier: Celerp.Celerp
+          installers-regex: 'Celerp-Setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
