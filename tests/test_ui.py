@@ -11008,13 +11008,24 @@ class TestDocumentsOverhaul:
         assert b"Unmark Sent" in r.content
 
     @pytest.mark.asyncio
-    async def test_no_copy_link_or_share_button(self, ui_client):
-        """Doc detail has no standalone Copy Link or Share button (share via Send form)."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+    async def test_share_button_gated_on_public_url(self, ui_client):
+        """Share renders only when the relay reports a public URL (the link is
+        served there - without it every minted URL would be dead), and the
+        legacy Copy Link button stays gone. relay status is pinned so the test
+        is deterministic even with a live dev server running."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert "Copy Link" not in content
         assert '>Share<' not in content
+
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_send_action_with_email(self, ui_client):

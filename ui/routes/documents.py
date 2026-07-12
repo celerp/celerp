@@ -3370,14 +3370,17 @@ celerpUpdateBulkAlloc();
             return JSONResponse([])
 
     def _share_panel(entity_id: str, status: dict) -> FT:
-        """Share modal body: URL + copy indicator when live, and one control row -
-        Share button, state light, expiry date picker, Revoke."""
+        """Share modal body. Link + copy indicator while live; below it one
+        control row: auto-revoke date picker, state light, and a single action
+        button - Share when the link is off, Revoke while it is live."""
+        from datetime import date as _d, timedelta as _td
         eid = entity_id.replace(":", "-")
         body_id = f"share-body-{eid}"
         shared = bool(status.get("shared"))
         active = bool(status.get("active"))
         view_url = status.get("view_url") or ""
-        expires = status.get("expires_at") or ""
+        # Unshared links get a sane default lifetime instead of living forever.
+        expires = (status.get("expires_at") or "") if shared else (_d.today() + _td(days=30)).isoformat()
 
         if shared and active:
             dot_cls, dot_tip = "share-dot share-dot--live", t("doc.share_live_tip")
@@ -3400,25 +3403,38 @@ celerpUpdateBulkAlloc();
                 cls="share-url",
             )
 
-        return Div(
-            P(t("doc.share_hint") if shared and active else t("doc.share_hint_off"), cls="form-hint"),
-            url_row,
-            Form(
-                Button(t("btn.share"), type="submit", cls="btn btn--primary btn--sm"),
-                Span(cls=dot_cls, title=dot_tip),
-                Label(
-                    t("doc.share_expires"),
-                    Input(type="date", name="expires_at", value=expires,
-                          cls="form-input share-expiry__input"),
-                    cls="share-expiry",
-                ),
-                (Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
-                        hx_target=f"#{body_id}", hx_swap="innerHTML",
-                        cls="btn btn--ghost btn--sm share-revoke") if shared else None),
+        expiry = Label(
+            t("doc.share_expires"),
+            Input(type="date", name="expires_at", value=expires,
+                  cls="form-input share-expiry__input",
+                  # While the link is live, changing the date applies it directly.
+                  **({"hx_post": f"/docs/{entity_id}/share", "hx_target": f"#{body_id}",
+                      "hx_swap": "innerHTML", "hx_trigger": "change"} if shared else {})),
+            cls="share-expiry",
+        )
+        dot = Span(cls=dot_cls, title=dot_tip)
+
+        if shared:
+            controls = Div(
+                expiry, dot,
+                Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
+                       hx_target=f"#{body_id}", hx_swap="innerHTML",
+                       cls="btn btn--ghost btn--sm share-panel__action"),
+                cls="share-controls",
+            )
+        else:
+            controls = Form(
+                expiry, dot,
+                Button(t("btn.share"), type="submit", cls="btn btn--primary btn--sm share-panel__action"),
                 hx_post=f"/docs/{entity_id}/share",
                 hx_target=f"#{body_id}", hx_swap="innerHTML",
                 cls="share-controls",
-            ),
+            )
+
+        return Div(
+            P(t("doc.share_hint") if shared and active else t("doc.share_hint_off"), cls="form-hint"),
+            url_row,
+            controls,
         )
 
     @app.get("/docs/{entity_id}/share")
