@@ -26,6 +26,7 @@ from reportlab.platypus import (
 )
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas as _rl_canvas
 
 # Register DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.)
 _FONT = "DejaVuSans"
@@ -34,7 +35,7 @@ pdfmetrics.registerFont(TTFont(_FONT, "/usr/share/fonts/truetype/dejavu/DejaVuSa
 pdfmetrics.registerFont(TTFont(_FONT_BOLD, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
 
 _BRAND_URL = "https://www.celerp.com"
-_BRAND_TEXT = "Powered by Celerp - Downloadable ERP for Serious Businesses"
+_BRAND_TEXT = "Powered by Celerp.com - Downloadable ERP for Serious Businesses"
 
 _GREY = colors.HexColor("#6b7280")
 _DARK = colors.HexColor("#111827")
@@ -441,11 +442,34 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     # --- Footer with branding (added via onFirstPage/onLaterPages) ---
     _fulfillment_stamp = doc.get("fulfillment_status") == "fulfilled"
 
+    class _NumberedCanvas(_rl_canvas.Canvas):
+        """Two-pass canvas: buffers every page, then stamps 'Page N of M' once
+        the total is known - a single-pass canvas can only ever say 'Page N'."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._page_states: list[dict] = []
+
+        def showPage(self):
+            self._page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._page_states)
+            for state in self._page_states:
+                self.__dict__.update(state)
+                self.setFont(_FONT, 7)
+                self.setFillColor(_GREY)
+                self.drawRightString(page_w - margin, 10 * mm, f"Page {self._pageNumber} of {total}")
+                super().showPage()
+            super().save()
+
     def _add_footer(canvas, doc_tmpl):
         canvas.saveState()
         canvas.setFont(_FONT, 7)
         canvas.setFillColor(_GREY)
         # One footer format everywhere: brand left, pipe, import link.
+        # The page count lands in _NumberedCanvas.save(), which knows the total.
         canvas.drawString(margin, 10 * mm, _BRAND_TEXT)
         brand_w = canvas.stringWidth(_BRAND_TEXT, _FONT, 7)
         canvas.linkURL(_BRAND_URL, (margin, 8 * mm, margin + brand_w, 13 * mm), relative=0)
@@ -457,8 +481,6 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
             canvas.drawString(lx, 10 * mm, link_label)
             link_w = canvas.stringWidth(link_label, _FONT, 7)
             canvas.linkURL(import_url, (lx, 8 * mm, lx + link_w, 13 * mm), relative=0)
-        page_num = canvas.getPageNumber()
-        canvas.drawRightString(page_w - margin, 10 * mm, f"Page {page_num}")
 
         # Fulfilled stamp: small green badge in top-right corner
         if _fulfillment_stamp:
@@ -468,7 +490,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
         canvas.restoreState()
 
-    pdf.build(story, onFirstPage=_add_footer, onLaterPages=_add_footer)
+    pdf.build(story, onFirstPage=_add_footer, onLaterPages=_add_footer, canvasmaker=_NumberedCanvas)
     return buf.getvalue()
 
 

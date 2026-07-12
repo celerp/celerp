@@ -15,7 +15,7 @@ re-exports them (ui.components.table) so there is one definition.
 from __future__ import annotations
 
 from fasthtml.common import (
-    A, Body, Div, Head, Html, Meta, NotStr, P, Script, Span, Strong, Style,
+    A, Body, Div, Head, Html, Meta, P, Script, Span, Strong, Style,
     Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
 )
 
@@ -32,7 +32,7 @@ INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"}
 IMPORTABLE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "purchase_order", "quotation", "list"})
 
 _BRAND_URL = "https://www.celerp.com"
-_BRAND_LABEL = "Powered by Celerp - Downloadable ERP for Serious Businesses"
+_BRAND_LABEL = "Powered by Celerp.com - Downloadable ERP for Serious Businesses"
 
 CURRENCY_SYMBOLS = {
     "AED": "AED ", "ARS": "AR$", "AUD": "A$", "BDT": "৳", "BRL": "R$",
@@ -123,6 +123,8 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 .dp-party-name { font-size: 10pt; font-weight: 600; }
 .dp-party-sub { font-size: 9pt; color: #444; line-height: 1.5; }
 .dp-lines { width: 100%; border-collapse: collapse; margin-bottom: 4mm; font-size: 9pt; }
+.dp-lines thead { display: table-header-group; }
+.dp-lines tr { break-inside: avoid; }
 .dp-lines thead th { background: #f5f5f5; font-weight: 700; text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid #999; }
 .dp-lines thead th.r { text-align: right; }
 .dp-lines tbody td { padding: 1.5mm 2mm; border-bottom: 1px solid #eee; vertical-align: top; }
@@ -141,7 +143,8 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 .dp-footer a:hover { text-decoration: underline; }
 .dp-footer__sep { color: #ddd; }
 @page { margin: 0; size: A4 portrait; }
-@media print { body { padding: 15mm; } }
+/* Reserve room for the fixed footer, which repeats on every printed page. */
+@media print { body { padding: 15mm; padding-bottom: 24mm; } }
 """
 
 

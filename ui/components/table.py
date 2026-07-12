@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t, get_lang
+from ui.i18n import t
 from celerp.services.field_schema import MIXED_VALUE
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value

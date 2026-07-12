@@ -169,7 +169,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
     behavior as _list_behavior, status_label as _list_status_label,
-    LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC, VOID as _LV,
+    LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).

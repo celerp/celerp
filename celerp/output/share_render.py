@@ -42,7 +42,7 @@ def _not_found_page(reason: str = "not-found") -> str:
   <div class="box">
     <h1>{_esc(title)}</h1>
     <p>{_esc(body)} Contact the sender for a current copy.</p>
-    <div class="brand"><a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a></div>
+    <div class="brand"><a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp.com - Downloadable ERP for Serious Businesses</a></div>
   </div>
 </body>
 </html>"""
