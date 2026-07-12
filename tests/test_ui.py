@@ -210,6 +210,41 @@ class TestAuthRouting:
         assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
         assert "addEventListener" in _IDLE_LOGOUT_JS
         assert f"{int(settings.idle_logout_minutes)} * 60000" in _IDLE_LOGOUT_JS
+        # The timer carries the current page so login can return there
+        assert "next=" in _IDLE_LOGOUT_JS
+
+    @pytest.mark.asyncio
+    async def test_login_bounce_carries_next_and_login_returns_there(self, ui_client):
+        """A timed-out user bounced off a page gets sent back to that page
+        after signing in, not to the dashboard."""
+        # Full-page bounce: the requested page lands in ?next=
+        r = await ui_client.get("/docs/doc:INV-1?page=2")
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2"
+
+        # HTMX fragment bounce: the browser page (HX-Current-URL) is used
+        r = await ui_client.get("/docs/doc:INV-1/share", headers={
+            "HX-Request": "true", "HX-Current-URL": "http://ui/docs/doc:INV-1?page=2"})
+        assert "next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2" in r.headers.get("HX-Redirect", "")
+
+        # Login form carries it and the successful POST honors it
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            page = await ui_client.get("/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2")
+        assert 'name="next" value="/docs/doc:INV-1?page=2"' in page.text
+        with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
+            r = await ui_client.post("/login", data={
+                "email": "a@b.c", "password": "pw", "next": "/docs/doc:INV-1?page=2"})
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/docs/doc:INV-1?page=2"
+
+    @pytest.mark.asyncio
+    async def test_login_next_rejects_offsite_and_auth_paths(self, ui_client):
+        """?next= is not an open redirect: absolute URLs, scheme-relative URLs,
+        and auth pages all fall back to the dashboard."""
+        with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
+            for bad in ("https://evil.example", "//evil.example", "/login?x=1", "/logout"):
+                r = await ui_client.post("/login", data={"email": "a@b.c", "password": "pw", "next": bad})
+                assert r.headers["location"] == "/", f"{bad!r} must not be honored"
 
     @pytest.mark.asyncio
     async def test_login_page_renders(self, ui_client):

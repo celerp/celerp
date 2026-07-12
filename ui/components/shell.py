@@ -53,7 +53,7 @@ _IDLE_LOGOUT_JS = ("""
   var IDLE_MS = __IDLE_MIN__ * 60000;
   if (IDLE_MS <= 0) return;
   var t;
-  function out(){ window.location.href = '/logout?reason=idle'; }
+  function out(){ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }
   function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
   ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){
     document.addEventListener(ev, reset, {passive:true});
@@ -605,9 +605,10 @@ document.addEventListener('DOMContentLoaded', function() {
       try {
         var data = JSON.parse(e.data || '{}');
         var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
-        window.location.href = '/login?reason=evicted' + by;
+        var nx = '&next=' + encodeURIComponent(location.pathname + location.search);
+        window.location.href = '/login?reason=evicted' + by + nx;
       } catch(_) {
-        window.location.href = '/login?reason=evicted';
+        window.location.href = '/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search);
       }
     });
 
