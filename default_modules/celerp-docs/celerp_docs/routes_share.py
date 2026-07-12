@@ -24,12 +24,13 @@ import json
 import secrets
 import socket
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, time as _time, timezone
 from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +50,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Public router — share token lookup and recipient import require no auth
 public_router = APIRouter()
 
-_TOKEN_BYTES = 32  # 256-bit URL-safe token
+_TOKEN_BYTES = 9  # 72-bit URL-safe token (12 chars) — short enough to share by hand, unguessable, revocable
 _ACCEPT_BASE = "https://www.celerp.com/accept"
 
 # A bundle arrives from another party — treat it as untrusted input. Cap what we
@@ -242,20 +243,38 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
 # Authenticated endpoints
 # ---------------------------------------------------------------------------
 
-async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> str:
-    """Return the entity's existing share token, or mint one. Caller commits."""
-    existing = await session.execute(
+def _share_active(row: DocShareToken) -> bool:
+    """A share link resolves until its expiry instant; no expiry = forever."""
+    return row.expires_at is None or row.expires_at > datetime.now(timezone.utc)
+
+
+async def _find_share_row(session: AsyncSession, company_id, entity_id: str) -> DocShareToken | None:
+    return (await session.execute(
         select(DocShareToken).where(
             DocShareToken.company_id == company_id,
             DocShareToken.entity_id == entity_id,
         )
-    )
-    row = existing.scalar_one_or_none()
-    if row:
-        return row.token
-    token = secrets.token_urlsafe(_TOKEN_BYTES)
-    session.add(DocShareToken(company_id=company_id, entity_id=entity_id, token=token))
-    return token
+    )).scalar_one_or_none()
+
+
+async def _active_share_row(session: AsyncSession, token: str) -> DocShareToken | None:
+    """Resolve a public token to its row; expired links are treated as revoked."""
+    row = (await session.execute(
+        select(DocShareToken).where(DocShareToken.token == token)
+    )).scalar_one_or_none()
+    return row if row is not None and _share_active(row) else None
+
+
+async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> DocShareToken:
+    """Return the entity's existing share token row, or mint one. Caller commits."""
+    row = await _find_share_row(session, company_id, entity_id)
+    if row is None:
+        row = DocShareToken(
+            company_id=company_id, entity_id=entity_id,
+            token=secrets.token_urlsafe(_TOKEN_BYTES),
+        )
+        session.add(row)
+    return row
 
 
 def public_view_url(token: str) -> str | None:
@@ -266,30 +285,74 @@ def public_view_url(token: str) -> str | None:
 
 async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
     """View link to embed in a send email — mints a token only when cloud-connected
-    (the branded view is only reachable then). Caller commits."""
+    (the branded view is only reachable then). An expired link is as dead as a
+    revoked one, so it yields None rather than a URL that 404s. Caller commits."""
     if not (settings.celerp_public_url or "").strip():
         return None
-    token = await get_or_create_share_token(session, company_id, entity_id)
-    return public_view_url(token)
+    row = await get_or_create_share_token(session, company_id, entity_id)
+    if not _share_active(row):
+        return None
+    return public_view_url(row.token)
+
+
+def _share_status(row: DocShareToken | None) -> dict:
+    """Uniform share-state payload for the UI: create/status/revoke all return it."""
+    if row is None:
+        return {"shared": False, "active": False, "token": None, "url": None,
+                "view_url": None, "expires_at": None}
+    return {
+        "shared": True,
+        "active": _share_active(row),
+        "token": row.token,
+        "url": _share_url(row.token),
+        "view_url": public_view_url(row.token),
+        "expires_at": row.expires_at.date().isoformat() if row.expires_at else None,
+    }
+
+
+class ShareCreateBody(BaseModel):
+    # ISO date (YYYY-MM-DD); the link stops resolving at the end of that day UTC.
+    # None/empty = no expiry.
+    expires_at: str | None = None
+
+
+@router.get("/docs/{entity_id}/share")
+async def share_status(
+    entity_id: str,
+    company_id: _uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Current share state for a document or list. Never mints a token."""
+    return _share_status(await _find_share_row(session, company_id, entity_id))
 
 
 @router.post("/docs/{entity_id}/share")
 async def create_share_link(
     entity_id: str,
+    body: ShareCreateBody | None = None,
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Generate (or return existing) public share token for a document or list."""
+    """Create the public share token for a document or list (or update the
+    expiry of the existing one)."""
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    token = await get_or_create_share_token(session, company_id, entity_id)
+    expires = None
+    if body and body.expires_at:
+        try:
+            expiry_date = _date.fromisoformat(body.expires_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="expires_at must be an ISO date (YYYY-MM-DD)")
+        expires = datetime.combine(expiry_date, _time(23, 59, 59), tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="expires_at must be in the future")
+
+    share_row = await get_or_create_share_token(session, company_id, entity_id)
+    share_row.expires_at = expires
     await session.commit()
-    # `url` is the accept/import router (kept for compatibility); `view_url` is the
-    # direct branded read-only view — the link to hand a customer (same as the send
-    # email uses). Falls back to the accept URL when not cloud-connected.
-    return {"token": token, "url": _share_url(token), "view_url": public_view_url(token)}
+    return _share_status(share_row)
 
 
 @router.delete("/docs/{entity_id}/share")
@@ -325,9 +388,7 @@ async def view_shared_doc(
     """Public read-only document view. No authentication required.
     CORS: Access-Control-Allow-Origin: * so celerp.com/accept JS can probe reachability.
     """
-    share_row = (await session.execute(
-        select(DocShareToken).where(DocShareToken.token == token)
-    )).scalar_one_or_none()
+    share_row = await _active_share_row(session, token)
     if share_row is None:
         return HTMLResponse(_not_found_page("link-expired"), status_code=404)
 
@@ -360,9 +421,7 @@ async def download_share_bundle(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Download the document as a .celerp JSON bundle (fallback for p2p import failures)."""
-    share_row = (await session.execute(
-        select(DocShareToken).where(DocShareToken.token == token)
-    )).scalar_one_or_none()
+    share_row = await _active_share_row(session, token)
     if share_row is None:
         raise HTTPException(status_code=404, detail="Share link not found or revoked")
 

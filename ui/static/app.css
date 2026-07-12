@@ -2636,11 +2636,14 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   min-width: min(480px, 90vw);
   width: 90vw;
   background: var(--c-bg);
-  /* Centering: native <dialog> centers itself in the viewport when opened with showModal() */
-  margin: auto;
-  /* Prevent dialog from touching top on small viewports */
-  top: 50%;
-  translate: 0 -50%;
+  /* Top-anchored: every modal's top edge sits at the same height regardless of
+     its own height (a short dialog centered vertically would open much lower
+     than a tall one). */
+  margin: 0 auto;
+  top: 14vh;
+  bottom: auto;
+  max-height: 80vh;
+  overflow-y: auto;
 }
 .modal-dialog::backdrop {
   background: rgba(0,0,0,0.5);
@@ -2703,6 +2706,45 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   padding-top: 4px;
   border-top: 1px solid var(--c-border);
 }
+.modal-body { padding: 16px 24px 24px; }
+
+/* --- Share modal --- */
+.share-url { position: relative; margin-top: 10px; }
+.share-url__input { width: 100%; padding-right: 38px; }
+.share-url__copy {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  translate: 0 -50%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--c-text2);
+  padding: 4px;
+  border-radius: var(--radius);
+  line-height: 0;
+}
+.share-url__copy:hover { color: var(--c-text); background: var(--c-bg3); }
+.share-url__copy--done { color: var(--c-green); }
+.share-controls { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.share-controls .share-revoke { margin-left: auto; }
+.share-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c-border);
+  flex: none;
+}
+.share-dot--live { background: var(--c-green); }
+.share-dot--expired { background: var(--c-amber); }
+.share-expiry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--c-text2);
+}
+.share-expiry__input { width: auto; font-size: 13px; padding: 6px 8px; }
 
 /* --- Factory reset modal --- */
 .reset-modal__body { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }

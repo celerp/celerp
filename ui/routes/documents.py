@@ -784,6 +784,7 @@ def _send_to_modal(
 
 # Compact SVG icons for CSV export/import (16x16, matching pair)
 _ICON_CSV_EXPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>'
+_ICON_COPY = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
 _ICON_CSV_IMPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 12 15 15"/></svg>'
 _ICON_PRINT = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
@@ -3368,30 +3369,68 @@ celerpUpdateBulkAlloc();
         except Exception:
             return JSONResponse([])
 
-    def _share_modal_body(entity_id: str, share_url: str) -> FT:
-        body_id = f"share-body-{entity_id.replace(':', '-')}"
+    def _share_panel(entity_id: str, status: dict) -> FT:
+        """Share modal body: URL + copy indicator when live, and one control row -
+        Share button, state light, expiry date picker, Revoke."""
+        eid = entity_id.replace(":", "-")
+        body_id = f"share-body-{eid}"
+        shared = bool(status.get("shared"))
+        active = bool(status.get("active"))
+        view_url = status.get("view_url") or ""
+        expires = status.get("expires_at") or ""
+
+        if shared and active:
+            dot_cls, dot_tip = "share-dot share-dot--live", t("doc.share_live_tip")
+        elif shared:
+            dot_cls, dot_tip = "share-dot share-dot--expired", t("doc.share_expired_tip")
+        else:
+            dot_cls, dot_tip = "share-dot", t("doc.share_off_tip")
+
+        url_row = None
+        if shared and active and view_url:
+            input_id = f"share-url-{eid}"
+            url_row = Div(
+                Input(type="text", value=view_url, readonly=True, onclick="this.select()",
+                      cls="form-input share-url__input", id=input_id),
+                Button(NotStr(_ICON_COPY), type="button", cls="share-url__copy",
+                       title=t("btn.copy"), aria_label=t("btn.copy"),
+                       onclick=(f"navigator.clipboard.writeText(document.getElementById('{input_id}').value);"
+                                "this.classList.add('share-url__copy--done');"
+                                "setTimeout(()=>this.classList.remove('share-url__copy--done'),1500)")),
+                cls="share-url",
+            )
+
         return Div(
-            P(t("doc.share_hint"), cls="form-hint"),
-            Input(type="text", value=share_url, readonly=True, onclick="this.select()",
-                  cls="form-input", id=f"share-url-{entity_id.replace(':', '-')}"),
-            Div(
-                Button(t("btn.copy"), type="button", data_copy_text=share_url,
-                       cls="btn btn--secondary btn--sm"),
-                A(t("doc.open"), href=share_url, target="_blank", cls="btn btn--secondary btn--sm"),
-                Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
-                       hx_target=f"#{body_id}", hx_swap="innerHTML",
-                       hx_confirm=t("doc.share_revoke_confirm"), cls="btn btn--ghost btn--sm"),
-                cls="modal-dialog__actions",
+            P(t("doc.share_hint") if shared and active else t("doc.share_hint_off"), cls="form-hint"),
+            url_row,
+            Form(
+                Button(t("btn.share"), type="submit", cls="btn btn--primary btn--sm"),
+                Span(cls=dot_cls, title=dot_tip),
+                Label(
+                    t("doc.share_expires"),
+                    Input(type="date", name="expires_at", value=expires,
+                          cls="form-input share-expiry__input"),
+                    cls="share-expiry",
+                ),
+                (Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
+                        hx_target=f"#{body_id}", hx_swap="innerHTML",
+                        cls="btn btn--ghost btn--sm share-revoke") if shared else None),
+                hx_post=f"/docs/{entity_id}/share",
+                hx_target=f"#{body_id}", hx_swap="innerHTML",
+                cls="share-controls",
             ),
         )
 
-    def _share_revoked_body(entity_id: str) -> FT:
-        body_id = f"share-body-{entity_id.replace(':', '-')}"
-        return Div(
-            P(t("doc.share_revoked"), cls="form-hint"),
-            Button(t("doc.create_share_link"), type="button", hx_post=f"/docs/{entity_id}/share",
-                   hx_target=f"#{body_id}", hx_swap="innerHTML", cls="btn btn--secondary btn--sm"),
-        )
+    @app.get("/docs/{entity_id}/share")
+    async def share_panel_route(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _R
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            return _share_panel(entity_id, await api.get_share_status(token, entity_id))
+        except APIError as e:
+            return _action_error(str(e.detail))
 
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
@@ -3399,11 +3438,10 @@ celerpUpdateBulkAlloc();
         if not token:
             from starlette.responses import Response as _R
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        expires_at = (form.get("expires_at") or "").strip() or None
         try:
-            result = await api.create_share_link(token, entity_id)
-            # The direct branded view is the link to hand a customer (same as the send email).
-            share_url = result.get("view_url") or result.get("url") or result.get("token", "")
-            return _share_modal_body(entity_id, share_url)
+            return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at))
         except APIError as e:
             return _action_error(str(e.detail))
 
@@ -3415,7 +3453,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             await api.revoke_share_link(token, entity_id)
-            return _share_revoked_body(entity_id)
+            return _share_panel(entity_id, {"shared": False})
         except APIError as e:
             return _action_error(str(e.detail))
 
@@ -5632,7 +5670,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _fail_js = _json.dumps(t("doc.share_failed"))
         action_btns_left.append(
             Button(t("btn.share"), type="button",
-                   hx_post=f"/docs/{entity_id}/share",
+                   hx_get=f"/docs/{entity_id}/share",
                    hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
                    hx_on__after_request=(
                        f"if(event.detail.successful){{document.getElementById('{_share_modal_id}').showModal()}}"

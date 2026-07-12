@@ -1831,9 +1831,14 @@ async def get_dashboard_kpis(token: str) -> dict:
 # Sprint S8: Document share links
 # ---------------------------------------------------------------------------
 
-async def create_share_link(token: str, entity_id: str) -> dict:
+async def get_share_status(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/share")).json()
+        return _raise(await c.get(f"/docs/{entity_id}/share")).json()
+
+
+async def create_share_link(token: str, entity_id: str, expires_at: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/share", json={"expires_at": expires_at})).json()
 
 
 async def revoke_share_link(token: str, entity_id: str) -> dict:

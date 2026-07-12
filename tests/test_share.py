@@ -57,7 +57,8 @@ async def test_create_share_link(client: AsyncClient):
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
-    assert len(data["token"]) >= 20
+    # 9 random bytes -> 12 URL-safe chars: short enough to share, still unguessable
+    assert len(data["token"]) == 12
 
 
 @pytest.mark.asyncio
@@ -621,6 +622,128 @@ async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, 
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert "/share/" not in captured["html"]
+
+
+# ---------------------------------------------------------------------------
+# Share status + expiry
+# ---------------------------------------------------------------------------
+
+async def _expire_token(session, token: str) -> None:
+    """Force a token's expiry into the past directly in the DB."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import update
+    from celerp.models.share import DocShareToken
+    await session.execute(
+        update(DocShareToken)
+        .where(DocShareToken.token == token)
+        .values(expires_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_share_status_lifecycle(client: AsyncClient):
+    """GET /share reports state without minting; create/revoke flip it."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+
+    r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.status_code == 200
+    assert r.json() == {"shared": False, "active": False, "token": None,
+                        "url": None, "view_url": None, "expires_at": None}
+    # Status must not have minted a token
+    r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.json()["shared"] is False
+
+    created = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert created["shared"] is True and created["active"] is True
+
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["shared"] is True and status["active"] is True
+    assert status["token"] == created["token"]
+
+    await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["shared"] is False
+
+
+@pytest.mark.asyncio
+async def test_share_expiry_validation(client: AsyncClient):
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/share",
+                          json={"expires_at": "not-a-date"}, headers=_h(tok))
+    assert r.status_code == 422
+    r = await client.post(f"/docs/{entity_id}/share",
+                          json={"expires_at": "2000-01-01"}, headers=_h(tok))
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_share_expiry_set_and_cleared(client: AsyncClient):
+    """A future expiry is stored; sharing again without one clears it."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    created = (await client.post(f"/docs/{entity_id}/share",
+                                 json={"expires_at": "2099-12-31"}, headers=_h(tok))).json()
+    assert created["expires_at"] == "2099-12-31"
+    assert created["active"] is True
+
+    cleared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert cleared["expires_at"] is None
+    assert cleared["token"] == created["token"]
+
+
+@pytest.mark.asyncio
+async def test_expired_link_is_dead_everywhere(client: AsyncClient, session):
+    """An expired token 404s on the public view and bundle download, and the
+    status endpoint reports shared-but-inactive."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    assert (await client.get(f"/share/{token}")).status_code == 200
+
+    await _expire_token(session, token)
+
+    assert (await client.get(f"/share/{token}")).status_code == 404
+    assert (await client.get(f"/share/{token}/bundle")).status_code == 404
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["shared"] is True and status["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_share_again_reactivates_expired_link(client: AsyncClient, session):
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    await _expire_token(session, token)
+    assert (await client.get(f"/share/{token}")).status_code == 404
+
+    reshared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert reshared["token"] == token
+    assert reshared["active"] is True
+    assert (await client.get(f"/share/{token}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_send_email_no_link_when_share_expired(client: AsyncClient, session, monkeypatch):
+    """An expired share link never lands in a send email - the email falls back
+    to the accept URL instead of embedding a URL that 404s."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    await _expire_token(session, token)
+
     r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
     assert r.status_code == 200
 
