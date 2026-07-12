@@ -67,7 +67,7 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     # signup and the bundle-download fallback, so no separate download link.
     footer_links = ""
     if doc_type in ("invoice", "purchase_order", "quotation"):
-        footer_links = f' &nbsp;·&nbsp; <a href="{_esc(accept_url)}">Import into Celerp</a>'
+        footer_links = f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
 
@@ -98,7 +98,7 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     .num {{ text-align: right; }}
     .totals-row {{ font-weight: 600; border-top: 2px solid #e5e7eb; }}
     .doc-notes {{ padding: 0 32px 16px; font-size: 14px; color: #374151; white-space: pre-wrap; }}
-    .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #9ca3af; }}
+    .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: #9ca3af; }}
     .doc-brand a {{ color: #9ca3af; text-decoration: none; }}
     .doc-brand a:hover {{ text-decoration: underline; }}
     @media print {{
@@ -186,7 +186,7 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
 
     # Same quiet-footer treatment as documents: import is a small utility link
     # for recipients who run Celerp, not a pitch on the sender's page.
-    footer_links = f' &nbsp;·&nbsp; <a href="{_esc(accept_url)}">Import into Celerp</a>'
+    footer_links = f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
     valid_until_html = (
@@ -221,7 +221,7 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
     .num {{ text-align: right; }}
     .totals-row {{ font-weight: 600; border-top: 2px solid #e5e7eb; }}
     .doc-notes {{ padding: 0 32px 16px; font-size: 14px; color: #374151; white-space: pre-wrap; }}
-    .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #9ca3af; }}
+    .doc-brand {{ padding: 14px 32px; border-top: 1px solid #eee; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: #9ca3af; }}
     .doc-brand a {{ color: #9ca3af; text-decoration: none; }}
     .doc-brand a:hover {{ text-decoration: underline; }}
     @media print {{
