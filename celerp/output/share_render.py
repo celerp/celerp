@@ -61,18 +61,13 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     tax = _fmt_money(doc.get("tax") or doc.get("tax_amount"), currency)
     total = _fmt_money(doc.get("total") or doc.get("total_amount"), currency)
 
-    # Import stays a quiet footer link: the page is the sender's document, not
-    # a Celerp pitch. It only means something to recipients who also run
-    # Celerp; everyone else just views or prints. The signup path for new
-    # users lives on the accept page itself, one click away.
+    # Import stays a quiet footer link after the brand line: the page is the
+    # sender's document, not a Celerp pitch, and it only means something to
+    # recipients who also run Celerp. The accept page it leads to handles
+    # signup and the bundle-download fallback, so no separate download link.
     footer_links = ""
     if doc_type in ("invoice", "purchase_order", "quotation"):
-        bundle_url = f"/share/{_esc(token)}/bundle"
-        footer_links = (
-            f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
-            f' &nbsp;·&nbsp; <a href="{bundle_url}" download>Download (.celerp)</a>'
-            " &nbsp;·&nbsp; "
-        )
+        footer_links = f' &nbsp;·&nbsp; <a href="{_esc(accept_url)}">Import into Celerp</a>'
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
 
@@ -145,7 +140,7 @@ def _public_doc_page(doc: dict, token: str, accept_url: str) -> str:
     </div>
     {notes_html}
     <div class="doc-brand">
-      {footer_links}<a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>
+      <a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>{footer_links}
     </div>
   </div>
 </body>
@@ -191,11 +186,7 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
 
     # Same quiet-footer treatment as documents: import is a small utility link
     # for recipients who run Celerp, not a pitch on the sender's page.
-    footer_links = (
-        f'<a href="{_esc(accept_url)}">Import into Celerp</a>'
-        f' &nbsp;·&nbsp; <a href="/share/{_esc(token)}/bundle" download>Download (.celerp)</a>'
-        " &nbsp;·&nbsp; "
-    )
+    footer_links = f' &nbsp;·&nbsp; <a href="{_esc(accept_url)}">Import into Celerp</a>'
 
     notes_html = f'<p class="doc-notes">{_esc(notes)}</p>' if notes else ""
     valid_until_html = (
@@ -272,7 +263,7 @@ def _public_list_page(lst: dict, token: str, accept_url: str) -> str:
     </div>
     {notes_html}
     <div class="doc-brand">
-      {footer_links}<a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>
+      <a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp - Downloadable ERP for Serious Businesses</a>{footer_links}
     </div>
   </div>
 </body>

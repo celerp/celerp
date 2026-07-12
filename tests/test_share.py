@@ -130,7 +130,10 @@ async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient
     r = await client.get(f"/share/{token}")
     assert "Import into Celerp" in r.text
     assert f"/accept?token={token}" in r.text
-    assert f"/share/{token}/bundle" in r.text
+    # Brand line leads; import trails it. No direct bundle link (the accept
+    # page offers the bundle as its own fallback) and no prominent CTA.
+    assert r.text.index("Powered by Celerp") < r.text.index("Import into Celerp")
+    assert f"/share/{token}/bundle" not in r.text
     assert "Accept this" not in r.text
     assert "Sign up free" not in r.text
     assert "btn-accept" not in r.text
