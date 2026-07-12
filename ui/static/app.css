@@ -243,6 +243,8 @@ a:hover { text-decoration: underline; }
 .btn--danger:hover { background: var(--c-red-dark); text-decoration: none; color: #fff; }
 .btn--outline.btn--danger { background: transparent; color: var(--c-red); border-color: var(--c-red); }
 .btn--outline.btn--danger:hover { background: var(--c-red); color: #fff; }
+.btn--success { background: var(--c-green); color: #fff; border-color: var(--c-green-dark); }
+.btn--success:hover { background: var(--c-green-dark); text-decoration: none; color: #fff; }
 .btn--full { width: 100%; }
 .btn--xs { padding: 3px 8px; font-size: 11px; }
 
@@ -2711,12 +2713,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   width: 100%;
   padding: 8px 40px 8px 11px;
   font-size: 12px;
-  color: var(--c-text2);
+  color: var(--c-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.share-url__input:focus { color: var(--c-text); }
 .share-url__copy {
   position: absolute;
   right: 5px;
@@ -2734,7 +2735,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 .share-url__copy:hover { color: var(--c-text); background: var(--c-bg3); }
 .share-url__copy--done, .share-url__copy--done:hover { color: var(--c-green); }
-.share-url--off .share-url__input { opacity: 0.55; }
 .share-controls {
   display: flex;
   align-items: center;
@@ -2746,7 +2746,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--c-border);
+  background: var(--c-red);
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.18);
   flex: none;
 }
 .share-dot--live {

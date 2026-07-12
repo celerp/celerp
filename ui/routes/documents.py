@@ -3405,12 +3405,13 @@ celerpUpdateBulkAlloc();
                                 "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value)}"
                                 "var b=this;b.classList.add('share-url__copy--done');"
                                 "setTimeout(function(){b.classList.remove('share-url__copy--done')},1500)")),
-                cls="share-url" + ("" if active else " share-url--off"),
+                cls="share-url",
             )
 
+        expiry_id = f"share-expiry-{eid}"
         expiry = Label(
             t("doc.share_expires"),
-            Input(type="date", name="expires_at", value=expires,
+            Input(type="date", name="expires_at", value=expires, id=expiry_id,
                   cls="form-input share-expiry__input",
                   # While the link is live, changing the date applies it directly.
                   **({"hx_post": f"/docs/{entity_id}/share", "hx_target": f"#{body_id}",
@@ -3420,21 +3421,17 @@ celerpUpdateBulkAlloc();
         dot = Span(cls=dot_cls, title=dot_tip)
 
         if active:
-            controls = Div(
-                expiry, dot,
-                Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
-                       hx_target=f"#{body_id}", hx_swap="innerHTML",
-                       cls="btn btn--ghost btn--sm share-panel__action"),
-                cls="share-controls",
-            )
+            action = Button(t("btn.revoke"), type="button", hx_delete=f"/docs/{entity_id}/share",
+                            hx_target=f"#{body_id}", hx_swap="innerHTML",
+                            cls="btn btn--ghost btn--sm share-panel__action")
         else:
-            controls = Form(
-                expiry, dot,
-                Button(t("btn.share"), type="submit", cls="btn btn--primary btn--sm share-panel__action"),
-                hx_post=f"/docs/{entity_id}/share",
-                hx_target=f"#{body_id}", hx_swap="innerHTML",
-                cls="share-controls",
-            )
+            action = Button(t("btn.share"), type="button", hx_post=f"/docs/{entity_id}/share",
+                            hx_include=f"#{expiry_id}",
+                            hx_target=f"#{body_id}", hx_swap="innerHTML",
+                            cls="btn btn--success btn--sm share-panel__action")
+        # One container for both states: a Form here would pick up the generic
+        # .modal-dialog form column layout and break the row.
+        controls = Div(expiry, dot, action, cls="share-controls")
 
         return Div(
             P(t("doc.share_hint") if active else t("doc.share_hint_off"), cls="form-hint"),
