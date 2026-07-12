@@ -22,11 +22,12 @@ from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form a
 from ui.components.files import _files_section as _shared_doc_files_section
 
 
-def _compose_company_address(a: dict) -> str:
-    """One-line address from a contact address dict (for the letterhead)."""
-    parts = [a.get("line1", ""), a.get("line2", ""), a.get("city", ""), a.get("state", ""),
-             a.get("postal_code", ""), a.get("country", "")]
-    return ", ".join(p for p in parts if p)
+from celerp.output.doc_print import (
+    IMPORTABLE_DOC_TYPES as _IMPORTABLE_DOC_TYPES,
+    INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
+    compose_address as _compose_company_address,
+    render_doc_print_html,
+)
 
 
 async def _company_letterhead(token: str) -> dict:
@@ -186,7 +187,6 @@ _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
 # header with PCS/WEIGHT shown inline (and editable) inside the description cell, the unit
 # merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
 # memo = "Consignment Out", list = "Lists".
-_INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
 # Doc types that may carry a header-level (whole-document) discount. Sales concessions
 # (invoice/quotation/memo) and supplier order-level discounts (bill/PO/consignment_in). Excludes
 # credit notes (reversals) and receipts (payment records), where a header discount is incoherent.
@@ -793,224 +793,6 @@ _ICON_PRINT = (
     '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
     '<rect x="6" y="14" width="12" height="8"/></svg>'
 )
-
-_DOC_PRINT_CSS = """
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: white; padding: 20mm; }
-.dp-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8mm; padding-bottom: 4mm; border-bottom: 2px solid #111; }
-.dp-company-name { font-size: 14pt; font-weight: 700; margin-bottom: 2mm; }
-.dp-company-sub { font-size: 9pt; color: #555; line-height: 1.5; }
-.dp-doc-title { font-size: 18pt; font-weight: 700; text-align: right; text-transform: uppercase; letter-spacing: 0.03em; }
-.dp-doc-meta { font-size: 9pt; text-align: right; margin-top: 2mm; line-height: 1.6; color: #333; }
-.dp-doc-meta strong { color: #111; }
-.dp-parties { display: flex; gap: 10mm; margin-bottom: 6mm; }
-.dp-party { flex: 1; }
-.dp-party-label { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 1mm; }
-.dp-party-name { font-size: 10pt; font-weight: 600; }
-.dp-party-sub { font-size: 9pt; color: #444; line-height: 1.5; }
-.dp-lines { width: 100%; border-collapse: collapse; margin-bottom: 4mm; font-size: 9pt; }
-.dp-lines thead th { background: #f5f5f5; font-weight: 700; text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid #999; }
-.dp-lines thead th.r { text-align: right; }
-.dp-lines tbody td { padding: 1.5mm 2mm; border-bottom: 1px solid #eee; vertical-align: top; }
-.dp-lines tbody td.r { text-align: right; }
-.dp-lines tbody td.mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
-.dp-totals { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 6mm; }
-.dp-totals table { border-collapse: collapse; min-width: 60mm; }
-.dp-totals td { padding: 1mm 2mm; font-size: 9.5pt; }
-.dp-totals td.label { text-align: left; color: #555; }
-.dp-totals td.amount { text-align: right; font-weight: 600; }
-.dp-totals tr.grand td { border-top: 2px solid #111; font-size: 11pt; font-weight: 700; padding-top: 2mm; }
-.dp-notes { margin-top: 4mm; font-size: 9pt; color: #444; border-top: 1px solid #ddd; padding-top: 3mm; }
-.dp-notes-label { font-weight: 700; color: #111; margin-bottom: 1mm; }
-.dp-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 3mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
-@page { margin: 0; size: A4 portrait; }
-@media print { body { padding: 15mm; } }
-"""
-
-
-def _doc_print_view(doc: dict) -> FT:
-    """Render a standalone printable HTML page for a document."""
-    from ui.components.table import fmt_money, currency_symbol
-
-    entity_id = doc.get("id") or doc.get("entity_id") or ""
-    doc_type = doc.get("doc_type", "")
-    doc_number = doc.get("doc_number") or doc.get("ref_id") or entity_id
-    title = doc_type.replace("_", " ").title() if doc_type else "Document"
-    issue_date = (doc.get("issue_date") or "")[:10]
-    due_date = (doc.get("due_date") or "")[:10]
-    currency = doc.get("currency") or "USD"
-
-    company_name = doc.get("company_name") or ""
-    company_address = doc.get("company_address") or ""
-    company_tax_id = doc.get("company_tax_id") or ""
-    company_email = doc.get("company_email") or ""
-    company_phone = doc.get("company_phone") or ""
-
-    contact_name = doc.get("contact_name") or doc.get("customer_name") or ""
-    contact_company = doc.get("contact_company_name") or ""
-    contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
-    contact_tax_id = doc.get("contact_tax_id") or ""
-    contact_email = doc.get("contact_email") or ""
-    ship_to_address = doc.get("contact_shipping_address") or ""
-    shipping_attn = doc.get("shipping_attn") or ""
-
-    line_items = doc.get("line_items") or []
-
-    def _money(v) -> str:
-        try:
-            return fmt_money(v, currency)
-        except Exception:
-            sym = currency_symbol(currency)
-            return f"{sym}{float(v or 0):,.2f}"
-
-    has_disc = any(li.get("discount_pct") for li in line_items)
-    from celerp.services.units import build_unit_map as _bum, DEFAULT_UNITS as _DU
-    _print_umap = _bum(_DU)
-    rows = []
-    for li in line_items:
-        qty = li.get("quantity") or li.get("qty") or 0
-        price = li.get("unit_price") or li.get("price") or 0
-        disc = li.get("discount_pct") or 0
-        line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
-        # Description holds only the description (the SKU has its own column) plus
-        # Pieces / Weight as labelled sub-lines when the line carries them.
-        desc = li.get("description") or li.get("name") or ""
-        sku = li.get("sku") or ""
-        _ls = "margin:0;font-size:8.5pt;"
-        _desc_parts = [P(f"- {desc}", style=_ls)]
-        # Pieces/Weight sub-lines are sales (invoice-layout) only; keep vendor docs clean.
-        if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
-            _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
-        rows.append(Tr(
-            Td(sku, cls="mono"),
-            Td(Div(*_desc_parts)),
-            Td(qty_label(li), cls="r"),
-            Td(fmt_rate(price, currency), cls="r"),
-            *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
-            Td(_money(line_total), cls="r"),
-        ))
-
-    headers = Tr(
-        Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
-        *([] if not has_disc else [Th("Disc%", cls="r")]),
-        Th("Amount", cls="r"),
-    )
-
-    subtotal = doc.get("subtotal") or 0
-    tax_total = doc.get("tax_total") or 0
-    grand_total = doc.get("grand_total") or doc.get("total") or 0
-    notes_text = doc.get("notes") or doc.get("terms") or ""
-
-    totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
-    # Header (whole-document) discount, when set. grand_total/total already reflects it.
-    _disc_amt = float(doc.get("discount_amount") or 0)
-    _disc_raw = float(doc.get("discount") or 0)
-    _disc_type = doc.get("discount_type") or "flat"
-    if not _disc_amt and _disc_raw:
-        _disc_amt = subtotal * _disc_raw / 100 if _disc_type == "percentage" else _disc_raw
-    if _disc_amt > 0.005:
-        _dlabel = f"Discount ({_disc_raw:g}%)" if _disc_type == "percentage" and _disc_raw else "Discount"
-        totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
-    if float(tax_total or 0):
-        totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
-    totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
-
-    is_purchasing = doc_type in ("bill", "purchase_order", "consignment_in")
-
-    if is_purchasing:
-        # Vendor = the contact (supplier); Bill To = us (the company)
-        vendor_box = Div(
-            P("Vendor", cls="dp-party-label"),
-            P(contact_name, cls="dp-party-name") if contact_name else None,
-            Div(
-                P(contact_company) if contact_company and contact_company != contact_name else None,
-                P(contact_address) if contact_address else None,
-                P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
-                P(contact_email) if contact_email else None,
-                cls="dp-party-sub",
-            ),
-        ) if contact_name else None
-        bill_to_box = Div(
-            P("Bill To", cls="dp-party-label"),
-            P(company_name, cls="dp-party-name") if company_name else None,
-            Div(
-                P(company_address) if company_address else None,
-                P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
-                P(company_email) if company_email else None,
-                cls="dp-party-sub",
-            ),
-        )
-        ship_to_box = Div(
-            P("Ship To", cls="dp-party-label"),
-            P(shipping_attn, cls="dp-party-name") if shipping_attn else None,
-            Div(
-                P(ship_to_address) if ship_to_address else None,
-                cls="dp-party-sub",
-            ),
-        ) if ship_to_address else None
-        parties_section = Div(vendor_box, bill_to_box, ship_to_box, cls="dp-parties")
-    else:
-        # Sales docs: Bill To = the contact (customer)
-        parties_section = Div(
-            Div(
-                P("Bill To", cls="dp-party-label"),
-                P(contact_name, cls="dp-party-name") if contact_name else None,
-                Div(
-                    P(contact_company) if contact_company and contact_company != contact_name else None,
-                    P(contact_address) if contact_address else None,
-                    P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
-                    P(contact_email) if contact_email else None,
-                    cls="dp-party-sub",
-                ),
-            ) if contact_name else None,
-            Div(
-                P("Ship To", cls="dp-party-label"),
-                P(shipping_attn, cls="dp-party-name") if shipping_attn else None,
-                Div(P(ship_to_address) if ship_to_address else None, cls="dp-party-sub"),
-            ) if ship_to_address else None,
-            cls="dp-parties",
-        )
-
-    return Html(
-        Head(
-            Meta(charset="utf-8"),
-            Meta(name="viewport", content="width=device-width, initial-scale=1"),
-            Title(f"{title} {doc_number}"),
-            Style(_DOC_PRINT_CSS),
-        ),
-        Body(
-            Div(
-                Div(
-                    P(company_name, cls="dp-company-name"),
-                    Div(
-                        P(company_address) if company_address else None,
-                        P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
-                        P(company_email) if company_email else None,
-                        P(company_phone) if company_phone else None,
-                        cls="dp-company-sub",
-                    ),
-                ),
-                Div(
-                    P(title, cls="dp-doc-title"),
-                    Div(
-                        P(Strong("No.: "), doc_number),
-                        P(Strong("Date: "), issue_date) if issue_date else None,
-                        P(Strong("Due: "), due_date) if due_date else None,
-                        cls="dp-doc-meta",
-                    ),
-                ),
-                cls="dp-header",
-            ),
-            parties_section,
-            Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
-            Div(Table(*totals_rows), cls="dp-totals"),
-            Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
-            Div(NotStr('Powered by <a href="https://celerp.com" style="color:#aaa;text-decoration:none;">celerp.com</a>  ·  '), doc_number, cls="dp-footer"),
-            Script("window.onload = function() { window.print(); }"),
-        ),
-    )
-
-
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
@@ -1734,6 +1516,15 @@ def setup_routes(app):
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
 
+    async def _print_import_url(token: str, entity_id: str) -> str | None:
+        """Accept URL for the printout footer - only while the share link is
+        live, so a paper or PDF copy never carries a URL that 404s."""
+        try:
+            status = await api.get_share_status(token, entity_id)
+        except APIError:
+            return None
+        return status.get("url") if status.get("active") else None
+
     # Same export for lists
     @app.get("/lists/{entity_id}/print")
     async def list_print_view(request: Request, entity_id: str):
@@ -1760,8 +1551,8 @@ def setup_routes(app):
                 pass
         await _enrich_print_lines(token, lst)
         from starlette.responses import HTMLResponse as _HR
-        from fasthtml.common import to_xml
-        return _HR(to_xml(_doc_print_view(lst)))
+        return _HR(render_doc_print_html(
+            lst, import_url=await _print_import_url(token, entity_id), auto_print=True))
 
     @app.get("/lists/{entity_id}/items/csv")
     async def list_items_export_csv(request: Request, entity_id: str):
@@ -1806,9 +1597,10 @@ def setup_routes(app):
                 pass
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
         await _enrich_print_lines(token, doc)
+        _imp = (await _print_import_url(token, entity_id)
+                if doc.get("doc_type") in _IMPORTABLE_DOC_TYPES else None)
         from starlette.responses import HTMLResponse as _HR
-        from fasthtml.common import to_xml
-        return _HR(to_xml(_doc_print_view(doc)))
+        return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True))
 
     @app.get("/docs/{entity_id}/pdf")
     async def doc_pdf_redirect(request: Request, entity_id: str):

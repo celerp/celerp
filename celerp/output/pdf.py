@@ -34,7 +34,7 @@ pdfmetrics.registerFont(TTFont(_FONT, "/usr/share/fonts/truetype/dejavu/DejaVuSa
 pdfmetrics.registerFont(TTFont(_FONT_BOLD, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
 
 _BRAND_URL = "https://www.celerp.com"
-_BRAND_TEXT = "Powered by Celerp \u00b7 Opensource Business Software for AI Transformations"
+_BRAND_TEXT = "Powered by Celerp - Downloadable ERP for Serious Businesses"
 
 _GREY = colors.HexColor("#6b7280")
 _DARK = colors.HexColor("#111827")
@@ -142,10 +142,13 @@ def _fmt_date(value: Any) -> str:
         return s
 
 
-def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = None) -> bytes:
+def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = None,
+                          import_url: str | None = None) -> bytes:
     """
     Generate a PDF for a Celerp document (invoice, PO, quotation, etc.).
-    Returns raw PDF bytes.
+    ``import_url``: accept-page URL for the footer's Import-into-Celerp link;
+    pass it only while the document's share link is live so saved PDFs never
+    carry a URL that 404s. Returns raw PDF bytes.
     """
     buf = io.BytesIO()
     page_w, page_h = A4
@@ -442,8 +445,18 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         canvas.saveState()
         canvas.setFont(_FONT, 7)
         canvas.setFillColor(_GREY)
-        brand = f"{_BRAND_TEXT} \u00b7 {_BRAND_URL}"
-        canvas.drawCentredString(page_w / 2, 10 * mm, brand)
+        # One footer format everywhere: brand left, pipe, import link.
+        canvas.drawString(margin, 10 * mm, _BRAND_TEXT)
+        brand_w = canvas.stringWidth(_BRAND_TEXT, _FONT, 7)
+        canvas.linkURL(_BRAND_URL, (margin, 8 * mm, margin + brand_w, 13 * mm), relative=0)
+        if import_url:
+            x = margin + brand_w + 4 * mm
+            canvas.drawString(x, 10 * mm, "|")
+            link_label = "Import into Celerp"
+            lx = x + 4 * mm
+            canvas.drawString(lx, 10 * mm, link_label)
+            link_w = canvas.stringWidth(link_label, _FONT, 7)
+            canvas.linkURL(import_url, (lx, 8 * mm, lx + link_w, 13 * mm), relative=0)
         page_num = canvas.getPageNumber()
         canvas.drawRightString(page_w - margin, 10 * mm, f"Page {page_num}")
 

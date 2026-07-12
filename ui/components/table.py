@@ -8,9 +8,12 @@ import re
 from fasthtml.common import *
 from ui.i18n import t, get_lang
 from celerp.services.field_schema import MIXED_VALUE
-
-# Canonical empty-value placeholder (rule k)
-EMPTY = "--"
+# Canonical definitions live with the shared document renderer; re-exported
+# here for the UI's many call sites. EMPTY is the canonical empty-value
+# placeholder (rule k).
+from celerp.output.doc_print import (  # noqa: F401
+    CURRENCY_SYMBOLS, EMPTY, currency_symbol, fmt_money, fmt_rate, unwrap_address,
+)
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
@@ -74,56 +77,6 @@ _SEARCHABLE_THRESHOLD = 10
 
 # Colors supported by status_cards (maps to CSS modifier class)
 _STATUS_CARD_COLORS = {"green", "yellow", "red", "blue", "gray"}
-
-# ISO 4217 → symbol map for money formatting
-_CURRENCY_SYMBOLS: dict[str, str] = {
-    "AED": "AED ", "AUD": "A$", "BDT": "৳", "BRL": "R$", "CAD": "C$",
-    "CHF": "CHF ", "CLP": "$", "CNY": "¥", "COP": "$", "CZK": "Kč ",
-    "DKK": "kr ", "EGP": "E£", "EUR": "€", "GBP": "£", "HKD": "HK$",
-    "HUF": "Ft ", "IDR": "Rp ", "ILS": "₪", "INR": "₹", "JPY": "¥",
-    "KRW": "₩", "KWD": "KD ", "MXN": "$", "MYR": "RM ", "NGN": "₦",
-    "NOK": "kr ", "NZD": "NZ$", "PEN": "S/", "PHP": "₱", "PKR": "₨ ",
-    "PLN": "zł ", "QAR": "QR ", "RON": "lei ", "RUB": "₽", "SAR": "SR ",
-    "SEK": "kr ", "SGD": "S$", "THB": "฿", "TRY": "₺", "TWD": "NT$",
-    "UAH": "₴", "USD": "$", "VND": "₫", "ZAR": "R ",
-}
-
-
-def currency_symbol(currency: str | None) -> str:
-    """Return the display symbol for an ISO 4217 currency code. Falls back to code + space."""
-    if not currency:
-        return ""
-    return _CURRENCY_SYMBOLS.get(currency.upper(), f"{currency.upper()} ")
-
-
-def fmt_money(value: str | float, currency: str | None = None) -> str:
-    """Format a money AMOUNT (total, tax, etc.) at currency precision."""
-    sym = currency_symbol(currency)
-    try:
-        return f"{sym}{float(value):,.2f}"
-    except (ValueError, TypeError):
-        return EMPTY
-
-
-def fmt_rate(value: str | float, currency: str | None = None) -> str:
-    """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
-    with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
-    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
-    sym = currency_symbol(currency)
-    try:
-        v = float(value)
-    except (ValueError, TypeError):
-        return EMPTY
-    lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
-    s = f"{v:,.{hi}f}"
-    if "." in s:
-        intp, frac = s.split(".")
-        frac = frac.rstrip("0")
-        if len(frac) < lo:
-            frac = frac.ljust(lo, "0")
-        s = f"{intp}.{frac}" if frac else intp
-    return f"{sym}{s}"
-
 
 def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
     """Clickable status filter cards at top of list pages.
@@ -2066,7 +2019,7 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
             return Td(val)
         s = str(val)
         # Currency detection — check against all known symbols
-        _MONEY_PREFIXES = tuple(_CURRENCY_SYMBOLS.values()) + ("฿", "$", "€", "£", "¥")
+        _MONEY_PREFIXES = tuple(CURRENCY_SYMBOLS.values()) + ("฿", "$", "€", "£", "¥")
         if any(s.startswith(p) for p in _MONEY_PREFIXES):
             return Td(s, cls="cell--number")
         return Td(s)
@@ -2077,23 +2030,6 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
         cls=f"data-table {cls_extra}".strip(),
         **({"id": id} if id else {}),
     )
-
-
-def unwrap_address(raw) -> str:
-    """Unwrap an address value that may be a dict (``{"text": "…"}``) or a plain string.
-
-    Single source of truth for all UI address display - used by settings, documents, etc.
-    """
-    if not raw:
-        return ""
-    if isinstance(raw, dict):
-        text = raw.get("text") or raw.get("line1") or ""
-        for k in ("line2", "city", "state", "postal_code", "country"):
-            v = raw.get(k) or ""
-            if v:
-                text = text + ("\n" if text else "") + v
-        return text
-    return str(raw)
 
 
 def col_resize_script(table_selector: str, storage_key: str):

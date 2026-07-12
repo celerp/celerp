@@ -140,6 +140,23 @@ async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_public_share_view_is_the_print_layout_with_letterhead(client: AsyncClient):
+    """The share page renders through the same letterhead layout as the Print
+    button - including the sender (From) block - not a separate design."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    r = await client.get(f"/share/{token}")
+    assert r.status_code == 200
+    # Sender letterhead (From): the company identity lives on the self-contact,
+    # which registration seeds with the admin's name - same rule as UI print.
+    assert 'class="dp-company-name">Admin<' in r.text
+    assert "Bill To" in r.text
+    assert "ACME Corp" in r.text
+
+
+@pytest.mark.asyncio
 async def test_public_share_view_no_import_link_for_memo(client: AsyncClient):
     """Memos are not importable, so their footer has no import link."""
     tok = await _token(client)
@@ -562,19 +579,19 @@ def test_paid_invoice_is_still_shareable():
 
 
 def test_print_view_escapes_injected_html():
-    """Document strings (incl. the doc number in the footer) must be HTML-escaped
-    when rendered, so an imported doc can't smuggle markup into the print view."""
-    from fasthtml.common import to_xml
-    from ui.routes.documents import _doc_print_view
+    """Document strings must be HTML-escaped by the shared renderer (it serves
+    both the Print button and the public share view), so an imported doc can't
+    smuggle markup into either surface."""
+    from celerp.output.doc_print import render_doc_print_html
 
-    html = to_xml(_doc_print_view({
+    html = render_doc_print_html({
         "doc_type": "invoice",
         "doc_number": "<script>alert(1)</script>",
         "contact_name": "<img src=x onerror=alert(2)>",
         "currency": "USD",
         "total": 10.0,
         "line_items": [{"description": "<b>bad</b>", "quantity": 1, "unit_price": 10.0}],
-    }))
+    })
     assert "<script>alert(1)</script>" not in html
     assert "<img src=x onerror=alert(2)>" not in html
     assert "&lt;script&gt;" in html

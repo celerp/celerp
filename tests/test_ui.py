@@ -3479,8 +3479,12 @@ class TestSprint4DocActions:
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):
-        """Doc detail must not contain dialog or modal elements."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+        """Without a connected relay, doc detail has no dialog or modal
+        elements (Send/Share modals are relay-gated). Relay status is pinned
+        so the test is deterministic even with a live dev server running."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
@@ -5791,7 +5795,11 @@ class TestSprint5NoPopups:
 
     @pytest.mark.asyncio
     async def test_no_dialog_in_quotation(self, ui_client):
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_QUOTATION_DOC)):
+        """Relay status pinned off: the quotation page's Send/Share dialogs
+        are relay-gated, so none may render."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_QUOTATION_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:QUO-2026-0001", cookies=_authed())
         assert b"<dialog" not in r.content.lower()
 

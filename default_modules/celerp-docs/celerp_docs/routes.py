@@ -583,7 +583,17 @@ async def get_doc_pdf(
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
 
-    pdf_bytes = generate_document_pdf(doc, company)
+    # Footer import link only while the share link is live, so saved PDFs
+    # never carry a URL that 404s.
+    from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
+    from celerp.output.doc_print import IMPORTABLE_DOC_TYPES
+    import_url = None
+    if doc.get("doc_type") in IMPORTABLE_DOC_TYPES:
+        share_row = await _find_share_row(session, company_id, entity_id)
+        if share_row is not None and _share_active(share_row):
+            import_url = _share_url(share_row.token)
+
+    pdf_bytes = generate_document_pdf(doc, company, import_url=import_url)
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or entity_id
     filename = f"{doc_ref}.pdf".replace("/", "-").replace(" ", "_")
     return _Resp(

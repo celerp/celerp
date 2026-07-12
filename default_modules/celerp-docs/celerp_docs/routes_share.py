@@ -41,7 +41,11 @@ from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.output.share_render import _public_doc_page, _public_list_page, _not_found_page
+from celerp.output.doc_print import (
+    IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
+    compose_address, render_doc_print_html, unwrap_address,
+)
+from celerp.output.share_render import _not_found_page
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
@@ -393,12 +397,79 @@ async def revoke_share_link(
 # Public endpoints (no auth)
 # ---------------------------------------------------------------------------
 
+async def _letterhead(session: AsyncSession, company_id) -> dict:
+    """Company letterhead fields for the shared document - the DB-side mirror
+    of the UI's resolution: the company's self-contact first, company
+    settings as the fallback."""
+    from celerp.models.company import Company
+    company = await session.get(Company, company_id)
+    if company is None:
+        return {}
+    cfg = company.settings or {}
+    contact_state: dict = {}
+    self_id = cfg.get("self_contact_id")
+    if self_id:
+        crow = await session.get(Projection, (company_id, self_id))
+        if crow is not None:
+            contact_state = crow.state or {}
+    addrs = contact_state.get("addresses") or []
+    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
+    address = (compose_address(primary) if primary else "") or unwrap_address(cfg.get("address")) or ""
+    return {
+        "company_name": contact_state.get("name") or company.name or "",
+        "company_address": address,
+        "company_phone": contact_state.get("phone") or cfg.get("phone") or "",
+        "company_tax_id": contact_state.get("tax_id") or cfg.get("tax_id") or "",
+        "company_email": contact_state.get("email") or cfg.get("email") or "",
+    }
+
+
+async def _resolve_share_contact(session: AsyncSession, company_id, state: dict) -> None:
+    """Fill the Bill-To block from the contact projection when the doc state
+    only carries a contact_id."""
+    cid = state.get("contact_id")
+    if not cid or state.get("contact_name"):
+        return
+    crow = await session.get(Projection, (company_id, cid))
+    if crow is None:
+        return
+    contact = crow.state or {}
+    state["contact_name"] = contact.get("name") or ""
+    state["contact_company_name"] = contact.get("company_name") or ""
+    state["contact_email"] = contact.get("email") or ""
+    state["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
+    state["contact_tax_id"] = contact.get("tax_id") or ""
+
+
+async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> None:
+    """Source pieces/weight (and the weight's unit) from each line's item for
+    the shared view - the DB-side mirror of the UI print enrichment."""
+    if state.get("doc_type") not in INVOICE_LAYOUT_DOC_TYPES:
+        return
+    from celerp.models.company import Company
+    from celerp.services.line_measures import item_measure_meta, resolve_line_measures
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    company = await session.get(Company, company_id)
+    units = ((company.settings or {}).get("units") if company else None) or DEFAULT_UNITS
+    umap = build_unit_map(units)
+    for li in state.get("line_items") or []:
+        eid = li.get("entity_id") or li.get("item_id")
+        if not eid:
+            continue
+        irow = await session.get(Projection, (company_id, eid))
+        if irow is None:
+            continue
+        meta = item_measure_meta(irow.state or {}, umap)
+        li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+
+
 @public_router.get("/share/{token}", response_class=HTMLResponse)
 async def view_shared_doc(
     token: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Public read-only document view. No authentication required.
+    """Public read-only document view - the exact letterhead layout the Print
+    button produces, plus the shared quiet footer. No authentication required.
     CORS: Access-Control-Allow-Origin: * so celerp.com/accept JS can probe reachability.
     """
     share_row = await _active_share_row(session, token)
@@ -409,11 +480,21 @@ async def view_shared_doc(
     if row is None:
         return HTMLResponse(_not_found_page("doc-missing"), status_code=404)
 
-    headers = {"Access-Control-Allow-Origin": "*"}
-    state = row.state
+    state = dict(row.state or {})
     if row.entity_type == "list":
-        return HTMLResponse(_public_list_page(state, token, _share_url(token)), headers=headers)
-    return HTMLResponse(_public_doc_page(state, token, _share_url(token)), headers=headers)
+        state.setdefault("doc_type", "list")
+        if not state.get("contact_name"):
+            state["contact_name"] = state.get("receiver") or state.get("customer_name") or ""
+        if not state.get("issue_date"):
+            state["issue_date"] = state.get("created_at") or state.get("date")
+    if not state.get("company_name"):
+        state.update(await _letterhead(session, share_row.company_id))
+    await _resolve_share_contact(session, share_row.company_id, state)
+    await _enrich_share_lines(session, share_row.company_id, state)
+
+    importable = state.get("doc_type") in IMPORTABLE_DOC_TYPES
+    html = render_doc_print_html(state, import_url=_share_url(token) if importable else None)
+    return HTMLResponse(html, headers={"Access-Control-Allow-Origin": "*"})
 
 
 @public_router.options("/share/{token}")
