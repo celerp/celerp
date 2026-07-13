@@ -371,7 +371,8 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-            settings_contacts, settings_cloud, settings_connectors, notifications, events, stars):
+            settings_contacts, settings_cloud, settings_connectors, settings_payments,
+            notifications, events, stars):
     mod.setup_routes(app)
 
 # Module-conditional UI routes

@@ -8483,6 +8483,30 @@ class TestFilesExcelFunnels:
         assert r.status_code == 200, r.text  # not 405
 
 
+class TestPaymentsSettingsPage:
+    """The payments page must actually be registered (regression: it was
+    imported in ui/app.py but missing from the kernel route tuple, so it
+    404ed) and it lives under Web Access - cloud tab bar, web-access nav."""
+
+    @pytest.mark.asyncio
+    async def test_page_registered_and_under_web_access(self, ui_client):
+        with (
+            patch("ui.api_client.get_payments_status", new=AsyncMock(return_value={"enabled": False})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200, f"expected the payments page, got {r.status_code}"
+        assert "stripe" in r.text.lower()
+        # Cloud tab bar present (Web Access placement), not the Global Config tabs.
+        assert "/settings/cloud?tab=status" in r.text
+        assert "/settings/general?tab=company" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_open(self, ui_client):
+        r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
+        assert r.status_code in (302, 303)
+
+
 class TestCompanyAllFilesView:
     """The unified Finance > All Files view aggregates company documents, item images and doc
     attachments into one read-only table, each row linking back to its owning entity."""

@@ -13,7 +13,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.i18n import t
 from ui.routes.settings import _check_role, _token
-from ui.routes.settings_general import _general_tabs
+from ui.routes.settings_cloud import _cloud_tabs, _has_team_features
 
 
 def _panel(enabled: bool, deposit_account: str, saved: bool = False) -> FT:
@@ -34,7 +34,7 @@ def _panel(enabled: bool, deposit_account: str, saved: bool = False) -> FT:
     )
     return Div(
         page_header(t("nav.payments")),
-        _general_tabs("payments"),
+        _cloud_tabs("payments", has_team_features=_has_team_features()),
         flash(t("flash.saved")) if saved else "",
         connect_block,
         Form(
@@ -67,9 +67,9 @@ def setup_routes(app):
         try:
             enabled, deposit = await _load(token)
         except APIError as e:
-            return base_shell(flash(str(e.detail)), nav_active="settings", request=request)
+            return base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
         return base_shell(_panel(enabled, deposit, saved=request.query_params.get("saved") == "1"),
-                          nav_active="settings", request=request)
+                          nav_active="web-access", request=request)
 
     @app.post("/settings/payments")
     async def payments_settings_save(request: Request):
@@ -85,7 +85,7 @@ def setup_routes(app):
         except APIError as e:
             enabled, deposit = await _load(token)
             return base_shell(Div(flash(str(e.detail)), _panel(enabled, deposit)),
-                              nav_active="settings", request=request)
+                              nav_active="web-access", request=request)
         return RedirectResponse("/settings/payments?saved=1", status_code=302)
 
     @app.post("/settings/payments/connect")
@@ -101,7 +101,7 @@ def setup_routes(app):
         except APIError as e:
             enabled, deposit = await _load(token)
             return base_shell(Div(flash(str(e.detail)), _panel(enabled, deposit)),
-                              nav_active="settings", request=request)
+                              nav_active="web-access", request=request)
         return RedirectResponse(result.get("url", "/settings/payments"), status_code=302)
 
     @app.post("/settings/payments/disconnect")
