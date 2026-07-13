@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Online invoice payment — Stripe checkout for a shared invoice, brokered by
+"""Online invoice payment - Stripe checkout for a shared invoice, brokered by
 Celerp Cloud.
 
 Public: /pay/{token} (start), /pay/{token}/return (reconcile on the customer's
@@ -40,10 +40,18 @@ _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
 _DEFAULT_DEPOSIT_ACCOUNT = "1110"
 
 
-async def _doc_for_token(session: AsyncSession, token: str):
-    share = (await session.execute(
-        select(DocShareToken).where(DocShareToken.token == token)
-    )).scalar_one_or_none()
+async def _doc_for_token(session: AsyncSession, token: str, *, require_active: bool = True):
+    """Resolve a pay token to its document. Starting a payment requires a live
+    share link (a revoked or expired link must not take money); the return leg
+    resolves any token, because a charge completed at Stripe has to reconcile
+    even if the link lapsed mid-checkout."""
+    if require_active:
+        from celerp_docs.routes_share import _active_share_row
+        share = await _active_share_row(session, token)
+    else:
+        share = (await session.execute(
+            select(DocShareToken).where(DocShareToken.token == token)
+        )).scalar_one_or_none()
     if share is None:
         return None, None, None
     row = await session.get(Projection, (share.company_id, share.entity_id))
@@ -75,7 +83,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if not reference:
         return None
     if any(p.get("reference") == reference for p in doc_state.get("payments", [])):
-        return None  # already recorded — replayed push / re-opened return page
+        return None  # already recorded - replayed push / re-opened return page
     outstanding = _outstanding(doc_state)
     if outstanding <= 0:
         return None
@@ -123,8 +131,8 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
 @public_router.get("/pay/{token}/return")
 async def return_from_payment(token: str, session_id: str = Query(""),
                               session: AsyncSession = Depends(get_session)):
-    """Customer's return from Stripe — reconcile immediately, then show the doc."""
-    company_id, entity_id, state = await _doc_for_token(session, token)
+    """Customer's return from Stripe - reconcile immediately, then show the doc."""
+    company_id, entity_id, state = await _doc_for_token(session, token, require_active=False)
     if state is not None and session_id:
         try:
             cs = await pay.checkout_status(session_id)

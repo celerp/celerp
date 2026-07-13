@@ -11,38 +11,35 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
+from ui.i18n import t
 from ui.routes.settings import _check_role, _token
 
 
 def _panel(enabled: bool, deposit_account: str, saved: bool = False) -> FT:
     connect_block = (
         Div(
-            P("✓ Connected. The Pay button now appears on shared invoices and in the "
-              "send email, so customers can pay you online.", cls="form-hint"),
-            Form(Button("Disconnect", type="submit", cls="btn btn--danger"),
+            P(t("pay.settings_connected"), cls="form-hint"),
+            Form(Button(t("btn.disconnect"), type="submit", cls="btn btn--danger"),
                  method="post", action="/settings/payments/disconnect"),
         )
         if enabled else
         Div(
-            P("Let customers pay invoices online by card. Connect a Stripe account — "
-              "or create one in the same step — and the Pay button turns on automatically.",
-              cls="form-hint"),
-            Form(Button("Connect with Stripe", type="submit", cls="btn btn--primary"),
+            P(t("pay.settings_intro"), cls="form-hint"),
+            Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
                  method="post", action="/settings/payments/connect"),
         )
     )
     return Div(
-        page_header("Payments"),
-        flash("Saved.") if saved else "",
+        page_header(t("nav.payments")),
+        flash(t("flash.saved")) if saved else "",
         connect_block,
         Form(
-            Div(Label("Deposit online payments to (account code)", cls="form-label"),
+            Div(Label(t("pay.deposit_label"), cls="form-label"),
                 Input(type="text", name="stripe_deposit_account", value=deposit_account or "",
                       placeholder="e.g. 1110", cls="form-input"),
-                P("The cash/bank account online payments are recorded against. "
-                  "Defaults to Cash if left blank.", cls="form-hint"),
+                P(t("pay.deposit_hint"), cls="form-hint"),
                 cls="form-group"),
-            Button("Save", type="submit", cls="btn btn--secondary"),
+            Button(t("btn.save"), type="submit", cls="btn btn--secondary"),
             method="post", action="/settings/payments", cls="settings-form",
         ),
     )

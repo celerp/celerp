@@ -2846,13 +2846,17 @@ def _settings_tabs(active: str, enabled_modules: set[str] | None = None, lang: s
         ]
     if "celerp-connectors" in em:
         tabs.append(("connectors", t("settings.tab_connectors", lang)))
+    if "celerp-docs" in em:
+        # Links to its own page (the panel needs live connection status).
+        tabs.append(("payments", t("nav.payments", lang)))
     if "celerp-backup" in em:
         tabs.append(("backup", t("settings.tab_backup", lang)))
     if "celerp-verticals" in em:
         tabs.append(("verticals", t("settings.tab_verticals", lang)))
     return Div(
         *[
-            A(label, href=f"/settings?tab={key}",
+            A(label,
+              href="/settings/payments" if key == "payments" else f"/settings?tab={key}",
               cls=f"tab {'tab--active' if key == active else ''}")
             for key, label in tabs
         ],

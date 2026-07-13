@@ -20,7 +20,7 @@ from test_config import _reload_config, _restore_config_module  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
-# Instance identity — first-boot persistence (ensure_instance_id / persist_cloud_settings)
+# Instance identity - first-boot persistence (ensure_instance_id / persist_cloud_settings)
 # ---------------------------------------------------------------------------
 
 class TestInstanceIdentityFirstBoot:
@@ -75,7 +75,7 @@ class TestInstanceIdentityFirstBoot:
 
 
 # ---------------------------------------------------------------------------
-# Startup activation probe — _try_auto_activate (celerp/main.py)
+# Startup activation probe - _try_auto_activate (celerp/main.py)
 # ---------------------------------------------------------------------------
 
 class TestAutoActivateProbe:

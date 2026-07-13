@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Online invoice payment via Stripe Connect, brokered by Celerp Cloud (mocked).
 
-The instance holds no Stripe credentials — checkout creation, session status and
+The instance holds no Stripe credentials - checkout creation, session status and
 Connect onboarding are all cloud calls, mocked here at the payments-service boundary.
 The "payments enabled" gate is the gateway feature flag delivered on the handshake.
 """
@@ -236,6 +236,29 @@ async def test_share_view_no_pay_button_when_disabled(client):
 
 
 @pytest.mark.asyncio
+async def test_paid_invoice_share_view_drops_pay_bar(client, payments_on):
+    """Once nothing is outstanding the share link reverts to a plain view."""
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+    r = await client.post(f"/docs/{eid}/payment", json={
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110",
+    }, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    html = (await client.get(f"/share/{token}")).text
+    assert f"/pay/{token}" not in html
+
+
+@pytest.mark.asyncio
+async def test_revoked_link_cannot_start_payment(client, payments_on):
+    """A revoked share link must not take money: /pay 404s like /share does."""
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+    assert (await client.delete(f"/docs/{eid}/share", headers=_h(tok))).status_code == 200
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_send_email_includes_pay_link(client, payments_on, monkeypatch):
     import asyncio
     captured = {}
@@ -252,7 +275,10 @@ async def test_send_email_includes_pay_link(client, payments_on, monkeypatch):
     assert r.status_code == 200
     await asyncio.wait_for(done.wait(), timeout=2)
     assert f"/pay/{token}" in captured["html"]
-    assert "Pay online" in captured["html"]
+    # The Pay button leads with the amount ("Pay USD 1,070.00"); the plain-text
+    # body carries the same link as a "Pay online:" line.
+    assert ">Pay USD" in captured["html"]
+    assert f"Pay online: " in captured["text"] and f"/pay/{token}" in captured["text"]
 
 
 # ── merchant Connect settings endpoints ──────────────────────────────────────
