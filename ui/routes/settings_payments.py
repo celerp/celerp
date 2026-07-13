@@ -13,24 +13,28 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.i18n import t
 from ui.routes.settings import _check_role, _token
+from ui.routes.settings_general import _general_tabs
 
 
 def _panel(enabled: bool, deposit_account: str, saved: bool = False) -> FT:
     connect_block = (
         Div(
             P(t("pay.settings_connected"), cls="form-hint"),
+            P(t("pay.fee_note"), cls="form-hint"),
             Form(Button(t("btn.disconnect"), type="submit", cls="btn btn--danger"),
                  method="post", action="/settings/payments/disconnect"),
         )
         if enabled else
         Div(
             P(t("pay.settings_intro"), cls="form-hint"),
+            P(t("pay.fee_note"), cls="form-hint"),
             Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
                  method="post", action="/settings/payments/connect"),
         )
     )
     return Div(
         page_header(t("nav.payments")),
+        _general_tabs("payments"),
         flash(t("flash.saved")) if saved else "",
         connect_block,
         Form(

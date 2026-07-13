@@ -1871,6 +1871,12 @@ async def get_payments_status(token: str) -> dict:
         return _raise(await c.get("/payments/status")).json()
 
 
+async def get_payments_enabled(token: str) -> bool:
+    """Cached payments flag - cheap per-render gate (no cloud round-trip)."""
+    async with _api_client(token) as c:
+        return bool(_raise(await c.get("/payments/enabled")).json().get("enabled"))
+
+
 async def start_payments_connect(token: str) -> dict:
     """Begin Stripe Connect onboarding; returns {url} to redirect the merchant to."""
     async with _api_client(token) as c:

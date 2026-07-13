@@ -2345,15 +2345,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
     gap: 16px;
     margin: 24px 0;
 }
-/* The two sync cards sit as a centred pair under the trio */
-.cloud-features--pair {
-    grid-template-columns: repeat(2, 1fr);
-    max-width: 66%;
-    margin: 0 auto 24px;
-}
 @media (max-width: 768px) {
     .cloud-features { grid-template-columns: repeat(2, 1fr); }
-    .cloud-features--pair { max-width: 100%; margin: 0 0 24px; }
 }
 .cloud-feature-card {
     padding: 20px 16px;

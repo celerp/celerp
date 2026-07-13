@@ -267,6 +267,11 @@ async def lifespan(_app: FastAPI):
     from celerp.services.reorder import reorder_alert_loop
     reorder_alert_task = asyncio.create_task(reorder_alert_loop())
 
+    # Online-payments reminder: while cloud-connected without a Stripe account,
+    # one bell nudge per company every 30 days (stops once payments are on).
+    from celerp.services.payments_reminder import payments_reminder_loop
+    payments_reminder_task = asyncio.create_task(payments_reminder_loop())
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -278,6 +283,7 @@ async def lifespan(_app: FastAPI):
     jti_cleanup_task.cancel()
     connector_sched_task.cancel()
     reorder_alert_task.cancel()
+    payments_reminder_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:

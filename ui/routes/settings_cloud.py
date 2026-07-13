@@ -98,7 +98,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-features",
         ),
-        # ...and the two sync features paired below
+        # ...and the sync + payments features below
         Div(
             _feature_card(
                 "🛒", t("cloud.feature_website_title", lang),
@@ -110,7 +110,12 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                 t("cloud.feature_accounting_desc", lang),
                 lang=lang,
             ),
-            cls="cloud-features cloud-features--pair",
+            _feature_card(
+                "💳", t("cloud.feature_payments_title", lang),
+                t("cloud.feature_payments_desc", lang),
+                lang=lang,
+            ),
+            cls="cloud-features",
         ),
         # Plans - the centred trial banner introduces them; no left-aligned heading needed
         Div(

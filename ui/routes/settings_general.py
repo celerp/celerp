@@ -47,11 +47,14 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
             ("users", t("settings.tab_users", lang)),
             ("modules", t("settings.tab_modules", lang)),
             ("backup", t("settings.tab_backup", lang)),
+            # Payments links to its own page: the panel needs live connection status.
+            ("payments", t("nav.payments", lang)),
         ]
     tabs.append(("password", t("settings.change_password", lang)))
     return Div(
         *[
-            A(label, href=f"/settings/general?tab={key}",
+            A(label,
+              href="/settings/payments" if key == "payments" else f"/settings/general?tab={key}",
               cls=f"tab {'tab--active' if key == active else ''}")
             for key, label in tabs
         ],

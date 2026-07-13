@@ -150,6 +150,13 @@ async def return_from_payment(token: str, session_id: str = Query(""),
 
 # ── Authed: merchant Connect status + one-click connect/disconnect ───────────
 
+@router.get("/payments/enabled")
+async def payments_enabled_flag(user=Depends(get_current_user)) -> dict:
+    """Cached feature flag, in-memory: cheap enough for per-page-render gates
+    (the settings page uses /payments/status for the authoritative answer)."""
+    return {"enabled": pay.payments_enabled()}
+
+
 @router.get("/payments/status")
 async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()

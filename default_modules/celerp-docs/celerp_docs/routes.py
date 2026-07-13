@@ -938,12 +938,15 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
     sent_to = payload.sent_to
     view_url = pay_url = None
+    amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
     if sent_to:
         # Emailing a document always shares it (an email with no viewable
         # document is pointless); send_view_url returns None if not cloud-connected.
         from celerp_docs.routes_share import send_pay_url, send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
-        if doc_type in ("invoice", "proforma"):
+        # Pay button only while something is owed: it charges the remaining
+        # balance (net of applied payments/credits), never the face total.
+        if doc_type in ("invoice", "proforma") and amount_due > 0:
             pay_url = await send_pay_url(session, company_id, entity_id)
     await session.commit()
 
@@ -961,6 +964,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             contact_name=contact_name, total=row.state.get("total", 0),
             currency=row.state.get("currency", "USD"),
             message=payload.message, view_url=view_url, pay_url=pay_url,
+            amount_due=amount_due,
         )
         reply_to = await _sender_reply_to(session, company_id, user)
         _email_with_receipt(
