@@ -459,6 +459,7 @@
   "error.unauthorized": "Nicht autorisiert",
   "field.tooltip.allow_splitting": "Wenn aktiviert, kann dieser Artikel in kleinere Pakete oder Unterartikel aufgeteilt werden.",
   "field.tooltip.barcode": "Barcode zum Scannen (nur Ziffern). Wird für den Etikettendruck und die POS-Suche verwendet.",
+  "field.tooltip.country_of_origin": "Land, in dem dieser Artikel hergestellt wurde. Wird auf Lieferscheine und Zollunterlagen übernommen.",
   "field.tooltip.hs_code": "Harmonisierter Systemcode für die Zoll- und Außenhandelsklassifizierung.",
   "field.tooltip.inventory_type": "Auf Lager: im Lager verfolgt. Nicht auf Lager: gekauft/verkauft, aber nicht verfolgt. Dienstleistung: kein physisches Lager.",
   "field.tooltip.location_name": "Das Lager oder der Lagerort, dem dieser Artikel zugeordnet ist.",

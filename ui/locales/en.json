@@ -486,6 +486,7 @@
   "error.unauthorized": "Unauthorized",
   "field.tooltip.allow_splitting": "When enabled, this item can be split into smaller parcels or child items.",
   "field.tooltip.barcode": "Barcode for scanning (digits only). Used for label printing and POS lookup.",
+  "field.tooltip.country_of_origin": "Country where this item was produced or manufactured. Flows to delivery notes and customs paperwork.",
   "field.tooltip.batch_no": "Batch or lot number for this physical stock. Free text; several lots can share one SKU.",
   "field.tooltip.hs_code": "Harmonized System code for customs and international trade classification.",
   "field.tooltip.inventory_type": "Stocked: tracked in inventory. Non-stocked: purchased/sold but not tracked. Service: no physical stock.",

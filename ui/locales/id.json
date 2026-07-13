@@ -459,6 +459,7 @@
   "error.unauthorized": "Tidak sah",
   "field.tooltip.allow_splitting": "Jika diaktifkan, item ini dapat dibagi menjadi paket atau sub-item yang lebih kecil.",
   "field.tooltip.barcode": "Barcode untuk pemindaian (hanya angka). Digunakan untuk cetak label dan pencarian di POS.",
+  "field.tooltip.country_of_origin": "Negara tempat barang ini diproduksi atau dibuat. Diteruskan ke surat jalan dan dokumen bea cukai.",
   "field.tooltip.hs_code": "Kode Sistem Harmonisasi untuk klasifikasi bea cukai dan perdagangan internasional.",
   "field.tooltip.inventory_type": "Stok: dilacak di inventaris. Non-stok: dibeli/dijual tanpa pelacakan. Layanan: tidak ada stok fisik.",
   "field.tooltip.location_name": "Gudang atau lokasi penyimpanan yang ditetapkan untuk item ini.",

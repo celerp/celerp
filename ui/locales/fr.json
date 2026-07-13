@@ -459,6 +459,7 @@
   "error.unauthorized": "Non autorisé",
   "field.tooltip.allow_splitting": "Lorsqu'il est activé, cet article peut être divisé en colis ou sous-articles plus petits.",
   "field.tooltip.barcode": "Code-barres pour la numérisation (chiffres uniquement). Utilisé pour l'impression d'étiquettes et la recherche en caisse.",
+  "field.tooltip.country_of_origin": "Pays où cet article a été produit ou fabriqué. Repris sur les bons de livraison et les documents douaniers.",
   "field.tooltip.hs_code": "Code du Système Harmonisé pour la classification douanière et le commerce international.",
   "field.tooltip.inventory_type": "En stock : suivi en inventaire. Hors stock : acheté/vendu sans suivi. Service : pas de stock physique.",
   "field.tooltip.location_name": "L'entrepôt ou l'emplacement de stockage auquel cet article est affecté.",

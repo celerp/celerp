@@ -459,6 +459,7 @@
   "error.unauthorized": "Non autorizzato",
   "field.tooltip.allow_splitting": "Se abilitato, questo articolo può essere suddiviso in pacchi o sotto-articoli più piccoli.",
   "field.tooltip.barcode": "Codice a barre per la scansione (solo cifre). Utilizzato per la stampa di etichette e la ricerca al punto vendita.",
+  "field.tooltip.country_of_origin": "Paese in cui questo articolo è stato prodotto o fabbricato. Riportato su bolle di consegna e documenti doganali.",
   "field.tooltip.hs_code": "Codice del Sistema Armonizzato per la classificazione doganale e il commercio internazionale.",
   "field.tooltip.inventory_type": "A magazzino: tracciato nell'inventario. Non a magazzino: acquistato/venduto senza tracciamento. Servizio: nessun magazzino fisico.",
   "field.tooltip.location_name": "Il magazzino o il luogo di stoccaggio assegnato a questo articolo.",

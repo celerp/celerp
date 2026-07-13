@@ -459,6 +459,7 @@
   "error.unauthorized": "Não autorizado",
   "field.tooltip.allow_splitting": "Quando ativado, este item pode ser dividido em pacotes ou sub-itens menores.",
   "field.tooltip.barcode": "Código de barras para leitura (somente dígitos). Usado para impressão de etiquetas e pesquisa em PDV.",
+  "field.tooltip.country_of_origin": "País onde este item foi produzido ou fabricado. Vai para as guias de remessa e a documentação aduaneira.",
   "field.tooltip.hs_code": "Código do Sistema Harmonizado para classificação aduaneira e comércio internacional.",
   "field.tooltip.inventory_type": "Em estoque: rastreado no inventário. Sem estoque: comprado/vendido sem rastreamento. Serviço: sem estoque físico.",
   "field.tooltip.location_name": "O armazém ou local de armazenamento atribuído a este item.",

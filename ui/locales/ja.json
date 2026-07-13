@@ -459,6 +459,7 @@
   "error.unauthorized": "無許可",
   "field.tooltip.allow_splitting": "有効にすると、このアイテムを小さな小包や子アイテムに分割できます。",
   "field.tooltip.barcode": "スキャン用バーコード（数字のみ）。ラベル印刷およびPOSルックアップに使用されます。",
+  "field.tooltip.country_of_origin": "この商品が生産・製造された国。納品書や通関書類に引き継がれます。",
   "field.tooltip.hs_code": "税関および国際貿易分類のための統一システムコード。",
   "field.tooltip.inventory_type": "在庫あり：在庫で追跡。在庫なし：購入・販売するが追跡しない。サービス：物理的な在庫なし。",
   "field.tooltip.location_name": "このアイテムが割り当てられている倉庫または保管場所。",

@@ -459,6 +459,7 @@
   "error.unauthorized": "trái phép",
   "field.tooltip.allow_splitting": "Khi được bật, mặt hàng này có thể được chia thành các gói hoặc mặt hàng con nhỏ hơn.",
   "field.tooltip.barcode": "Mã vạch để quét (chỉ gồm chữ số). Dùng để in nhãn và tra cứu tại điểm bán hàng.",
+  "field.tooltip.country_of_origin": "Quốc gia nơi mặt hàng này được sản xuất hoặc chế tạo. Được đưa vào phiếu giao hàng và chứng từ hải quan.",
   "field.tooltip.hs_code": "Mã Hệ thống Hài hòa để phân loại hải quan và thương mại quốc tế.",
   "field.tooltip.inventory_type": "Có tồn kho: theo dõi trong kho. Không tồn kho: mua/bán nhưng không theo dõi. Dịch vụ: không có hàng hóa vật lý.",
   "field.tooltip.location_name": "Kho hàng hoặc vị trí lưu trữ được chỉ định cho mặt hàng này.",
