@@ -57,7 +57,8 @@ async def test_create_share_link(client: AsyncClient):
     assert r.status_code == 200
     data = r.json()
     assert "token" in data
-    assert len(data["token"]) >= 20
+    # 9 random bytes -> 12 URL-safe chars: short enough to share, still unguessable
+    assert len(data["token"]) == 12
 
 
 @pytest.mark.asyncio
@@ -118,27 +119,53 @@ async def test_public_share_view_contains_branding(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_contains_accept_cta(client: AsyncClient):
-    """Invoice share pages must have the Accept & import CTA."""
+async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient):
+    """The page is the sender's document, not a Celerp pitch: import and
+    download live as small footer links, and the old prominent CTA (giant
+    Accept button, signup pitch) stays gone."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok, "invoice")
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
-    assert "Accept this invoice" in r.text
+    assert "Import into Celerp" in r.text
     assert f"/accept?token={token}" in r.text
+    # Brand line leads; import trails it. No direct bundle link (the accept
+    # page offers the bundle as its own fallback) and no prominent CTA.
+    assert r.text.index("Powered by Celerp") < r.text.index("Import into Celerp")
+    assert f"/share/{token}/bundle" not in r.text
+    assert "Accept this" not in r.text
+    assert "Sign up free" not in r.text
+    assert "btn-accept" not in r.text
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_no_accept_cta_for_memo(client: AsyncClient):
-    """Memos have no Accept CTA."""
+async def test_public_share_view_is_the_print_layout_with_letterhead(client: AsyncClient):
+    """The share page renders through the same letterhead layout as the Print
+    button - including the sender (From) block - not a separate design."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    r = await client.get(f"/share/{token}")
+    assert r.status_code == 200
+    # Sender letterhead (From): the company identity lives on the self-contact,
+    # which registration seeds with the admin's name - same rule as UI print.
+    assert 'class="dp-company-name">Admin<' in r.text
+    assert "Bill To" in r.text
+    assert "ACME Corp" in r.text
+
+
+@pytest.mark.asyncio
+async def test_public_share_view_no_import_link_for_memo(client: AsyncClient):
+    """Memos are not importable, so their footer has no import link."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok, "memo")
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
     assert r.status_code == 200
-    assert "Accept this" not in r.text
+    assert "Import into Celerp" not in r.text
 
 
 @pytest.mark.asyncio
@@ -193,13 +220,20 @@ async def test_revoke_nonexistent_share_returns_404(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_after_revoke_new_share_generates_new_token(client: AsyncClient):
+async def test_revoke_then_reshare_keeps_stable_url(client: AsyncClient):
+    """A document's link is stable: revoke turns it off, re-share turns the
+    SAME token back on."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
     t1 = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
     await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))
-    t2 = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
-    assert t1 != t2
+    assert (await client.get(f"/share/{t1}")).status_code == 404
+
+    reshared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert reshared["token"] == t1
+    assert reshared["active"] is True
+    assert (await client.get(f"/share/{t1}")).status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -324,14 +358,15 @@ async def test_list_public_view_renders_html(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_public_view_has_accept_cta(client: AsyncClient):
+async def test_list_public_view_has_quiet_import_link(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
 
     r = await client.get(f"/share/{token}")
-    assert "Accept this list" in r.text
+    assert "Import into Celerp" in r.text
     assert "Powered by Celerp" in r.text
+    assert "btn-accept" not in r.text
 
 
 @pytest.mark.asyncio
@@ -544,19 +579,19 @@ def test_paid_invoice_is_still_shareable():
 
 
 def test_print_view_escapes_injected_html():
-    """Document strings (incl. the doc number in the footer) must be HTML-escaped
-    when rendered, so an imported doc can't smuggle markup into the print view."""
-    from fasthtml.common import to_xml
-    from ui.routes.documents import _doc_print_view
+    """Document strings must be HTML-escaped by the shared renderer (it serves
+    both the Print button and the public share view), so an imported doc can't
+    smuggle markup into either surface."""
+    from celerp.output.doc_print import render_doc_print_html
 
-    html = to_xml(_doc_print_view({
+    html = render_doc_print_html({
         "doc_type": "invoice",
         "doc_number": "<script>alert(1)</script>",
         "contact_name": "<img src=x onerror=alert(2)>",
         "currency": "USD",
         "total": 10.0,
         "line_items": [{"description": "<b>bad</b>", "quantity": 1, "unit_price": 10.0}],
-    }))
+    })
     assert "<script>alert(1)</script>" not in html
     assert "<img src=x onerror=alert(2)>" not in html
     assert "&lt;script&gt;" in html
@@ -587,9 +622,9 @@ async def _capture_send(monkeypatch):
     done = asyncio.Event()
 
     async def _fake(to, subject, body_html, body_text="", **kw):
-        captured.update(to=to, html=body_html, text=body_text)
+        captured.update(to=to, subject=subject, html=body_html, text=body_text, **kw)
         done.set()
-        return True
+        return True, "test transport"
 
     monkeypatch.setattr("celerp.services.email.send_email", _fake)
     return captured, done
@@ -614,6 +649,150 @@ async def test_send_email_includes_view_link_when_cloud_connected(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_send_uses_custom_subject_message_and_formatted_amount(client: AsyncClient, monkeypatch):
+    """The sender's subject and message reach the email verbatim (they used to
+    be discarded), and the amount is at currency precision."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)  # total 1070.0, THB
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={
+        "sent_to": "cust@x.com", "subject": "Your order is ready",
+        "message": "Thanks for your business, please see attached.",
+    })
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert captured["subject"] == "Your order is ready"
+    assert "Thanks for your business, please see attached." in captured["html"]
+    assert "THB 1,070.00" in captured["html"]
+    assert "THB 1070.0" not in captured["html"]  # no naked float
+
+
+@pytest.mark.asyncio
+async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, monkeypatch):
+    """Mail is from noreply@, so a Reply-To (the sender's address) must be set
+    or a customer's reply would bounce."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)  # registers admin share@test.com
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    # Falls back to the sending user's address when no company email is set.
+    assert captured.get("reply_to") == "share@test.com"
+    # The sending business is passed for the "{company} via Celerp" From name.
+    assert captured.get("from_name") == "ShareCo"
+
+
+@pytest.mark.asyncio
+async def test_send_always_shares_with_30_day_window(client: AsyncClient, monkeypatch):
+    """Emailing a document always shares it (no opt-out) and gives the link a
+    fresh 30-day expiry, so the recipient's view link is guaranteed live."""
+    from datetime import datetime, timezone
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={"sent_to": "cust@x.com"})
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert "/share/" in captured["html"]
+    # The doc is now live, expiring ~30 days out.
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is True
+    days_left = (datetime.fromisoformat(status["expires_at"]).date()
+                 - datetime.now(timezone.utc).date()).days
+    assert 29 <= days_left <= 30
+
+
+@pytest.mark.asyncio
+async def test_share_state_endpoint_is_read_only(client: AsyncClient):
+    """GET /share/state reports active state without minting a token, so
+    merely viewing a document never creates share rows."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+
+    state = (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()
+    assert state == {"active": False}
+    # No token was minted: the modal endpoint would report shared=False still
+    # unless *it* mints. Prove the state endpoint alone didn't activate anything.
+    assert (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()["active"] is False
+
+    # After a real share, the light goes green.
+    await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()["active"] is True
+
+
+async def _capture_receipt(monkeypatch, ok: bool, detail: str):
+    """Patch the transport + notification service; return captured call + event."""
+    import asyncio
+    calls: dict = {}
+    done = asyncio.Event()
+
+    async def _fake_send(*a, **kw):
+        return ok, detail
+
+    async def _fake_create(session, company_id, category, title, body, **kw):
+        calls.update(company_id=company_id, category=category, title=title, body=body, **kw)
+        done.set()
+
+    monkeypatch.setattr("celerp.services.email.send_email", _fake_send)
+    monkeypatch.setattr("celerp.notifications.service.create", _fake_create)
+    return calls, done
+
+
+@pytest.mark.asyncio
+async def test_send_doc_success_creates_bell_notification(client: AsyncClient, monkeypatch):
+    """A verified delivery drops an 'Email delivered to <addr>' notification
+    (the bell badge counts unread rows, so this is what lights it up)."""
+    import asyncio
+    calls, done = await _capture_receipt(monkeypatch, True, "delivered via Celerp relay")
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert calls["category"] == "email"
+    assert calls["title"] == "Email delivered to cust@x.com"
+    assert "cust@x.com" in calls["body"]
+    assert calls["priority"] == "low"
+    assert calls["action_url"] == f"/docs/{entity_id}"
+
+
+@pytest.mark.asyncio
+async def test_send_doc_failure_creates_failure_notification(client: AsyncClient, monkeypatch):
+    """A refused send (e.g. relay quota) surfaces the reason in a high-priority
+    notification instead of vanishing silently."""
+    import asyncio
+    calls, done = await _capture_receipt(monkeypatch, False, "Monthly email quota (500) reached. Upgrade your plan for more.")
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert calls["title"] == "Email to cust@x.com failed"
+    assert "quota" in calls["body"]
+    assert calls["priority"] == "high"
+
+
+@pytest.mark.asyncio
 async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, monkeypatch):
     from celerp.config import settings as cfg
     monkeypatch.setattr(cfg, "celerp_public_url", "")
@@ -627,3 +806,169 @@ async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, 
     import asyncio
     await asyncio.wait_for(done.wait(), timeout=2)
     assert "/share/" not in captured["html"]
+
+
+# ---------------------------------------------------------------------------
+# Share status + expiry
+# ---------------------------------------------------------------------------
+
+async def _expire_token(session, token: str) -> None:
+    """Force a token's expiry into the past directly in the DB."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import update
+    from celerp.models.share import DocShareToken
+    await session.execute(
+        update(DocShareToken)
+        .where(DocShareToken.token == token)
+        .values(expires_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_share_status_lifecycle(client: AsyncClient):
+    """First GET mints the stable link deactivated; Share activates it, Revoke
+    deactivates it - same token throughout."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+
+    r = await client.get(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.status_code == 200
+    first = r.json()
+    assert first["active"] is False and first["revoked"] is True
+    assert len(first["token"]) == 12
+    # A deactivated link does not resolve publicly
+    assert (await client.get(f"/share/{first['token']}")).status_code == 404
+
+    created = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert created["active"] is True and created["revoked"] is False
+    assert created["token"] == first["token"]
+
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is True and status["token"] == first["token"]
+
+    revoked = (await client.delete(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert revoked["active"] is False and revoked["revoked"] is True
+    assert revoked["token"] == first["token"]
+
+
+@pytest.mark.asyncio
+async def test_share_status_unknown_doc_404s(client: AsyncClient):
+    tok = await _token(client)
+    r = await client.get("/docs/nonexistent-doc-id/share", headers=_h(tok))
+    assert r.status_code == 404
+
+
+def test_share_active_rule():
+    """The single rule every public endpoint gates on: revoked wins over
+    everything; otherwise the link lives strictly until its expiry instant."""
+    from datetime import datetime, timedelta, timezone
+    from celerp.models.share import DocShareToken
+    from celerp_docs.routes_share import _share_active
+
+    now = datetime.now(timezone.utc)
+    row = lambda **kw: DocShareToken(token="t", entity_id="doc:x", **kw)
+
+    assert _share_active(row(revoked_at=None, expires_at=None)) is True
+    assert _share_active(row(revoked_at=None, expires_at=now + timedelta(days=1))) is True
+    assert _share_active(row(revoked_at=None, expires_at=now - timedelta(seconds=1))) is False
+    # Exactly at the expiry instant the link is already off (strict >)
+    assert _share_active(row(revoked_at=None, expires_at=now)) is False
+    # Revoked beats a future expiry
+    assert _share_active(row(revoked_at=now, expires_at=now + timedelta(days=365))) is False
+
+
+@pytest.mark.asyncio
+async def test_share_expiry_validation(client: AsyncClient):
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    for bad in ("not-a-date", "2026-02-30", "2099-12-31T10:00:00", "2000-01-01"):
+        r = await client.post(f"/docs/{entity_id}/share",
+                              json={"expires_at": bad}, headers=_h(tok))
+        assert r.status_code == 422, f"{bad!r} should be rejected"
+    # Nothing above may have activated the link
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_share_expiring_today_is_live_through_end_of_day(client: AsyncClient):
+    """The chosen date is inclusive: the link works until end of that day UTC."""
+    from datetime import datetime, timezone
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    today = datetime.now(timezone.utc).date().isoformat()
+    created = (await client.post(f"/docs/{entity_id}/share",
+                                 json={"expires_at": today}, headers=_h(tok))).json()
+    assert created["active"] is True
+    assert created["expires_at"] == today
+    assert (await client.get(f"/share/{created['token']}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_share_expiry_set_and_cleared(client: AsyncClient):
+    """A future expiry is stored; sharing again without one clears it."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    created = (await client.post(f"/docs/{entity_id}/share",
+                                 json={"expires_at": "2099-12-31"}, headers=_h(tok))).json()
+    assert created["expires_at"] == "2099-12-31"
+    assert created["active"] is True
+
+    cleared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert cleared["expires_at"] is None
+    assert cleared["token"] == created["token"]
+
+
+@pytest.mark.asyncio
+async def test_expired_link_is_dead_everywhere(client: AsyncClient, session):
+    """An expired token 404s on the public view and bundle download, and the
+    status endpoint reports shared-but-inactive."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    assert (await client.get(f"/share/{token}")).status_code == 200
+
+    await _expire_token(session, token)
+
+    assert (await client.get(f"/share/{token}")).status_code == 404
+    assert (await client.get(f"/share/{token}/bundle")).status_code == 404
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is False and status["expired"] is True
+
+
+@pytest.mark.asyncio
+async def test_share_again_reactivates_expired_link(client: AsyncClient, session):
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    await _expire_token(session, token)
+    assert (await client.get(f"/share/{token}")).status_code == 404
+
+    reshared = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert reshared["token"] == token
+    assert reshared["active"] is True
+    assert (await client.get(f"/share/{token}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_send_reactivates_an_expired_share_link(client: AsyncClient, session, monkeypatch):
+    """Sending re-shares for a fresh 30-day window, so a previously expired
+    link is revived and included rather than left dead."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    await _expire_token(session, token)
+    assert (await client.get(f"/share/{token}")).status_code == 404  # dead before send
+
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert f"/share/{token}" in captured["html"]
+    assert (await client.get(f"/share/{token}")).status_code == 200  # revived

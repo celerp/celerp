@@ -24,12 +24,13 @@ import json
 import secrets
 import socket
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,7 +41,11 @@ from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.output.share_render import _public_doc_page, _public_list_page, _not_found_page
+from celerp.output.doc_print import (
+    IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
+    compose_address, render_doc_print_html, unwrap_address,
+)
+from celerp.output.share_render import _not_found_page
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
@@ -49,7 +54,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Public router — share token lookup and recipient import require no auth
 public_router = APIRouter()
 
-_TOKEN_BYTES = 32  # 256-bit URL-safe token
+_TOKEN_BYTES = 9  # 72-bit URL-safe token (12 chars) — short enough to share by hand, unguessable, revocable
 _ACCEPT_BASE = "https://www.celerp.com/accept"
 
 # A bundle arrives from another party — treat it as untrusted input. Cap what we
@@ -242,20 +247,43 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
 # Authenticated endpoints
 # ---------------------------------------------------------------------------
 
-async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> str:
-    """Return the entity's existing share token, or mint one. Caller commits."""
-    existing = await session.execute(
+def _share_active(row: DocShareToken) -> bool:
+    """A link resolves while it is not revoked and not past its expiry instant."""
+    if row.revoked_at is not None:
+        return False
+    return row.expires_at is None or row.expires_at > datetime.now(timezone.utc)
+
+
+async def _find_share_row(session: AsyncSession, company_id, entity_id: str) -> DocShareToken | None:
+    return (await session.execute(
         select(DocShareToken).where(
             DocShareToken.company_id == company_id,
             DocShareToken.entity_id == entity_id,
         )
-    )
-    row = existing.scalar_one_or_none()
-    if row:
-        return row.token
-    token = secrets.token_urlsafe(_TOKEN_BYTES)
-    session.add(DocShareToken(company_id=company_id, entity_id=entity_id, token=token))
-    return token
+    )).scalar_one_or_none()
+
+
+async def _active_share_row(session: AsyncSession, token: str) -> DocShareToken | None:
+    """Resolve a public token to its row; expired links are treated as revoked."""
+    row = (await session.execute(
+        select(DocShareToken).where(DocShareToken.token == token)
+    )).scalar_one_or_none()
+    return row if row is not None and _share_active(row) else None
+
+
+async def get_or_create_share_token(session: AsyncSession, company_id, entity_id: str) -> DocShareToken:
+    """Return the entity's share token row, minting a deactivated one if none
+    exists. A document's link is stable for its lifetime: activation (Share),
+    deactivation (Revoke) and expiry toggle the same token. Caller commits."""
+    row = await _find_share_row(session, company_id, entity_id)
+    if row is None:
+        row = DocShareToken(
+            company_id=company_id, entity_id=entity_id,
+            token=secrets.token_urlsafe(_TOKEN_BYTES),
+            revoked_at=datetime.now(timezone.utc),  # born deactivated; Share turns it on
+        )
+        session.add(row)
+    return row
 
 
 def public_view_url(token: str) -> str | None:
@@ -264,42 +292,120 @@ def public_view_url(token: str) -> str | None:
     return f"{base}/share/{token}" if base else None
 
 
+# Emailing a document always shares it for this long, so the recipient's view
+# link is guaranteed to work without the sender managing expiry by hand.
+SEND_SHARE_DAYS = 30
+
+
 async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
-    """View link to embed in a send email — mints a token only when cloud-connected
-    (the branded view is only reachable then). Caller commits."""
+    """Activate the public share link for a send and return its URL, or None
+    when not cloud-connected (the branded view is only reachable then).
+
+    Sending IS the share: the link is reactivated and given a fresh
+    SEND_SHARE_DAYS window each time, so every emailed link is live. Caller
+    commits."""
     if not (settings.celerp_public_url or "").strip():
         return None
-    token = await get_or_create_share_token(session, company_id, entity_id)
-    return public_view_url(token)
+    row = await get_or_create_share_token(session, company_id, entity_id)
+    row.revoked_at = None
+    row.expires_at = datetime.now(timezone.utc) + timedelta(days=SEND_SHARE_DAYS)
+    return public_view_url(row.token)
 
 
 async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
-    """Direct "Pay online" link for a send email, when cloud-connected and Stripe is set."""
+    """Online-payment link for a send email, when cloud-connected and Stripe is
+    connected. Rides the same stable share token the view link activates (call
+    send_view_url first in a send flow), so both links live and die together.
+    Caller commits."""
     from celerp.services import payments as _pay
-    if not (settings.celerp_public_url or "").strip() or not _pay.payments_enabled():
-        return None
-    token = await get_or_create_share_token(session, company_id, entity_id)
     base = (settings.celerp_public_url or "").rstrip("/")
-    return f"{base}/pay/{token}"
+    if not base or not _pay.payments_enabled():
+        return None
+    row = await get_or_create_share_token(session, company_id, entity_id)
+    return f"{base}/pay/{row.token}"
+
+
+def _share_status(row: DocShareToken | None) -> dict:
+    """Uniform share-state payload for the UI: status/create/revoke all return it."""
+    if row is None:
+        return {"shared": False, "active": False, "revoked": False, "expired": False,
+                "token": None, "url": None, "view_url": None, "expires_at": None}
+    active = _share_active(row)
+    return {
+        "shared": active,
+        "active": active,
+        "revoked": row.revoked_at is not None,
+        "expired": row.revoked_at is None and not active,
+        "token": row.token,
+        "url": _share_url(row.token),
+        "view_url": public_view_url(row.token),
+        "expires_at": row.expires_at.date().isoformat() if row.expires_at else None,
+    }
+
+
+class ShareCreateBody(BaseModel):
+    # ISO date (YYYY-MM-DD); the link stops resolving at the end of that day UTC.
+    # None/empty = no expiry.
+    expires_at: str | None = None
+
+
+@router.get("/docs/{entity_id}/share/state")
+async def share_state(
+    entity_id: str,
+    company_id: _uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Read-only share state for the page-load status light. Never mints a
+    token (so merely viewing a document doesn't create share rows)."""
+    row = await _find_share_row(session, company_id, entity_id)
+    return {"active": bool(row is not None and _share_active(row))}
+
+
+@router.get("/docs/{entity_id}/share")
+async def share_status(
+    entity_id: str,
+    company_id: _uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Share state for a document or list. Mints the (deactivated) token on
+    first call so the UI always shows the document's stable URL; never
+    activates anything."""
+    row = await session.get(Projection, (company_id, entity_id))
+    if row is None or row.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    share_row = await get_or_create_share_token(session, company_id, entity_id)
+    await session.commit()
+    return _share_status(share_row)
 
 
 @router.post("/docs/{entity_id}/share")
 async def create_share_link(
     entity_id: str,
+    body: ShareCreateBody | None = None,
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Generate (or return existing) public share token for a document or list."""
+    """Create the public share token for a document or list (or update the
+    expiry of the existing one)."""
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    token = await get_or_create_share_token(session, company_id, entity_id)
+    expires = None
+    if body and body.expires_at:
+        try:
+            expiry_date = _date.fromisoformat(body.expires_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="expires_at must be an ISO date (YYYY-MM-DD)")
+        expires = datetime.combine(expiry_date, _time(23, 59, 59), tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="expires_at must be in the future")
+
+    share_row = await get_or_create_share_token(session, company_id, entity_id)
+    share_row.revoked_at = None
+    share_row.expires_at = expires
     await session.commit()
-    # `url` is the accept/import router (kept for compatibility); `view_url` is the
-    # direct branded read-only view — the link to hand a customer (same as the send
-    # email uses). Falls back to the accept URL when not cloud-connected.
-    return {"token": token, "url": _share_url(token), "view_url": public_view_url(token)}
+    return _share_status(share_row)
 
 
 @router.delete("/docs/{entity_id}/share")
@@ -308,36 +414,96 @@ async def revoke_share_link(
     company_id: _uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Revoke the share token for a document."""
-    existing = await session.execute(
-        select(DocShareToken).where(
-            DocShareToken.company_id == company_id,
-            DocShareToken.entity_id == entity_id,
-        )
-    )
-    token_row = existing.scalar_one_or_none()
+    """Deactivate the share link immediately. The token row persists so the
+    document keeps its stable URL; Share turns the same link back on."""
+    token_row = await _find_share_row(session, company_id, entity_id)
     if not token_row:
         raise HTTPException(status_code=404, detail="No share link found")
-    await session.delete(token_row)
+    token_row.revoked_at = datetime.now(timezone.utc)
     await session.commit()
-    return {"revoked": True}
+    return _share_status(token_row)
 
 
 # ---------------------------------------------------------------------------
 # Public endpoints (no auth)
 # ---------------------------------------------------------------------------
 
+async def _letterhead(session: AsyncSession, company_id) -> dict:
+    """Company letterhead fields for the shared document - the DB-side mirror
+    of the UI's resolution: the company's self-contact first, company
+    settings as the fallback."""
+    from celerp.models.company import Company
+    company = await session.get(Company, company_id)
+    if company is None:
+        return {}
+    cfg = company.settings or {}
+    contact_state: dict = {}
+    self_id = cfg.get("self_contact_id")
+    if self_id:
+        crow = await session.get(Projection, (company_id, self_id))
+        if crow is not None:
+            contact_state = crow.state or {}
+    addrs = contact_state.get("addresses") or []
+    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
+    address = (compose_address(primary) if primary else "") or unwrap_address(cfg.get("address")) or ""
+    return {
+        "company_name": contact_state.get("name") or company.name or "",
+        "company_address": address,
+        "company_phone": contact_state.get("phone") or cfg.get("phone") or "",
+        "company_tax_id": contact_state.get("tax_id") or cfg.get("tax_id") or "",
+        "company_email": contact_state.get("email") or cfg.get("email") or "",
+    }
+
+
+async def _resolve_share_contact(session: AsyncSession, company_id, state: dict) -> None:
+    """Fill the Bill-To block from the contact projection when the doc state
+    only carries a contact_id."""
+    cid = state.get("contact_id")
+    if not cid or state.get("contact_name"):
+        return
+    crow = await session.get(Projection, (company_id, cid))
+    if crow is None:
+        return
+    contact = crow.state or {}
+    state["contact_name"] = contact.get("name") or ""
+    state["contact_company_name"] = contact.get("company_name") or ""
+    state["contact_email"] = contact.get("email") or ""
+    state["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
+    state["contact_tax_id"] = contact.get("tax_id") or ""
+
+
+async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> None:
+    """Source pieces/weight (and the weight's unit) from each line's item for
+    the shared view - the DB-side mirror of the UI print enrichment."""
+    if state.get("doc_type") not in INVOICE_LAYOUT_DOC_TYPES:
+        return
+    from celerp.models.company import Company
+    from celerp.services.line_measures import item_measure_meta, resolve_line_measures
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    company = await session.get(Company, company_id)
+    units = ((company.settings or {}).get("units") if company else None) or DEFAULT_UNITS
+    umap = build_unit_map(units)
+    for li in state.get("line_items") or []:
+        eid = li.get("entity_id") or li.get("item_id")
+        if not eid:
+            continue
+        irow = await session.get(Projection, (company_id, eid))
+        if irow is None:
+            continue
+        meta = item_measure_meta(irow.state or {}, umap)
+        li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+
+
 @public_router.get("/share/{token}", response_class=HTMLResponse)
 async def view_shared_doc(
     token: str,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Public read-only document view. No authentication required.
+    """Public read-only document view - the exact letterhead layout the Print
+    button produces, plus the shared quiet footer. No authentication required.
     CORS: Access-Control-Allow-Origin: * so celerp.com/accept JS can probe reachability.
     """
-    share_row = (await session.execute(
-        select(DocShareToken).where(DocShareToken.token == token)
-    )).scalar_one_or_none()
+    share_row = await _active_share_row(session, token)
     if share_row is None:
         return HTMLResponse(_not_found_page("link-expired"), status_code=404)
 
@@ -345,15 +511,32 @@ async def view_shared_doc(
     if row is None:
         return HTMLResponse(_not_found_page("doc-missing"), status_code=404)
 
-    headers = {"Access-Control-Allow-Origin": "*"}
-    state = row.state
+    state = dict(row.state or {})
     if row.entity_type == "list":
-        return HTMLResponse(_public_list_page(state, token, _share_url(token)), headers=headers)
+        state.setdefault("doc_type", "list")
+        if not state.get("contact_name"):
+            state["contact_name"] = state.get("receiver") or state.get("customer_name") or ""
+        if not state.get("issue_date"):
+            state["issue_date"] = state.get("created_at") or state.get("date")
+    if not state.get("company_name"):
+        state.update(await _letterhead(session, share_row.company_id))
+    await _resolve_share_contact(session, share_row.company_id, state)
+    await _enrich_share_lines(session, share_row.company_id, state)
+
+    importable = state.get("doc_type") in IMPORTABLE_DOC_TYPES
+    # Online payment: offered on money-carrying, payable doc types when this
+    # instance has Stripe connected. The renderer drops the bar once nothing
+    # is outstanding, so a paid invoice's link quietly reverts to view-only.
     pay_url = None
     from celerp.services import payments as _pay
     if _pay.payments_enabled() and state.get("doc_type") in ("invoice", "proforma"):
         pay_url = f"/pay/{token}"
-    return HTMLResponse(_public_doc_page(state, token, _share_url(token), pay_url=pay_url), headers=headers)
+    html = render_doc_print_html(
+        state,
+        import_url=_share_url(token) if importable else None,
+        pay_url=pay_url,
+    )
+    return HTMLResponse(html, headers={"Access-Control-Allow-Origin": "*"})
 
 
 @public_router.options("/share/{token}")
@@ -374,9 +557,7 @@ async def download_share_bundle(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Download the document as a .celerp JSON bundle (fallback for p2p import failures)."""
-    share_row = (await session.execute(
-        select(DocShareToken).where(DocShareToken.token == token)
-    )).scalar_one_or_none()
+    share_row = await _active_share_row(session, token)
     if share_row is None:
         raise HTTPException(status_code=404, detail="Share link not found or revoked")
 

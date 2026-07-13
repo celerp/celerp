@@ -9,9 +9,12 @@ schema (common: someone wiped the DB then started the server), the next
 `celerp migrate` runs N migrations' DDL against a schema that already has it.
 The old catch-list approach took 30+ seconds and missed obscure error cases.
 
-_auto_stamp walks revisions newest→oldest and for each one checks whether
-its DDL signature is present in the live schema. It stamps past any
-revision that is already applied, leaving the rest for alembic upgrade.
+_auto_stamp walks revisions newest→oldest and checks, for each revision
+with verifiable DDL, whether its signature is present in the live schema.
+Signature-less revisions (data backfills) carry no evidence and never
+justify a stamp on their own — a backfill at head cannot mask an unapplied
+migration below it. The walker returns the newest revision the schema is
+provably consistent with; alembic upgrade applies the rest.
 
 The walker recognises these DDL signatures:
   - create_table: table exists
@@ -245,8 +248,10 @@ def downgrade():
 # ── find_safe_stamp ───────────────────────────────────────────────────────────
 
 class TestFindSafeStamp:
-    """find_safe_stamp walks revisions newest→oldest, asks the inspector
-    which are already applied, and returns the first not-applied revision.
+    """find_safe_stamp walks revisions newest→oldest and returns the newest
+    revision the live schema is provably consistent with. Signature-less
+    revisions are skipped as evidence-free; the decision comes from the
+    newest revision with verifiable DDL.
     """
 
     def _make_inspector(self, *tables_with_cols):
@@ -279,10 +284,8 @@ class TestFindSafeStamp:
                                             table="users", column=None)]
         sigs_by_rev = {"rev1": sigs_for_rev1}
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
-        # None of the signatures match, so first not-applied is rev1 → stamp "rev1"
-        # Actually, find_safe_stamp returns the LAST applied revision (the safe
-        # one to advance past). With nothing applied, that would be "base".
-        # We'll verify the actual contract in the implementation.
+        # Nothing applied → no revision is safe to stamp
+        assert result == "base"
 
     def test_walks_past_fully_applied_revision(self):
         """A revision whose create_table is in the schema is fully applied."""
@@ -323,19 +326,32 @@ class TestFindSafeStamp:
         # → safe stamp is "base"
         assert result == "base"
 
-    def test_skips_data_only_revisions(self):
-        """A revision with no DDL signatures (pure data backfill) is
-        trusted: assume it's applied if the stamp says so. The walker
-        returns it as 'applied' without introspection."""
+    def test_data_only_revisions_carry_no_evidence(self):
+        """A revision with no DDL signatures (pure data backfill) never
+        justifies a stamp on its own — with nothing verifiable in the
+        whole chain, the walker returns base and the stamp is left alone."""
         from unittest.mock import MagicMock
         inspector = self._make_inspector()  # empty schema
         rev = MagicMock(revision="rev1")
         revs = [rev]
         sigs_by_rev = {"rev1": []}  # no DDL signatures
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
-        # No signatures means we cannot prove it's NOT applied → trust it
-        # → stamp advances past it
-        assert result == "rev1"
+        assert result == "base"
+
+    def test_backfill_above_applied_ddl_is_stamped_past(self):
+        """A signature-less backfill at head above a fully-applied DDL
+        revision is stamped past: the schema is provably at head, and
+        backfills are deliberately skipped on create_all schemas."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("users", ["id", "email"]))
+        revs = [MagicMock(revision=r) for r in ("backfill", "ddl")]
+        sigs_by_rev = {
+            "ddl": [RevisionSignature(rev="ddl", kind="add_column",
+                                       table="users", column="email")],
+            # "backfill": no verifiable DDL
+        }
+        result = find_safe_stamp(revs, sigs_by_rev, inspector)
+        assert result == "backfill"
 
     def test_walks_multiple_revisions_in_order(self):
         """A chain of fully-applied revisions is stamped past in one pass."""
@@ -345,7 +361,7 @@ class TestFindSafeStamp:
             ("users", ["id", "email"]),
             ("orders", ["id"]),
         )
-        revs = [MagicMock(revision=f"rev{i}") for i in (1, 2, 3)]
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]  # newest first
         sigs_by_rev = {
             "rev1": [RevisionSignature(rev="rev1", kind="create_table",
                                         table="users", column=None)],
@@ -355,8 +371,29 @@ class TestFindSafeStamp:
                                         table="orders", column=None)],
         }
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
-        # All three fully applied → safe stamp is the last one
+        # All fully applied → safe stamp is the newest
         assert result == "rev3"
+
+    def test_backfill_at_head_does_not_mask_missing_ddl_below(self):
+        """Regression: a signature-less backfill at head must not be trusted
+        while a DDL revision below it is unapplied. (The old walker
+        "trusted" the backfill, set safe_stamp=head before finding the gap,
+        and over-stamped the DB — skipping the missing migration forever:
+        the is_sync_to_shopify incident.)"""
+        from unittest.mock import MagicMock
+        # Table exists, but the column rev2 adds is missing
+        inspector = self._make_inspector(("projections", ["entity_id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]  # newest first
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table",
+                                        table="projections", column=None)],
+            "rev2": [RevisionSignature(rev="rev2", kind="add_column",
+                                        table="projections",
+                                        column="is_sync_to_shopify")],
+            # rev3: pure data backfill — no verifiable DDL
+        }
+        result = find_safe_stamp(revs, sigs_by_rev, inspector)
+        assert result == "rev1"
 
 
 class TestRealMigrationsVsSchema:
@@ -374,7 +411,7 @@ class TestRealMigrationsVsSchema:
         cfg = build_alembic_config()
         from alembic.script import ScriptDirectory
         script = ScriptDirectory.from_config(cfg)
-        revs = list(script.walk_revisions())
+        revs = list(script.walk_revisions())  # head→base, the walker's order
         # Build signatures for every migration
         versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
         sigs_by_rev = {}
@@ -422,7 +459,7 @@ class TestCliStampsBehindOnDevSchema:
         from alembic.script import ScriptDirectory
         cfg = build_alembic_config()
         script = ScriptDirectory.from_config(cfg)
-        revs = list(script.walk_revisions())
+        revs = list(script.walk_revisions())  # head→base, the walker's order
         versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
         sigs_by_rev = {}
         for mig in versions_dir.glob("*.py"):
@@ -445,10 +482,10 @@ class TestCliStampsBehindOnDevSchema:
             (i for i, r in enumerate(revs) if r.revision == result),
             len(revs),
         )
-        # Lower index = newer. We expect result_idx to be at most 3
-        # positions behind head (so within the last 3 revisions).
-        assert head_idx - result_idx <= 3, (
-            f"Walker returned {result} which is {head_idx - result_idx} "
+        # Lower index = newer. We expect result to be at most 3 positions
+        # behind head (so within the last 3 revisions).
+        assert result_idx - head_idx <= 3, (
+            f"Walker returned {result} which is {result_idx - head_idx} "
             f"revisions behind head {head}. The dev schema should be "
             f"near head, not far behind."
         )

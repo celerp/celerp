@@ -9,11 +9,13 @@ SQLAlchemy models. After a wipe (`celerp init --force`) the schema is at
 head` then re-applies N migrations and crashes on DuplicateTable, DuplicateColumn
 or worse.
 
-This module walks revisions newest→oldest and for each one asks
-"is the DDL signature of this revision present in the live schema?". It
-returns the highest revision that is fully applied. The caller (cli.py)
-then stamps the DB to that revision, leaving the rest for alembic upgrade
-to apply cleanly.
+This module walks revisions newest→oldest and asks, for each revision with
+verifiable DDL, "is its signature present in the live schema?". It returns
+the newest revision the schema is provably consistent with. Revisions
+without verifiable DDL (data backfills) carry no evidence and are skipped —
+they never justify a stamp on their own, so a backfill at head cannot mask
+an unapplied migration below it. The caller (cli.py) stamps the DB to the
+returned revision, leaving the rest for alembic upgrade to apply cleanly.
 
 **Safety contract: false negatives are safe, false positives are catastrophic.**
 A false negative (saying "not applied" when it actually is) costs us a
@@ -232,44 +234,46 @@ def find_safe_stamp(
     sigs_by_rev: dict[str, list[RevisionSignature]],
     inspector,
 ) -> str:
-    """Walk revisions in the order given and return the safe-stamp revision.
+    """Walk revisions head→base and return the safe-stamp revision.
 
     Contract:
-      - For each revision, check every verifiable signature against the live
-        schema. If ALL signatures are present (or there are none), the
-        revision is considered fully applied.
-      - The function returns the revision id of the highest fully-applied
-        revision, or "base" if none are applied.
-      - On the first revision that is NOT fully applied, stop walking.
-        Any revisions earlier in the chain (which the caller should also
-        check) are not our concern here — pass them in the right order.
+      - `revisions` MUST be ordered newest→oldest (walk_revisions() order).
+        Old revisions cannot be verified oldest-first: their DDL may be
+        legitimately absent because a later migration dropped or moved it,
+        while a create_all schema always matches the *newest* revisions.
       - A revision with zero verifiable signatures (pure data backfill) is
-        conservatively treated as "applied" — we cannot prove it isn't, and
-        refusing to advance would leave the dev stuck on a stamp that
-        already represents applied work.
+        undecided: it is skipped, never stamped on its own evidence. A
+        backfill at head must not mask an unapplied revision below it.
+      - The decision comes from the newest revision that HAS verifiable
+        signatures:
+          * all present, no missing revision seen above it → the schema is
+            at head; return the newest revision (signature-less backfills
+            above are deliberately stamped past on create_all schemas).
+          * all present, but a revision above it had missing DDL → return
+            this revision, so alembic upgrade re-runs everything above it,
+            the gap included.
+          * signatures missing → keep walking down for the newest revision
+            that is fully applied.
+      - No revision verifiable at all → "base".
 
     Args:
-        revisions: Iterable of alembic Script objects (need .revision attr)
+        revisions: Iterable of alembic Script objects (need .revision attr),
+            ordered newest→oldest
         sigs_by_rev: Mapping of revision_id → list of RevisionSignature
         inspector: SQLAlchemy Inspector bound to the live DB
 
     Returns:
-        Revision id of the highest fully-applied revision, or "base".
+        Revision id safe to stamp, or "base".
     """
-    safe_stamp = "base"
-    for rev in revisions:
-        rev_id = getattr(rev, "revision", None)
-        if rev_id is None:
-            continue
-        sigs = sigs_by_rev.get(rev_id, [])
+    revs = [r for r in revisions if getattr(r, "revision", None) is not None]
+    seen_gap = False
+    for rev in revs:
+        sigs = sigs_by_rev.get(rev.revision, [])
         if not sigs:
-            # No verifiable DDL — trust the stamp, advance past
-            safe_stamp = rev_id
-            continue
-        # All signatures must be present for the revision to be "applied"
+            continue  # undecided — carries no evidence either way
         if all(_signature_applied(inspector, s) for s in sigs):
-            safe_stamp = rev_id
-        else:
-            # First not-fully-applied revision — stop walking
-            break
-    return safe_stamp
+            if seen_gap:
+                return rev.revision
+            return revs[0].revision
+        seen_gap = True
+    return "base"

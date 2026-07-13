@@ -26,7 +26,7 @@ from ui.config import get_token as _token, get_role as _get_role, API_BASE as _a
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, is_rtl
 from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
@@ -2740,6 +2740,7 @@ function celerpPrintLabel(entityId, templateId) {
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
@@ -2761,13 +2762,15 @@ function celerpPrintLabel(entityId, templateId) {
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=total_qty,
+                resulting_sku=resulting_sku,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
             return _bulk_toast_error(e.detail)
-        # Find the target item's SKU for the post-merge filter
+        # Post-merge filter: the merged item's actual SKU - the custom one when
+        # typed, else the target item's.
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
-        target_sku = target_item.get("sku", "") if target_item else ""
+        target_sku = resulting_sku or (target_item.get("sku", "") if target_item else "")
         redirect_qs = f"?q={target_sku}" if target_sku else ""
         return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
 
@@ -3836,6 +3839,7 @@ function celerpPrintLabel(entityId, templateId) {
         raw_qty = str(form.get("resulting_quantity", "")).strip()
         raw_cost = str(form.get("resulting_cost_total", "")).strip()
         resulting_name = str(form.get("resulting_name", "")).strip() or None
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         try:
             resulting_quantity = float(raw_qty) if raw_qty else None
         except ValueError:
@@ -3864,6 +3868,7 @@ function celerpPrintLabel(entityId, templateId) {
                 resulting_quantity=resulting_quantity,
                 resulting_cost_total=resulting_cost_total,
                 resulting_name=resulting_name,
+                resulting_sku=resulting_sku,
                 resolved_attributes=resolved_attributes or None,
             )
         except APIError as e:
@@ -4196,13 +4201,26 @@ def _bulk_context_templates(
         id="tpl-transform",
     )
 
-    # Merge: target dropdown + confirm
+    # Merge: the target dropdown lists the selected items plus a final "New SKU"
+    # option. Picking an item merges into it (its SKU wins, nothing extra shown);
+    # picking "New SKU" reveals [dropdown] -> [enter SKU] on the same line and the
+    # merge bases on the first selected item. JS moves the option to the end after
+    # populating the item choices.
     merge_tpl = Template(
         Div(
-            Select(
-                Option(t("inv.select_target_item"), value="", disabled=True, selected=True),
-                id="merge-target-select",
-                name="target_sku_from", cls="form-input form-input--sm",
+            Div(
+                Select(
+                    Option(t("inv.select_target_item"), value="", disabled=True, selected=True),
+                    Option(t("inv.new_sku"), value="__new__", id="merge-new-sku-opt"),
+                    id="merge-target-select",
+                    name="target_sku_from", cls="form-input form-input--sm",
+                ),
+                Span("←" if is_rtl() else "→", id="merge-sku-arrow", style="display:none"),
+                Input(
+                    type="text", id="merge-resulting-sku", cls="form-input form-input--sm",
+                    placeholder=t("inv.enter_sku"), title=t("inv.enter_sku"), style="display:none",
+                ),
+                style="display:flex;align-items:center;gap:0.5rem",
             ),
             Div(id="merge-confirm", style="display:none"),
             id="merge-context",

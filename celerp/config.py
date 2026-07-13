@@ -248,7 +248,13 @@ def write_config(cfg: dict) -> None:
 
     if "database" in cfg:
         db = cfg["database"]
-        lines += ["[database]", f'url = {_str(db.get("url", ""))}', ""]
+        lines += ["[database]", f'url = {_str(db.get("url", ""))}']
+        # `embedded = true` marks a bundled-PostgreSQL install so later commands
+        # boot the cluster before connecting. Absent key = external (all configs
+        # written before this shipped), so external installs are unchanged.
+        if db.get("embedded"):
+            lines += ["embedded = true"]
+        lines += [""]
 
     if "auth" in cfg:
         auth = cfg["auth"]

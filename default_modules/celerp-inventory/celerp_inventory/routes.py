@@ -263,6 +263,7 @@ class MergeBody(BaseModel):
     resulting_quantity: float | None = None    # optional override (default = sum)
     resulting_cost_total: float | None = None  # optional override (default = sum of source cost_totals)
     resulting_name: str | None = None          # optional override (default = target's name)
+    resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
     idempotency_key: str | None = None
 
@@ -1388,6 +1389,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     unit_cfg = unit_map.get(parent_sell_by)
     decimals = unit_cfg["decimals"] if unit_cfg else 0
 
+    # Pieces are PARTITIONED across a split, never copied wholesale (issue #223):
+    # a child gets pieces only from an explicit per-child count, or, for a
+    # piece-unit item, its own quantity. Never inherited from the mother.
+    parent_is_pieces_unit = is_pieces_unit(parent_sell_by, unit_map)
+    parent_attrs_wo_pieces = {k: v for k, v in parent_attrs.items() if k != "pieces"}
+
     parent_weight: float | None = _read_float(parent.state, "weight")
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
@@ -1468,12 +1475,18 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_data: dict = {
             k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
         }
+        # Pieces are never inherited from the mother: an explicit per-child count
+        # (already merged into child.attributes) or, for a piece-unit item, the
+        # child's own quantity. Otherwise the child carries no pieces.
+        _child_attrs = {**parent_attrs_wo_pieces, **child.attributes}
+        if parent_is_pieces_unit:
+            _child_attrs["pieces"] = _to_int_pieces(child.quantity)
         child_data.update({
             "sku": child_skus[i],
             "name": parent.state.get("name", child_skus[i]),
             "quantity": child.quantity,
             "status": "available",
-            "attributes": {**parent_attrs, **child.attributes},
+            "attributes": _child_attrs,
             "barcode": child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6),
         })
         if child.weight is not None:
@@ -1609,9 +1622,19 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
+    clear_mother_pieces = False
     if parent_pieces is not None:
-        total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
-        computed_mother_pieces = parent_pieces - total_child_pieces
+        if parent_is_pieces_unit:
+            # Pieces track quantity for a piece-unit item.
+            computed_mother_pieces = _to_int_pieces(new_parent_qty)
+        elif any(c.attributes.get("pieces") is not None for c in children):
+            total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
+            computed_mother_pieces = parent_pieces - total_child_pieces
+        else:
+            # No per-pile counts were given, so how the pieces divide is unknown.
+            # Clear the mother's count rather than keeping the full total, which
+            # would duplicate it against children that carry none (issue #223).
+            clear_mother_pieces = True
 
     computed_mother_weight: float | None = None
     if payload.mother_weight is not None:
@@ -1621,13 +1644,16 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
         computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
 
-    if computed_mother_weight is not None or computed_mother_pieces is not None:
+    if computed_mother_weight is not None or computed_mother_pieces is not None or clear_mother_pieces:
         fields_changed: dict[str, dict] = {}
         if computed_mother_weight is not None:
             fields_changed["weight"] = {"old": parent.state.get("weight"), "new": computed_mother_weight}
-        if computed_mother_pieces is not None:
+        if computed_mother_pieces is not None or clear_mother_pieces:
             new_attrs = dict(parent_attrs)
-            new_attrs["pieces"] = computed_mother_pieces
+            if clear_mother_pieces:
+                new_attrs.pop("pieces", None)
+            else:
+                new_attrs["pieces"] = computed_mother_pieces
             fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
         await emit_event(
             session,
@@ -2192,8 +2218,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # Build item.created data from target projection.
     target_state = target_proj.state
     new_entity_id = f"item:{uuid.uuid4()}"
+    # The merged item is genuinely new, so its SKU can be the target's (default),
+    # or a custom value the user typed (issue #190). SKU is a product-type that may
+    # repeat across lots (per-lot identity is the barcode + entity_id), so no
+    # uniqueness check is applied - consistent with create/rename.
+    merged_sku = (payload.resulting_sku or "").strip() or str(target_state.get("sku") or "")
     create_data: dict = {
-        "sku": str(target_state.get("sku") or ""),
+        "sku": merged_sku,
         "name": resulting_name,
         "quantity": resulting_qty,
         "sell_by": str(target_state.get("sell_by") or "piece"),
@@ -2327,7 +2358,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     )
 
     # Deactivate all source items: qty=0, is_available=False, merged_into=new item.
-    new_sku = str(target_state.get("sku") or new_entity_id)
+    new_sku = merged_sku or new_entity_id
     for proj in source_projections:
         await emit_event(
             session,

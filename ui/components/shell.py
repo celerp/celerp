@@ -53,7 +53,7 @@ _IDLE_LOGOUT_JS = ("""
   var IDLE_MS = __IDLE_MIN__ * 60000;
   if (IDLE_MS <= 0) return;
   var t;
-  function out(){ window.location.href = '/logout?reason=idle'; }
+  function out(){ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }
   function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
   ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){
     document.addEventListener(ev, reset, {passive:true});
@@ -483,58 +483,74 @@ _GLOBAL_UI_ERROR_HTML = Div(
 _TOAST_CONTAINER_HTML = Div(id="toast-container", cls="toast-container")
 
 _NOTIFICATION_JS = """
+// The bell is an unread inbox: it lists only unread notifications, so a
+// dismissed (read) one never reappears on refresh. Escape all server strings
+// (recipient emails and doc numbers flow into titles/bodies).
+function _notifEsc(s) {
+  var d = document.createElement('div');
+  d.textContent = (s == null ? '' : String(s));
+  return d.innerHTML;
+}
+
+function _notifItemHtml(n) {
+  var inner = '<div class="notif-item__title">' + _notifEsc(n.title) + '</div>'
+            + '<div class="notif-item__body">' + _notifEsc(n.body) + '</div>';
+  // A referenced document becomes a link; otherwise plain content.
+  var content = n.action_url
+    ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
+    : '<div class="notif-item__link">' + inner + '</div>';
+  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '" data-id="' + _notifEsc(n.id) + '">'
+    + content
+    + '<button class="notif-item__dismiss" type="button" title="Mark as read" aria-label="Mark as read">&times;</button>'
+    + '</div>';
+}
+
+function _renderNotifs(data) {
+  var badge = document.getElementById('notif-badge');
+  var list = document.getElementById('notif-list');
+  if (badge) {
+    if (data.unread_count > 0) {
+      badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+  if (list) {
+    if (!data.items || data.items.length === 0) {
+      list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
+    } else {
+      list.innerHTML = data.items.slice(0, 10).map(_notifItemHtml).join('');
+    }
+  }
+}
+
+window._loadNotifs = function() {
+  return fetch('/notifications?unread_only=true')
+    .then(function(r) { return r.json(); })
+    .then(_renderNotifs)
+    .catch(function() {});
+};
+
 window.toggleNotifPanel = function() {
   var p = document.getElementById('notif-panel');
   if (!p) return;
   var visible = p.style.display !== 'none';
   p.style.display = visible ? 'none' : '';
-  if (!visible) {
-    fetch('/notifications')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var badge = document.getElementById('notif-badge');
-        var list = document.getElementById('notif-list');
-        if (badge) {
-          if (data.unread_count > 0) {
-            badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
-            badge.style.display = '';
-          } else {
-            badge.style.display = 'none';
-          }
-        }
-        if (list) {
-          if (data.items.length === 0) {
-            list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
-          } else {
-            list.innerHTML = data.items.slice(0, 10).map(function(n) {
-              return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '">'
-                + '<div class="notif-item__title">' + n.title + '</div>'
-                + '<div class="notif-item__body">' + n.body + '</div>'
-                + '</div>';
-            }).join('');
-          }
-        }
-      })
-      .catch(function() {});
-  }
+  if (!visible) window._loadNotifs();
+};
+
+// Dismiss one notification (mark read) without navigating; it disappears and
+// the badge updates, while notifications the user leaves alone stay put.
+window.markNotifRead = function(id) {
+  fetch('/notifications/' + encodeURIComponent(id) + '/read', { method: 'POST' })
+    .then(function() { window._loadNotifs(); })
+    .catch(function() {});
 };
 
 window.markAllNotifRead = function() {
   fetch('/notifications/read-all', { method: 'POST' })
-    .then(function() {
-      var p = document.getElementById('notif-panel');
-      if (p && p.style.display !== 'none') {
-        fetch('/notifications')
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            var badge = document.getElementById('notif-badge');
-            var list = document.getElementById('notif-list');
-            if (badge) badge.style.display = 'none';
-            if (list) list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
-          })
-          .catch(function() {});
-      }
-    })
+    .then(function() { window._loadNotifs(); })
     .catch(function() {});
 };
 
@@ -547,35 +563,22 @@ document.addEventListener('DOMContentLoaded', function() {
   var NOTIF_FLOOR_MS = 60000;   // cap opportunistic refreshes to ~1/min
   var lastNotifFetch = 0;
 
-  function updateBadge(count) {
-    if (count > 0) {
-      badge.textContent = count > 99 ? '99+' : count;
-      badge.style.display = '';
-    } else {
-      badge.style.display = 'none';
-    }
-  }
-
   function loadNotifications() {
     lastNotifFetch = Date.now();
-    fetch('/notifications')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        updateBadge(data.unread_count);
-        if (list) {
-          if (data.items.length === 0) {
-            list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
-          } else {
-            list.innerHTML = data.items.slice(0, 10).map(function(n) {
-              return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '">'
-                + '<div class="notif-item__title">' + n.title + '</div>'
-                + '<div class="notif-item__body">' + n.body + '</div>'
-                + '</div>';
-            }).join('');
-          }
-        }
-      })
-      .catch(function() {});
+    window._loadNotifs();
+  }
+
+  // Per-item dismiss (delegated, so it survives list re-renders).
+  if (list) {
+    list.addEventListener('click', function(e) {
+      var btn = e.target.closest('.notif-item__dismiss');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var item = btn.closest('.notif-item');
+      var id = item && item.getAttribute('data-id');
+      if (id) window.markNotifRead(id);
+    });
   }
 
   // Close panel on outside click
@@ -605,9 +608,10 @@ document.addEventListener('DOMContentLoaded', function() {
       try {
         var data = JSON.parse(e.data || '{}');
         var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
-        window.location.href = '/login?reason=evicted' + by;
+        var nx = '&next=' + encodeURIComponent(location.pathname + location.search);
+        window.location.href = '/login?reason=evicted' + by + nx;
       } catch(_) {
-        window.location.href = '/login?reason=evicted';
+        window.location.href = '/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search);
       }
     });
 

@@ -35,15 +35,24 @@ def setup_routes(app):
 
     # ── Pre-auth gate: check bootstrap state ────────────────────────────────
 
+    def _safe_next(raw) -> str:
+        """Same-app absolute paths only - ?next= must never become an open
+        redirect or bounce back into the auth pages."""
+        raw = str(raw or "")
+        if raw.startswith("/") and not raw.startswith("//") and not raw.startswith(("/login", "/logout")):
+            return raw
+        return "/"
+
     @app.get("/login")
     async def login_page(request: Request):
+        nxt = _safe_next(request.query_params.get("next"))
         token = request.cookies.get(COOKIE_NAME)
         if token:
             # Validate before trusting - stale tokens (e.g. after init --force) must not
             # redirect back to dashboard and cause an infinite redirect loop.
             try:
                 await api_get_company(token)
-                return RedirectResponse("/", status_code=302)
+                return RedirectResponse(nxt, status_code=302)
             except APIError as e:
                 if e.status == 401:
                     # Token invalid - clear it and fall through to login page
@@ -89,7 +98,7 @@ def setup_routes(app):
             notice = flash("You were signed out after a period of inactivity. Please sign in again.", kind="warning")
         else:
             notice = ""
-        resp = auth_shell(_login_form(notice=notice), title="Sign in - Celerp")
+        resp = auth_shell(_login_form(notice=notice, next_url=nxt), title="Sign in - Celerp")
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp
@@ -105,8 +114,9 @@ def setup_routes(app):
         form = await request.form()
         email = str(form.get("email", "")).strip()
         password = str(form.get("password", ""))
+        nxt = _safe_next(form.get("next"))
         if not email or not password:
-            return auth_shell(_login_form(email=email, error="Email and password required"), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error="Email and password required", next_url=nxt), title="Sign in - Celerp")
         try:
             access_token, refresh_token = await api_login(email, password)
         except APIError as e:
@@ -115,10 +125,10 @@ def setup_routes(app):
                     _direct_connection_gate(email, password),
                     title="Sign in - Celerp",
                 )
-            return auth_shell(_login_form(email=email, error=e.detail), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title="Sign in - Celerp")
         except Exception as e:
-            return auth_shell(_login_form(email=email, error=f"Server error: {e}"), title="Sign in - Celerp")
-        resp = RedirectResponse("/", status_code=302)
+            return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
+        resp = RedirectResponse(nxt, status_code=302)
         _set_tokens(resp, access_token, refresh_token, request)
         return resp
 
@@ -127,15 +137,16 @@ def setup_routes(app):
         form = await request.form()
         email = str(form.get("email", "")).strip()
         password = str(form.get("password", ""))
+        nxt = _safe_next(form.get("next"))
         if not email or not password:
-            return auth_shell(_login_form(email=email, error="Email and password required"), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error="Email and password required", next_url=nxt), title="Sign in - Celerp")
         try:
             access_token, refresh_token = await api_login_force(email, password)
         except APIError as e:
-            return auth_shell(_login_form(email=email, error=e.detail), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title="Sign in - Celerp")
         except Exception as e:
-            return auth_shell(_login_form(email=email, error=f"Server error: {e}"), title="Sign in - Celerp")
-        resp = RedirectResponse("/", status_code=302)
+            return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
+        resp = RedirectResponse(nxt, status_code=302)
         _set_tokens(resp, access_token, refresh_token, request)
         return resp
 
@@ -363,8 +374,10 @@ def setup_routes(app):
         token = request.cookies.get(COOKIE_NAME)
         if token:
             await api_logout(token)
-        reason = request.query_params.get("reason", "")
-        dest = f"/login?reason={reason}" if reason else "/login"
+        from urllib.parse import urlencode
+        params = {k: v for k, v in (("reason", request.query_params.get("reason", "")),
+                                    ("next", request.query_params.get("next", ""))) if v}
+        dest = f"/login?{urlencode(params)}" if params else "/login"
         resp = RedirectResponse(dest, status_code=302)
         _clear_tokens(resp)
         return resp
@@ -513,7 +526,7 @@ def _clear_tokens(resp) -> None:
 # Components
 # ---------------------------------------------------------------------------
 
-def _login_form(email: str = "", error: str | None = None, notice: str = "") -> FT:
+def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
     lang = "en"
     return Div(
         Div(
@@ -524,6 +537,9 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "") -> 
         notice,
         Form(
             flash(error) if error else "",
+            # Carries the page the user was bounced from, so signing back in
+            # returns there instead of the dashboard.
+            Input(type="hidden", name="next", value=next_url) if next_url != "/" else "",
             Div(Label(t("label.email", lang), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email", value=email,
                       placeholder="you@company.com", required=True, autofocus=True, cls="form-input"),

@@ -92,6 +92,35 @@ async def test_list_notifications_with_data(auth_client, session):
     assert data["unread_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_unread_only_hides_read_notifications(auth_client, session):
+    """The bell fetches ?unread_only=true, so a dismissed notification must
+    not come back on the next fetch (the reported 'comes back on refresh' bug)."""
+    c, headers = auth_client
+    from celerp.models.notification import Notification
+    from celerp.models.company import User
+    from celerp.models.accounting import UserCompany
+    from sqlalchemy import select
+
+    user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
+    keep = Notification(company_id=uc.company_id, user_id=user.id, category="email", title="Keep", body="B")
+    dismiss = Notification(company_id=uc.company_id, user_id=user.id, category="email", title="Dismiss", body="B")
+    session.add_all([keep, dismiss])
+    await session.commit()
+    await session.refresh(dismiss)
+
+    # Dismiss one, then the unread-only bell shows only the other.
+    assert (await c.post(f"/notifications/{dismiss.id}/read", headers=headers)).status_code == 204
+    data = (await c.get("/notifications?unread_only=true", headers=headers)).json()
+    titles = [i["title"] for i in data["items"]]
+    assert titles == ["Keep"]
+    assert data["unread_count"] == 1
+    # The full list still has both (read history is retained server-side).
+    alld = (await c.get("/notifications", headers=headers)).json()
+    assert {i["title"] for i in alld["items"]} == {"Keep", "Dismiss"}
+
+
 # ── POST /notifications/{id}/read ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
