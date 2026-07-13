@@ -110,8 +110,13 @@ async def list_notifications(
     *,
     limit: int = 20,
     offset: int = 0,
+    unread_only: bool = False,
 ) -> list[Notification]:
-    """List notifications for a user, newest first."""
+    """List notifications for a user, newest first.
+
+    unread_only powers the bell, which is an unread inbox: a read (dismissed)
+    notification must not reappear on the next fetch.
+    """
     q = (
         select(Notification)
         .where(
@@ -122,6 +127,8 @@ async def list_notifications(
         .limit(limit)
         .offset(offset)
     )
+    if unread_only:
+        q = q.where(Notification.read == False)  # noqa: E712
     return list((await session.execute(q)).scalars().all())
 
 

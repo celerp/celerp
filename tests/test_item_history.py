@@ -151,6 +151,76 @@ async def test_split_pieces_tracked_when_used(client):
     assert (c0["pieces_before"], c0["pieces_after"]) == (8, 3)
 
 
+async def _item(client, headers, entity_id) -> dict:
+    r = await client.get(f"/items/{entity_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _pieces(state: dict):
+    """pieces, read the way the app does: top-level (as the GET endpoint promotes
+    it) then attributes."""
+    v = state.get("pieces")
+    if v is None:
+        v = (state.get("attributes") or {}).get("pieces")
+    return v
+
+
+# --------------------------------------------------------------------------- #
+# Issue #223: pieces are partitioned across a split, never duplicated
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_split_weight_parcel_no_child_pieces_clears_instead_of_duplicating(client):
+    """The reported bug: a weight-sold parcel with pieces, split without stating
+    per-child pieces, duplicated the count onto both mother and child. It must
+    now be cleared (unknown) on both, never fabricated."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    # 5 kg / 25 pieces, weight-sold, splitting off 1 kg with pieces left blank.
+    parent_id = await _seed(client, h, quantity=5.0, sell_by="carat", attributes={"pieces": 25})
+    r = await client.post(f"/items/{parent_id}/split",
+                          json={"children": [{"sku": "MUM.1", "quantity": 1.0, "weight": 1.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["children"][0]["id"]
+
+    mother = await _item(client, h, parent_id)
+    child = await _item(client, h, child_id)
+    # Neither carries a fabricated count (the bug produced 25 on each).
+    assert _pieces(mother) is None, f"mother pieces should be cleared, got {_pieces(mother)}"
+    assert _pieces(child) is None, f"child must not inherit the mother's pieces, got {_pieces(child)}"
+
+
+@pytest.mark.asyncio
+async def test_split_weight_parcel_with_child_pieces_conserves(client):
+    """When per-child pieces ARE given, conservation holds: mother = parent - Σ children."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=5.0, sell_by="carat", attributes={"pieces": 25})
+    r = await client.post(f"/items/{parent_id}/split",
+                          json={"children": [{"sku": "MUM.1", "quantity": 2.0, "weight": 2.0, "pieces": 10}]},
+                          headers=h)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["children"][0]["id"]
+
+    assert _pieces(await _item(client, h, child_id)) == 10
+    assert _pieces(await _item(client, h, parent_id)) == 15  # 25 - 10, no duplication
+
+
+@pytest.mark.asyncio
+async def test_split_piece_unit_pieces_track_quantity(client):
+    """For a piece-unit item, pieces track quantity: children get their own
+    quantity, the mother keeps what remains - never the full inherited count."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    # sell_by 'piece' with a pieces attribute equal to quantity.
+    parent_id = await _seed(client, h, quantity=10.0, sell_by="piece", attributes={"pieces": 10})
+    r = await client.post(f"/items/{parent_id}/split",
+                          json={"children": [{"sku": "MUM.1", "quantity": 3.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["children"][0]["id"]
+
+    assert _pieces(await _item(client, h, child_id)) == 3
+    assert _pieces(await _item(client, h, parent_id)) == 7  # 10 - 3
+
+
 @pytest.mark.asyncio
 async def test_transform_emits_child_origin_event(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}

@@ -150,10 +150,15 @@
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
-      "artifactName": "Celerp.AppImage",
       "target": [
         {
           "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
           "arch": [
             "x64"
           ]
@@ -178,6 +183,12 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "appImage": {
+      "artifactName": "Celerp.AppImage"
+    },
+    "deb": {
+      "artifactName": "Celerp.deb"
     },
     "afterPack": "./after-pack.js",
     "publish": {

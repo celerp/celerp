@@ -202,6 +202,20 @@ async def test_subscription_updated_sets_state(client):
 
 # ── stop() ────────────────────────────────────────────────────────────────────
 
+def test_relay_routes_share_paths_to_api_server(client):
+    """Public share links are API-app routes; everything else browser-facing is
+    UI. Routed to the UI server, /share/<token> 404s and every shared link is
+    dead for external visitors."""
+    assert client._local_port_for("/share/AbCdEfGhIjKl") == client._api_port
+    assert client._local_port_for("/share/AbCdEfGhIjKl/bundle") == client._api_port
+    assert client._local_port_for("/share") == client._api_port
+    # UI stays UI - including lookalike prefixes
+    assert client._local_port_for("/") == client._ui_port
+    assert client._local_port_for("/docs/doc:123") == client._ui_port
+    assert client._local_port_for("/api/barcode-preview") == client._ui_port
+    assert client._local_port_for("/shared-thing") == client._ui_port
+
+
 def test_stop_sets_running_false(client):
     """stop() sets _running=False."""
     client._running = True

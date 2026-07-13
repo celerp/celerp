@@ -61,6 +61,25 @@ from starlette.responses import HTMLResponse
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
            "/forgot-password", "/reset-password"}
 
+def _next_qs(req: Request) -> str:
+    """'&next=<encoded page>' for a login bounce, so signing back in returns
+    the user to the page they were on instead of the dashboard. HTMX fragments
+    carry the real browser page in HX-Current-URL; a full-page GET is the page
+    itself; other requests carry nothing usable."""
+    from urllib.parse import quote, urlsplit
+    cur = req.headers.get("hx-current-url")
+    if cur:
+        parts = urlsplit(cur)
+        path = parts.path + (f"?{parts.query}" if parts.query else "")
+    elif req.method == "GET":
+        path = req.url.path + (f"?{req.url.query}" if req.url.query else "")
+    else:
+        return ""
+    if not path.startswith("/") or path == "/" or path.startswith(("/login", "/logout")):
+        return ""
+    return "&next=" + quote(path, safe="")
+
+
 def _auth_guard(req: Request):
     """Redirect unauthenticated requests to login/setup before they reach any route."""
     path = req.url.path
@@ -71,8 +90,9 @@ def _auth_guard(req: Request):
     # An HTMX request follows a 302 and swaps the login page into the fragment (a silent, broken
     # in-page failure). HX-Redirect makes the browser do a real navigation instead.
     if req.headers.get("hx-request"):
-        return Response(status_code=200, headers={"HX-Redirect": "/login?reason=expired"})
-    return RedirectResponse("/login", status_code=302)
+        return Response(status_code=200, headers={"HX-Redirect": f"/login?reason=expired{_next_qs(req)}"})
+    nxt = _next_qs(req)
+    return RedirectResponse(f"/login?{nxt[1:]}" if nxt else "/login", status_code=302)
 
 
 def _token_needs_refresh(access_token: str) -> bool:
@@ -285,7 +305,7 @@ def _401_redirect(detail: str, request: Request | None = None):
         params = f"reason=evicted&by={ip}" if ip else "reason=evicted"
     else:
         params = "reason=expired"
-    url = f"/login?{params}"
+    url = f"/login?{params}{_next_qs(request) if request is not None else ''}"
     if request is not None and request.headers.get("hx-request"):
         return Response(status_code=200, headers={"HX-Redirect": url})
     return _RR(url, status_code=302)
@@ -351,7 +371,8 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-            settings_contacts, settings_cloud, settings_connectors, notifications, events, stars):
+            settings_contacts, settings_cloud, settings_connectors, settings_payments,
+            notifications, events, stars):
     mod.setup_routes(app)
 
 # Module-conditional UI routes

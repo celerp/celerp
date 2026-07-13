@@ -47,6 +47,14 @@ dependencies = [
     # IANA timezone database for zoneinfo. Windows ships no system tz database, so
     # zoneinfo.ZoneInfo() fails there without this; also protects minimal Linux.
     "tzdata>=2024.1",
+    # Bundled PostgreSQL 17 for zero-setup pip installs: `celerp init` boots a
+    # self-contained cluster when no system Postgres is running (an existing server
+    # always wins). Marker-guarded to platforms with wheels — Linux x86_64/aarch64
+    # (glibc and musl) and Windows x64, any CPython. macOS wheels exist but require
+    # macOS 26+ (which markers can't express), so darwin users on 26+ opt in with
+    # `pip install celerp-postgres`; elsewhere init falls back to external-Postgres
+    # guidance. See celerp/embedded_pg.py.
+    "celerp-postgres>=17.10,<18; (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')) or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
 
 [project.urls]
@@ -76,11 +84,12 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser' --timeout=30"
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=30"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
+    "embedded_pg: bundled-PostgreSQL integration tests (boot a real pgserver cluster; ~slow). Run separately with: pytest -m embedded_pg",
 ]
 
 # NOTE: do NOT set [tool.coverage.run] core = "sysmon" here. The sys.monitoring

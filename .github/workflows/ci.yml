@@ -125,6 +125,48 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Bundled-PostgreSQL tests: mode resolution + manager units + a real cluster
+  # from the celerp-postgres wheels (integration). --noconftest and no Postgres
+  # service: these boot their own cluster, which also lets them run on the
+  # macOS/Windows runners (no Docker). macOS: the celerp dependency marker
+  # excludes darwin (wheels need macOS 26+, which markers can't express), so the
+  # mac job installs celerp-postgres explicitly — proving the documented manual
+  # opt-in path on the macOS 26 runner.
+  embedded:
+    name: Embedded PG (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: ubuntu-24.04-arm, python: "3.12" }
+          # Pinned to macos-26: the celerp-postgres mac wheels are (honestly)
+          # tagged macosx_26_0, and the macos-latest pool still hands out
+          # macOS 15 machines mid-migration, where pip finds no wheel.
+          - { os: macos-26, python: "3.12", extra: celerp-postgres }
+          - { os: windows-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        shell: bash
+        run: pip install -e ".[dev]" ${{ matrix.extra }}
+      - name: Run embedded-PG unit + integration tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: >
+          pytest tests/test_embedded_pg_modes.py tests/test_embedded_pg_manager.py
+          tests/test_embedded_pg_integration.py
+          --noconftest -o addopts="" -p no:cacheprovider --timeout=300 -q
+
   # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in
   # CI before; they catch the "require added, build.files not updated" class (v1.2.6)
   # statically, on every PR, with no build.
@@ -150,7 +192,7 @@ jobs:
   # (this job), which passes only when every unit, browser, AND electron job passed.
   test:
     name: Test
-    needs: [shard, browser, electron]
+    needs: [shard, browser, embedded, electron]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -164,8 +206,12 @@ jobs:
             echo "One or more browser-test shards failed (result: ${{ needs.browser.result }})"
             exit 1
           fi
+          if [ "${{ needs.embedded.result }}" != "success" ]; then
+            echo "One or more embedded-PostgreSQL jobs failed (result: ${{ needs.embedded.result }})"
+            exit 1
+          fi
           if [ "${{ needs.electron.result }}" != "success" ]; then
             echo "Electron unit tests failed (result: ${{ needs.electron.result }})"
             exit 1
           fi
-          echo "All unit, browser, and electron checks passed."
+          echo "All unit, browser, embedded, and electron checks passed."

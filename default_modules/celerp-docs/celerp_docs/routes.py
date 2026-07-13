@@ -108,6 +108,8 @@ class DocSendBody(BaseModel):
     sent_to: str | None = None
     cc: str | None = None
     bcc: str | None = None
+    subject: str | None = None
+    message: str | None = None
     idempotency_key: str | None = None
 
 
@@ -583,7 +585,17 @@ async def get_doc_pdf(
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
 
-    pdf_bytes = generate_document_pdf(doc, company)
+    # Footer import link only while the share link is live, so saved PDFs
+    # never carry a URL that 404s.
+    from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
+    from celerp.output.doc_print import IMPORTABLE_DOC_TYPES
+    import_url = None
+    if doc.get("doc_type") in IMPORTABLE_DOC_TYPES:
+        share_row = await _find_share_row(session, company_id, entity_id)
+        if share_row is not None and _share_active(share_row):
+            import_url = _share_url(share_row.token)
+
+    pdf_bytes = generate_document_pdf(doc, company, import_url=import_url)
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or entity_id
     filename = f"{doc_ref}.pdf".replace("/", "-").replace(" ", "_")
     return _Resp(
@@ -857,6 +869,78 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return {"event_id": entry.id}
 
 
+async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
+    """Reply-To for outgoing document emails: the company's business address
+    (self-contact) so recipients can actually reply, falling back to company
+    settings and then the sending user. Mail is sent from noreply@, so without
+    this a customer's reply would bounce."""
+    company_row = await session.get(Company, company_id)
+    cfg = (company_row.settings or {}) if company_row else {}
+    self_id = cfg.get("self_contact_id")
+    if self_id:
+        crow = await session.get(Projection, {"company_id": company_id, "entity_id": self_id})
+        email = (crow.state or {}).get("email") if crow else None
+        if email:
+            return email
+    return cfg.get("email") or getattr(user, "email", "") or ""
+
+
+async def _payments_tip_suffix(session, company_id) -> str:
+    """One-time payments pitch that piggybacks on the first delivery receipt
+    for a payable doc (no separate nag notification). Empty string once shown,
+    once payments are on, or when the instance cannot take payments anyway."""
+    from celerp.models.company import Company
+    from celerp.services.payments import payments_enabled
+    if payments_enabled():
+        return ""
+    company = await session.get(Company, company_id)
+    if company is None or (company.settings or {}).get("pay_tip_shown"):
+        return ""
+    settings = dict(company.settings or {})
+    settings["pay_tip_shown"] = True
+    company.settings = settings
+    session.add(company)
+    return (" Tip: connect a Stripe account under Web Access, Payments and "
+            "emailed invoices include a Pay button so customers can pay you by card.")
+
+
+def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
+                        payable: bool = False, **send_kwargs) -> None:
+    """Send in the background, then drop a bell notification with the outcome.
+
+    The route's session is gone by the time the send resolves, so the receipt
+    is written in its own session. Delivery is verified: send_email only
+    reports ok when a transport actually accepted the message. For payable
+    docs, the very first receipt carries the one-time online-payments tip."""
+    import uuid as _uuid_mod
+
+    async def _run() -> None:
+        from celerp.db import SessionLocal
+        from celerp.notifications import service as notif_service
+        from celerp.services.email import send_email
+        ok, detail = await send_email(**send_kwargs)
+        cid = company_id if isinstance(company_id, _uuid_mod.UUID) else _uuid_mod.UUID(str(company_id))
+        try:
+            async with SessionLocal() as s:
+                if ok:
+                    tip = await _payments_tip_suffix(s, cid) if payable else ""
+                    await notif_service.create(
+                        s, cid, "email", f"Email delivered to {sent_to}",
+                        f"{doc_label} was emailed to {sent_to}.{tip}",
+                        action_url=action_url, priority="low")
+                else:
+                    await notif_service.create(
+                        s, cid, "email", f"Email to {sent_to} failed",
+                        f"{doc_label} could not be delivered: {detail}",
+                        action_url=action_url, priority="high")
+                await s.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Email receipt notification failed for %s", sent_to)
+
+    asyncio.create_task(_run())
+
+
 @router.post("/{entity_id}/send")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -876,58 +960,41 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
     sent_to = payload.sent_to
     view_url = pay_url = None
+    amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
     if sent_to:
+        # Emailing a document always shares it (an email with no viewable
+        # document is pointless); send_view_url returns None if not cloud-connected.
         from celerp_docs.routes_share import send_pay_url, send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
-        if doc_type in ("invoice", "proforma"):
+        # Pay button only while something is owed: it charges the remaining
+        # balance (net of applied payments/credits), never the face total.
+        if doc_type in ("invoice", "proforma") and amount_due > 0:
             pay_url = await send_pay_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
     if sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
-        total = row.state.get("total", 0)
-        currency = row.state.get("currency", "USD")
         doc_type = row.state.get("doc_type", "document").replace("_", " ").title()
         contact_name = row.state.get("contact_name") or "there"
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
-        subject = f"{doc_type} #{doc_number} from {sender_name}"
-        _btn = "display:inline-block;padding:10px 20px;color:#fff;text-decoration:none;border-radius:6px;"
-        _buttons = []
-        if pay_url:
-            _buttons.append(f"<a href=\"{pay_url}\" style=\"{_btn}background:#111;margin-right:8px;\">Pay online</a>")
-        if view_url:
-            _buttons.append(f"<a href=\"{view_url}\" style=\"{_btn}background:#555;\">View {doc_type}</a>")
-        view_html = f"<p>{''.join(_buttons)}</p>" if _buttons else ""
-        view_text = ""
-        if pay_url:
-            view_text += f"Pay online: {pay_url}\n"
-        if view_url:
-            view_text += f"View it online: {view_url}\n"
-        if view_text:
-            view_text += "\n"
-        body_html = (
-            f"<p>Hi {contact_name},</p>"
-            f"<p>Please find your <strong>{doc_type} #{doc_number}</strong> from "
-            f"<strong>{sender_name}</strong>.</p>"
-            f"<p>Amount: <strong>{currency} {total}</strong></p>"
-            f"{view_html}"
-            f"<p style='color:#888;font-size:13px;'>Questions about this document? "
-            f"Reply to this email and we'll get back to you.</p>"
+        subject = (payload.subject or "").strip() or f"{doc_type} #{doc_number} from {sender_name}"
+        body_html, body_text = compose_doc_email(
+            doc_type_label=doc_type, doc_number=doc_number, sender_name=sender_name,
+            contact_name=contact_name, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url, pay_url=pay_url,
+            amount_due=amount_due,
         )
-        body_text = (
-            f"Hi {contact_name},\n\n"
-            f"Please find your {doc_type} #{doc_number} from {sender_name}.\n"
-            f"Amount: {currency} {total}\n\n"
-            f"{view_text}"
-            f"Questions? Reply to this email."
+        reply_to = await _sender_reply_to(session, company_id, user)
+        _email_with_receipt(
+            company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
+            payable=row.state.get("doc_type") in ("invoice", "proforma"),
+            to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
+            reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
         )
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(
-            sent_to, subject, body_html, body_text=body_text,
-            cc=payload.cc or "", bcc=payload.bcc or "",
-        ))
 
     return {"event_id": entry.id}
 
@@ -1256,49 +1323,91 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     return {"deleted": entity_id}
 
 
+# One lock per document: payment recording reads the payments list to derive
+# payment_index (the JE idempotency key), so two recorders interleaving on the
+# same doc (customer-return leg + gateway push, or an online confirm racing a
+# hand-entered payment) could compute the SAME index from stale state - the
+# second JE then dedupes against the first and money silently never posts to
+# the books. The client runs in one process, so an asyncio lock fully
+# serializes; the fresh re-read inside the lock is what makes it correct.
+_payment_locks: dict[str, asyncio.Lock] = {}
+
+
+def _payment_lock(entity_id: str) -> asyncio.Lock:
+    lock = _payment_locks.get(entity_id)
+    if lock is None:
+        lock = _payment_locks[entity_id] = asyncio.Lock()
+    return lock
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict, body: dict,
                             *, source: str, actor_id, idempotency_key: str):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
-    so a Stripe payment lands identically to a hand-entered one. Caller commits."""
-    if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
-    if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
-    if outstanding <= 0:
-        raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    from celerp.services.money import to_decimal as _to_d
-    amount = float(body["amount"])
-    # 1-cent tolerance covers display rounding on the final payment.
-    if _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
-    bank_code = body.get("bank_account")
-    if not bank_code:
-        raise HTTPException(status_code=422, detail="bank_account is required")
-    body.setdefault("currency", doc_state.get("currency", "USD"))
-    body["remaining_balance"] = max(0.0, outstanding - amount)
-    payment_index = len(doc_state.get("payments", []))
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=actor_id, location_id=None, source=source,
-        idempotency_key=idempotency_key, metadata_={},
-    )
-    _company = await session.get(Company, company_id)
-    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
-    await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
-        amount=amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
-        payment_date=body["payment_date"],
-        base_currency=_base_currency,
-        conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
-    )
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle(
-        "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
-        doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
-    )
+    so a Stripe payment lands identically to a hand-entered one. Caller commits.
+
+    ``doc_state`` is advisory: the guards and payment_index are recomputed from a
+    fresh read inside the per-document lock, so a concurrent recorder can never
+    produce a duplicate or colliding payment_index."""
+    async with _payment_lock(entity_id):
+        row = await session.get(Projection, (company_id, entity_id))
+        if row is not None:
+            await session.refresh(row)  # another session may have committed a payment meanwhile
+            doc_state = dict(row.state)
+        if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+            raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
+        if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+            raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+        # Replay guard for referenced (online) payments: the same Stripe intent
+        # arriving twice (return leg + webhook push) records exactly once.
+        reference = body.get("reference")
+        if reference and any(p.get("reference") == reference for p in doc_state.get("payments", [])):
+            raise HTTPException(status_code=409, detail="Payment already recorded")
+        outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
+        if outstanding <= 0:
+            raise HTTPException(status_code=409, detail="Invoice already fully paid")
+        from celerp.services.money import to_decimal as _to_d
+        amount = float(body["amount"])
+        if reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            # An online charge already happened at Stripe; if a manual payment
+            # landed while the customer was checking out, apply what the invoice
+            # can still absorb and keep the real charge on record - the surplus
+            # is a genuine overpayment for the merchant to refund or credit.
+            body["charged_amount"] = amount
+            amount = float(outstanding)
+            body["amount"] = amount
+        # 1-cent tolerance covers display rounding on the final payment.
+        elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
+        bank_code = body.get("bank_account")
+        if not bank_code:
+            raise HTTPException(status_code=422, detail="bank_account is required")
+        body.setdefault("currency", doc_state.get("currency", "USD"))
+        body["remaining_balance"] = max(0.0, outstanding - amount)
+        payment_index = len(doc_state.get("payments", []))
+        entry = await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
+            data=body, actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=idempotency_key, metadata_={},
+        )
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        await auto_je.create_for_doc_payment(
+            session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+            amount=amount, payment_index=payment_index,
+            bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
+            payment_date=body["payment_date"],
+            base_currency=_base_currency,
+            conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+        )
+        from celerp.modules.slots import fire_lifecycle
+        await fire_lifecycle(
+            "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
+            doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
+        )
+        # The lock only helps if this recorder's write is visible to the next
+        # lock holder: commit before releasing.
+        await session.commit()
     return entry
 
 
@@ -4589,21 +4698,29 @@ async def send_list(
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
                             "sent_to": payload.sent_to})
-    await session.commit()
+    view_url = None
     if payload.sent_to:
+        from celerp_docs.routes_share import send_view_url
+        view_url = await send_view_url(session, company_id, entity_id)
+        await session.commit()
+    if payload.sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]
         company_row = await session.get(Company, company_id)
         sender = company_row.name if company_row else "Your supplier"
         contact = row.state.get("customer_name") or "there"
-        total = row.state.get("total", 0)
-        cur = row.state.get("currency", "USD")
-        subject = f"Quotation #{ref} from {sender}"
-        html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
-                f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
-        text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(payload.sent_to, subject, html, body_text=text,
-                                       cc=payload.cc or "", bcc=payload.bcc or ""))
+        subject = (payload.subject or "").strip() or f"Quotation #{ref} from {sender}"
+        html, text = compose_doc_email(
+            doc_type_label="Quotation", doc_number=ref, sender_name=sender,
+            contact_name=contact, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url,
+        )
+        reply_to = await _sender_reply_to(session, company_id, user)
+        _email_with_receipt(
+            company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
+            to=payload.sent_to, subject=subject, body_html=html, body_text=text,
+            reply_to=reply_to, from_name=sender, cc=payload.cc or "", bcc=payload.bcc or "")
     return {"ok": True}
 
 

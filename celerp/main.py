@@ -80,21 +80,34 @@ async def _try_auto_activate() -> None:
     """
     _log = logging.getLogger(__name__)
     try:
+        import asyncio
+
         import httpx
-        from celerp.config import settings as _s, ensure_instance_id, read_config, write_config
+        from celerp.config import settings as _s, ensure_instance_id, config_path, persist_cloud_settings
+        first_boot = not config_path().exists()
         iid = ensure_instance_id()
-        from celerp.gateway.state import relay_http_url as _rhu
+        from celerp.gateway.state import activate_payload, relay_http_url as _rhu
         relay_base = _rhu()
         _httpx_log = logging.getLogger("httpx")
         _prev_level = _httpx_log.level
         _httpx_log.setLevel(logging.WARNING)
         try:
-            from celerp import __version__ as _ver
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid, "version": _ver})
+            payload = activate_payload(iid, first_boot=first_boot)
+            # Retry transient transport failures (slow first network, relay
+            # restarting); an HTTP response of any status is final.
+            r = None
+            for delay in (0, 5, 30):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as c:
+                        r = await c.post(f"{relay_base}/auth/activate", json=payload)
+                    break
+                except httpx.HTTPError:
+                    continue
         finally:
             _httpx_log.setLevel(_prev_level)
-        if r.status_code != 200:
+        if r is None or r.status_code != 200:
             return
         data = r.json()
         token = data.get("gateway_token", "")
@@ -111,24 +124,18 @@ async def _try_auto_activate() -> None:
         if not _s.backup_encryption_key:
             import base64, secrets as _secrets
             _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
-        # Persist to config.toml
+        # Persist to config.toml (best-effort; the WS client must still start)
         try:
-            cfg = read_config()
-            if cfg:
-                cloud = cfg.setdefault("cloud", {})
-                cloud["token"] = token
-                cloud["instance_id"] = iid
-                if public_url:
-                    cloud["public_url"] = public_url
-                if tos_version:
-                    cloud["tos_version"] = tos_version
-                if _s.backup_encryption_key:
-                    cloud["backup_encryption_key"] = _s.backup_encryption_key
-                write_config(cfg)
+            persist_cloud_settings(
+                token=token,
+                instance_id=iid,
+                public_url=public_url,
+                tos_version=tos_version,
+                backup_encryption_key=_s.backup_encryption_key,
+            )
         except Exception:
             pass
         # Start gateway WS client
-        import asyncio
         from celerp.gateway import client as _gw
         if _gw.get_client() is None:
             gw = _gw.GatewayClient(gateway_token=token, instance_id=iid, gateway_url=_s.gateway_url)

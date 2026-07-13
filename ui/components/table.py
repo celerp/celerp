@@ -6,11 +6,14 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t, get_lang
+from ui.i18n import t
 from celerp.services.field_schema import MIXED_VALUE
-
-# Canonical empty-value placeholder (rule k)
-EMPTY = "--"
+# Canonical definitions live with the shared document renderer; re-exported
+# here for the UI's many call sites. EMPTY is the canonical empty-value
+# placeholder (rule k).
+from celerp.output.doc_print import (  # noqa: F401
+    CURRENCY_SYMBOLS, EMPTY, currency_symbol, fmt_money, fmt_rate, unwrap_address,
+)
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
@@ -74,56 +77,6 @@ _SEARCHABLE_THRESHOLD = 10
 
 # Colors supported by status_cards (maps to CSS modifier class)
 _STATUS_CARD_COLORS = {"green", "yellow", "red", "blue", "gray"}
-
-# ISO 4217 → symbol map for money formatting
-_CURRENCY_SYMBOLS: dict[str, str] = {
-    "AED": "AED ", "AUD": "A$", "BDT": "৳", "BRL": "R$", "CAD": "C$",
-    "CHF": "CHF ", "CLP": "$", "CNY": "¥", "COP": "$", "CZK": "Kč ",
-    "DKK": "kr ", "EGP": "E£", "EUR": "€", "GBP": "£", "HKD": "HK$",
-    "HUF": "Ft ", "IDR": "Rp ", "ILS": "₪", "INR": "₹", "JPY": "¥",
-    "KRW": "₩", "KWD": "KD ", "MXN": "$", "MYR": "RM ", "NGN": "₦",
-    "NOK": "kr ", "NZD": "NZ$", "PEN": "S/", "PHP": "₱", "PKR": "₨ ",
-    "PLN": "zł ", "QAR": "QR ", "RON": "lei ", "RUB": "₽", "SAR": "SR ",
-    "SEK": "kr ", "SGD": "S$", "THB": "฿", "TRY": "₺", "TWD": "NT$",
-    "UAH": "₴", "USD": "$", "VND": "₫", "ZAR": "R ",
-}
-
-
-def currency_symbol(currency: str | None) -> str:
-    """Return the display symbol for an ISO 4217 currency code. Falls back to code + space."""
-    if not currency:
-        return ""
-    return _CURRENCY_SYMBOLS.get(currency.upper(), f"{currency.upper()} ")
-
-
-def fmt_money(value: str | float, currency: str | None = None) -> str:
-    """Format a money AMOUNT (total, tax, etc.) at currency precision."""
-    sym = currency_symbol(currency)
-    try:
-        return f"{sym}{float(value):,.2f}"
-    except (ValueError, TypeError):
-        return EMPTY
-
-
-def fmt_rate(value: str | float, currency: str | None = None) -> str:
-    """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
-    with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
-    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
-    sym = currency_symbol(currency)
-    try:
-        v = float(value)
-    except (ValueError, TypeError):
-        return EMPTY
-    lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
-    s = f"{v:,.{hi}f}"
-    if "." in s:
-        intp, frac = s.split(".")
-        frac = frac.rstrip("0")
-        if len(frac) < lo:
-            frac = frac.ljust(lo, "0")
-        s = f"{intp}.{frac}" if frac else intp
-    return f"{sym}{s}"
-
 
 def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
     """Clickable status filter cards at top of list pages.
@@ -1604,10 +1557,14 @@ function _populateMergeTargets(){
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');
     sel.appendChild(opt);
   });
+  // Keep "New SKU" as the last choice, below the item options.
+  var newSkuOpt=document.getElementById('merge-new-sku-opt');
+  if(newSkuOpt) sel.appendChild(newSkuOpt);
   sel.addEventListener('change',function(){
     var confirmDiv=document.getElementById('merge-confirm');
     if(!confirmDiv) return;
     var n=CelerpSelection.count();
+    var isNewSku=sel.value==='__new__';
     var targetText=sel.options[sel.selectedIndex].textContent;
     confirmDiv.innerHTML='';
     confirmDiv.style.display='flex';
@@ -1615,21 +1572,40 @@ function _populateMergeTargets(){
     confirmDiv.style.gap='0.5rem';
     confirmDiv.style.marginTop='0.5rem';
     var msg=document.createElement('span');
-    msg.textContent='Merge '+n+' items into '+targetText+'?';
+    msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';
     msg.style.fontSize='0.85rem';
+    // "New SKU" reveals [dropdown] -> [enter SKU]; picking an item hides it
+    // (that item's SKU wins, so there is nothing extra to show).
+    var skuInput=document.getElementById('merge-resulting-sku');
+    var skuArrow=document.getElementById('merge-sku-arrow');
+    if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
+    if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
+    if(isNewSku&&skuInput){skuInput.focus();}
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
     var btn=document.createElement('button');
     btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent='Confirm';
     btn.addEventListener('click',function(){
+      var skuEl=document.getElementById('merge-resulting-sku');
+      // "New SKU" mode needs a typed SKU; the merge bases on the first selected
+      // item (deterministic - the pick only decides the SKU, not the survivor).
+      if(isNewSku && (!skuEl || !skuEl.value.trim())){
+        if(skuEl) skuEl.focus();
+        return;
+      }
       var form=document.createElement('form');
       CelerpSelection.ids().forEach(function(id){
         var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
         form.appendChild(inp);
       });
-      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';t.value=sel.value;
+      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
+      t.value=isNewSku?CelerpSelection.ids()[0]:sel.value;
       form.appendChild(t);
+      if(isNewSku){
+        var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
+        form.appendChild(sk);
+      }
       document.body.appendChild(form);
       // Keep the form attached until the request finishes - removing it early detaches the htmx
       // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
@@ -1641,6 +1617,8 @@ function _populateMergeTargets(){
     cancel.addEventListener('click',function(){
       confirmDiv.style.display='none';
       sel.value='';
+      if(skuInput){skuInput.style.display='none';skuInput.value='';}
+      if(skuArrow){skuArrow.style.display='none';}
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
@@ -2046,6 +2024,23 @@ def breadcrumbs(crumbs: list[tuple[str, str | None]]) -> FT:
     return Div(*parts, cls="breadcrumbs")
 
 
+def bank_account_options(bank_accounts: list[dict] | None, default_code: str | None = None) -> list:
+    """Option elements for every active bank account ("1110 - Bank name").
+
+    DRY: doc payment forms, the bulk-pay modal, and the payments settings
+    deposit selector. Key names match _bank_to_dict in celerp-accounting:
+    chart_account_code and bank_name. default_code pre-selects its option.
+    """
+    return [
+        Option(
+            f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
+            value=ba.get("chart_account_code", ""),
+            selected=(ba.get("chart_account_code") == default_code),
+        )
+        for ba in (bank_accounts or [])
+    ]
+
+
 def add_new_option(label: str = "+ Add new", redirect_url: str = "#") -> tuple:
     """Return (Option element, onchange JS snippet) for 'add new' in dynamic selects."""
     option = Option(label, value="__new__")
@@ -2066,7 +2061,7 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
             return Td(val)
         s = str(val)
         # Currency detection — check against all known symbols
-        _MONEY_PREFIXES = tuple(_CURRENCY_SYMBOLS.values()) + ("฿", "$", "€", "£", "¥")
+        _MONEY_PREFIXES = tuple(CURRENCY_SYMBOLS.values()) + ("฿", "$", "€", "£", "¥")
         if any(s.startswith(p) for p in _MONEY_PREFIXES):
             return Td(s, cls="cell--number")
         return Td(s)
@@ -2077,23 +2072,6 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
         cls=f"data-table {cls_extra}".strip(),
         **({"id": id} if id else {}),
     )
-
-
-def unwrap_address(raw) -> str:
-    """Unwrap an address value that may be a dict (``{"text": "…"}``) or a plain string.
-
-    Single source of truth for all UI address display - used by settings, documents, etc.
-    """
-    if not raw:
-        return ""
-    if isinstance(raw, dict):
-        text = raw.get("text") or raw.get("line1") or ""
-        for k in ("line2", "city", "state", "postal_code", "country"):
-            v = raw.get(k) or ""
-            if v:
-                text = text + ("\n" if text else "") + v
-        return text
-    return str(raw)
 
 
 def col_resize_script(table_selector: str, storage_key: str):
