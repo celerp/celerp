@@ -8,7 +8,7 @@
     "email": "support@celerp.com"
   },
   "homepage": "https://www.celerp.com",
-  "license": "SEE LICENSE IN LICENSING.md",
+  "license": "BUSL-1.1",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "start": "electron .",
