@@ -49,13 +49,14 @@ class NotificationList(BaseModel):
 async def list_notifications(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    unread_only: bool = Query(False),
     session: AsyncSession = Depends(get_session),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
 ):
     """List notifications for the current user, newest first."""
     items = await notif_svc.list_notifications(
-        session, company_id, user.id, limit=limit, offset=offset,
+        session, company_id, user.id, limit=limit, offset=offset, unread_only=unread_only,
     )
     unread = await notif_svc.get_unread_count(session, company_id, user.id)
     return NotificationList(
