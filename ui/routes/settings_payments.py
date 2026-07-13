@@ -37,11 +37,14 @@ def _pitch() -> FT:
         ),
         Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
              method="post", action="/settings/payments/connect"),
-        # Fine print: left-aligned in a narrow centered column (centered
+        # Button microcopy: "Free to set up." centered tight under the CTA,
+        # where it reads as part of the button's promise. The remaining fine
+        # print sits left-aligned in a narrow centered column (centered
         # multi-line text reads as a wall); the Stripe line sits apart, one
         # step smaller and lighter, as a trust footer rather than more copy.
+        P(t("pay.pitch_free"), cls="form-hint", style="margin-top:8px;"),
         P(t("pay.pitch_fineprint"), cls="form-hint",
-          style="margin:16px auto 0;max-width:400px;text-align:left;line-height:1.6;"),
+          style="margin:14px auto 0;max-width:400px;text-align:left;line-height:1.6;"),
         P(t("pay.pitch_stripe_cred"),
           style="margin:12px auto 0;max-width:400px;text-align:left;font-size:0.7rem;color:#9aa0b5;"),
         cls="settings-card",
