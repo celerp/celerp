@@ -622,7 +622,7 @@ async def _capture_send(monkeypatch):
     done = asyncio.Event()
 
     async def _fake(to, subject, body_html, body_text="", **kw):
-        captured.update(to=to, subject=subject, html=body_html, text=body_text)
+        captured.update(to=to, subject=subject, html=body_html, text=body_text, **kw)
         done.set()
         return True, "test transport"
 
@@ -670,6 +670,25 @@ async def test_send_uses_custom_subject_message_and_formatted_amount(client: Asy
     assert "Thanks for your business, please see attached." in captured["html"]
     assert "THB 1,070.00" in captured["html"]
     assert "THB 1070.0" not in captured["html"]  # no naked float
+
+
+@pytest.mark.asyncio
+async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, monkeypatch):
+    """Mail is from noreply@, so a Reply-To (the sender's address) must be set
+    or a customer's reply would bounce."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)  # registers admin share@test.com
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    # Falls back to the sending user's address when no company email is set.
+    assert captured.get("reply_to") == "share@test.com"
 
 
 @pytest.mark.asyncio

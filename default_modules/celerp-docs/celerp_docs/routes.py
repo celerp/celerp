@@ -869,6 +869,22 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return {"event_id": entry.id}
 
 
+async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
+    """Reply-To for outgoing document emails: the company's business address
+    (self-contact) so recipients can actually reply, falling back to company
+    settings and then the sending user. Mail is sent from noreply@, so without
+    this a customer's reply would bounce."""
+    company_row = await session.get(Company, company_id)
+    cfg = (company_row.settings or {}) if company_row else {}
+    self_id = cfg.get("self_contact_id")
+    if self_id:
+        crow = await session.get(Projection, {"company_id": company_id, "entity_id": self_id})
+        email = (crow.state or {}).get("email") if crow else None
+        if email:
+            return email
+    return cfg.get("email") or getattr(user, "email", "") or ""
+
+
 def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str, **send_kwargs) -> None:
     """Send in the background, then drop a bell notification with the outcome.
 
@@ -944,10 +960,11 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             currency=row.state.get("currency", "USD"),
             message=payload.message, view_url=view_url,
         )
+        reply_to = await _sender_reply_to(session, company_id, user)
         _email_with_receipt(
             company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
             to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
-            cc=payload.cc or "", bcc=payload.bcc or "",
+            reply_to=reply_to, cc=payload.cc or "", bcc=payload.bcc or "",
         )
 
     return {"event_id": entry.id}
@@ -4628,10 +4645,11 @@ async def send_list(
             currency=row.state.get("currency", "USD"),
             message=payload.message, view_url=view_url,
         )
+        reply_to = await _sender_reply_to(session, company_id, user)
         _email_with_receipt(
             company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
             to=payload.sent_to, subject=subject, body_html=html, body_text=text,
-            cc=payload.cc or "", bcc=payload.bcc or "")
+            reply_to=reply_to, cc=payload.cc or "", bcc=payload.bcc or "")
     return {"ok": True}
 
 
