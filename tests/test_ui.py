@@ -4486,22 +4486,26 @@ class TestItemActionRouteCompleteness:
     async def test_merge_passes_correct_args(self, ui_client):
         captured = {}
         async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resolved_attributes=None, idempotency_key=None):
+                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
+                        resolved_attributes=None, idempotency_key=None):
             captured.update({
                 "sources": source_entity_ids,
                 "target": target_sku_from,
                 "qty": resulting_quantity,
+                "sku": resulting_sku,
             })
             return {"id": "item:new1"}
         with patch("ui.api_client.merge_items", new=_mock):
             await ui_client.post(
                 "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "8"},
+                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a",
+                      "resulting_quantity": "8", "resulting_sku": "CUSTOM-1"},
                 cookies=_authed(),
             )
         assert captured["target"] == "item:a"
         assert captured["sources"] == ["item:a", "item:b"]
         assert captured["qty"] == 8.0
+        assert captured["sku"] == "CUSTOM-1"  # custom SKU flows through
 
     @pytest.mark.asyncio
     async def test_merge_invalid_qty_shows_error(self, ui_client):

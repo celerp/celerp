@@ -1570,6 +1570,17 @@ function _populateMergeTargets(){
     var msg=document.createElement('span');
     msg.textContent='Merge '+n+' items into '+targetText+'?';
     msg.style.fontSize='0.85rem';
+    // Merged SKU: defaults to the target's SKU, editable to any custom value
+    // (the merged item is genuinely new). Blank falls back to the target's SKU.
+    var skuWrap=document.createElement('label');
+    skuWrap.style.display='flex';skuWrap.style.flexDirection='column';
+    skuWrap.style.gap='0.15rem';skuWrap.style.fontSize='0.8rem';
+    skuWrap.textContent='Merged SKU (optional)';
+    var skuInput=document.createElement('input');
+    skuInput.type='text';skuInput.className='form-input form-input--sm';
+    skuInput.id='merge-resulting-sku';
+    skuInput.value=(_liveMergeMeta(sel.value).sku)||'';
+    skuWrap.appendChild(skuInput);
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
@@ -1583,6 +1594,11 @@ function _populateMergeTargets(){
       });
       var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';t.value=sel.value;
       form.appendChild(t);
+      var skuEl=document.getElementById('merge-resulting-sku');
+      if(skuEl && skuEl.value.trim()){
+        var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
+        form.appendChild(sk);
+      }
       document.body.appendChild(form);
       // Keep the form attached until the request finishes - removing it early detaches the htmx
       // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
@@ -1597,6 +1613,7 @@ function _populateMergeTargets(){
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
+    confirmDiv.appendChild(skuWrap);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);

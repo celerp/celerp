@@ -2740,6 +2740,7 @@ function celerpPrintLabel(entityId, templateId) {
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
@@ -2761,6 +2762,7 @@ function celerpPrintLabel(entityId, templateId) {
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=total_qty,
+                resulting_sku=resulting_sku,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
@@ -3836,6 +3838,7 @@ function celerpPrintLabel(entityId, templateId) {
         raw_qty = str(form.get("resulting_quantity", "")).strip()
         raw_cost = str(form.get("resulting_cost_total", "")).strip()
         resulting_name = str(form.get("resulting_name", "")).strip() or None
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
         try:
             resulting_quantity = float(raw_qty) if raw_qty else None
         except ValueError:
@@ -3864,6 +3867,7 @@ function celerpPrintLabel(entityId, templateId) {
                 resulting_quantity=resulting_quantity,
                 resulting_cost_total=resulting_cost_total,
                 resulting_name=resulting_name,
+                resulting_sku=resulting_sku,
                 resolved_attributes=resolved_attributes or None,
             )
         except APIError as e:
