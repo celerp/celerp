@@ -11071,6 +11071,19 @@ class TestDocumentsOverhaul:
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
+    async def test_lifecycle_buttons_have_explanatory_tooltips(self, ui_client):
+        """Jargon actions like 'Issue Invoice' carry a plain-language title so
+        users understand what they do before clicking."""
+        doc = dict(_BLANK_DOC, doc_type="invoice", status="draft")
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert "Issue Invoice" in content
+        assert "becomes an official invoice you can send and collect payment on" in content
+
+    @pytest.mark.asyncio
     async def test_send_modal_has_share_toggle_and_status_light(self, ui_client):
         """When cloud-connected, the send modal offers the Share toggle and the
         Share button carries a status dot (green when the doc is live)."""

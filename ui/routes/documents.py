@@ -5265,19 +5265,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if doc_type == "quotation" and status not in ("void", "converted"):
         action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
-                   hx_swap="none", cls="btn btn--primary")
+                   hx_swap="none", cls="btn btn--primary",
+                   title="Turn this accepted quote into an invoice, carrying over its line items.")
         )
     # Issued memos can be converted to invoices (customer keeps goods)
     if doc_type == "memo" and status in ("final", "sent", "received", "partially_received"):
         action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
-                   hx_swap="none", cls="btn btn--secondary")
+                   hx_swap="none", cls="btn btn--secondary",
+                   title="Turn this memo into an invoice because the customer is keeping the goods.")
         )
     # Issued consignment_in can be converted to vendor bills (vendor keeps goods)
     if doc_type == "consignment_in" and status in ("final", "sent", "received", "partially_received"):
         action_btns_left.append(
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
-                   hx_swap="none", cls="btn btn--secondary")
+                   hx_swap="none", cls="btn btn--secondary",
+                   title="Turn this consignment into a vendor bill because you are keeping the goods and now owe for them.")
         )
     # List lifecycle buttons — uniform invoice-style across every type (a list behaves like a list
     # whatever its type): Draft -> [Issue] -> finalized, then the type's primary action in the same
@@ -5286,8 +5289,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if is_list:
         if status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
+            _list_word = (list_type or "list").replace("_", " ")
             action_btns_left.append(Button("Issue", hx_post=f"/lists/{entity_id}/action/finalize",
-                                           hx_swap="none", cls="btn btn--primary"))
+                                           hx_swap="none", cls="btn btn--primary",
+                                           title=f"Finalize this {_list_word} and lock its contents so it can be sent, converted, or acted on."))
         elif status == _LF:
             if pol["audit"]:
                 # "Adjust stock" lives directly above the Counted column (see the line section),
@@ -5306,16 +5311,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             elif list_type == "quotation":
                 # Convert is the quote's terminal (closes); Send / Mark-as-sent come from _can_send.
                 action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice",
-                                               hx_swap="none", cls="btn btn--secondary"))
+                                               hx_swap="none", cls="btn btn--secondary",
+                                               title="Turn this accepted quote into an invoice. This closes the quote."))
                 action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo",
-                                               hx_swap="none", cls="btn btn--secondary"))
+                                               hx_swap="none", cls="btn btn--secondary",
+                                               title="Turn this quote into a memo so the goods go out on approval before invoicing."))
         elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
             # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
             action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",
                                            hx_swap="none", cls="btn btn--secondary",
+                                           title="Reverse the stock changes this audit applied, restoring the previous quantities.",
                                            hx_confirm="Reverse this audit's stock adjustment?"))
         action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate",
-                                       hx_swap="none", cls="btn btn--secondary"))
+                                       hx_swap="none", cls="btn btn--secondary",
+                                       title="Create an editable draft copy of this list."))
     if status in ("draft", "sent") and not is_list:
         _finalize_labels = {
             "invoice": "Issue Invoice",
@@ -5325,17 +5334,29 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             "credit_note": "Issue Credit Note",
             "receipt": "Issue Receipt",
         }
+        # Plain-language tooltip for the primary lifecycle action: "Issue"/"Finalize"
+        # is jargon until you know it locks the document and makes it official.
+        _finalize_tips = {
+            "invoice": "Finalize this invoice and lock its contents. It becomes an official invoice you can send and collect payment on.",
+            "purchase_order": "Record this purchase order as a vendor bill you owe and can receive stock against.",
+            "memo": "Finalize this memo so the items go out to the customer on approval or loan.",
+            "consignment_in": "Finalize this consignment: hold the vendor's goods for sale before owing for them.",
+            "credit_note": "Finalize this credit note so it can offset an invoice or refund the customer.",
+            "receipt": "Finalize this receipt as the official record of a payment received.",
+        }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
+        finalize_tip = _finalize_tips.get(doc_type, "Finalize this document and lock its contents so it can be sent and acted on.")
         if _is_operator and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
-                       cls="btn btn--primary")
+                       title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft") and _is_operator and not suppress_doc_actions:
         action_btns_right.append(
             Details(
-                Summary(t("btn.void"), cls="btn btn--danger"),
+                Summary(t("btn.void"), cls="btn btn--danger",
+                        title="Cancel this document. It stays on record marked void and can no longer be edited."),
                 Form(
                     Input(type="text", name="reason", placeholder="Void reason...", cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
@@ -5359,7 +5380,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if status in _revertable_statuses and amount_paid_for_revert == 0 and _is_operator and not suppress_doc_actions:
         action_btns_right.insert(0,
             Details(
-                Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
+                Summary(t("doc.revert_to_draft"), cls="btn btn--secondary",
+                        title="Reopen this document as an editable draft, undoing its issued status."),
                 Form(
                     Input(type="text", name="reason", placeholder="Reason (optional)...", cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
@@ -5429,6 +5451,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             action_btns_left.append(
                 Button(t("btn.send"), type="button",
                        onclick=f"document.getElementById('{modal_id}').showModal()",
+                       title="Email this document to your customer with an optional online view link.",
                        cls="btn btn--secondary"),
             )
             # Dialog rendered at the bottom of the page via extra content - inject as sibling
@@ -5496,14 +5519,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _mark_ok:
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"{_base}/action/mark_sent",
-                       hx_swap="none", cls="btn btn--secondary")
+                       hx_swap="none", cls="btn btn--secondary",
+                       title="Record this document as sent without emailing it (for example, if you sent it by hand).")
             )
         # Unmark Sent: a "sent" document, or a finalized quote whose sent milestone is set.
         _unmark_ok = (status == _LF and _list_sent) if is_list else (status == "sent")
         if _unmark_ok:
             action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
-                       hx_swap="none", cls="btn btn--secondary")
+                       hx_swap="none", cls="btn btn--secondary",
+                       title="Clear the sent marker so this document shows as not yet sent.")
             )
     # Share: a public read-only link (customer-facing docs + lists; never supplier docs).
     if _can_share:
