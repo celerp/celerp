@@ -1512,6 +1512,7 @@ async def merge_items(
     resulting_quantity: float | None = None,
     resulting_cost_total: float | None = None,
     resulting_name: str | None = None,
+    resulting_sku: str | None = None,
     resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
 ) -> dict:
@@ -1522,6 +1523,8 @@ async def merge_items(
         body["resulting_cost_total"] = resulting_cost_total
     if resulting_name is not None:
         body["resulting_name"] = resulting_name
+    if resulting_sku is not None:
+        body["resulting_sku"] = resulting_sku
     if resolved_attributes:
         body["resolved_attributes"] = resolved_attributes
     if idempotency_key:
@@ -1831,9 +1834,20 @@ async def get_dashboard_kpis(token: str) -> dict:
 # Sprint S8: Document share links
 # ---------------------------------------------------------------------------
 
-async def create_share_link(token: str, entity_id: str) -> dict:
+async def get_share_status(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/share")).json()
+        return _raise(await c.get(f"/docs/{entity_id}/share")).json()
+
+
+async def get_share_state(token: str, entity_id: str) -> dict:
+    """Read-only: {'active': bool}. Does not mint a token (page-load light)."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/share/state")).json()
+
+
+async def create_share_link(token: str, entity_id: str, expires_at: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/share", json={"expires_at": expires_at})).json()
 
 
 async def revoke_share_link(token: str, entity_id: str) -> dict:

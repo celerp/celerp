@@ -108,6 +108,8 @@ class DocSendBody(BaseModel):
     sent_to: str | None = None
     cc: str | None = None
     bcc: str | None = None
+    subject: str | None = None
+    message: str | None = None
     idempotency_key: str | None = None
 
 
@@ -583,7 +585,17 @@ async def get_doc_pdf(
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
 
-    pdf_bytes = generate_document_pdf(doc, company)
+    # Footer import link only while the share link is live, so saved PDFs
+    # never carry a URL that 404s.
+    from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
+    from celerp.output.doc_print import IMPORTABLE_DOC_TYPES
+    import_url = None
+    if doc.get("doc_type") in IMPORTABLE_DOC_TYPES:
+        share_row = await _find_share_row(session, company_id, entity_id)
+        if share_row is not None and _share_active(share_row):
+            import_url = _share_url(share_row.token)
+
+    pdf_bytes = generate_document_pdf(doc, company, import_url=import_url)
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or entity_id
     filename = f"{doc_ref}.pdf".replace("/", "-").replace(" ", "_")
     return _Resp(
@@ -857,6 +869,56 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return {"event_id": entry.id}
 
 
+async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
+    """Reply-To for outgoing document emails: the company's business address
+    (self-contact) so recipients can actually reply, falling back to company
+    settings and then the sending user. Mail is sent from noreply@, so without
+    this a customer's reply would bounce."""
+    company_row = await session.get(Company, company_id)
+    cfg = (company_row.settings or {}) if company_row else {}
+    self_id = cfg.get("self_contact_id")
+    if self_id:
+        crow = await session.get(Projection, {"company_id": company_id, "entity_id": self_id})
+        email = (crow.state or {}).get("email") if crow else None
+        if email:
+            return email
+    return cfg.get("email") or getattr(user, "email", "") or ""
+
+
+def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str, **send_kwargs) -> None:
+    """Send in the background, then drop a bell notification with the outcome.
+
+    The route's session is gone by the time the send resolves, so the receipt
+    is written in its own session. Delivery is verified: send_email only
+    reports ok when a transport actually accepted the message."""
+    import uuid as _uuid_mod
+
+    async def _run() -> None:
+        from celerp.db import SessionLocal
+        from celerp.notifications import service as notif_service
+        from celerp.services.email import send_email
+        ok, detail = await send_email(**send_kwargs)
+        cid = company_id if isinstance(company_id, _uuid_mod.UUID) else _uuid_mod.UUID(str(company_id))
+        try:
+            async with SessionLocal() as s:
+                if ok:
+                    await notif_service.create(
+                        s, cid, "email", f"Email delivered to {sent_to}",
+                        f"{doc_label} was emailed to {sent_to}.",
+                        action_url=action_url, priority="low")
+                else:
+                    await notif_service.create(
+                        s, cid, "email", f"Email to {sent_to} failed",
+                        f"{doc_label} could not be delivered: {detail}",
+                        action_url=action_url, priority="high")
+                await s.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Email receipt notification failed for %s", sent_to)
+
+    asyncio.create_task(_run())
+
+
 @router.post("/{entity_id}/send")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -873,38 +935,37 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
+
+    sent_to = payload.sent_to
+    view_url = None
+    if sent_to:
+        # Emailing a document always shares it (an email with no viewable
+        # document is pointless); send_view_url returns None if not cloud-connected.
+        from celerp_docs.routes_share import send_view_url
+        view_url = await send_view_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
-    sent_to = payload.sent_to
     if sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
-        total = row.state.get("total", 0)
-        currency = row.state.get("currency", "USD")
         doc_type = row.state.get("doc_type", "document").replace("_", " ").title()
         contact_name = row.state.get("contact_name") or "there"
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
-        subject = f"{doc_type} #{doc_number} from {sender_name}"
-        body_html = (
-            f"<p>Hi {contact_name},</p>"
-            f"<p>Please find your <strong>{doc_type} #{doc_number}</strong> from "
-            f"<strong>{sender_name}</strong>.</p>"
-            f"<p>Amount: <strong>{currency} {total}</strong></p>"
-            f"<p style='color:#888;font-size:13px;'>Questions about this document? "
-            f"Reply to this email and we'll get back to you.</p>"
+        subject = (payload.subject or "").strip() or f"{doc_type} #{doc_number} from {sender_name}"
+        body_html, body_text = compose_doc_email(
+            doc_type_label=doc_type, doc_number=doc_number, sender_name=sender_name,
+            contact_name=contact_name, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url,
         )
-        body_text = (
-            f"Hi {contact_name},\n\n"
-            f"Please find your {doc_type} #{doc_number} from {sender_name}.\n"
-            f"Amount: {currency} {total}\n\n"
-            f"Questions? Reply to this email."
+        reply_to = await _sender_reply_to(session, company_id, user)
+        _email_with_receipt(
+            company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
+            to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
+            reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
         )
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(
-            sent_to, subject, body_html, body_text=body_text,
-            cc=payload.cc or "", bcc=payload.bcc or "",
-        ))
 
     return {"event_id": entry.id}
 
@@ -4566,21 +4627,29 @@ async def send_list(
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
                             "sent_to": payload.sent_to})
-    await session.commit()
+    view_url = None
     if payload.sent_to:
+        from celerp_docs.routes_share import send_view_url
+        view_url = await send_view_url(session, company_id, entity_id)
+        await session.commit()
+    if payload.sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]
         company_row = await session.get(Company, company_id)
         sender = company_row.name if company_row else "Your supplier"
         contact = row.state.get("customer_name") or "there"
-        total = row.state.get("total", 0)
-        cur = row.state.get("currency", "USD")
-        subject = f"Quotation #{ref} from {sender}"
-        html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
-                f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
-        text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
-        from celerp.services.email import send_email
-        asyncio.create_task(send_email(payload.sent_to, subject, html, body_text=text,
-                                       cc=payload.cc or "", bcc=payload.bcc or ""))
+        subject = (payload.subject or "").strip() or f"Quotation #{ref} from {sender}"
+        html, text = compose_doc_email(
+            doc_type_label="Quotation", doc_number=ref, sender_name=sender,
+            contact_name=contact, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url,
+        )
+        reply_to = await _sender_reply_to(session, company_id, user)
+        _email_with_receipt(
+            company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
+            to=payload.sent_to, subject=subject, body_html=html, body_text=text,
+            reply_to=reply_to, from_name=sender, cc=payload.cc or "", bcc=payload.bcc or "")
     return {"ok": True}
 
 

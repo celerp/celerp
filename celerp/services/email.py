@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Email service — gateway relay first, SMTP fallback, silent skip if neither configured."""
+"""Email service — relay HTTP first (verified), SMTP fallback, skip if neither configured."""
 
 from __future__ import annotations
 
@@ -21,23 +21,38 @@ async def send_email(
     reply_to: str = "",
     cc: str = "",
     bcc: str = "",
-) -> bool:
-    """Send a transactional email via gateway relay or SMTP fallback.
+    from_name: str = "",
+) -> tuple[bool, str]:
+    """Send a transactional email via the relay or SMTP fallback.
 
-    Returns True on success, False if no transport is configured or on error.
-    Never raises.
+    Returns (ok, detail). ok is True only when a transport actually accepted
+    the message - the relay path is a synchronous HTTP call to the relay's
+    /email/send (which submits to the provider before answering 200), so
+    callers can surface real delivery feedback. Never raises.
     """
     from celerp.config import settings
 
-    # 1. Gateway relay (preferred when connected to cloud)
+    detail = ""
+    # 1. Relay (preferred when cloud-connected): synchronous and verified.
+    #    The old path pushed an email.send frame down the gateway WS, which
+    #    the relay never handled - emails silently vanished. The gateway token
+    #    is the instance API key; exchanging it for a bearer JWT is the auth
+    #    every relay REST endpoint accepts.
     if settings.gateway_token:
+        from celerp.gateway.state import relay_http_url
+        base = relay_http_url()
         try:
-            from celerp.gateway.client import get_client
-            gw = get_client()
-            if gw is not None:
-                await gw.send_message(
-                    "email.send",
-                    payload={
+            import httpx
+            async with httpx.AsyncClient(timeout=30) as client:
+                tok_resp = await client.post(
+                    f"{base}/auth/token", json={"api_key": settings.gateway_token})
+                if tok_resp.status_code != 200:
+                    raise RuntimeError(f"relay auth failed ({tok_resp.status_code})")
+                bearer = tok_resp.json()["access_token"]
+                resp = await client.post(
+                    f"{base}/email/send",
+                    headers={"Authorization": f"Bearer {bearer}"},
+                    json={
                         "to": to,
                         "subject": subject,
                         "body_html": body_html,
@@ -45,11 +60,19 @@ async def send_email(
                         "reply_to": reply_to,
                         "cc": cc,
                         "bcc": bcc,
+                        "from_name": from_name,
                     },
                 )
-                return True
+            if resp.status_code == 200:
+                return True, "delivered via Celerp relay"
+            try:
+                detail = str(resp.json().get("detail") or f"relay error {resp.status_code}")
+            except Exception:
+                detail = f"relay error {resp.status_code}"
+            log.warning("Relay email to %s failed: %s", to, detail)
         except Exception as exc:
-            log.debug("Gateway email failed, falling back to SMTP: %s", exc)
+            detail = f"relay send failed: {exc}"
+            log.warning("Relay email to %s failed: %s", to, detail)
 
     # 2. SMTP fallback
     if settings.smtp_host:
@@ -81,11 +104,11 @@ async def send_email(
                 password=settings.smtp_password or None,
                 use_tls=settings.smtp_tls,
             )
-            return True
+            return True, "delivered via SMTP"
         except Exception as exc:
             log.debug("SMTP email failed: %s", exc)
-            return False
+            return False, detail or f"SMTP send failed: {exc}"
 
-    # 3. Neither configured
-    log.debug("Email not sent (no gateway token or SMTP configured): to=%s subject=%s", to, subject)
-    return False
+    # 3. Neither configured (or the relay refused and no SMTP fallback exists)
+    log.debug("Email not sent: to=%s subject=%s detail=%s", to, subject, detail)
+    return False, detail or "no email transport configured (connect the Celerp relay or set up SMTP)"

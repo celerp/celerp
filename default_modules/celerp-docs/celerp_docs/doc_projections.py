@@ -90,6 +90,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "doc.finalized":
         # Bills with only non-stock items skip receiving and go straight to awaiting_payment.
         current["status"] = "awaiting_payment" if data.get("skip_receiving") else "final"
+        # Durable "has been issued" marker: the status is later overwritten by
+        # doc.sent, so the Issue button relies on this flag, not the status.
+        current["finalized"] = True
         # Invoice finalize assigns real ref_id (INV-...) and preserves proforma ref
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
@@ -98,6 +101,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["source_proforma_ref"] = data["source_proforma_ref"]
     elif event_type == "doc.converted_to_bill":
         current["status"] = "awaiting_payment"
+        current["finalized"] = True  # a converted bill is issued
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
             current["doc_number"] = data["ref_id"]
@@ -115,6 +119,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["pre_void_fulfillment"] = data["pre_void_fulfillment"]
     elif event_type == "doc.reverted_to_draft":
         current["status"] = "draft"
+        current["finalized"] = False  # back to an editable, un-issued draft
         # PO->bill revert: restore doc_type and original ref_id
         if data.get("doc_type"):
             current["doc_type"] = data["doc_type"]

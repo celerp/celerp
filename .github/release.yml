@@ -1,0 +1,8 @@
+# Shapes GitHub's auto-generated release notes (generated at publish time in
+# build.yml). PR titles are conventional (feat/fix/chore prefixes), so the flat
+# list reads well; bots are excluded as noise in user-facing notes.
+changelog:
+  exclude:
+    authors:
+      - github-actions[bot]
+      - dependabot[bot]

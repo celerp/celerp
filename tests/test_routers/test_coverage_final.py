@@ -5,11 +5,11 @@ Final coverage gap closers targeting:
 - items.py  128-130, 134-136, 140-142  (valuation with total_cost/wholesale/retail via import)
 - reports.py 166, 182, 184, 186        (AP aging buckets current, d30, d60, d90, d90plus)
 - reports.py 448-455, 540              (purchases price_range group_by, expiring days_remaining>days)
-- share.py   53                        (share_url with celerp_public_url set)
-- share.py   129, 164                  (share token entity missing, list entity share view)
-- share.py   197-212                   (import shared doc: HTTPStatusError 4xx, 5xx, 502 network)
-- share.py   268, 270                  (bundle: token not found, entity not found)
-- share.py   489-490                   (public list page discount row)
+- share.py                             (share_url with celerp_public_url set)
+- share.py                             (share token entity missing, list entity share view)
+- share.py                             (import shared doc: HTTPStatusError 4xx, 5xx, 502 network)
+- share.py                             (bundle: token not found, entity not found)
+- share.py                             (shared list discount row, rendered via doc_print)
 - health.py  27-28                     (readiness DB error path)
 - crm.py     354-355, 638-640          (memo summary bad decimal, batch import memos error)
 - lists.py   135, 137, 187-188, 399    (list filter date_from/to, csv q filter, import template)
@@ -343,7 +343,9 @@ async def test_share_import_doc_http_404(client):
     mock_response.status_code = 404
     exc = httpx.HTTPStatusError("not found", request=MagicMock(), response=mock_response)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -366,7 +368,9 @@ async def test_share_import_doc_http_502(client):
     mock_response.status_code = 503
     exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=mock_response)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -384,7 +388,9 @@ async def test_share_import_doc_network_error(client):
     """GET /docs/import when network fails → 502 (lines 209-210)."""
     tok = await _reg(client)
 
-    with patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
+    with patch("celerp_docs.routes_share._validate_public_src",
+               new=AsyncMock(return_value="https://other.celerp.test")), \
+         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)

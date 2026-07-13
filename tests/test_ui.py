@@ -210,6 +210,41 @@ class TestAuthRouting:
         assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
         assert "addEventListener" in _IDLE_LOGOUT_JS
         assert f"{int(settings.idle_logout_minutes)} * 60000" in _IDLE_LOGOUT_JS
+        # The timer carries the current page so login can return there
+        assert "next=" in _IDLE_LOGOUT_JS
+
+    @pytest.mark.asyncio
+    async def test_login_bounce_carries_next_and_login_returns_there(self, ui_client):
+        """A timed-out user bounced off a page gets sent back to that page
+        after signing in, not to the dashboard."""
+        # Full-page bounce: the requested page lands in ?next=
+        r = await ui_client.get("/docs/doc:INV-1?page=2")
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2"
+
+        # HTMX fragment bounce: the browser page (HX-Current-URL) is used
+        r = await ui_client.get("/docs/doc:INV-1/share", headers={
+            "HX-Request": "true", "HX-Current-URL": "http://ui/docs/doc:INV-1?page=2"})
+        assert "next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2" in r.headers.get("HX-Redirect", "")
+
+        # Login form carries it and the successful POST honors it
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            page = await ui_client.get("/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2")
+        assert 'name="next" value="/docs/doc:INV-1?page=2"' in page.text
+        with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
+            r = await ui_client.post("/login", data={
+                "email": "a@b.c", "password": "pw", "next": "/docs/doc:INV-1?page=2"})
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/docs/doc:INV-1?page=2"
+
+    @pytest.mark.asyncio
+    async def test_login_next_rejects_offsite_and_auth_paths(self, ui_client):
+        """?next= is not an open redirect: absolute URLs, scheme-relative URLs,
+        and auth pages all fall back to the dashboard."""
+        with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
+            for bad in ("https://evil.example", "//evil.example", "/login?x=1", "/logout"):
+                r = await ui_client.post("/login", data={"email": "a@b.c", "password": "pw", "next": bad})
+                assert r.headers["location"] == "/", f"{bad!r} must not be honored"
 
     @pytest.mark.asyncio
     async def test_login_page_renders(self, ui_client):
@@ -3479,8 +3514,12 @@ class TestSprint4DocActions:
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):
-        """Doc detail must not contain dialog or modal elements."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+        """Without a connected relay, doc detail has no dialog or modal
+        elements (Send/Share modals are relay-gated). Relay status is pinned
+        so the test is deterministic even with a live dev server running."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
@@ -4447,22 +4486,26 @@ class TestItemActionRouteCompleteness:
     async def test_merge_passes_correct_args(self, ui_client):
         captured = {}
         async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resolved_attributes=None, idempotency_key=None):
+                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
+                        resolved_attributes=None, idempotency_key=None):
             captured.update({
                 "sources": source_entity_ids,
                 "target": target_sku_from,
                 "qty": resulting_quantity,
+                "sku": resulting_sku,
             })
             return {"id": "item:new1"}
         with patch("ui.api_client.merge_items", new=_mock):
             await ui_client.post(
                 "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "8"},
+                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a",
+                      "resulting_quantity": "8", "resulting_sku": "CUSTOM-1"},
                 cookies=_authed(),
             )
         assert captured["target"] == "item:a"
         assert captured["sources"] == ["item:a", "item:b"]
         assert captured["qty"] == 8.0
+        assert captured["sku"] == "CUSTOM-1"  # custom SKU flows through
 
     @pytest.mark.asyncio
     async def test_merge_invalid_qty_shows_error(self, ui_client):
@@ -5791,7 +5834,11 @@ class TestSprint5NoPopups:
 
     @pytest.mark.asyncio
     async def test_no_dialog_in_quotation(self, ui_client):
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_QUOTATION_DOC)):
+        """Relay status pinned off: the quotation page's Send/Share dialogs
+        are relay-gated, so none may render."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_QUOTATION_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:QUO-2026-0001", cookies=_authed())
         assert b"<dialog" not in r.content.lower()
 
@@ -11008,13 +11055,139 @@ class TestDocumentsOverhaul:
         assert b"Unmark Sent" in r.content
 
     @pytest.mark.asyncio
-    async def test_no_copy_link_or_share_button(self, ui_client):
-        """Doc detail has no standalone Copy Link or Share button (share via Send form)."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+    async def test_share_button_gated_on_public_url(self, ui_client):
+        """Share renders only when the relay reports a public URL (the link is
+        served there - without it every minted URL would be dead), and the
+        legacy Copy Link button stays gone. relay status is pinned so the test
+        is deterministic even with a live dev server running."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert "Copy Link" not in content
         assert '>Share<' not in content
+
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert '>Share<' in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_issue_button_hidden_once_invoice_is_issued(self, ui_client):
+        """The Issue button shows for a draft proforma but must not reappear
+        after the invoice is finalized and then emailed (status -> 'sent')."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+
+        async def _get(doc):
+            with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+                 patch("ui.api_client.get_relay_status", new=_no_relay):
+                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            return r.content.decode()
+
+        # Draft proforma: Issue shows.
+        draft = dict(_BLANK_DOC, doc_type="invoice", status="draft", ref_id="PF-2026-0001")
+        assert "Issue Invoice" in await _get(draft)
+
+        # Finalized then emailed: status is 'sent', finalized flag set -> hidden.
+        sent = dict(_BLANK_DOC, doc_type="invoice", status="sent",
+                    ref_id="INV-2026-0001", finalized=True)
+        assert "Issue Invoice" not in await _get(sent)
+
+        # Legacy row (no flag) but with a real INV number -> still hidden.
+        legacy = dict(_BLANK_DOC, doc_type="invoice", status="sent", ref_id="INV-2026-0001")
+        assert "Issue Invoice" not in await _get(legacy)
+
+        # A proforma marked-sent (never finalized) -> Issue still available.
+        marked = dict(_BLANK_DOC, doc_type="invoice", status="sent", ref_id="PF-2026-0002")
+        assert "Issue Invoice" in await _get(marked)
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_buttons_have_explanatory_tooltips(self, ui_client):
+        """Jargon actions like 'Issue Invoice' carry a plain-language title so
+        users understand what they do before clicking."""
+        doc = dict(_BLANK_DOC, doc_type="invoice", status="draft")
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert "Issue Invoice" in content
+        assert "becomes an official invoice you can send and collect payment on" in content
+
+    @pytest.mark.asyncio
+    async def test_send_modal_notes_30_day_link_and_shows_status_light(self, ui_client):
+        """No share opt-out: the modal states the view link is added for 30
+        days, and the Share button carries a status dot (green when live)."""
+        doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _active = AsyncMock(return_value={"active": True})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_relay), \
+             patch("ui.api_client.get_share_state", new=_active):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert 'name="share"' not in content            # toggle removed
+        assert "active for 30 days" in content          # the note
+        assert "share-btn-dot--live" in content         # green light (doc is shared)
+
+    @pytest.mark.asyncio
+    async def test_send_action_forwards_subject_and_message(self, ui_client):
+        """The modal's subject and message reach the API (they were dropped)."""
+        sent = AsyncMock(return_value={})
+        with patch("ui.api_client.send_doc", new=sent):
+            await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
+                "sent_to": "c@x.com", "subject": "Hi", "message": "See attached"})
+        data = sent.call_args[1]["data"]
+        assert data["subject"] == "Hi"
+        assert data["message"] == "See attached"
+        assert "share" not in data
+
+    @pytest.mark.asyncio
+    async def test_bill_to_email_is_editable_and_send_modal_prefills_it(self, ui_client):
+        """The Bill To email is an editable cell like its siblings (it used to
+        be the only read-only field), and the send modal prefills the To field
+        with it while staying replaceable."""
+        doc = dict(_BLANK_DOC, contact_email="billing@acme.com", status="sent")
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert "/field/contact_email/edit" in content
+        assert 'name="sent_to" value="billing@acme.com"' in content
+
+    @pytest.mark.asyncio
+    async def test_doc_detail_backfills_email_from_contact(self, ui_client):
+        """Docs that stored a contact name but no email resolve the email from
+        the contact record, so Bill To and the send modal are not blank."""
+        doc = dict(_BLANK_DOC, contact_id="contact:c1", contact_name="ACME Corp")
+        contact = {"name": "ACME Corp", "email": "billing@acme.com", "addresses": []}
+        _relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "billing@acme.com" in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_share_panel_forwards_expiry_date(self, ui_client):
+        """The modal's date picker value reaches the API on Share; an empty
+        picker forwards None (no expiry)."""
+        _status = {"active": True, "revoked": False, "expired": False,
+                   "token": "AbCdEfGhIjKl", "view_url": "https://x.celerp.com/share/AbCdEfGhIjKl",
+                   "url": "", "expires_at": "2099-12-31"}
+        with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
+            r = await ui_client.post("/docs/doc:INV-001/share",
+                                     data={"expires_at": "2099-12-31"}, cookies=_authed())
+        assert r.status_code == 200
+        assert mock_create.call_args[0][2] == "2099-12-31"
+
+        with patch("ui.api_client.create_share_link", new=AsyncMock(return_value=_status)) as mock_create:
+            await ui_client.post("/docs/doc:INV-001/share",
+                                 data={"expires_at": ""}, cookies=_authed())
+        assert mock_create.call_args[0][2] is None
 
     @pytest.mark.asyncio
     async def test_send_action_with_email(self, ui_client):

@@ -68,14 +68,10 @@ async def _list_entity(client, tok) -> str:
 # Unit: _fmt_money + _esc
 # ---------------------------------------------------------------------------
 
-def test_share_fmt_money_and_esc():
-    """_fmt_money ValueError returns '--'; _esc None returns '' (lines 303-304, 309)."""
-    from celerp.output.share_render import _fmt_money, _esc
-
-    assert _fmt_money("not-a-number") == "--"
-    assert _fmt_money(None) == "--"
-    assert _fmt_money(1234.5) == "USD 1,234.50"
-    assert _fmt_money(1234.5, "THB") == "THB 1,234.50"
+def test_share_esc():
+    """_esc escapes HTML on the dead-link page (None -> '', angle brackets and
+    quotes entitized). Money formatting now lives in celerp.output.doc_print."""
+    from celerp.output.share_render import _esc
 
     assert _esc(None) == ""
     assert _esc("<script>") == "&lt;script&gt;"

@@ -2506,3 +2506,43 @@ async def test_bulk_delete_drafts_empty_ids_returns_422(client, session):
     token = await _register(client)
     r = await client.delete("/docs/bulk-draft?doc_ids=", headers=_h(token))
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_finalized_flag_survives_send(client, session):
+    """Sending a finalized invoice overwrites its status to 'sent', but the
+    durable `finalized` flag must remain True so the Issue button never
+    reappears (regression: finalized+emailed invoice showed 'Issue Invoice')."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc.get("finalized") in (None, False)
+    assert str(doc.get("ref_id", "")).upper().startswith("PF")  # proforma draft
+
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(token))).status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["finalized"] is True
+    assert doc["status"] in ("final", "awaiting_payment")
+
+    # Emailing it flips status to 'sent' but must not clear finalized.
+    assert (await client.post(f"/docs/{inv}/send", headers=_h(token),
+                              json={"sent_via": "manual"})).status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["status"] == "sent"
+    assert doc["finalized"] is True
+
+
+@pytest.mark.asyncio
+async def test_finalized_flag_cleared_on_revert(client, session):
+    """Reverting an issued invoice to draft clears the flag so it can be
+    issued again."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    await client.post(f"/docs/{inv}/finalize", headers=_h(token))
+    r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(token), json={})
+    assert r.status_code in (200, 404)
+    if r.status_code == 200:
+        doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+        assert doc["status"] == "draft"
+        assert doc["finalized"] is False
