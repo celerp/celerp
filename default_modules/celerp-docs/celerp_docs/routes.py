@@ -885,12 +885,33 @@ async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
     return cfg.get("email") or getattr(user, "email", "") or ""
 
 
-def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str, **send_kwargs) -> None:
+async def _payments_tip_suffix(session, company_id) -> str:
+    """One-time payments pitch that piggybacks on the first delivery receipt
+    for a payable doc (no separate nag notification). Empty string once shown,
+    once payments are on, or when the instance cannot take payments anyway."""
+    from celerp.models.company import Company
+    from celerp.services.payments import payments_enabled
+    if payments_enabled():
+        return ""
+    company = await session.get(Company, company_id)
+    if company is None or (company.settings or {}).get("pay_tip_shown"):
+        return ""
+    settings = dict(company.settings or {})
+    settings["pay_tip_shown"] = True
+    company.settings = settings
+    session.add(company)
+    return (" Tip: connect a Stripe account under Web Access, Payments and "
+            "emailed invoices include a Pay button so customers can pay you by card.")
+
+
+def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
+                        payable: bool = False, **send_kwargs) -> None:
     """Send in the background, then drop a bell notification with the outcome.
 
     The route's session is gone by the time the send resolves, so the receipt
     is written in its own session. Delivery is verified: send_email only
-    reports ok when a transport actually accepted the message."""
+    reports ok when a transport actually accepted the message. For payable
+    docs, the very first receipt carries the one-time online-payments tip."""
     import uuid as _uuid_mod
 
     async def _run() -> None:
@@ -902,9 +923,10 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
         try:
             async with SessionLocal() as s:
                 if ok:
+                    tip = await _payments_tip_suffix(s, cid) if payable else ""
                     await notif_service.create(
                         s, cid, "email", f"Email delivered to {sent_to}",
-                        f"{doc_label} was emailed to {sent_to}.",
+                        f"{doc_label} was emailed to {sent_to}.{tip}",
                         action_url=action_url, priority="low")
                 else:
                     await notif_service.create(
@@ -937,12 +959,17 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     )
 
     sent_to = payload.sent_to
-    view_url = None
+    view_url = pay_url = None
+    amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
     if sent_to:
         # Emailing a document always shares it (an email with no viewable
         # document is pointless); send_view_url returns None if not cloud-connected.
-        from celerp_docs.routes_share import send_view_url
+        from celerp_docs.routes_share import send_pay_url, send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
+        # Pay button only while something is owed: it charges the remaining
+        # balance (net of applied payments/credits), never the face total.
+        if doc_type in ("invoice", "proforma") and amount_due > 0:
+            pay_url = await send_pay_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
@@ -958,11 +985,13 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             doc_type_label=doc_type, doc_number=doc_number, sender_name=sender_name,
             contact_name=contact_name, total=row.state.get("total", 0),
             currency=row.state.get("currency", "USD"),
-            message=payload.message, view_url=view_url,
+            message=payload.message, view_url=view_url, pay_url=pay_url,
+            amount_due=amount_due,
         )
         reply_to = await _sender_reply_to(session, company_id, user)
         _email_with_receipt(
             company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
+            payable=row.state.get("doc_type") in ("invoice", "proforma"),
             to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
             reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
         )
@@ -1294,61 +1323,102 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     return {"deleted": entity_id}
 
 
+# One lock per document: payment recording reads the payments list to derive
+# payment_index (the JE idempotency key), so two recorders interleaving on the
+# same doc (customer-return leg + gateway push, or an online confirm racing a
+# hand-entered payment) could compute the SAME index from stale state - the
+# second JE then dedupes against the first and money silently never posts to
+# the books. The client runs in one process, so an asyncio lock fully
+# serializes; the fresh re-read inside the lock is what makes it correct.
+_payment_locks: dict[str, asyncio.Lock] = {}
+
+
+def _payment_lock(entity_id: str) -> asyncio.Lock:
+    lock = _payment_locks.get(entity_id)
+    if lock is None:
+        lock = _payment_locks[entity_id] = asyncio.Lock()
+    return lock
+
+
+async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict, body: dict,
+                            *, source: str, actor_id, idempotency_key: str):
+    """Record a payment against a doc: guard, emit doc.payment.received, post the cash
+    JE, fire the payment lifecycle hook. Shared by the manual route and online payment
+    so a Stripe payment lands identically to a hand-entered one. Caller commits.
+
+    ``doc_state`` is advisory: the guards and payment_index are recomputed from a
+    fresh read inside the per-document lock, so a concurrent recorder can never
+    produce a duplicate or colliding payment_index."""
+    async with _payment_lock(entity_id):
+        row = await session.get(Projection, (company_id, entity_id))
+        if row is not None:
+            await session.refresh(row)  # another session may have committed a payment meanwhile
+            doc_state = dict(row.state)
+        if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+            raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
+        if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+            raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+        # Replay guard for referenced (online) payments: the same Stripe intent
+        # arriving twice (return leg + webhook push) records exactly once.
+        reference = body.get("reference")
+        if reference and any(p.get("reference") == reference for p in doc_state.get("payments", [])):
+            raise HTTPException(status_code=409, detail="Payment already recorded")
+        outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
+        if outstanding <= 0:
+            raise HTTPException(status_code=409, detail="Invoice already fully paid")
+        from celerp.services.money import to_decimal as _to_d
+        amount = float(body["amount"])
+        if reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            # An online charge already happened at Stripe; if a manual payment
+            # landed while the customer was checking out, apply what the invoice
+            # can still absorb and keep the real charge on record - the surplus
+            # is a genuine overpayment for the merchant to refund or credit.
+            body["charged_amount"] = amount
+            amount = float(outstanding)
+            body["amount"] = amount
+        # 1-cent tolerance covers display rounding on the final payment.
+        elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
+        bank_code = body.get("bank_account")
+        if not bank_code:
+            raise HTTPException(status_code=422, detail="bank_account is required")
+        body.setdefault("currency", doc_state.get("currency", "USD"))
+        body["remaining_balance"] = max(0.0, outstanding - amount)
+        payment_index = len(doc_state.get("payments", []))
+        entry = await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
+            data=body, actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=idempotency_key, metadata_={},
+        )
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        await auto_je.create_for_doc_payment(
+            session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+            amount=amount, payment_index=payment_index,
+            bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
+            payment_date=body["payment_date"],
+            base_currency=_base_currency,
+            conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+        )
+        from celerp.modules.slots import fire_lifecycle
+        await fire_lifecycle(
+            "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
+            doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
+        )
+        # The lock only helps if this recorder's write is visible to the next
+        # lock holder: commit before releasing.
+        await session.commit()
+    return entry
+
+
 @router.post("/{entity_id}/payment")
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    # Snapshot scalar values before any flush() to avoid SQLAlchemy lazy-load expiry
-    # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
+    # Snapshot before any flush() to avoid SQLAlchemy lazy-load expiry.
     _doc_state = dict(row.state)
-    _user_id = user.id
-    if _doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
-    if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
-    if outstanding <= 0:
-        raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    # Use Decimal comparison: 1-cent tolerance covers display rounding on the final payment.
-    # New docs will have exact rounded totals so this tolerance only applies to legacy data.
-    from celerp.services.money import to_decimal as _to_d
-    if _to_d(payload.amount) - _to_d(outstanding) > _to_d("0.01"):
-        raise HTTPException(status_code=409, detail=f"Payment {payload.amount} exceeds amount outstanding {outstanding}")
-
-    body = payload.model_dump(exclude_none=True)
-    body.setdefault("currency", _doc_state.get("currency", "USD"))
-    body["remaining_balance"] = max(0.0, outstanding - payload.amount)
-    if not payload.bank_account:
-        raise HTTPException(status_code=422, detail="bank_account is required")
-    bank_code = payload.bank_account
-    # Compute payment_index BEFORE appending (len of current active+voided list = next index)
-    payment_index = len(_doc_state.get("payments", []))
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=_user_id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
-    doc_type = _doc_state.get("doc_type", "invoice")
-    _pay_company = await session.get(Company, company_id)
-    _pay_base_currency = (_pay_company.settings.get("currency", "USD") if _pay_company else "USD")
-    await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
-        amount=payload.amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type=doc_type,
-        payment_date=payload.payment_date,
-        base_currency=_pay_base_currency,
-        conversion_rate=float(_doc_state.get("conversion_rate") or 1),
-    )
-    # Lifecycle hook for modules (e.g. multicurrency FX gain/loss)
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle(
-        "on_doc_payment",
-        session=session,
-        company_id=company_id,
-        user_id=_user_id,
-        doc_id=entity_id,
-        doc=_doc_state,
-        amount=payload.amount,
-        bank_account_code=bank_code,
+    entry = await apply_doc_payment(
+        session, company_id, entity_id, _doc_state, payload.model_dump(exclude_none=True),
+        source="api", actor_id=user.id, idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     await session.commit()
     return {"event_id": entry.id}

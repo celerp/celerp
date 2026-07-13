@@ -69,6 +69,13 @@ def to_stored_float(v: Decimal) -> float:
     return float(v)
 
 
+def to_minor_units(v: _MoneyInput, currency: str) -> int:
+    """Integer smallest-currency-units for a processor (e.g. cents), respecting
+    zero-decimal (JPY) and 3-decimal (KWD) currencies."""
+    dp = currency_dp(currency)
+    return int((round_money(v, currency) * (Decimal(10) ** dp)).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 # ---------------------------------------------------------------------------
 # Rates (unit prices) vs amounts.
 # A unit price is a RATE, not a money amount: it may carry more precision so that

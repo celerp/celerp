@@ -733,77 +733,66 @@ class TestMainModuleLoading:
 # H. settings.py — module-gated tabs
 # ===========================================================================
 
-class TestSettingsModuleGatedTabs:
-    """_settings_tabs() only shows tabs for enabled modules."""
+class TestSettingsSectionTabs:
+    """The live per-section tab builders (the old monolithic _settings_tabs was
+    dead code from before the settings split and is gone)."""
 
-    def _get_tabs_html(self, enabled_modules: set) -> str:
-        from ui.routes.settings import _settings_tabs
-        result = _settings_tabs("company", enabled_modules=enabled_modules)
-        # FastHTML FT → render to string
+    @staticmethod
+    def _xml(ft):
         from fasthtml.common import to_xml
-        return to_xml(result)
+        return to_xml(ft)
 
-    def test_kernel_tabs_always_present(self):
-        """company, users, taxes, terms, modules are always shown."""
-        html = self._get_tabs_html(set())
-        for tab in ("company", "users", "taxes", "terms", "modules"):
-            assert tab in html, f"kernel tab '{tab}' missing from empty-module render"
+    def test_general_tabs_admin_sees_kernel_tabs(self):
+        from ui.routes.settings_general import _general_tabs
+        html = self._xml(_general_tabs("company", is_admin=True))
+        for tab in ("company", "users", "modules", "backup"):
+            assert f"tab={tab}" in html, f"kernel tab '{tab}' missing for admin"
+        assert "tab=password" in html
+        # Payments lives under Web Access (_cloud_tabs), not Global Config.
+        assert "/settings/payments" not in html
 
-    def test_inventory_tabs_hidden_without_module(self):
-        """schema, locations, import-history, bulk-attach not shown without celerp-inventory."""
-        html = self._get_tabs_html(set())
-        for tab in ("schema", "locations", "import-history", "bulk-attach"):
-            assert f"tab={tab}" not in html, f"inventory tab '{tab}' shown without module"
+    def test_general_tabs_non_admin_sees_only_password(self):
+        from ui.routes.settings_general import _general_tabs
+        html = self._xml(_general_tabs("password", is_admin=False))
+        assert "tab=password" in html
+        for tab in ("company", "users", "modules", "backup"):
+            assert f"tab={tab}" not in html
+        assert "/settings/payments" not in html
 
-    def test_inventory_tabs_shown_with_module(self):
-        """schema, locations, import-history, bulk-attach shown when celerp-inventory enabled."""
-        html = self._get_tabs_html({"celerp-inventory"})
-        for tab in ("schema", "locations", "import-history", "bulk-attach"):
-            assert f"tab={tab}" in html, f"inventory tab '{tab}' missing with module"
+    def test_general_tabs_active_class_marks_correct_tab(self):
+        from ui.routes.settings_general import _general_tabs
+        html = self._xml(_general_tabs("users", is_admin=True))
+        users_pos = html.find("tab=users")
+        assert users_pos != -1
+        # The active class sits on the users link, not elsewhere.
+        active_pos = html.find("tab--active")
+        assert active_pos != -1 and abs(active_pos - users_pos) < 120
 
-    def test_connectors_tab_gated(self):
-        html_no = self._get_tabs_html(set())
-        html_yes = self._get_tabs_html({"celerp-connectors"})
-        assert "tab=connectors" not in html_no
-        assert "tab=connectors" in html_yes
+    def test_sales_tabs_connectors_gated_on_module(self):
+        from ui.routes.settings_sales import _sales_tabs
+        assert "tab=connectors" not in self._xml(_sales_tabs("taxes", set()))
+        assert "tab=connectors" in self._xml(_sales_tabs("taxes", {"celerp-connectors"}))
 
-    def test_backup_tab_gated(self):
-        html_no = self._get_tabs_html(set())
-        html_yes = self._get_tabs_html({"celerp-backup"})
-        assert "tab=backup" not in html_no
-        assert "tab=backup" in html_yes
-
-    def test_ai_tab_not_in_settings(self):
-        """AI tab is now on its own /ai page, not in _settings_tabs."""
-        html = self._get_tabs_html({"celerp-ai"})
-        assert "tab=ai" not in html
-
-    def test_verticals_tab_gated(self):
-        html_no = self._get_tabs_html(set())
-        html_yes = self._get_tabs_html({"celerp-verticals"})
-        assert "tab=verticals" not in html_no
-        assert "tab=verticals" in html_yes
-
-    def test_cloud_relay_not_in_settings_tabs(self):
-        """cloud-relay is now its own /settings/cloud page, not a tab in _settings_tabs."""
-        html = self._get_tabs_html(set())
-        assert "tab=cloud-relay" not in html
-
-    def test_multiple_modules_all_tabs_shown(self):
-        """All optional tabs present when all modules enabled (except AI which has its own page)."""
-        em = {"celerp-inventory", "celerp-connectors", "celerp-backup", "celerp-ai", "celerp-verticals"}
-        html = self._get_tabs_html(em)
-        for tab in ("schema", "locations", "import-history", "bulk-attach", "connectors", "backup", "verticals"):
+    def test_inventory_tabs_present(self):
+        from ui.routes.settings_inventory import _inventory_tabs
+        html = self._xml(_inventory_tabs("locations"))
+        for tab in ("locations", "categories", "units", "reorder", "bulk-attach", "import-history"):
             assert f"tab={tab}" in html
-        assert "tab=ai" not in html
 
-    def test_none_enabled_modules_treated_as_empty(self):
-        """None passed as enabled_modules → same as empty set."""
-        from ui.routes.settings import _settings_tabs
-        from fasthtml.common import to_xml
-        html = to_xml(_settings_tabs("company", enabled_modules=None))
-        assert "company" in html
-        assert "tab=schema" not in html
+    def test_cloud_tabs_carry_payments_and_gate_infrastructure(self):
+        from ui.routes.settings_cloud import _cloud_tabs
+        html = self._xml(_cloud_tabs("status", has_team_features=False))
+        assert "tab=status" in html and "tab=connectors" in html
+        assert "/settings/payments" in html
+        assert "tab=infrastructure" not in html
+        assert "tab=infrastructure" in self._xml(_cloud_tabs("status", has_team_features=True))
+
+    def test_dead_monolith_tab_builder_is_gone(self):
+        """Regression: _settings_tabs was unreachable dead code that still let
+        tests pass while the real pages showed something else."""
+        import ui.routes.settings as settings_mod
+        assert not hasattr(settings_mod, "_settings_tabs")
+        assert not hasattr(settings_mod, "_settings_content")
 
 
 # ===========================================================================
@@ -983,15 +972,12 @@ class TestSetupFringe:
         assert "maxAttempts" in content or "Taking longer" in content or "longer than expected" in content.lower()
 
     def test_settings_tabs_active_class_marks_correct_tab(self):
-        """Active tab receives 'tab--active' CSS class."""
-        from ui.routes.settings import _settings_tabs
+        """Active tab receives 'tab--active' CSS class (live general builder)."""
+        from ui.routes.settings_general import _general_tabs
         from fasthtml.common import to_xml
-        html = to_xml(_settings_tabs("users", enabled_modules=set()))
-        # The users tab link must have tab--active
-        # Simple heuristic: tab--active appears near 'users'
-        idx_users = html.find("tab=users")
-        idx_active = html.find("tab--active")
-        assert idx_active != -1, "No tab--active class found"
+        html = to_xml(_general_tabs("users", is_admin=True))
+        assert html.find("tab=users") != -1
+        assert html.find("tab--active") != -1, "No tab--active class found"
 
     @pytest.mark.asyncio
     async def test_settings_401_redirects_to_login(self, ui_client):

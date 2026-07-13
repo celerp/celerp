@@ -32,9 +32,14 @@ def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") 
     if has_team_features:
         tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
     tabs.append(("connectors", t("cloud.tab_connectors", lang, default="Connectors")))
+    # Payments lives with Web Access: it only works cloud-connected, and a
+    # not-yet-connected visitor lands amid the plans/features pitch instead of
+    # a dead Connect button. Links to its own page (needs live status).
+    tabs.append(("payments", t("nav.payments", lang)))
     return Div(
         *[
-            A(label, href=f"/settings/cloud?tab={key}",
+            A(label,
+              href="/settings/payments" if key == "payments" else f"/settings/cloud?tab={key}",
               cls=f"tab {'tab--active' if key == active else ''}")
             for key, label in tabs
         ],
@@ -98,7 +103,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-features",
         ),
-        # ...and the two sync features paired below
+        # ...and the sync + payments features below
         Div(
             _feature_card(
                 "🛒", t("cloud.feature_website_title", lang),
@@ -110,7 +115,12 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                 t("cloud.feature_accounting_desc", lang),
                 lang=lang,
             ),
-            cls="cloud-features cloud-features--pair",
+            _feature_card(
+                "💳", t("cloud.feature_payments_title", lang),
+                t("cloud.feature_payments_desc", lang),
+                lang=lang,
+            ),
+            cls="cloud-features",
         ),
         # Plans - the centred trial banner introduces them; no left-aligned heading needed
         Div(

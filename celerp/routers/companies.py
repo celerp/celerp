@@ -1592,11 +1592,11 @@ async def disable_module(
     company.settings = disable(company.settings or {}, module_name)
     await session.commit()
     # Remove from config file so the next restart honours the disable
+    # (write_config creates the file when missing, keeping DB and file in sync)
     cfg = read_config()
-    if cfg:
-        enabled = cfg.get("modules", {}).get("enabled", [])
-        cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != module_name]
-        write_config(cfg)
+    enabled = cfg.get("modules", {}).get("enabled", [])
+    cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != module_name]
+    write_config(cfg)
     enabled_list = sorted(get_enabled(company.settings))
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
 

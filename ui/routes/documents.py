@@ -15,7 +15,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
@@ -1900,11 +1900,17 @@ celerpUpdateBulkAlloc();
             _share_enabled = bool(_relay_status.get("public_url"))
         except Exception:
             pass
+        _payments_on: bool = False
         if _share_enabled:
             try:
                 _share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
             except Exception:
                 pass
+            if doc_type in ("invoice", "proforma"):
+                try:
+                    _payments_on = await api.get_payments_enabled(token)
+                except Exception:
+                    pass
         status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
@@ -1955,7 +1961,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -4666,24 +4672,6 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
-def _bank_account_options(bank_accounts: list[dict] | None, default_code: str | None = None) -> list:
-    """Return Option elements for every active bank account.
-
-    DRY: used in _payment_section (invoice/bill/credit-note forms) and the
-    bulk-pay modal. Key names match _bank_to_dict in celerp-accounting routes:
-    chart_account_code and bank_name.
-    default_code: pre-selects the matching option (pass first account's code).
-    """
-    return [
-        Option(
-            f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
-            value=ba.get("chart_account_code", ""),
-            selected=(ba.get("chart_account_code") == default_code),
-        )
-        for ba in (bank_accounts or [])
-    ]
-
-
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True) -> FT:
     """Shared payment/credit section for invoices, bills, and credit notes.
 
@@ -5172,7 +5160,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5184,6 +5172,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     status = doc.get("status", "draft")
     doc_type = doc.get("doc_type", "")
     is_draft = status == "draft"
+    # Remaining balance (net of applied payments/credits) - what a Pay button
+    # would charge; all payment hints/labels use this, never the face total.
+    try:
+        _pay_due = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
+    except (TypeError, ValueError):
+        _pay_due = 0.0
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
@@ -5502,6 +5496,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             Textarea(default_body, name="message", rows="3", cls="form-input"),
                             P(t("doc.send_appends_hint") if share_enabled else t("doc.send_appends_hint_offline"),
                               cls="form-hint"),
+                            # Online payment, payable docs only: a quiet state line. On, it
+                            # confirms the Pay button and the exact amount due (net of
+                            # payments/credits); off, it is the discovery path to setup.
+                            (P(t("pay.send_includes_button",
+                                 amount=fmt_money(_pay_due, doc.get("currency") or company_currency)),
+                               cls="form-hint")
+                             if payments_on and _pay_due > 0 else
+                             P(t("pay.send_hint_off"), " ",
+                               A(t("pay.send_hint_link"), href="/settings/payments", cls="auth-link"),
+                               cls="form-hint")
+                             if share_enabled and not payments_on else None)
+                            if doc_type in ("invoice", "proforma") else None,
                             cls="form-group",
                         ),
                         Div(
@@ -7507,6 +7513,20 @@ async function celerpCsvImport(input, entityId) {{
             ),
             cls="doc-actions",
         ) if (action_btns_left or action_btns_right or action_btns_print) else "",
+        # Online-payment discovery: one muted line under the action row on an
+        # unpaid, sendable invoice when payments are not connected. Dismissable
+        # for good via localStorage (server state never sees the dismissal).
+        Div(
+            P(t("pay.doc_hint"), " ",
+              A(t("pay.send_hint_link"), href="/settings/payments", cls="auth-link"), " ",
+              Button("×", type="button", title="Dismiss", aria_label="Dismiss",
+                     style="background:none;border:none;cursor:pointer;color:#999;padding:0 4px;font-size:14px;line-height:1;vertical-align:middle;",
+                     onclick="localStorage.setItem('celerp_pay_hint_dismissed','1');document.getElementById('pay-setup-hint').remove()"),
+              cls="form-hint"),
+            Script("if(localStorage.getItem('celerp_pay_hint_dismissed')){var _ph=document.getElementById('pay-setup-hint');if(_ph)_ph.remove();}"),
+            id="pay-setup-hint",
+        ) if (share_enabled and not payments_on and not suppress_doc_actions
+              and doc_type in ("invoice", "proforma") and not is_draft and _pay_due > 0) else "",
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(

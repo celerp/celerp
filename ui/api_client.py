@@ -182,12 +182,23 @@ async def change_password(token: str, current_password: str, new_password: str) 
         return r.json()["detail"]
 
 
-async def register(company_name: str, email: str, name: str, password: str) -> tuple[str, str]:
+async def setup_code_required() -> bool:
+    """True if this (headless) install requires a setup code to create the first admin."""
+    async with _anon_api_client(timeout=5.0) as c:
+        r = await c.get("/auth/bootstrap-status")
+        if r.is_error:
+            return False
+        return r.json().get("setup_code_required", False)
+
+
+async def register(company_name: str, email: str, name: str, password: str,
+                   setup_code: str | None = None) -> tuple[str, str]:
     """Returns (access_token, refresh_token)."""
+    payload = {"company_name": company_name, "email": email, "name": name, "password": password}
+    if setup_code:
+        payload["setup_code"] = setup_code
     async with _anon_api_client() as c:
-        r = _raise(await c.post("/auth/register", json={
-            "company_name": company_name, "email": email, "name": name, "password": password,
-        }))
+        r = _raise(await c.post("/auth/register", json=payload))
         data = r.json()
         return data["access_token"], data["refresh_token"]
 
@@ -220,7 +231,7 @@ def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
     for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
-              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method"):
+              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account"):
         if k not in data:
             data[k] = settings.get(k)
     # Expose dashboard preferences at top level
@@ -240,7 +251,7 @@ async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method"}
+                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}
@@ -1853,6 +1864,28 @@ async def create_share_link(token: str, entity_id: str, expires_at: str | None =
 async def revoke_share_link(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/share")).json()
+
+
+async def get_payments_status(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/status")).json()
+
+
+async def get_payments_enabled(token: str) -> bool:
+    """Cached payments flag - cheap per-render gate (no cloud round-trip)."""
+    async with _api_client(token) as c:
+        return bool(_raise(await c.get("/payments/enabled")).json().get("enabled"))
+
+
+async def start_payments_connect(token: str) -> dict:
+    """Begin Stripe Connect onboarding; returns {url} to redirect the merchant to."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/connect")).json()
+
+
+async def disconnect_payments(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/disconnect")).json()
 
 
 # ---------------------------------------------------------------------------

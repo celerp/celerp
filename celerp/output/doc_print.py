@@ -142,6 +142,11 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 .dp-footer a { color: #aaa; text-decoration: none; }
 .dp-footer a:hover { text-decoration: underline; }
 .dp-footer__sep { color: #ddd; }
+/* Screen-only online-payment bar: paper carries no buttons. */
+.dp-paybar { display: flex; justify-content: space-between; align-items: center; gap: 8mm; margin-bottom: 8mm; padding: 4mm 6mm; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; font-size: 10pt; color: #14532d; }
+.dp-paybar__btn { display: inline-block; padding: 3mm 8mm; background: #16a34a; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 700; }
+.dp-paybar__btn:hover { background: #15803d; }
+@media print { .dp-paybar { display: none; } }
 @page { margin: 0; size: A4 portrait; }
 /* Reserve room for the fixed footer, which repeats on every printed page. */
 @media print { body { padding: 15mm; padding-bottom: 24mm; } }
@@ -163,12 +168,36 @@ def _doc_footer(import_url: str | None):
     )
 
 
-def render_doc_print_html(doc: dict, *, import_url: str | None = None, auto_print: bool = False) -> str:
+def _pay_bar(pay_url: str | None, doc: dict, currency: str):
+    """Screen-only bar above the letterhead: amount due + a Pay button.
+    Rendered only while something is outstanding, so a paid invoice's share
+    link reverts to a plain view. Hidden in print CSS - paper carries no
+    buttons."""
+    if not pay_url:
+        return None
+    try:
+        outstanding = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
+    except (TypeError, ValueError):
+        outstanding = 0.0
+    if outstanding <= 0:
+        return None
+    amount = fmt_money(outstanding, currency)
+    return Div(
+        Span("Amount due ", Strong(amount)),
+        A(f"Pay {amount} now", href=pay_url, cls="dp-paybar__btn"),
+        cls="dp-paybar",
+    )
+
+
+def render_doc_print_html(doc: dict, *, import_url: str | None = None,
+                          pay_url: str | None = None, auto_print: bool = False) -> str:
     """Render the letterhead document page as a standalone HTML string.
 
     ``doc`` must already carry company_* letterhead fields, resolved contact
     fields, and (for invoice-layout types) enriched line measures - both the
     UI print routes and the API share view prepare it the same way.
+    ``pay_url`` adds the screen-only payment bar (public share view of a
+    payable doc on a Stripe-connected instance).
     """
     entity_id = doc.get("id") or doc.get("entity_id") or ""
     doc_type = doc.get("doc_type", "")
@@ -316,6 +345,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None, auto_prin
             Style(DOC_PRINT_CSS),
         ),
         Body(
+            _pay_bar(pay_url, doc, currency),
             Div(
                 Div(
                     P(company_name, cls="dp-company-name"),

@@ -118,17 +118,29 @@ def ensure_instance_id() -> str:
     iid = str(_uuid.uuid4())
     settings.gateway_instance_id = iid
 
-    # Persist to config.toml if it exists (best-effort; silently skip on error)
+    # Persist to config.toml, creating it when missing - the id must survive
+    # restarts (best-effort; silently skip on error)
     try:
-        cfg = read_config()
-        if cfg:
-            cloud = cfg.setdefault("cloud", {})
-            cloud["instance_id"] = iid
-            write_config(cfg)
+        persist_cloud_settings(instance_id=iid)
     except Exception:
         pass
 
     return iid
+
+
+def persist_cloud_settings(**values: str) -> None:
+    """Write the given [cloud] settings into config.toml.
+
+    Creates the file when it does not exist yet (first boot of a packaged
+    install), so identity, token, and backup key survive restarts. Falsy
+    values are skipped, never erased.
+    """
+    cfg = read_config()
+    cloud = cfg.setdefault("cloud", {})
+    for key, value in values.items():
+        if value:
+            cloud[key] = value
+    write_config(cfg)
 
 
 def load_cloud_config() -> None:
@@ -246,7 +258,10 @@ def write_config(cfg: dict) -> None:
 
     if "auth" in cfg:
         auth = cfg["auth"]
-        lines += ["[auth]", f'jwt_secret = {_str(auth.get("jwt_secret", ""))}', ""]
+        lines += ["[auth]", f'jwt_secret = {_str(auth.get("jwt_secret", ""))}']
+        if auth.get("setup_code_hash"):
+            lines.append(f'setup_code_hash = {_str(auth["setup_code_hash"])}')
+        lines.append("")
 
     if "server" in cfg:
         srv = cfg["server"]
@@ -254,8 +269,10 @@ def write_config(cfg: dict) -> None:
             "[server]",
             f'api_port = {srv.get("api_port", 0)}',
             f'ui_port = {srv.get("ui_port", 0)}',
-            "",
         ]
+        if srv.get("headless"):
+            lines.append("headless = true")
+        lines.append("")
 
     if "cloud" in cfg:
         cloud = cfg["cloud"]

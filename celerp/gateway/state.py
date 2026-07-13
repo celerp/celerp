@@ -79,6 +79,27 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
+def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dict:
+    """Build the /auth/activate request body.
+
+    Single source of truth for every activation call site (startup probe,
+    Cloud settings, claim-by-email), so the relay always learns version and
+    platform. first_boot is only known by the startup probe.
+    """
+    import platform as _platform
+
+    from celerp import __version__
+
+    payload = {
+        "instance_id": instance_id,
+        "version": __version__,
+        "platform": _platform.system(),
+    }
+    if first_boot is not None:
+        payload["first_boot"] = first_boot
+    return payload
+
+
 def relay_session_headers() -> dict[str, str]:
     """Return X-Session-Token + X-Instance-ID headers for relay REST calls.
 

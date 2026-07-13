@@ -295,6 +295,9 @@ class GatewayClient:
         elif msg_type == "woocommerce.webhook":
             self._spawn(self._handle_woocommerce_webhook(payload))
 
+        elif msg_type == "invoice.payment":
+            self._spawn(self._handle_invoice_payment(payload))
+
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
 
@@ -376,6 +379,32 @@ class GatewayClient:
             await dispatch_woocommerce_webhook(raw, signature, topic)
         except Exception as exc:
             log.warning("woocommerce webhook handling failed (topic=%s): %s", topic, exc)
+
+    async def _handle_invoice_payment(self, payload: dict) -> None:
+        """Backup confirmation for an online invoice payment. Records through the same
+        idempotent path as the customer-return reconcile, so a replay is a no-op."""
+        company_id = payload.get("company_id")
+        entity_id = payload.get("entity_id")
+        reference = payload.get("reference")
+        if not (company_id and entity_id and reference):
+            return
+        try:
+            from celerp.db import get_session_ctx
+            from celerp.models.projections import Projection
+            from celerp_docs.routes_payments import record_stripe_payment
+
+            async with get_session_ctx() as session:
+                row = await session.get(Projection, (company_id, entity_id))
+                if row is None:
+                    return
+                await record_stripe_payment(
+                    session, company_id, entity_id, dict(row.state),
+                    reference=reference,
+                    amount_minor=int(payload.get("amount_minor") or 0),
+                    currency=payload.get("currency", "USD"),
+                )
+        except Exception as exc:
+            log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.

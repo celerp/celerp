@@ -312,6 +312,19 @@ async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> st
     return public_view_url(row.token)
 
 
+async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
+    """Online-payment link for a send email, when cloud-connected and Stripe is
+    connected. Rides the same stable share token the view link activates (call
+    send_view_url first in a send flow), so both links live and die together.
+    Caller commits."""
+    from celerp.services import payments as _pay
+    base = (settings.celerp_public_url or "").rstrip("/")
+    if not base or not _pay.payments_enabled():
+        return None
+    row = await get_or_create_share_token(session, company_id, entity_id)
+    return f"{base}/pay/{row.token}"
+
+
 def _share_status(row: DocShareToken | None) -> dict:
     """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
@@ -511,7 +524,18 @@ async def view_shared_doc(
     await _enrich_share_lines(session, share_row.company_id, state)
 
     importable = state.get("doc_type") in IMPORTABLE_DOC_TYPES
-    html = render_doc_print_html(state, import_url=_share_url(token) if importable else None)
+    # Online payment: offered on money-carrying, payable doc types when this
+    # instance has Stripe connected. The renderer drops the bar once nothing
+    # is outstanding, so a paid invoice's link quietly reverts to view-only.
+    pay_url = None
+    from celerp.services import payments as _pay
+    if _pay.payments_enabled() and state.get("doc_type") in ("invoice", "proforma"):
+        pay_url = f"/pay/{token}"
+    html = render_doc_print_html(
+        state,
+        import_url=_share_url(token) if importable else None,
+        pay_url=pay_url,
+    )
     return HTMLResponse(html, headers={"Access-Control-Allow-Origin": "*"})
 
 

@@ -855,8 +855,24 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     _post_migration_grants(db_url_val)
     click.echo("  ✓ Database ready")
 
+    # Headless installs (a process manager runs `start`) are network-exposed, so the
+    # first-admin page shouldn't be claimable by whoever reaches it first. Mint a
+    # one-time setup code the operator must present; keep the API on loopback too.
+    setup_code = None
+    if no_start:
+        import hashlib
+        setup_code = secrets.token_hex(4)
+        cfg["auth"]["setup_code_hash"] = hashlib.sha256(setup_code.encode()).hexdigest()
+        cfg["server"]["headless"] = True
+
     # Write config
     _write_config(cfg)
+
+    if setup_code:
+        from celerp.config import config_path as _cfg_path
+        code_file = _cfg_path().parent / "setup-code"
+        code_file.write_text(setup_code + "\n")
+        code_file.chmod(0o600)
 
     api_port_val = cfg["server"]["api_port"]
     ui_port_val = cfg["server"]["ui_port"]
@@ -877,6 +893,13 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
         )
 
     if no_start:
+        if setup_code:
+            code_file = config_path.parent / "setup-code"
+            click.echo(
+                f"\nSetup code: {setup_code}\n"
+                f"  Enter it on the first-admin page to claim this instance.\n"
+                f"  (also saved to {code_file})\n"
+            )
         click.echo("Setup complete. Start the servers with: celerp start")
         return
     _start(cfg)
@@ -921,9 +944,13 @@ def _start(cfg: dict) -> None:
     def _sentinel() -> "Path":
         return _cfg_path().parent / ".restart_requested"
 
+    # Headless installs expose the UI publicly but the UI reaches the API over
+    # localhost, so keep the API off the public interface there.
+    _api_host = "127.0.0.1" if cfg.get("server", {}).get("headless") else "0.0.0.0"
+
     def _spawn_api(env: dict, port: int) -> subprocess.Popen:
         return subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "celerp.main:app", "--host", "0.0.0.0", "--port", str(port),
+            [sys.executable, "-m", "uvicorn", "celerp.main:app", "--host", _api_host, "--port", str(port),
              "--timeout-graceful-shutdown", "3"],
             env=env,
         )

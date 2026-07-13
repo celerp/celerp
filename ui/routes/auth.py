@@ -162,7 +162,8 @@ def setup_routes(app):
             return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
-        return auth_shell(_setup_form(), title="Set up Celerp")
+        from ui.api_client import setup_code_required as _code_req
+        return auth_shell(_setup_form(setup_code_required=await _code_req()), title="Set up Celerp")
 
     @app.get("/setup/import-backup")
     async def setup_import_page(request: Request):
@@ -250,9 +251,14 @@ def setup_routes(app):
         email = str(form.get("email", "")).strip()
         password = str(form.get("password", ""))
         confirm = str(form.get("confirm_password", ""))
+        setup_code = str(form.get("setup_code", "")).strip()
+
+        from ui.api_client import setup_code_required as _code_req
+        code_required = await _code_req()
 
         def _fail(msg):
-            return auth_shell(_setup_form(company_name=company_name, name=name, email=email, error=msg), title="Set up Celerp")
+            return auth_shell(_setup_form(company_name=company_name, name=name, email=email, error=msg,
+                                          setup_code_required=code_required), title="Set up Celerp")
 
         if not all([company_name, name, email, password]):
             return _fail("All fields are required")
@@ -260,8 +266,11 @@ def setup_routes(app):
             return _fail("Passwords do not match")
         if len(password) < 8:
             return _fail("Password must be at least 8 characters")
+        if code_required and not setup_code:
+            return _fail("Setup code is required")
         try:
-            access_token, refresh_token = await api_register(company_name, email, name, password)
+            access_token, refresh_token = await api_register(company_name, email, name, password,
+                                                             setup_code=setup_code or None)
         except APIError as e:
             return _fail(e.detail)
         except Exception as e:
@@ -549,9 +558,20 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
 
 
 def _setup_form(
-    company_name: str = "", name: str = "", email: str = "", error: str | None = None
+    company_name: str = "", name: str = "", email: str = "", error: str | None = None,
+    setup_code_required: bool = False,
 ) -> FT:
     lang = "en"
+    _code_field = ""
+    if setup_code_required:
+        from celerp.config import config_path as _cp
+        _code_field = Div(
+            Label(t("label.setup_code"), For="setup_code", cls="form-label"),
+            Input(type="text", id="setup_code", name="setup_code",
+                  placeholder="", required=True, cls="form-input"),
+            P(t("msg.setup_code_hint", path=str(_cp().parent / "setup-code")), cls="form-hint"),
+            cls="form-group",
+        )
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
@@ -581,6 +601,7 @@ def _setup_form(
                 Input(type="password", id="confirm_password", name="confirm_password",
                       placeholder="••••••••", required=True, cls="form-input"),
                 cls="form-group"),
+            _code_field,
             Button(t("btn.create_workspace", lang), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", cls="auth-form",
         ),
