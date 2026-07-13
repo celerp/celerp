@@ -267,9 +267,14 @@ class TestAuthRouting:
         """GET /setup → renders setup form when not yet bootstrapped.
 
         /setup is in ui/routes/auth.py and uses a direct import of bootstrap_status,
-        so the patch target is ui.routes.auth.bootstrap_status.
-        """
-        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=False)):
+        so the patch target is ui.routes.auth.bootstrap_status. setup_code_required
+        is imported inside the handler, so it patches at ui.api_client (unpatched it
+        makes a real HTTP call, which only passes when a dev server happens to be
+        listening on :8000)."""
+        with (
+            patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=False)),
+            patch("ui.api_client.setup_code_required", new=AsyncMock(return_value=False)),
+        ):
             r = await ui_client.get("/setup")
         assert r.status_code == 200
         assert r.content  # non-empty HTML
@@ -8427,28 +8432,43 @@ class TestCompanyDetailsPage:
 
 class TestFilesExcelFunnels:
     """The shared files table carries Excel-style column funnels (a Tag funnel + data-row rows). Product
-    images are hidden by default ONLY when hide_product_images=True (the Company Files view) - never on
-    an item's own page, where the product images are the whole point."""
+    images are excluded server-side (before pagination) ONLY when hide_product_images=True (the Company
+    Files view) - never on an item's own page, where the product images are the whole point."""
 
     _FILES = [
         {"id": "f1", "filename": "registration.pdf", "size": 10, "document_tag": "registrations", "uploaded_at": "2026-06-18"},
         {"id": "f2", "filename": "hero.jpg", "size": 20, "document_tag": "product_images", "uploaded_at": "2026-06-18"},
     ]
 
-    def test_funnel_present_but_no_default_exclude_by_default(self):
+    def test_funnel_present_and_product_images_shown_by_default(self):
         from ui.components.files import _files_section
         from fasthtml.common import to_xml
         html = to_xml(_files_section("item", "item:1", self._FILES, can_tag=True))
         assert "colfilter" in html and "data-row" in html and "data-filter-value" in html
-        # Product images are NOT hidden on a normal (e.g. item) files table (no funnel default-exclude
-        # attribute - the bare string also appears inside COLUMN_FILTER_JS, so match the attribute form).
-        assert 'data-filter-exclude="' not in html
+        # Product images are NOT hidden on a normal (e.g. item) files table.
+        assert "hero.jpg" in html
 
-    def test_product_images_hidden_only_when_requested(self):
+    def test_product_images_excluded_only_when_requested(self):
         from ui.components.files import _files_section
         from fasthtml.common import to_xml
         html = to_xml(_files_section("company", "all", self._FILES, can_tag=True, hide_product_images=True))
-        assert 'data-filter-exclude="' in html
+        # Excluded server-side: the row never renders (and the pager never counts it).
+        assert "hero.jpg" not in html
+        assert "registration.pdf" in html
+
+    def test_pager_counts_only_visible_files(self):
+        """Regression: with product images excluded, the pager must not count them.
+        25 product images + 1 document on one page -> no pagination at all (was:
+        an empty-looking table under a multi-page pager)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": f"img{i}", "filename": f"img{i}.jpg", "size": 1,
+                  "document_tag": "product_images", "uploaded_at": "2026-06-18"} for i in range(25)]
+        files.append({"id": "d1", "filename": "reg.pdf", "size": 1,
+                      "document_tag": "registrations", "uploaded_at": "2026-06-18"})
+        html = to_xml(_files_section("company", "all", files, hide_product_images=True))
+        assert "reg.pdf" in html
+        assert "page-link" not in html
 
     @pytest.mark.asyncio
     async def test_item_file_description_route_accepts_post(self, ui_client):
@@ -8474,7 +8494,8 @@ class TestCompanyAllFilesView:
         self_contact = {"id": "contact:self", "name": "My Co", "is_self": True,
                         "files": [{"id": "cf1", "filename": "reg.pdf", "document_tag": "registrations", "uploaded_at": "2026-06-18"}]}
         items = {"items": [{"id": "item:1", "sku": "SKU-1",
-                            "files": [{"id": "if1", "filename": "hero.jpg", "document_tag": "product_images", "uploaded_at": "2026-06-18"}]}]}
+                            "files": [{"id": "if1", "filename": "hero.jpg", "document_tag": "product_images", "uploaded_at": "2026-06-18"},
+                                      {"id": "if2", "filename": "spec.pdf", "document_tag": "spec_sheets", "uploaded_at": "2026-06-18"}]}]}
         docs = {"items": [{"id": "doc:1", "ref_id": "INV-001",
                            "files": [{"id": "df1", "filename": "scan.pdf", "document_tag": "receipts", "uploaded_at": "2026-06-18"}]}]}
         with ExitStack() as stack:
@@ -8486,10 +8507,10 @@ class TestCompanyAllFilesView:
         assert r.status_code == 200, r.text
         # All three sources present, each linking back to its owning entity.
         assert "reg.pdf" in r.text and "Company" in r.text
-        assert "hero.jpg" in r.text and "/inventory/item:1" in r.text and "SKU-1" in r.text
+        assert "spec.pdf" in r.text and "/inventory/item:1" in r.text and "SKU-1" in r.text
         assert "scan.pdf" in r.text and "/docs/doc:1" in r.text and "INV-001" in r.text
-        # Product images are hidden by default via the Tag funnel (attribute form, not the JS ref).
-        assert 'data-filter-exclude="' in r.text
+        # Product images are excluded server-side (before pagination) in this view.
+        assert "hero.jpg" not in r.text
 
 
 class TestCompanyLetterhead:

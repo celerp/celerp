@@ -114,6 +114,14 @@ def _files_section(
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
     _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
 
+    # Product images are excluded BEFORE sort/filter/pagination where they would
+    # clutter business documents (the aggregated Company Files view) - never on
+    # an item's own page, where the product images are the point. Excluding them
+    # any later (e.g. a client-side column filter) leaves the pager counting
+    # rows the table never shows.
+    if hide_product_images:
+        files = [f for f in files if (f.get("document_tag") or "") != "product_images"]
+
     # ── Sort ─────────────────────────────────────────────────────────────────
     def _uploaded_at_key(f: dict) -> str:
         return f.get("uploaded_at") or ""
@@ -410,15 +418,13 @@ def _files_section(
                  style=None if compact else "min-width:200px;")
 
     # Excel-style funnels: filter by Tag and, when present, by what each file is Linked To. Client-side,
-    # additive over the server filter bar. Product images are hidden by default ONLY where they would
-    # clutter business documents (the aggregated Company Files view) - never on an item's own page, where
-    # the product images are the point.
+    # additive over the server filter bar. (Product images are excluded server-side
+    # above, so no default funnel exclusion is needed.)
     from ui.components.table import filter_th, COLUMN_FILTER_JS
-    _tag_exclude = [_tag_label("product_images")] if hide_product_images else None
     header_cells = [
         date_th,
         Th(t("th.filename")),
-        filter_th(t("label.tag"), 2, default_exclude=_tag_exclude),
+        filter_th(t("label.tag"), 2),
         desc_th,
     ]
     if has_linked:
