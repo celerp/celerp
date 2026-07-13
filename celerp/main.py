@@ -268,7 +268,8 @@ async def lifespan(_app: FastAPI):
     reorder_alert_task = asyncio.create_task(reorder_alert_loop())
 
     # Online-payments reminder: while cloud-connected without a Stripe account,
-    # one bell nudge per company every 30 days (stops once payments are on).
+    # a bell nudge per company on a widening schedule (4/6/9/14-week gaps),
+    # then permanent silence; stops immediately once payments are on.
     from celerp.services.payments_reminder import payments_reminder_loop
     payments_reminder_task = asyncio.create_task(payments_reminder_loop())
 
