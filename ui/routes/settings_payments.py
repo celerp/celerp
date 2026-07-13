@@ -38,6 +38,7 @@ def _pitch() -> FT:
         Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
              method="post", action="/settings/payments/connect"),
         P(t("pay.pitch_fineprint"), cls="form-hint", style="margin-top:14px;"),
+        P(t("pay.pitch_stripe_cred"), cls="form-hint"),
         cls="settings-card",
         style="text-align:center;max-width:560px;margin:24px auto;padding:32px;",
     )
