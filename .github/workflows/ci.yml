@@ -144,7 +144,10 @@ jobs:
           - { os: ubuntu-latest, python: "3.12" }
           - { os: ubuntu-latest, python: "3.13" }
           - { os: ubuntu-24.04-arm, python: "3.12" }
-          - { os: macos-latest, python: "3.12", extra: celerp-postgres }
+          # Pinned to macos-26: the celerp-postgres mac wheels are (honestly)
+          # tagged macosx_26_0, and the macos-latest pool still hands out
+          # macOS 15 machines mid-migration, where pip finds no wheel.
+          - { os: macos-26, python: "3.12", extra: celerp-postgres }
           - { os: windows-latest, python: "3.12" }
     steps:
       - uses: actions/checkout@v4
