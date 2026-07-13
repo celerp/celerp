@@ -50,26 +50,45 @@ async def test_payments_enabled_flag_endpoint(client, monkeypatch):
     assert r.json() == {"enabled": True}
 
 
-# ── monthly reminder: 30-day re-arm per company ───────────────────────────────
+# ── reminder backoff: 4/6/9/14-week gaps, then silence for good ───────────────
 
 @pytest.mark.asyncio
-async def test_payments_reminder_respects_30_day_window(client, session):
+async def test_payments_reminder_backoff_series_then_stops(client, session):
+    from datetime import datetime, timedelta, timezone
     from sqlalchemy import select
     from celerp.models.company import Company
     from celerp.models.notification import Notification
-    from celerp.services.payments_reminder import _remind_company
+    from celerp.services.payments_reminder import BACKOFF_WEEKS, _STATE_KEY, _remind_company
 
     r = await client.post("/auth/register", json={
         "company_name": "RemindCo", "email": "remind@test.com", "name": "A", "password": "password123"})
     assert r.status_code == 200
-    company_id = (await session.execute(select(Company.id).where(Company.name == "RemindCo"))).scalar_one()
+    company = (await session.execute(select(Company).where(Company.name == "RemindCo"))).scalar_one()
 
-    assert await _remind_company(session, company_id) is True     # first nudge fires
-    assert await _remind_company(session, company_id) is False    # re-armed only after 30 days
+    def _age_last(weeks: int):
+        """Pretend the last nudge happened `weeks` ago."""
+        s = dict(company.settings)
+        st = dict(s[_STATE_KEY])
+        st["last_at"] = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).isoformat()
+        s[_STATE_KEY] = st
+        company.settings = s
+
+    assert await _remind_company(session, company) is True      # nudge 1: immediate
+    assert await _remind_company(session, company) is False     # gap not served
+
+    for i, gap in enumerate(BACKOFF_WEEKS):
+        _age_last(gap - 1)
+        assert await _remind_company(session, company) is False, f"fired early before gap {gap}w"
+        _age_last(gap)
+        assert await _remind_company(session, company) is True, f"nudge {i + 2} after {gap}w"
+
+    # Series exhausted: silent forever, no matter how much time passes.
+    _age_last(52)
+    assert await _remind_company(session, company) is False
 
     notifs = (await session.execute(
-        select(Notification).where(Notification.company_id == company_id,
+        select(Notification).where(Notification.company_id == company.id,
                                    Notification.category == "payments")
     )).scalars().all()
-    assert len(notifs) == 1
-    assert notifs[0].action_url == "/settings/payments"
+    assert len(notifs) == len(BACKOFF_WEEKS) + 1
+    assert all(n.action_url == "/settings/payments" for n in notifs)
