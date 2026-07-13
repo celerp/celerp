@@ -24,7 +24,7 @@ import json
 import secrets
 import socket
 import uuid as _uuid
-from datetime import date as _date, datetime, time as _time, timezone
+from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -292,17 +292,23 @@ def public_view_url(token: str) -> str | None:
     return f"{base}/share/{token}" if base else None
 
 
+# Emailing a document always shares it for this long, so the recipient's view
+# link is guaranteed to work without the sender managing expiry by hand.
+SEND_SHARE_DAYS = 30
+
+
 async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
-    """View link to embed in a send email — only when cloud-connected (the
-    branded view is only reachable then). Sending IS an explicit share, so a
-    revoked link is reactivated; an expired one yields None rather than a URL
-    that 404s. Caller commits."""
+    """Activate the public share link for a send and return its URL, or None
+    when not cloud-connected (the branded view is only reachable then).
+
+    Sending IS the share: the link is reactivated and given a fresh
+    SEND_SHARE_DAYS window each time, so every emailed link is live. Caller
+    commits."""
     if not (settings.celerp_public_url or "").strip():
         return None
     row = await get_or_create_share_token(session, company_id, entity_id)
     row.revoked_at = None
-    if not _share_active(row):
-        return None
+    row.expires_at = datetime.now(timezone.utc) + timedelta(days=SEND_SHARE_DAYS)
     return public_view_url(row.token)
 
 

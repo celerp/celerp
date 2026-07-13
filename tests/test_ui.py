@@ -11113,9 +11113,9 @@ class TestDocumentsOverhaul:
         assert "becomes an official invoice you can send and collect payment on" in content
 
     @pytest.mark.asyncio
-    async def test_send_modal_has_share_toggle_and_status_light(self, ui_client):
-        """When cloud-connected, the send modal offers the Share toggle and the
-        Share button carries a status dot (green when the doc is live)."""
+    async def test_send_modal_notes_30_day_link_and_shows_status_light(self, ui_client):
+        """No share opt-out: the modal states the view link is added for 30
+        days, and the Share button carries a status dot (green when live)."""
         doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
         _active = AsyncMock(return_value={"active": True})
@@ -11124,28 +11124,21 @@ class TestDocumentsOverhaul:
              patch("ui.api_client.get_share_state", new=_active):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
-        assert 'name="share"' in content              # toggle present
-        assert "share-btn-dot--live" in content        # green light (doc is shared)
-        assert "share-toggle" in content
+        assert 'name="share"' not in content            # toggle removed
+        assert "active for 30 days" in content          # the note
+        assert "share-btn-dot--live" in content         # green light (doc is shared)
 
     @pytest.mark.asyncio
-    async def test_send_action_forwards_message_and_share(self, ui_client):
-        """The modal's subject/message/share reach the API (they were dropped)."""
+    async def test_send_action_forwards_subject_and_message(self, ui_client):
+        """The modal's subject and message reach the API (they were dropped)."""
         sent = AsyncMock(return_value={})
         with patch("ui.api_client.send_doc", new=sent):
             await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
-                "sent_to": "c@x.com", "subject": "Hi", "message": "See attached", "share": "on"})
+                "sent_to": "c@x.com", "subject": "Hi", "message": "See attached"})
         data = sent.call_args[1]["data"]
         assert data["subject"] == "Hi"
         assert data["message"] == "See attached"
-        assert data["share"] is True
-
-        # Unchecked toggle submits no 'share' field -> share False.
-        sent2 = AsyncMock(return_value={})
-        with patch("ui.api_client.send_doc", new=sent2):
-            await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
-                "sent_to": "c@x.com"})
-        assert sent2.call_args[1]["data"]["share"] is False
+        assert "share" not in data
 
     @pytest.mark.asyncio
     async def test_bill_to_email_is_editable_and_send_modal_prefills_it(self, ui_client):

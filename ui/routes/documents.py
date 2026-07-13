@@ -2723,8 +2723,6 @@ celerpUpdateBulkAlloc();
                     "bcc": str(form.get("bcc", "")).strip() or None,
                     "subject": str(form.get("subject", "")).strip() or None,
                     "message": str(form.get("message", "")).strip() or None,
-                    # Unchecked checkbox submits nothing; presence == share on.
-                    "share": form.get("share") is not None,
                 }
                 await api.send_doc(token, entity_id, data=data)
             elif action == "mark_sent":
@@ -4136,7 +4134,6 @@ celerpUpdateBulkAlloc();
                     "bcc": str(form.get("bcc", "")).strip() or None,
                     "subject": str(form.get("subject", "")).strip() or None,
                     "message": str(form.get("message", "")).strip() or None,
-                    "share": form.get("share") is not None,
                 })
             elif action == "mark_sent":
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
@@ -5503,14 +5500,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         Div(
                             Label(t("label.message"), cls="form-label"),
                             Textarea(default_body, name="message", rows="3", cls="form-input"),
-                            P(t("doc.send_appends_hint"), cls="form-hint"),
+                            P(t("doc.send_appends_hint") if share_enabled else t("doc.send_appends_hint_offline"),
+                              cls="form-hint"),
                             cls="form-group",
                         ),
-                        (Label(
-                            Input(type="checkbox", name="share", checked=True, cls="share-toggle__input"),
-                            Span(t("doc.send_share_toggle"), cls="share-toggle__label"),
-                            cls="share-toggle",
-                        ) if share_enabled else Input(type="hidden", name="share", value="")),
                         Div(
                             Button(t("btn.cancel"), type="button",
                                    onclick=f"document.getElementById('{modal_id}').close()",

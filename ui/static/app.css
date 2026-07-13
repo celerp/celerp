@@ -2784,16 +2784,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   background: var(--c-red);
 }
 .share-btn-dot--live { background: var(--c-green); }
-/* Share toggle in the send modal. */
-.share-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--c-text);
-}
-.share-toggle__input { width: auto; margin: 0; }
 
 /* --- Factory reset modal --- */
 .reset-modal__body { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }

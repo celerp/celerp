@@ -673,26 +673,28 @@ async def test_send_uses_custom_subject_message_and_formatted_amount(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_send_with_share_off_omits_link_and_leaves_doc_unshared(client: AsyncClient, monkeypatch):
-    """Share toggle off: no view button in the email, and the document is not
-    activated for public viewing."""
+async def test_send_always_shares_with_30_day_window(client: AsyncClient, monkeypatch):
+    """Emailing a document always shares it (no opt-out) and gives the link a
+    fresh 30-day expiry, so the recipient's view link is guaranteed live."""
+    from datetime import datetime, timezone
     from celerp.config import settings as cfg
     monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
     captured, done = await _capture_send(monkeypatch)
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={
-        "sent_to": "cust@x.com", "share": False})
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={"sent_to": "cust@x.com"})
     assert r.status_code == 200
 
     import asyncio
     await asyncio.wait_for(done.wait(), timeout=2)
-    assert "/share/" not in captured["html"]
-    assert "View " not in captured["html"]
-    # The read-only state endpoint still reports the doc as not shared.
-    state = (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()
-    assert state["active"] is False
+    assert "/share/" in captured["html"]
+    # The doc is now live, expiring ~30 days out.
+    status = (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    assert status["active"] is True
+    days_left = (datetime.fromisoformat(status["expires_at"]).date()
+                 - datetime.now(timezone.utc).date()).days
+    assert 29 <= days_left <= 30
 
 
 @pytest.mark.asyncio
@@ -929,9 +931,9 @@ async def test_share_again_reactivates_expired_link(client: AsyncClient, session
 
 
 @pytest.mark.asyncio
-async def test_send_email_no_link_when_share_expired(client: AsyncClient, session, monkeypatch):
-    """An expired share link never lands in a send email - the email falls back
-    to the accept URL instead of embedding a URL that 404s."""
+async def test_send_reactivates_an_expired_share_link(client: AsyncClient, session, monkeypatch):
+    """Sending re-shares for a fresh 30-day window, so a previously expired
+    link is revived and included rather than left dead."""
     from celerp.config import settings as cfg
     monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
     captured, done = await _capture_send(monkeypatch)
@@ -940,10 +942,12 @@ async def test_send_email_no_link_when_share_expired(client: AsyncClient, sessio
     entity_id = await _create_doc(client, tok)
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
     await _expire_token(session, token)
+    assert (await client.get(f"/share/{token}")).status_code == 404  # dead before send
 
     r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio
     await asyncio.wait_for(done.wait(), timeout=2)
-    assert "/share/" not in captured["html"]
+    assert f"/share/{token}" in captured["html"]
+    assert (await client.get(f"/share/{token}")).status_code == 200  # revived
