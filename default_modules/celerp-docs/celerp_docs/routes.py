@@ -108,6 +108,11 @@ class DocSendBody(BaseModel):
     sent_to: str | None = None
     cc: str | None = None
     bcc: str | None = None
+    subject: str | None = None
+    message: str | None = None
+    # Activate the public share link and include a View button in the email.
+    # Default True: emailing a document is normally so the recipient can view it.
+    share: bool = True
     idempotency_key: str | None = None
 
 
@@ -920,42 +925,25 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
     sent_to = payload.sent_to
     view_url = None
-    if sent_to:
+    if sent_to and payload.share:
         from celerp_docs.routes_share import send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
     if sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
-        total = row.state.get("total", 0)
-        currency = row.state.get("currency", "USD")
         doc_type = row.state.get("doc_type", "document").replace("_", " ").title()
         contact_name = row.state.get("contact_name") or "there"
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
-        subject = f"{doc_type} #{doc_number} from {sender_name}"
-        view_html = (
-            f"<p><a href=\"{view_url}\" style=\"display:inline-block;padding:10px 20px;"
-            f"background:#111;color:#fff;text-decoration:none;border-radius:6px;\">"
-            f"View {doc_type}</a></p>" if view_url else ""
-        )
-        view_text = f"View it online: {view_url}\n\n" if view_url else ""
-        body_html = (
-            f"<p>Hi {contact_name},</p>"
-            f"<p>Please find your <strong>{doc_type} #{doc_number}</strong> from "
-            f"<strong>{sender_name}</strong>.</p>"
-            f"<p>Amount: <strong>{currency} {total}</strong></p>"
-            f"{view_html}"
-            f"<p style='color:#888;font-size:13px;'>Questions about this document? "
-            f"Reply to this email and we'll get back to you.</p>"
-        )
-        body_text = (
-            f"Hi {contact_name},\n\n"
-            f"Please find your {doc_type} #{doc_number} from {sender_name}.\n"
-            f"Amount: {currency} {total}\n\n"
-            f"{view_text}"
-            f"Questions? Reply to this email."
+        subject = (payload.subject or "").strip() or f"{doc_type} #{doc_number} from {sender_name}"
+        body_html, body_text = compose_doc_email(
+            doc_type_label=doc_type, doc_number=doc_number, sender_name=sender_name,
+            contact_name=contact_name, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url,
         )
         _email_with_receipt(
             company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
@@ -4623,18 +4611,24 @@ async def send_list(
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
                             "sent_to": payload.sent_to})
-    await session.commit()
+    view_url = None
+    if payload.sent_to and payload.share:
+        from celerp_docs.routes_share import send_view_url
+        view_url = await send_view_url(session, company_id, entity_id)
+        await session.commit()
     if payload.sent_to:
+        from celerp_docs.doc_email import compose_doc_email
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]
         company_row = await session.get(Company, company_id)
         sender = company_row.name if company_row else "Your supplier"
         contact = row.state.get("customer_name") or "there"
-        total = row.state.get("total", 0)
-        cur = row.state.get("currency", "USD")
-        subject = f"Quotation #{ref} from {sender}"
-        html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
-                f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
-        text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
+        subject = (payload.subject or "").strip() or f"Quotation #{ref} from {sender}"
+        html, text = compose_doc_email(
+            doc_type_label="Quotation", doc_number=ref, sender_name=sender,
+            contact_name=contact, total=row.state.get("total", 0),
+            currency=row.state.get("currency", "USD"),
+            message=payload.message, view_url=view_url,
+        )
         _email_with_receipt(
             company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
             to=payload.sent_to, subject=subject, body_html=html, body_text=text,

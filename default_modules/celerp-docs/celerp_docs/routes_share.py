@@ -330,6 +330,18 @@ class ShareCreateBody(BaseModel):
     expires_at: str | None = None
 
 
+@router.get("/docs/{entity_id}/share/state")
+async def share_state(
+    entity_id: str,
+    company_id: _uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Read-only share state for the page-load status light. Never mints a
+    token (so merely viewing a document doesn't create share rows)."""
+    row = await _find_share_row(session, company_id, entity_id)
+    return {"active": bool(row is not None and _share_active(row))}
+
+
 @router.get("/docs/{entity_id}/share")
 async def share_status(
     entity_id: str,

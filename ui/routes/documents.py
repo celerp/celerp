@@ -1892,6 +1892,7 @@ celerpUpdateBulkAlloc();
         # Check relay connection for Send button visibility
         _relay_connected: bool = False
         _share_enabled: bool = False
+        _share_active: bool = False
         try:
             _relay_status = await api.get_relay_status(token)
             _relay_connected = bool(_relay_status.get("connected"))
@@ -1899,6 +1900,11 @@ celerpUpdateBulkAlloc();
             _share_enabled = bool(_relay_status.get("public_url"))
         except Exception:
             pass
+        if _share_enabled:
+            try:
+                _share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
+            except Exception:
+                pass
         status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
@@ -1949,7 +1955,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2715,6 +2721,10 @@ celerpUpdateBulkAlloc();
                     "sent_via": "email",
                     "cc": str(form.get("cc", "")).strip() or None,
                     "bcc": str(form.get("bcc", "")).strip() or None,
+                    "subject": str(form.get("subject", "")).strip() or None,
+                    "message": str(form.get("message", "")).strip() or None,
+                    # Unchecked checkbox submits nothing; presence == share on.
+                    "share": form.get("share") is not None,
                 }
                 await api.send_doc(token, entity_id, data=data)
             elif action == "mark_sent":
@@ -3950,18 +3960,24 @@ celerpUpdateBulkAlloc();
             _list_locations = []
         _list_relay = False
         _list_share = False
+        _list_share_active = False
         try:
             _ls_status = await api.get_relay_status(token)
             _list_relay = bool(_ls_status.get("connected"))
             _list_share = bool(_ls_status.get("public_url"))
         except Exception:
             pass
+        if _list_share:
+            try:
+                _list_share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
+            except Exception:
+                pass
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request),
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
-                        relay_connected=_list_relay, share_enabled=_list_share),
+                        relay_connected=_list_relay, share_enabled=_list_share, share_active=_list_share_active),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -4118,6 +4134,9 @@ celerpUpdateBulkAlloc();
                     "sent_to": sent_to, "sent_via": "email",
                     "cc": str(form.get("cc", "")).strip() or None,
                     "bcc": str(form.get("bcc", "")).strip() or None,
+                    "subject": str(form.get("subject", "")).strip() or None,
+                    "message": str(form.get("message", "")).strip() or None,
+                    "share": form.get("share") is not None,
                 })
             elif action == "mark_sent":
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
@@ -5156,7 +5175,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5448,9 +5467,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         ),
                         Div(
                             Label(t("label.message"), cls="form-label"),
-                            Textarea(default_body, name="message", rows="4", cls="form-input"),
+                            Textarea(default_body, name="message", rows="3", cls="form-input"),
+                            P(t("doc.send_appends_hint"), cls="form-hint"),
                             cls="form-group",
                         ),
+                        (Label(
+                            Input(type="checkbox", name="share", checked=True, cls="share-toggle__input"),
+                            Span(t("doc.send_share_toggle"), cls="share-toggle__label"),
+                            cls="share-toggle",
+                        ) if share_enabled else Input(type="hidden", name="share", value="")),
                         Div(
                             Button(t("btn.cancel"), type="button",
                                    onclick=f"document.getElementById('{modal_id}').close()",
@@ -5486,8 +5511,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
         _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
         _fail_js = _json.dumps(t("doc.share_failed"))
+        # Status dot on the button itself: green when the link is live, red when
+        # not, so the state is visible without opening the modal.
+        _dot_cls = "share-btn-dot share-btn-dot--live" if share_active else "share-btn-dot"
+        _dot_tip = t("doc.share_live_tip") if share_active else t("doc.share_off_tip")
         action_btns_left.append(
-            Button(t("btn.share"), type="button",
+            Button(Span(cls=_dot_cls, title=_dot_tip), t("btn.share"), type="button",
                    hx_get=f"/docs/{entity_id}/share",
                    hx_target=f"#{_share_body_id}", hx_swap="innerHTML",
                    hx_on__after_request=(

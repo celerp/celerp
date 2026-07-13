@@ -2773,6 +2773,27 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   padding: 5px 8px;
   letter-spacing: normal;
 }
+/* Status dot inside the Share button (live vs off, without opening the modal). */
+.share-btn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: middle;
+  background: var(--c-red);
+}
+.share-btn-dot--live { background: var(--c-green); }
+/* Share toggle in the send modal. */
+.share-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--c-text);
+}
+.share-toggle__input { width: auto; margin: 0; }
 
 /* --- Factory reset modal --- */
 .reset-modal__body { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }

@@ -1836,6 +1836,12 @@ async def get_share_status(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/docs/{entity_id}/share")).json()
 
 
+async def get_share_state(token: str, entity_id: str) -> dict:
+    """Read-only: {'active': bool}. Does not mint a token (page-load light)."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/share/state")).json()
+
+
 async def create_share_link(token: str, entity_id: str, expires_at: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/share", json={"expires_at": expires_at})).json()

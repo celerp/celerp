@@ -622,7 +622,7 @@ async def _capture_send(monkeypatch):
     done = asyncio.Event()
 
     async def _fake(to, subject, body_html, body_text="", **kw):
-        captured.update(to=to, html=body_html, text=body_text)
+        captured.update(to=to, subject=subject, html=body_html, text=body_text)
         done.set()
         return True, "test transport"
 
@@ -646,6 +646,71 @@ async def test_send_email_includes_view_link_when_cloud_connected(client: AsyncC
     token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
     assert f"https://acme.celerp.com/share/{token}" in captured["html"]
     assert f"https://acme.celerp.com/share/{token}" in captured["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_custom_subject_message_and_formatted_amount(client: AsyncClient, monkeypatch):
+    """The sender's subject and message reach the email verbatim (they used to
+    be discarded), and the amount is at currency precision."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)  # total 1070.0, THB
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={
+        "sent_to": "cust@x.com", "subject": "Your order is ready",
+        "message": "Thanks for your business, please see attached.",
+    })
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert captured["subject"] == "Your order is ready"
+    assert "Thanks for your business, please see attached." in captured["html"]
+    assert "THB 1,070.00" in captured["html"]
+    assert "THB 1070.0" not in captured["html"]  # no naked float
+
+
+@pytest.mark.asyncio
+async def test_send_with_share_off_omits_link_and_leaves_doc_unshared(client: AsyncClient, monkeypatch):
+    """Share toggle off: no view button in the email, and the document is not
+    activated for public viewing."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={
+        "sent_to": "cust@x.com", "share": False})
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert "/share/" not in captured["html"]
+    assert "View " not in captured["html"]
+    # The read-only state endpoint still reports the doc as not shared.
+    state = (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()
+    assert state["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_share_state_endpoint_is_read_only(client: AsyncClient):
+    """GET /share/state reports active state without minting a token, so
+    merely viewing a document never creates share rows."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+
+    state = (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()
+    assert state == {"active": False}
+    # No token was minted: the modal endpoint would report shared=False still
+    # unless *it* mints. Prove the state endpoint alone didn't activate anything.
+    assert (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()["active"] is False
+
+    # After a real share, the light goes green.
+    await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert (await client.get(f"/docs/{entity_id}/share/state", headers=_h(tok))).json()["active"] is True
 
 
 async def _capture_receipt(monkeypatch, ok: bool, detail: str):

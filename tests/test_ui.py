@@ -11071,6 +11071,41 @@ class TestDocumentsOverhaul:
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
+    async def test_send_modal_has_share_toggle_and_status_light(self, ui_client):
+        """When cloud-connected, the send modal offers the Share toggle and the
+        Share button carries a status dot (green when the doc is live)."""
+        doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _active = AsyncMock(return_value={"active": True})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_relay), \
+             patch("ui.api_client.get_share_state", new=_active):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content = r.content.decode()
+        assert 'name="share"' in content              # toggle present
+        assert "share-btn-dot--live" in content        # green light (doc is shared)
+        assert "share-toggle" in content
+
+    @pytest.mark.asyncio
+    async def test_send_action_forwards_message_and_share(self, ui_client):
+        """The modal's subject/message/share reach the API (they were dropped)."""
+        sent = AsyncMock(return_value={})
+        with patch("ui.api_client.send_doc", new=sent):
+            await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
+                "sent_to": "c@x.com", "subject": "Hi", "message": "See attached", "share": "on"})
+        data = sent.call_args[1]["data"]
+        assert data["subject"] == "Hi"
+        assert data["message"] == "See attached"
+        assert data["share"] is True
+
+        # Unchecked toggle submits no 'share' field -> share False.
+        sent2 = AsyncMock(return_value={})
+        with patch("ui.api_client.send_doc", new=sent2):
+            await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
+                "sent_to": "c@x.com"})
+        assert sent2.call_args[1]["data"]["share"] is False
+
+    @pytest.mark.asyncio
     async def test_bill_to_email_is_editable_and_send_modal_prefills_it(self, ui_client):
         """The Bill To email is an editable cell like its siblings (it used to
         be the only read-only field), and the send modal prefills the To field
