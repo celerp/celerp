@@ -862,7 +862,7 @@
   "pay.send_includes_button": "Include un pulsante Paga ({amount}).",
   "pay.deposit_cash_option": "Cassa (1110) - predefinito",
   "pay.pitch_free": "La configurazione è gratuita.",
-  "pay.pitch_fineprint": "Non paghi nulla finché una fattura non viene saldata: 1% più la commissione carta di Stripe, direttamente sul tuo account Stripe.",
+  "pay.pitch_fineprint": "Paghi solo l'1% più la commissione carta di Stripe, e ricevi il denaro direttamente sul tuo account Stripe.",
   "pay.pitch_head": "Fatti pagare nel momento in cui invii una fattura",
   "pay.pitch_stripe_cred": "I pagamenti sono elaborati da Stripe, scelto da milioni di aziende in tutto il mondo.",
   "pay.pitch_li1": "I clienti pagano dalla fattura ricevuta via email o dal link di condivisione, senza portale né login",

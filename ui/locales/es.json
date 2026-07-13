@@ -862,7 +862,7 @@
   "pay.send_includes_button": "Incluye un botón de pago ({amount}).",
   "pay.deposit_cash_option": "Caja (1110) - predeterminado",
   "pay.pitch_free": "La configuración es gratis.",
-  "pay.pitch_fineprint": "No pagas nada hasta que se cobra una factura: 1% más la comisión de tarjeta de Stripe, directo a tu propia cuenta de Stripe.",
+  "pay.pitch_fineprint": "Solo pagas un 1% más la comisión de tarjeta de Stripe, y recibes el dinero directamente en tu cuenta de Stripe.",
   "pay.pitch_head": "Cobra en el momento en que envías una factura",
   "pay.pitch_stripe_cred": "Los pagos los procesa Stripe, en quien confían millones de empresas en todo el mundo.",
   "pay.pitch_li1": "Los clientes pagan desde la factura del correo o su enlace compartido, sin portal ni inicio de sesión",

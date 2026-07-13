@@ -862,7 +862,7 @@
   "pay.send_includes_button": "Enthält eine Bezahlen-Schaltfläche ({amount}).",
   "pay.deposit_cash_option": "Kasse (1110) - Standard",
   "pay.pitch_free": "Die Einrichtung ist kostenlos.",
-  "pay.pitch_fineprint": "Sie zahlen nichts, bis eine Rechnung bezahlt wird: 1 % plus Stripe-Kartengebühr, direkt auf Ihr eigenes Stripe-Konto.",
+  "pay.pitch_fineprint": "Sie zahlen nur 1 % plus Stripe-Kartengebühr und erhalten das Geld direkt auf Ihr Stripe-Konto.",
   "pay.pitch_head": "Werden Sie bezahlt, sobald Sie eine Rechnung senden",
   "pay.pitch_stripe_cred": "Die Zahlungen wickelt Stripe ab, dem Millionen von Unternehmen weltweit vertrauen.",
   "pay.pitch_li1": "Kunden zahlen direkt aus der E-Mail-Rechnung oder über den Freigabelink, ohne Portal oder Login",

@@ -862,7 +862,7 @@
   "pay.send_includes_button": "Bao gồm nút Thanh toán ({amount}).",
   "pay.deposit_cash_option": "Tiền mặt (1110) - mặc định",
   "pay.pitch_free": "Thiết lập miễn phí.",
-  "pay.pitch_fineprint": "Bạn không trả gì cho đến khi hóa đơn được thanh toán: 1% cộng phí thẻ của Stripe, tiền về thẳng tài khoản Stripe của bạn.",
+  "pay.pitch_fineprint": "Bạn chỉ trả 1% cộng phí thẻ của Stripe, và nhận tiền thẳng vào tài khoản Stripe của mình.",
   "pay.pitch_head": "Được thanh toán ngay khi bạn gửi hóa đơn",
   "pay.pitch_stripe_cred": "Thanh toán được xử lý bởi Stripe, được hàng triệu doanh nghiệp trên toàn thế giới tin dùng.",
   "pay.pitch_li1": "Khách hàng thanh toán từ hóa đơn trong email hoặc liên kết chia sẻ, không cần cổng thông tin hay đăng nhập",

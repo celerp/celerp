@@ -862,7 +862,7 @@
   "pay.send_includes_button": "支払いボタン（{amount}）が含まれます。",
   "pay.deposit_cash_option": "現金（1110）- 既定",
   "pay.pitch_free": "設定は無料。",
-  "pay.pitch_fineprint": "請求書が支払われるまで費用は一切かかりません。支払い時に1%とStripeのカード手数料のみで、売上はお客様自身のStripeアカウントに直接入金されます。",
+  "pay.pitch_fineprint": "お支払いは1%とStripeのカード手数料のみ。売上はお客様のStripeアカウントに直接入金されます。",
   "pay.pitch_head": "請求書を送ったその瞬間から回収がはじまる",
   "pay.pitch_stripe_cred": "決済は世界中の何百万社もの企業に信頼されているStripeが処理します。",
   "pay.pitch_li1": "顧客はメールの請求書や共有リンクからそのまま支払い。ポータルもログインも不要",
