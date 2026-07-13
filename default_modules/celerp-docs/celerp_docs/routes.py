@@ -1323,49 +1323,91 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     return {"deleted": entity_id}
 
 
+# One lock per document: payment recording reads the payments list to derive
+# payment_index (the JE idempotency key), so two recorders interleaving on the
+# same doc (customer-return leg + gateway push, or an online confirm racing a
+# hand-entered payment) could compute the SAME index from stale state - the
+# second JE then dedupes against the first and money silently never posts to
+# the books. The client runs in one process, so an asyncio lock fully
+# serializes; the fresh re-read inside the lock is what makes it correct.
+_payment_locks: dict[str, asyncio.Lock] = {}
+
+
+def _payment_lock(entity_id: str) -> asyncio.Lock:
+    lock = _payment_locks.get(entity_id)
+    if lock is None:
+        lock = _payment_locks[entity_id] = asyncio.Lock()
+    return lock
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict, body: dict,
                             *, source: str, actor_id, idempotency_key: str):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
-    so a Stripe payment lands identically to a hand-entered one. Caller commits."""
-    if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
-    if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
-    if outstanding <= 0:
-        raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    from celerp.services.money import to_decimal as _to_d
-    amount = float(body["amount"])
-    # 1-cent tolerance covers display rounding on the final payment.
-    if _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
-    bank_code = body.get("bank_account")
-    if not bank_code:
-        raise HTTPException(status_code=422, detail="bank_account is required")
-    body.setdefault("currency", doc_state.get("currency", "USD"))
-    body["remaining_balance"] = max(0.0, outstanding - amount)
-    payment_index = len(doc_state.get("payments", []))
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=actor_id, location_id=None, source=source,
-        idempotency_key=idempotency_key, metadata_={},
-    )
-    _company = await session.get(Company, company_id)
-    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
-    await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
-        amount=amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
-        payment_date=body["payment_date"],
-        base_currency=_base_currency,
-        conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
-    )
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle(
-        "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
-        doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
-    )
+    so a Stripe payment lands identically to a hand-entered one. Caller commits.
+
+    ``doc_state`` is advisory: the guards and payment_index are recomputed from a
+    fresh read inside the per-document lock, so a concurrent recorder can never
+    produce a duplicate or colliding payment_index."""
+    async with _payment_lock(entity_id):
+        row = await session.get(Projection, (company_id, entity_id))
+        if row is not None:
+            await session.refresh(row)  # another session may have committed a payment meanwhile
+            doc_state = dict(row.state)
+        if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+            raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
+        if doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+            raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+        # Replay guard for referenced (online) payments: the same Stripe intent
+        # arriving twice (return leg + webhook push) records exactly once.
+        reference = body.get("reference")
+        if reference and any(p.get("reference") == reference for p in doc_state.get("payments", [])):
+            raise HTTPException(status_code=409, detail="Payment already recorded")
+        outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
+        if outstanding <= 0:
+            raise HTTPException(status_code=409, detail="Invoice already fully paid")
+        from celerp.services.money import to_decimal as _to_d
+        amount = float(body["amount"])
+        if reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            # An online charge already happened at Stripe; if a manual payment
+            # landed while the customer was checking out, apply what the invoice
+            # can still absorb and keep the real charge on record - the surplus
+            # is a genuine overpayment for the merchant to refund or credit.
+            body["charged_amount"] = amount
+            amount = float(outstanding)
+            body["amount"] = amount
+        # 1-cent tolerance covers display rounding on the final payment.
+        elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+            raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
+        bank_code = body.get("bank_account")
+        if not bank_code:
+            raise HTTPException(status_code=422, detail="bank_account is required")
+        body.setdefault("currency", doc_state.get("currency", "USD"))
+        body["remaining_balance"] = max(0.0, outstanding - amount)
+        payment_index = len(doc_state.get("payments", []))
+        entry = await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
+            data=body, actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=idempotency_key, metadata_={},
+        )
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        await auto_je.create_for_doc_payment(
+            session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
+            amount=amount, payment_index=payment_index,
+            bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
+            payment_date=body["payment_date"],
+            base_currency=_base_currency,
+            conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+        )
+        from celerp.modules.slots import fire_lifecycle
+        await fire_lifecycle(
+            "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
+            doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
+        )
+        # The lock only helps if this recorder's write is visible to the next
+        # lock holder: commit before releasing.
+        await session.commit()
     return entry
 
 

@@ -79,24 +79,29 @@ async def _deposit_account(session: AsyncSession, company_id) -> str:
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str):
     """Record a confirmed online charge as a payment. Idempotent on the reference
-    (Stripe payment_intent). Shared by the customer-return and the gateway-push paths."""
+    (Stripe payment_intent). Shared by the customer-return and the gateway-push paths.
+
+    Passes the raw charged amount: apply_doc_payment re-reads the document
+    inside the per-document lock and clamps against the FRESH outstanding, so
+    a manual payment racing the checkout can't reject or double-book the
+    charge. Replays (same reference) come back as a quiet None."""
     if not reference:
         return None
     if any(p.get("reference") == reference for p in doc_state.get("payments", [])):
         return None  # already recorded - replayed push / re-opened return page
-    outstanding = _outstanding(doc_state)
-    if outstanding <= 0:
-        return None
-    amount = min(amount_minor / (10 ** currency_dp(currency)), outstanding)
+    amount = amount_minor / (10 ** currency_dp(currency))
     from celerp_docs.routes import apply_doc_payment
     body = {"amount": amount, "payment_date": datetime.date.today().isoformat(),
             "currency": currency.upper(), "bank_account": await _deposit_account(session, company_id),
             "method": "stripe", "reference": reference}
-    entry = await apply_doc_payment(
-        session, company_id, entity_id, doc_state, body,
-        source="stripe", actor_id=await _company_owner_id(session, company_id),
-        idempotency_key=reference,
-    )
+    try:
+        entry = await apply_doc_payment(
+            session, company_id, entity_id, doc_state, body,
+            source="stripe", actor_id=await _company_owner_id(session, company_id),
+            idempotency_key=reference,
+        )
+    except HTTPException:
+        return None  # replay or already-settled invoice: nothing left to record
     await session.commit()
     return entry
 

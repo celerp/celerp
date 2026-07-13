@@ -216,6 +216,174 @@ async def test_backup_push_uses_company_deposit_account(client, session, payment
     assert pay_entry["bank_account"] == "1055"
 
 
+# ── the whole journey, end to end ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_full_online_payment_journey(client, session, payments_on, monkeypatch):
+    """Merchant sends an invoice; customer pays it from the email; money lands
+    in the books; the link reverts to view-only; replays change nothing.
+
+    Chains every hop of the real flow: send email (Pay leads with the amount
+    due) -> share page carries the pay bar -> /pay creates the checkout with
+    the exact balance in minor units and reconcile metadata -> the return leg
+    records the payment -> status paid, journal entry posted, pay bar gone,
+    /pay refuses further charges -> a replayed return records nothing."""
+    import asyncio as _asyncio
+
+    sent = {}
+    email_done = _asyncio.Event()
+    async def _fake_send(to, subject, body_html, body_text="", **kw):
+        sent.update(html=body_html, text=body_text, subject=subject)
+        email_done.set()
+        return True
+    monkeypatch.setattr("celerp.services.email.send_email", _fake_send)
+
+    checkout = {}
+    async def _fake_checkout(**kw):
+        checkout.update(kw)
+        return {"url": "https://stripe.test/cs_journey"}
+    monkeypatch.setattr("celerp.services.payments.create_checkout", _fake_checkout)
+
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+
+    # 1. Merchant clicks Send: the email leads with a Pay button for the balance due.
+    r = await client.post(f"/docs/{eid}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    await _asyncio.wait_for(email_done.wait(), timeout=2)
+    assert f"/pay/{token}" in sent["html"] and ">Pay USD 1,070.00<" in sent["html"]
+    assert f"/pay/{token}" in sent["text"]
+
+    # 2. Customer opens the invoice: print layout with the amount-due pay bar
+    # (the on-page bar formats with the currency symbol; the email uses the code).
+    html = (await client.get(f"/share/{token}")).text
+    assert f"/pay/{token}" in html and "Pay $1,070.00 now" in html
+
+    # 3. Customer clicks Pay: checkout for the exact balance, with reconcile metadata.
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "https://stripe.test/cs_journey"
+    assert checkout["amount_minor"] == 107000 and checkout["currency"] == "USD"
+    assert checkout["metadata"]["entity_id"] == eid and checkout["metadata"]["token"] == token
+    assert "{CHECKOUT_SESSION_ID}" in checkout["success_url"]
+
+    # 4. Stripe confirms; the customer returns; the payment reconciles.
+    monkeypatch.setattr("celerp.services.payments.checkout_status",
+                        lambda sid: _async({"paid": True, "reference": "pi_journey",
+                                            "amount_minor": 107000, "currency": "usd"}))
+    r = await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/share/{token}"
+
+    # 5. Money truth: invoice paid, exactly one payment, exactly one posted JE.
+    doc = await _doc_state(client, tok, eid)
+    assert doc["status"] == "paid" and doc["amount_outstanding"] == 0
+    assert [p["reference"] for p in doc["payments"]] == ["pi_journey"]
+    cid = _company_id(tok)
+    assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
+
+    # 6. The link reverts to view-only and cannot take more money.
+    html = (await client.get(f"/share/{token}")).text
+    assert f"/pay/{token}" not in html
+    assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 409
+
+    # 7. Replayed return (re-opened tab): nothing records twice.
+    await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
+    doc = await _doc_state(client, tok, eid)
+    assert len(doc["payments"]) == 1
+    assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
+
+
+# ── money truth: books post, races cannot double-book or drop a JE ───────────
+
+async def _pay_je_entities(session, cid, eid) -> list[str]:
+    """Ledger entities of the auto-posted payment JEs for this doc, sorted."""
+    from sqlalchemy import select
+    from celerp.models.ledger import LedgerEntry
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == cid,
+            LedgerEntry.entity_id.like(f"je:auto:{eid}:pay:%"),
+        ).distinct()
+    )).scalars().all()
+    return sorted(rows)
+
+
+@pytest.mark.asyncio
+async def test_online_payment_posts_exactly_one_journal_entry(client, session, payments_on):
+    from celerp.models.projections import Projection
+    from celerp_docs.routes_payments import record_stripe_payment
+
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    row = await session.get(Projection, (cid, eid))
+    await record_stripe_payment(session, cid, eid, dict(row.state),
+                                reference="pi_je", amount_minor=107000, currency="usd")
+    assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
+
+
+@pytest.mark.asyncio
+async def test_manual_payment_racing_online_confirm(client, session, payments_on):
+    """The race that silently loses money from the books: a manual payment lands
+    while the customer is at Stripe checkout. The online confirm then arrives
+    holding a STALE snapshot (as both the return leg and the gateway push do).
+
+    Required outcome: the online charge still records (clamped to the fresh
+    outstanding, with the real charged amount kept on the payment record) and
+    posts its own journal entry at the NEXT payment index - never colliding
+    with the manual payment's JE and never silently deduping away."""
+    from celerp.models.projections import Projection
+    from celerp_docs.routes_payments import record_stripe_payment
+
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+
+    # Snapshot BEFORE the manual payment: this is what the confirm leg holds.
+    stale = dict((await session.get(Projection, (cid, eid))).state)
+
+    r = await client.post(f"/docs/{eid}/payment", json={
+        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1110",
+    }, headers=_h(tok))
+    assert r.status_code == 200, r.text
+
+    # Online confirm arrives with the stale snapshot and the full charge.
+    await record_stripe_payment(session, cid, eid, stale,
+                                reference="pi_race", amount_minor=107000, currency="usd")
+
+    doc = await _doc_state(client, tok, eid)
+    assert doc["status"] == "paid"
+    stripe_pay = next(p for p in doc["payments"] if p.get("reference") == "pi_race")
+    assert stripe_pay["amount"] == 570.0            # clamped to fresh outstanding
+    assert stripe_pay["charged_amount"] == 1070.0   # the real charge is on record
+    # Both payments posted their own JE - distinct indexes, nothing deduped away.
+    assert await _pay_je_entities(session, cid, eid) == [
+        f"je:auto:{eid}:pay:0", f"je:auto:{eid}:pay:1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stale_replay_after_return_recorded_is_noop(client, session, payments_on):
+    """Gateway push arrives with a snapshot older than the return leg's record:
+    the fresh re-read inside the lock sees the reference and quietly no-ops."""
+    from celerp.models.projections import Projection
+    from celerp_docs.routes_payments import record_stripe_payment
+
+    tok = await _register(client)
+    eid, token = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    stale = dict((await session.get(Projection, (cid, eid))).state)
+
+    await record_stripe_payment(session, cid, eid, dict((await session.get(Projection, (cid, eid))).state),
+                                reference="pi_dup", amount_minor=107000, currency="usd")
+    # Replay with the PRE-payment snapshot (worst case: passes the caller's own
+    # stale pre-check, must be stopped by the locked fresh read).
+    assert await record_stripe_payment(session, cid, eid, stale,
+                                       reference="pi_dup", amount_minor=107000, currency="usd") is None
+    doc = await _doc_state(client, tok, eid)
+    assert len([p for p in doc["payments"] if p.get("reference") == "pi_dup"]) == 1
+    assert await _pay_je_entities(session, cid, eid) == [f"je:auto:{eid}:pay:0"]
+
+
 # ── customer-facing surfaces gate on the flag ────────────────────────────────
 
 @pytest.mark.asyncio
