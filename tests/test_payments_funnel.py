@@ -50,45 +50,34 @@ async def test_payments_enabled_flag_endpoint(client, monkeypatch):
     assert r.json() == {"enabled": True}
 
 
-# ── reminder backoff: 4/6/9/14-week gaps, then silence for good ───────────────
+# ── one-time payments tip: piggybacks on the first delivery receipt ───────────
 
 @pytest.mark.asyncio
-async def test_payments_reminder_backoff_series_then_stops(client, session):
-    from datetime import datetime, timedelta, timezone
+async def test_payments_tip_fires_once_on_first_receipt(client, session):
     from sqlalchemy import select
     from celerp.models.company import Company
-    from celerp.models.notification import Notification
-    from celerp.services.payments_reminder import BACKOFF_WEEKS, _STATE_KEY, _remind_company
+    from celerp_docs.routes import _payments_tip_suffix
 
     r = await client.post("/auth/register", json={
-        "company_name": "RemindCo", "email": "remind@test.com", "name": "A", "password": "password123"})
+        "company_name": "TipCo", "email": "tip@test.com", "name": "A", "password": "password123"})
     assert r.status_code == 200
-    company = (await session.execute(select(Company).where(Company.name == "RemindCo"))).scalar_one()
+    company_id = (await session.execute(select(Company.id).where(Company.name == "TipCo"))).scalar_one()
 
-    def _age_last(weeks: int):
-        """Pretend the last nudge happened `weeks` ago."""
-        s = dict(company.settings)
-        st = dict(s[_STATE_KEY])
-        st["last_at"] = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).isoformat()
-        s[_STATE_KEY] = st
-        company.settings = s
+    tip = await _payments_tip_suffix(session, company_id)
+    assert "Pay button" in tip and "Stripe" in tip          # first payable receipt carries the pitch
+    assert await _payments_tip_suffix(session, company_id) == ""   # never again
 
-    assert await _remind_company(session, company) is True      # nudge 1: immediate
-    assert await _remind_company(session, company) is False     # gap not served
 
-    for i, gap in enumerate(BACKOFF_WEEKS):
-        _age_last(gap - 1)
-        assert await _remind_company(session, company) is False, f"fired early before gap {gap}w"
-        _age_last(gap)
-        assert await _remind_company(session, company) is True, f"nudge {i + 2} after {gap}w"
+@pytest.mark.asyncio
+async def test_payments_tip_silent_when_payments_on(client, session, monkeypatch):
+    from sqlalchemy import select
+    from celerp.models.company import Company
+    from celerp_docs.routes import _payments_tip_suffix
 
-    # Series exhausted: silent forever, no matter how much time passes.
-    _age_last(52)
-    assert await _remind_company(session, company) is False
+    r = await client.post("/auth/register", json={
+        "company_name": "TipOnCo", "email": "tipon@test.com", "name": "A", "password": "password123"})
+    assert r.status_code == 200
+    company_id = (await session.execute(select(Company.id).where(Company.name == "TipOnCo"))).scalar_one()
 
-    notifs = (await session.execute(
-        select(Notification).where(Notification.company_id == company.id,
-                                   Notification.category == "payments")
-    )).scalars().all()
-    assert len(notifs) == len(BACKOFF_WEEKS) + 1
-    assert all(n.action_url == "/settings/payments" for n in notifs)
+    monkeypatch.setattr("celerp.services.payments.payments_enabled", lambda: True)
+    assert await _payments_tip_suffix(session, company_id) == ""

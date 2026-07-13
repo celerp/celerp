@@ -15,7 +15,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
@@ -4669,24 +4669,6 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
             ) if is_draft else P(current or "--", cls="meta-value"),
             cls="form-group",
         ),
-    ]
-
-
-def _bank_account_options(bank_accounts: list[dict] | None, default_code: str | None = None) -> list:
-    """Return Option elements for every active bank account.
-
-    DRY: used in _payment_section (invoice/bill/credit-note forms) and the
-    bulk-pay modal. Key names match _bank_to_dict in celerp-accounting routes:
-    chart_account_code and bank_name.
-    default_code: pre-selects the matching option (pass first account's code).
-    """
-    return [
-        Option(
-            f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
-            value=ba.get("chart_account_code", ""),
-            selected=(ba.get("chart_account_code") == default_code),
-        )
-        for ba in (bank_accounts or [])
     ]
 
 

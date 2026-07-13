@@ -2024,6 +2024,23 @@ def breadcrumbs(crumbs: list[tuple[str, str | None]]) -> FT:
     return Div(*parts, cls="breadcrumbs")
 
 
+def bank_account_options(bank_accounts: list[dict] | None, default_code: str | None = None) -> list:
+    """Option elements for every active bank account ("1110 - Bank name").
+
+    DRY: doc payment forms, the bulk-pay modal, and the payments settings
+    deposit selector. Key names match _bank_to_dict in celerp-accounting:
+    chart_account_code and bank_name. default_code pre-selects its option.
+    """
+    return [
+        Option(
+            f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
+            value=ba.get("chart_account_code", ""),
+            selected=(ba.get("chart_account_code") == default_code),
+        )
+        for ba in (bank_accounts or [])
+    ]
+
+
 def add_new_option(label: str = "+ Add new", redirect_url: str = "#") -> tuple:
     """Return (Option element, onchange JS snippet) for 'add new' in dynamic selects."""
     option = Option(label, value="__new__")

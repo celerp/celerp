@@ -885,12 +885,33 @@ async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:
     return cfg.get("email") or getattr(user, "email", "") or ""
 
 
-def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str, **send_kwargs) -> None:
+async def _payments_tip_suffix(session, company_id) -> str:
+    """One-time payments pitch that piggybacks on the first delivery receipt
+    for a payable doc (no separate nag notification). Empty string once shown,
+    once payments are on, or when the instance cannot take payments anyway."""
+    from celerp.models.company import Company
+    from celerp.services.payments import payments_enabled
+    if payments_enabled():
+        return ""
+    company = await session.get(Company, company_id)
+    if company is None or (company.settings or {}).get("pay_tip_shown"):
+        return ""
+    settings = dict(company.settings or {})
+    settings["pay_tip_shown"] = True
+    company.settings = settings
+    session.add(company)
+    return (" Tip: connect a Stripe account under Web Access, Payments and "
+            "emailed invoices include a Pay button so customers can pay you by card.")
+
+
+def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: str,
+                        payable: bool = False, **send_kwargs) -> None:
     """Send in the background, then drop a bell notification with the outcome.
 
     The route's session is gone by the time the send resolves, so the receipt
     is written in its own session. Delivery is verified: send_email only
-    reports ok when a transport actually accepted the message."""
+    reports ok when a transport actually accepted the message. For payable
+    docs, the very first receipt carries the one-time online-payments tip."""
     import uuid as _uuid_mod
 
     async def _run() -> None:
@@ -902,9 +923,10 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
         try:
             async with SessionLocal() as s:
                 if ok:
+                    tip = await _payments_tip_suffix(s, cid) if payable else ""
                     await notif_service.create(
                         s, cid, "email", f"Email delivered to {sent_to}",
-                        f"{doc_label} was emailed to {sent_to}.",
+                        f"{doc_label} was emailed to {sent_to}.{tip}",
                         action_url=action_url, priority="low")
                 else:
                     await notif_service.create(
@@ -969,6 +991,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         reply_to = await _sender_reply_to(session, company_id, user)
         _email_with_receipt(
             company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
+            payable=row.state.get("doc_type") in ("invoice", "proforma"),
             to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
             reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
         )

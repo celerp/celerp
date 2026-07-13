@@ -8486,20 +8486,55 @@ class TestFilesExcelFunnels:
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
     imported in ui/app.py but missing from the kernel route tuple, so it
-    404ed) and it lives under Web Access - cloud tab bar, web-access nav."""
+    404ed), lives under Web Access, and renders three distinct states:
+    no relay = Web Access upsell; relay without Stripe = a single-CTA sales
+    pitch with no admin controls; connected = deposit selector + disconnect."""
+
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit=""):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for name, val in (
+            ("get_relay_status", {"connected": relay}),
+            ("get_payments_status", {"enabled": enabled}),
+            ("get_company", {"stripe_deposit_account": deposit}),
+            ("get_bank_accounts", {"items": banks or []}),
+        ):
+            stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+        return stack
 
     @pytest.mark.asyncio
-    async def test_page_registered_and_under_web_access(self, ui_client):
-        with (
-            patch("ui.api_client.get_payments_status", new=AsyncMock(return_value={"enabled": False})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
-        ):
+    async def test_sales_state_single_cta_no_admin_controls(self, ui_client):
+        with self._mocks(relay=True, enabled=False):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200, f"expected the payments page, got {r.status_code}"
         assert "stripe" in r.text.lower()
-        # Cloud tab bar present (Web Access placement), not the Global Config tabs.
+        # Web Access placement: cloud tab bar, not Global Config tabs.
         assert "/settings/cloud?tab=status" in r.text
         assert "/settings/general?tab=company" not in r.text
+        # Pure sales page: one CTA, no deposit selector, no disconnect.
+        assert "/settings/payments/connect" in r.text
+        assert "stripe_deposit_account" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_no_relay_state_shows_upgrade_banner(self, ui_client):
+        with self._mocks(relay=False, enabled=False):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "upgrade-banner" in r.text
+        assert "/settings/payments/connect" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_connected_state_deposit_dropdown_with_add_new(self, ui_client):
+        banks = [{"chart_account_code": "1120", "bank_name": "Kasikorn"}]
+        with self._mocks(relay=True, enabled=True, banks=banks, deposit="1120"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        # Dropdown, not a free-text field: bank option selected, Cash default, add-new.
+        assert "1120 - Kasikorn" in r.text
+        assert 'value="__new__"' in r.text and "/settings/accounting/bank-accounts/new" in r.text
+        assert "/settings/payments/disconnect" in r.text
+        assert 'type="text" name="stripe_deposit_account"' not in r.text
 
     @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
