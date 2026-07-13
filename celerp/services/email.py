@@ -34,39 +34,43 @@ async def send_email(
     detail = ""
     # 1. Relay (preferred when cloud-connected): synchronous and verified.
     #    The old path pushed an email.send frame down the gateway WS, which
-    #    the relay never handled - emails silently vanished.
+    #    the relay never handled - emails silently vanished. The gateway token
+    #    is the instance API key; exchanging it for a bearer JWT is the auth
+    #    every relay REST endpoint accepts.
     if settings.gateway_token:
-        from celerp.gateway.state import relay_http_url, relay_session_headers
-        headers = relay_session_headers()
-        if headers.get("X-Session-Token"):
+        from celerp.gateway.state import relay_http_url
+        base = relay_http_url()
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30) as client:
+                tok_resp = await client.post(
+                    f"{base}/auth/token", json={"api_key": settings.gateway_token})
+                if tok_resp.status_code != 200:
+                    raise RuntimeError(f"relay auth failed ({tok_resp.status_code})")
+                bearer = tok_resp.json()["access_token"]
+                resp = await client.post(
+                    f"{base}/email/send",
+                    headers={"Authorization": f"Bearer {bearer}"},
+                    json={
+                        "to": to,
+                        "subject": subject,
+                        "body_html": body_html,
+                        "body_text": body_text,
+                        "reply_to": reply_to,
+                        "cc": cc,
+                        "bcc": bcc,
+                    },
+                )
+            if resp.status_code == 200:
+                return True, "delivered via Celerp relay"
             try:
-                import httpx
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(
-                        f"{relay_http_url()}/email/send",
-                        headers=headers,
-                        json={
-                            "to": to,
-                            "subject": subject,
-                            "body_html": body_html,
-                            "body_text": body_text,
-                            "reply_to": reply_to,
-                            "cc": cc,
-                            "bcc": bcc,
-                        },
-                    )
-                if resp.status_code == 200:
-                    return True, "delivered via Celerp relay"
-                try:
-                    detail = str(resp.json().get("detail") or f"relay error {resp.status_code}")
-                except Exception:
-                    detail = f"relay error {resp.status_code}"
-                log.warning("Relay email to %s failed: %s", to, detail)
-            except Exception as exc:
-                detail = f"relay unreachable: {exc}"
-                log.warning("Relay email to %s failed: %s", to, detail)
-        else:
-            detail = "no active cloud session"
+                detail = str(resp.json().get("detail") or f"relay error {resp.status_code}")
+            except Exception:
+                detail = f"relay error {resp.status_code}"
+            log.warning("Relay email to %s failed: %s", to, detail)
+        except Exception as exc:
+            detail = f"relay send failed: {exc}"
+            log.warning("Relay email to %s failed: %s", to, detail)
 
     # 2. SMTP fallback
     if settings.smtp_host:

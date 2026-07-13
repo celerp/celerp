@@ -15,17 +15,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-_HEADERS = {"X-Session-Token": "sess-tok", "X-Instance-ID": "inst-1"}
-_NO_SESSION = {"X-Session-Token": "", "X-Instance-ID": "inst-1"}
+def _mock_httpx(status=200, detail=None, auth_status=200):
+    """AsyncClient factory mock: /auth/token exchange plus /email/send."""
+    send_resp = MagicMock()
+    send_resp.status_code = status
+    send_resp.json = MagicMock(return_value={"detail": detail} if detail else {"sent": True})
+    auth_resp = MagicMock()
+    auth_resp.status_code = auth_status
+    auth_resp.json = MagicMock(return_value={"access_token": "jwt-abc"})
 
+    async def _post(url, **kw):
+        return auth_resp if url.endswith("/auth/token") else send_resp
 
-def _mock_httpx(status=200, detail=None):
-    """AsyncClient factory mock whose post() returns the given status."""
-    resp = MagicMock()
-    resp.status_code = status
-    resp.json = MagicMock(return_value={"detail": detail} if detail else {"sent": True})
     client = MagicMock()
-    client.post = AsyncMock(return_value=resp)
+    client.post = AsyncMock(side_effect=_post)
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=client)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -55,11 +58,12 @@ def _smtp_configured(overrides: dict | None = None):
 
 @pytest.mark.asyncio
 async def test_send_email_via_relay_success():
-    """Cloud-connected: POSTs to the relay's /email/send and reports verified delivery."""
+    """Cloud-connected: exchanges the gateway token for a bearer JWT, POSTs
+    the relay's /email/send, and reports verified delivery. This auth works
+    against the relay as deployed - no session required."""
     factory, client = _mock_httpx(200)
     with (
-        patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
     ):
@@ -71,10 +75,13 @@ async def test_send_email_via_relay_success():
 
     assert ok is True
     assert "relay" in detail
-    url = client.post.call_args[0][0]
-    assert url == "https://relay.test/email/send"
-    assert client.post.call_args[1]["headers"]["X-Session-Token"] == "sess-tok"
-    payload = client.post.call_args[1]["json"]
+    assert client.post.call_count == 2
+    auth_call, send_call = client.post.call_args_list
+    assert auth_call[0][0] == "https://relay.test/auth/token"
+    assert auth_call[1]["json"] == {"api_key": "api-key-123"}
+    assert send_call[0][0] == "https://relay.test/email/send"
+    assert send_call[1]["headers"]["Authorization"] == "Bearer jwt-abc"
+    payload = send_call[1]["json"]
     assert payload["to"] == "user@example.com"
     assert payload["subject"] == "Hello"
     assert payload["reply_to"] == "support@acme.com"
@@ -88,8 +95,7 @@ async def test_send_email_relay_quota_error_surfaces_detail():
     which lands in the failure notification."""
     factory, _ = _mock_httpx(402, detail="Monthly email quota (500) reached. Upgrade your plan for more.")
     with (
-        patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
         patch("celerp.config.settings.smtp_host", ""),
@@ -107,8 +113,7 @@ async def test_send_email_relay_unreachable_falls_back_to_smtp():
     factory, client = _mock_httpx(200)
     client.post.side_effect = ConnectionError("relay down")
     with (
-        patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_HEADERS)),
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
         _smtp_configured(),
@@ -123,11 +128,13 @@ async def test_send_email_relay_unreachable_falls_back_to_smtp():
 
 
 @pytest.mark.asyncio
-async def test_send_email_no_cloud_session_falls_back_to_smtp():
-    """Gateway token set but no live session (relay not connected) → SMTP."""
+async def test_send_email_relay_auth_rejected_falls_back_to_smtp():
+    """A relay that refuses the token exchange (e.g. revoked key) → SMTP."""
+    factory, _ = _mock_httpx(200, auth_status=401)
     with (
-        patch("celerp.config.settings.gateway_token", "tok123"),
-        patch("celerp.gateway.state.relay_session_headers", return_value=dict(_NO_SESSION)),
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
         _smtp_configured(),
         patch("aiosmtplib.send", new=AsyncMock(return_value=None)) as mock_smtp,
     ):
