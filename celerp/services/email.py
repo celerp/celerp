@@ -21,6 +21,7 @@ async def send_email(
     reply_to: str = "",
     cc: str = "",
     bcc: str = "",
+    from_name: str = "",
 ) -> tuple[bool, str]:
     """Send a transactional email via the relay or SMTP fallback.
 
@@ -59,6 +60,7 @@ async def send_email(
                         "reply_to": reply_to,
                         "cc": cc,
                         "bcc": bcc,
+                        "from_name": from_name,
                     },
                 )
             if resp.status_code == 200:

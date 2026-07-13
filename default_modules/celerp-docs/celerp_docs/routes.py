@@ -964,7 +964,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         _email_with_receipt(
             company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
             to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
-            reply_to=reply_to, cc=payload.cc or "", bcc=payload.bcc or "",
+            reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
         )
 
     return {"event_id": entry.id}
@@ -4649,7 +4649,7 @@ async def send_list(
         _email_with_receipt(
             company_id, f"Quotation #{ref}", payload.sent_to, f"/lists/{entity_id}",
             to=payload.sent_to, subject=subject, body_html=html, body_text=text,
-            reply_to=reply_to, cc=payload.cc or "", bcc=payload.bcc or "")
+            reply_to=reply_to, from_name=sender, cc=payload.cc or "", bcc=payload.bcc or "")
     return {"ok": True}
 
 

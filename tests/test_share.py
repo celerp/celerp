@@ -689,6 +689,8 @@ async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, m
     await asyncio.wait_for(done.wait(), timeout=2)
     # Falls back to the sending user's address when no company email is set.
     assert captured.get("reply_to") == "share@test.com"
+    # The sending business is passed for the "{company} via Celerp" From name.
+    assert captured.get("from_name") == "ShareCo"
 
 
 @pytest.mark.asyncio
