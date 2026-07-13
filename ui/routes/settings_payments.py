@@ -37,8 +37,13 @@ def _pitch() -> FT:
         ),
         Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
              method="post", action="/settings/payments/connect"),
-        P(t("pay.pitch_fineprint"), cls="form-hint", style="margin-top:14px;"),
-        P(t("pay.pitch_stripe_cred"), cls="form-hint"),
+        # Fine print: left-aligned in a narrow centered column (centered
+        # multi-line text reads as a wall); the Stripe line sits apart, one
+        # step smaller and lighter, as a trust footer rather than more copy.
+        P(t("pay.pitch_fineprint"), cls="form-hint",
+          style="margin:16px auto 0;max-width:400px;text-align:left;line-height:1.6;"),
+        P(t("pay.pitch_stripe_cred"),
+          style="margin:12px auto 0;max-width:400px;text-align:left;font-size:0.7rem;color:#9aa0b5;"),
         cls="settings-card",
         style="text-align:center;max-width:560px;margin:24px auto;padding:32px;",
     )

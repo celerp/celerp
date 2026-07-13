@@ -861,7 +861,7 @@
   "pay.send_hint_off": "Vous voulez un bouton Payer dans cet e-mail ?",
   "pay.send_includes_button": "Comprend un bouton Payer ({amount}).",
   "pay.deposit_cash_option": "Caisse (1110) - par défaut",
-  "pay.pitch_fineprint": "Configuration gratuite. Un moyen économique de recevoir des paiements par carte. Vous ne payez rien tant qu'une facture n'est pas réglée : 1 % plus les frais de carte de Stripe, directement sur votre propre compte Stripe.",
+  "pay.pitch_fineprint": "Configuration gratuite. Vous ne payez rien tant qu'une facture n'est pas réglée : 1 % plus les frais de carte de Stripe, directement sur votre propre compte Stripe.",
   "pay.pitch_head": "Soyez payé dès l'envoi de la facture",
   "pay.pitch_stripe_cred": "Les paiements sont traités par Stripe, auquel des millions d'entreprises font confiance dans le monde entier.",
   "pay.pitch_li1": "Les clients paient depuis la facture reçue par e-mail ou son lien de partage, sans portail ni connexion",
