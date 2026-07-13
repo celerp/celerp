@@ -9,7 +9,7 @@ import html
 
 
 def _esc(s) -> str:
-    return html.escape(str(s), quote=True)
+    return html.escape(str(s or ""), quote=True)
 
 
 def _not_found_page(reason: str = "not-found") -> str:

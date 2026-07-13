@@ -199,7 +199,11 @@ class TestHeaderDiscount:
     @pytest.mark.asyncio
     async def test_pencil_and_popover_on_draft_invoice(self, ui_client):
         doc = {**_DRAFT_DOC, "entity_id": "d:hd", "doc_type": "invoice", "status": "draft"}
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+        # Pin relay off so the relay-gated Send dialog can't render; this test is
+        # about the discount editor being an inline popover, not a modal.
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/d:hd", cookies=_authed())
         assert r.status_code == 200
         assert 'class="btn-disc-edit"' in r.text, "discount pencil missing on a draft invoice"
@@ -289,12 +293,11 @@ class TestHeaderDiscount:
 
     def test_print_view_shows_discount(self):
         """The printable invoice shows the header discount between Subtotal and Total."""
-        from fasthtml.common import to_xml
-        from ui.routes.documents import _doc_print_view
+        from celerp.output.doc_print import render_doc_print_html
         doc = {"doc_type": "invoice", "subtotal": 1000.0, "tax_total": 45.0, "total": 945.0,
                "discount": 10, "discount_type": "percentage", "discount_amount": 100.0,
                "line_items": [{"name": "Widget", "quantity": 10, "unit_price": 100.0, "line_total": 1000.0}]}
-        html = to_xml(_doc_print_view(doc))
+        html = render_doc_print_html(doc)
         assert "Discount (10%)" in html
         assert "-$100.00" in html
 
@@ -381,9 +384,8 @@ class TestUnitPricePrecision:
 
     def test_print_view_unit_price_full_precision(self):
         """The printable view renders the unit price via fmt_rate (real decimals)."""
-        from fasthtml.common import to_xml
-        from ui.routes.documents import _doc_print_view
-        html = to_xml(_doc_print_view(_doc_with([_HIPREC_LINE])))
+        from celerp.output.doc_print import render_doc_print_html
+        html = render_doc_print_html(_doc_with([_HIPREC_LINE]))
         assert "15.285" in html
         assert "15.29" not in html
 
