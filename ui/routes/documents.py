@@ -5325,7 +5325,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate",
                                        hx_swap="none", cls="btn btn--secondary",
                                        title="Create an editable draft copy of this list."))
-    if status in ("draft", "sent") and not is_list:
+    # The Issue button shows only for an un-issued document. "sent" is
+    # ambiguous: a draft can be marked-sent (still un-issued) OR a finalized doc
+    # can be emailed, which overwrites its status to "sent". Distinguish via the
+    # durable `finalized` flag, with a fallback for invoices finalized before
+    # that flag existed (a real, non-proforma number). A "draft" is never
+    # issued - including a reverted invoice that keeps its INV number.
+    _inv_ref = str(doc.get("ref_id") or doc.get("doc_number") or "") if doc_type == "invoice" else ""
+    _sent_but_unissued = (
+        status == "sent"
+        and not doc.get("finalized")
+        and not (_inv_ref and not _inv_ref.upper().startswith("PF"))
+    )
+    if not is_list and (status == "draft" or _sent_but_unissued):
         _finalize_labels = {
             "invoice": "Issue Invoice",
             "purchase_order": "Convert to Bill",

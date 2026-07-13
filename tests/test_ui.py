@@ -11071,6 +11071,35 @@ class TestDocumentsOverhaul:
         assert '>Share<' in r.content.decode()
 
     @pytest.mark.asyncio
+    async def test_issue_button_hidden_once_invoice_is_issued(self, ui_client):
+        """The Issue button shows for a draft proforma but must not reappear
+        after the invoice is finalized and then emailed (status -> 'sent')."""
+        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+
+        async def _get(doc):
+            with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+                 patch("ui.api_client.get_relay_status", new=_no_relay):
+                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            return r.content.decode()
+
+        # Draft proforma: Issue shows.
+        draft = dict(_BLANK_DOC, doc_type="invoice", status="draft", ref_id="PF-2026-0001")
+        assert "Issue Invoice" in await _get(draft)
+
+        # Finalized then emailed: status is 'sent', finalized flag set -> hidden.
+        sent = dict(_BLANK_DOC, doc_type="invoice", status="sent",
+                    ref_id="INV-2026-0001", finalized=True)
+        assert "Issue Invoice" not in await _get(sent)
+
+        # Legacy row (no flag) but with a real INV number -> still hidden.
+        legacy = dict(_BLANK_DOC, doc_type="invoice", status="sent", ref_id="INV-2026-0001")
+        assert "Issue Invoice" not in await _get(legacy)
+
+        # A proforma marked-sent (never finalized) -> Issue still available.
+        marked = dict(_BLANK_DOC, doc_type="invoice", status="sent", ref_id="PF-2026-0002")
+        assert "Issue Invoice" in await _get(marked)
+
+    @pytest.mark.asyncio
     async def test_lifecycle_buttons_have_explanatory_tooltips(self, ui_client):
         """Jargon actions like 'Issue Invoice' carry a plain-language title so
         users understand what they do before clicking."""
