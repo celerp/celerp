@@ -733,18 +733,31 @@ jobs:
           # The release is still a draft; get-release-by-tag only returns published
           # releases, so list releases (drafts included for an authed token) and
           # match on tag_name.
-          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          INFO=$(curl -s -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
-            | python3 -c "import sys,json; tag='$TAG'; print(next((r['id'] for r in json.load(sys.stdin) if r['tag_name']==tag), ''))" 2>/dev/null || true)
+            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else '%s %s' % (r['id'], 1 if (r.get('body') or '').strip() else 0))" 2>/dev/null || true)
+          RELEASE_ID="${INFO%% *}"
+          HAS_BODY="${INFO##* }"
           if [ -z "$RELEASE_ID" ]; then
             echo "ERROR: no release found for tag $TAG to publish" >&2
             exit 1
+          fi
+          # Description: auto-generate from merged PR titles since the previous
+          # release (GitHub generate-notes). Only when the body is empty - a
+          # hand-written draft body always wins.
+          if [ "$HAS_BODY" = "0" ]; then
+            PAYLOAD=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/generate-notes" \
+              -d "{\"tag_name\":\"$TAG\"}" \
+              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'true','body':notes.get('body','')}))")
+          else
+            PAYLOAD='{"draft":false,"make_latest":"true"}'
           fi
           echo "Publishing release $RELEASE_ID ($TAG) as latest"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
             -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
-            -d '{"draft":false,"make_latest":"true"}')
+            -d "$PAYLOAD")
           if [ "$STATUS" -ge 300 ]; then
             echo "ERROR: publish PATCH returned HTTP $STATUS" >&2
             exit 1
