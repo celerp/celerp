@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "Nessuno schema di categoria applicato ancora. Usa le opzioni sottostanti per aggiungere schemi.",
   "inv.no_document_type_selected": "Nessun tipo di documento selezionato.",
   "inv.no_label_templates": "Nessun modello di etichetta.",
+  "inv.enter_sku": "Inserisci SKU",
+  "inv.new_sku": "Nuovo SKU",
   "inv.override_hero_images": "Sostituisci immagini principali esistenti",
   "inv.quantity_must_be_greater_than_0": "La quantità deve essere maggiore di 0",
   "inv.restore": "Ripristina al catalogo",

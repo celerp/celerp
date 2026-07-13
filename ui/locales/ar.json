@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "لم يتم تطبيق مخططات الفئات حتى الآن. استخدم الخيارات أدناه لإضافة المخططات.",
   "inv.no_document_type_selected": "لم يتم تحديد نوع المستند.",
   "inv.no_label_templates": "لا توجد قوالب التسمية.",
+  "inv.enter_sku": "أدخل SKU",
+  "inv.new_sku": "SKU جديد",
   "inv.override_hero_images": "استبدال الصور الرئيسية الحالية",
   "inv.quantity_must_be_greater_than_0": "يجب أن تكون الكمية أكبر من 0",
   "inv.restore": "استعادة إلى الكتالوج",

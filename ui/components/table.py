@@ -1557,10 +1557,14 @@ function _populateMergeTargets(){
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');
     sel.appendChild(opt);
   });
+  // Keep "New SKU" as the last choice, below the item options.
+  var newSkuOpt=document.getElementById('merge-new-sku-opt');
+  if(newSkuOpt) sel.appendChild(newSkuOpt);
   sel.addEventListener('change',function(){
     var confirmDiv=document.getElementById('merge-confirm');
     if(!confirmDiv) return;
     var n=CelerpSelection.count();
+    var isNewSku=sel.value==='__new__';
     var targetText=sel.options[sel.selectedIndex].textContent;
     confirmDiv.innerHTML='';
     confirmDiv.style.display='flex';
@@ -1568,34 +1572,37 @@ function _populateMergeTargets(){
     confirmDiv.style.gap='0.5rem';
     confirmDiv.style.marginTop='0.5rem';
     var msg=document.createElement('span');
-    msg.textContent='Merge '+n+' items into '+targetText+'?';
+    msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';
     msg.style.fontSize='0.85rem';
-    // Merged SKU: defaults to the target's SKU, editable to any custom value
-    // (the merged item is genuinely new). Blank falls back to the target's SKU.
-    var skuWrap=document.createElement('label');
-    skuWrap.style.display='flex';skuWrap.style.flexDirection='column';
-    skuWrap.style.gap='0.15rem';skuWrap.style.fontSize='0.8rem';
-    skuWrap.textContent='Merged SKU (optional)';
-    var skuInput=document.createElement('input');
-    skuInput.type='text';skuInput.className='form-input form-input--sm';
-    skuInput.id='merge-resulting-sku';
-    skuInput.value=(_liveMergeMeta(sel.value).sku)||'';
-    skuWrap.appendChild(skuInput);
+    // "New SKU" reveals [dropdown] -> [enter SKU]; picking an item hides it
+    // (that item's SKU wins, so there is nothing extra to show).
+    var skuInput=document.getElementById('merge-resulting-sku');
+    var skuArrow=document.getElementById('merge-sku-arrow');
+    if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
+    if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
+    if(isNewSku&&skuInput){skuInput.focus();}
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
     var btn=document.createElement('button');
     btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent='Confirm';
     btn.addEventListener('click',function(){
+      var skuEl=document.getElementById('merge-resulting-sku');
+      // "New SKU" mode needs a typed SKU; the merge bases on the first selected
+      // item (deterministic - the pick only decides the SKU, not the survivor).
+      if(isNewSku && (!skuEl || !skuEl.value.trim())){
+        if(skuEl) skuEl.focus();
+        return;
+      }
       var form=document.createElement('form');
       CelerpSelection.ids().forEach(function(id){
         var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
         form.appendChild(inp);
       });
-      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';t.value=sel.value;
+      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
+      t.value=isNewSku?CelerpSelection.ids()[0]:sel.value;
       form.appendChild(t);
-      var skuEl=document.getElementById('merge-resulting-sku');
-      if(skuEl && skuEl.value.trim()){
+      if(isNewSku){
         var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
         form.appendChild(sk);
       }
@@ -1610,10 +1617,11 @@ function _populateMergeTargets(){
     cancel.addEventListener('click',function(){
       confirmDiv.style.display='none';
       sel.value='';
+      if(skuInput){skuInput.style.display='none';skuInput.value='';}
+      if(skuArrow){skuArrow.style.display='none';}
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
-    confirmDiv.appendChild(skuWrap);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);

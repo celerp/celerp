@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "カテゴリ スキーマはまだ適用されていません。スキーマを追加するには、以下のオプションを使用します。",
   "inv.no_document_type_selected": "ドキュメントの種類が選択されていません。",
   "inv.no_label_templates": "ラベルテンプレートはありません。",
+  "inv.enter_sku": "SKUを入力",
+  "inv.new_sku": "新しいSKU",
   "inv.override_hero_images": "既存のメイン画像を上書き",
   "inv.quantity_must_be_greater_than_0": "数量は 0 より大きくなければなりません",
   "inv.restore": "カタログに戻す",

@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "Chưa có lược đồ danh mục nào được áp dụng. Sử dụng các tùy chọn bên dưới để thêm lược đồ.",
   "inv.no_document_type_selected": "Không có loại tài liệu nào được chọn.",
   "inv.no_label_templates": "Không có mẫu nhãn.",
+  "inv.enter_sku": "Nhập SKU",
+  "inv.new_sku": "SKU mới",
   "inv.override_hero_images": "Ghi đè hình ảnh chính hiện có",
   "inv.quantity_must_be_greater_than_0": "Số lượng phải lớn hơn 0",
   "inv.restore": "Khôi phục vào danh mục",

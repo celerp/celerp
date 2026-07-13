@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "Belum ada skema kategori yang diterapkan. Gunakan opsi di bawah untuk menambahkan skema.",
   "inv.no_document_type_selected": "Tidak ada jenis dokumen yang dipilih.",
   "inv.no_label_templates": "Tidak ada templat label.",
+  "inv.enter_sku": "Masukkan SKU",
+  "inv.new_sku": "SKU baru",
   "inv.override_hero_images": "Timpa gambar utama yang ada",
   "inv.quantity_must_be_greater_than_0": "Kuantitas harus lebih besar dari 0",
   "inv.restore": "Kembalikan ke katalog",

@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "Aún no se han aplicado esquemas de categorías. Utilice las siguientes opciones para agregar esquemas.",
   "inv.no_document_type_selected": "No se seleccionó ningún tipo de documento.",
   "inv.no_label_templates": "Sin plantillas de etiquetas.",
+  "inv.enter_sku": "Introducir SKU",
+  "inv.new_sku": "Nuevo SKU",
   "inv.override_hero_images": "Reemplazar imágenes principales existentes",
   "inv.quantity_must_be_greater_than_0": "La cantidad debe ser mayor que 0",
   "inv.restore": "Restaurar al catálogo",

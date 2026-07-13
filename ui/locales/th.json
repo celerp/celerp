@@ -536,6 +536,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "ยังไม่มีการใช้สคีมาหมวดหมู่ ใช้ตัวเลือกด้านล่างเพื่อเพิ่มสคีมา",
   "inv.no_document_type_selected": "ไม่ได้เลือกประเภทเอกสาร",
   "inv.no_label_templates": "ไม่มีเทมเพลตป้ายกำกับ",
+  "inv.enter_sku": "ป้อน SKU",
+  "inv.new_sku": "SKU ใหม่",
   "inv.override_hero_images": "แทนที่รูปภาพหลักที่มีอยู่",
   "inv.quantity_must_be_greater_than_0": "จำนวนต้องมากกว่า 0",
   "inv.restore": "คืนสู่แคตาล็อก",

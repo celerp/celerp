@@ -567,6 +567,8 @@
   "inv.no_category_schemas_applied_yet_use_the_options_be": "No category schemas applied yet. Use the options below to add schemas.",
   "inv.no_document_type_selected": "No document type selected.",
   "inv.no_label_templates": "No label templates.",
+  "inv.enter_sku": "Enter SKU",
+  "inv.new_sku": "New SKU",
   "inv.override_hero_images": "Override existing hero images",
   "inv.quantity_must_be_greater_than_0": "Quantity must be greater than 0",
   "inv.restore": "Restore to Catalog",
