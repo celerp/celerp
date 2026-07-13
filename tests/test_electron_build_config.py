@@ -25,12 +25,24 @@ def test_stable_artifact_names():
         f"dmg.artifactName must be 'Celerp-mac.dmg', got {build.get('dmg', {}).get('artifactName')!r}. "
         "Changing this breaks website download links."
     )
-    # win and linux: artifactName at the platform level
+    # win: artifactName at the platform level (nsis is the only windows target)
     assert build["win"].get("artifactName") == "Celerp-Setup.exe", (
         f"win.artifactName must be 'Celerp-Setup.exe', got {build['win'].get('artifactName')!r}."
     )
-    assert build["linux"].get("artifactName") == "Celerp.AppImage", (
-        f"linux.artifactName must be 'Celerp.AppImage', got {build['linux'].get('artifactName')!r}."
+    # linux builds two targets (AppImage + deb), so like mac the names live in
+    # the dedicated per-target sections - a linux-level artifactName would name
+    # both artifacts identically.
+    assert build.get("appImage", {}).get("artifactName") == "Celerp.AppImage", (
+        f"appImage.artifactName must be 'Celerp.AppImage', got {build.get('appImage', {}).get('artifactName')!r}. "
+        "Changing this breaks website download links and latest-linux.yml."
+    )
+    assert build.get("deb", {}).get("artifactName") == "Celerp.deb", (
+        f"deb.artifactName must be 'Celerp.deb', got {build.get('deb', {}).get('artifactName')!r}. "
+        "Changing this breaks website download links."
+    )
+    assert build["linux"].get("artifactName") is None, (
+        "linux.artifactName must not be set: it would apply to BOTH the AppImage "
+        "and the deb, naming them identically. Use appImage/deb sections instead."
     )
 
 

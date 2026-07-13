@@ -694,6 +694,7 @@ jobs:
             electron/dist/Celerp-Setup.exe
             electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
+            electron/dist/Celerp.deb
           if-no-files-found: warn
 
       - name: Release (dev build)
@@ -708,6 +709,7 @@ jobs:
             electron/dist/Celerp-Setup.exe
             electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
+            electron/dist/Celerp.deb
           draft: false
           prerelease: true
 
