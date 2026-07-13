@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "description": "Free business software \u2014 inventory, invoicing, and operations in one place.",
   "main": "main.js",
-  "author": "Data Universal Limited",
+  "author": {
+    "name": "Data Universal Limited",
+    "email": "support@celerp.com"
+  },
+  "homepage": "https://www.celerp.com",
   "license": "BUSL-1.1",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
