@@ -8,7 +8,7 @@
     "email": "support@celerp.com"
   },
   "homepage": "https://www.celerp.com",
-  "license": "BUSL-1.1",
+  "license": "SEE LICENSE IN LICENSING.md",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "start": "electron .",
@@ -61,6 +61,8 @@
           "alembic.ini",
           "pyproject.toml",
           "MANIFEST.in",
+          "LICENSE",
+          "LICENSING.md",
           "!**/__pycache__",
           "!**/*.pyc",
           "!tests/**",
