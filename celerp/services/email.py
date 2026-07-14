@@ -10,7 +10,26 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
+from celerp.output.branding import EMAIL_BRAND_LINE as _BRAND_LINE, brand_url as _brand_url
+
 log = logging.getLogger(__name__)
+
+_BRAND_URL = _brand_url("email")
+
+
+def _with_footer(body_html: str, body_text: str) -> tuple[str, str]:
+    """Append the brand footer to both MIME parts so they stay in sync."""
+    footer_html = (
+        '<p style="margin-top:24px;font-size:12px;color:#6b7280;">'
+        f'<a href="{_BRAND_URL}" style="color:#6b7280;">{_BRAND_LINE}</a></p>'
+    )
+    if "</body>" in body_html:
+        body_html = body_html.replace("</body>", footer_html + "</body>", 1)
+    else:
+        body_html = body_html + footer_html
+    if body_text:
+        body_text = f"{body_text}\n\n--\n{_BRAND_LINE}\n{_BRAND_URL}\n"
+    return body_html, body_text
 
 
 async def send_email(
@@ -22,6 +41,7 @@ async def send_email(
     cc: str = "",
     bcc: str = "",
     from_name: str = "",
+    branded: bool = True,
 ) -> tuple[bool, str]:
     """Send a transactional email via the relay or SMTP fallback.
 
@@ -31,6 +51,9 @@ async def send_email(
     callers can surface real delivery feedback. Never raises.
     """
     from celerp.config import settings
+
+    if branded:
+        body_html, body_text = _with_footer(body_html, body_text)
 
     detail = ""
     # 1. Relay (preferred when cloud-connected): synchronous and verified.

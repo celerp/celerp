@@ -272,3 +272,50 @@ async def test_smtp_no_reply_to_when_not_provided():
         await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
 
     assert captured["reply_to"] is None
+
+
+# ── Brand footer ──────────────────────────────────────────────────────────────
+
+def test_with_footer_appends_to_both_parts():
+    """Footer lands inside <body> when present and mirrors into the text part."""
+    from celerp.services.email import _BRAND_LINE, _BRAND_URL, _with_footer
+
+    html, text = _with_footer("<html><body><p>Hi</p></body></html>", "Hi")
+    assert _BRAND_LINE in html
+    assert html.count("</body>") == 1
+    assert html.index(_BRAND_LINE) < html.index("</body>")
+    assert _BRAND_LINE in text and _BRAND_URL in text
+
+
+def test_with_footer_plain_fragment_and_empty_text():
+    """No <body> tag → footer is appended; empty text part stays empty."""
+    from celerp.services.email import _BRAND_LINE, _with_footer
+
+    html, text = _with_footer("<p>Hi</p>", "")
+    assert _BRAND_LINE in html
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_send_email_brands_by_default_and_not_when_opted_out():
+    """The footer rides every send unless branded=False (security emails)."""
+    from celerp.services.email import _BRAND_LINE
+
+    for branded, expected in ((True, True), (False, False)):
+        captured = {}
+
+        async def _mock_send(msg, **kwargs):
+            captured["html"] = msg.get_payload(1).get_payload()
+            return None
+
+        with (
+            patch("celerp.config.settings.gateway_token", ""),
+            _smtp_configured(),
+            patch("aiosmtplib.send", new=_mock_send),
+        ):
+            from celerp.services import email as email_mod
+            ok, _ = await email_mod.send_email(
+                "user@example.com", "Hello", "<p>Hi</p>", "Hi plain", branded=branded)
+
+        assert ok is True
+        assert (_BRAND_LINE in captured["html"]) is expected

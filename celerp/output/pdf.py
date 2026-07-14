@@ -28,14 +28,15 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as _rl_canvas
 
+from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
+
 # Register DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.)
 _FONT = "DejaVuSans"
 _FONT_BOLD = "DejaVuSans-Bold"
 pdfmetrics.registerFont(TTFont(_FONT, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
 pdfmetrics.registerFont(TTFont(_FONT_BOLD, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
 
-_BRAND_URL = "https://www.celerp.com"
-_BRAND_TEXT = "Powered by Celerp.com - Downloadable ERP for Serious Businesses"
+_BRAND_URL = _brand_url("pdf")
 
 _GREY = colors.HexColor("#6b7280")
 _DARK = colors.HexColor("#111827")

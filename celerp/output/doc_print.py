@@ -19,6 +19,7 @@ from fasthtml.common import (
     Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
 )
 
+from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.services.line_measures import measure_sublines, qty_label
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -32,8 +33,7 @@ INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"}
 # Import-into-Celerp footer link (an import link on a memo would just 422).
 IMPORTABLE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "purchase_order", "quotation", "list"})
 
-_BRAND_URL = "https://www.celerp.com"
-_BRAND_LABEL = "Powered by Celerp.com - Downloadable ERP for Serious Businesses"
+_BRAND_URL = _brand_url("doc-print")
 
 CURRENCY_SYMBOLS = {
     "AED": "AED ", "ARS": "AR$", "AUD": "A$", "BDT": "৳", "BRL": "R$",

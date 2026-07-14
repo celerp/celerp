@@ -406,6 +406,7 @@ async def password_reset_request(
             "Reset your Celerp password",
             body_html,
             body_text=body_text,
+            branded=False,  # security email: keep it minimal
         ))
 
     return {"detail": "If that email exists, you'll receive a reset link."}
