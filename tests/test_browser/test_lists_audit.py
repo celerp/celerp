@@ -61,7 +61,8 @@ def test_lists_page_loads(page: Page, ui_server: str, api):
 # ── LA-02: Type tab pills ─────────────────────────────────────────────────────
 
 def test_type_tab_pills_present(page: Page, ui_server: str, api):
-    """LA-02: All + 3 list-type tab pills are rendered."""
+    """LA-02: All + one tab pill per registered list type are rendered."""
+    from celerp.services.list_behavior import LIST_BEHAVIOR
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
     _no_crash(page, "type-tabs")
     tab_container = page.locator("#type-tabs")
@@ -69,13 +70,13 @@ def test_type_tab_pills_present(page: Page, ui_server: str, api):
     # "All" tab
     all_tab = tab_container.locator("a", has_text="All")
     expect(all_tab).to_be_visible()
-    # Current list types: quotation, transfer, audit
-    for label in ("Quotation", "Transfer", "Audit"):
-        tab = tab_container.locator(f"a:has-text('{label}')")
+    for behavior in LIST_BEHAVIOR.values():
+        tab = tab_container.locator(f"a:has-text('{behavior.label}')")
         expect(tab).to_be_visible()
-    # Total count: All + 3 types = 4
+    # Pinned to the registry: adding a list type cannot leave a stale count here.
     tabs = tab_container.locator("a.category-tab")
-    assert tabs.count() == 4, f"Expected 4 type tabs, got {tabs.count()}"
+    assert tabs.count() == 1 + len(LIST_BEHAVIOR), (
+        f"Expected {1 + len(LIST_BEHAVIOR)} type tabs, got {tabs.count()}")
 
 
 # ── LA-03: Status cards ───────────────────────────────────────────────────────

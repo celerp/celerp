@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import html
 
+from celerp.output.branding import BRAND_TEXT, brand_url
+
+_BRAND_HREF = brand_url("share-page").replace("&", "&amp;")
+
 
 def _esc(s) -> str:
     return html.escape(str(s or ""), quote=True)
@@ -42,7 +46,7 @@ def _not_found_page(reason: str = "not-found") -> str:
   <div class="box">
     <h1>{_esc(title)}</h1>
     <p>{_esc(body)} Contact the sender for a current copy.</p>
-    <div class="brand"><a href="https://www.celerp.com" target="_blank" rel="noopener">Powered by Celerp.com - Downloadable ERP for Serious Businesses</a></div>
+    <div class="brand"><a href="{_BRAND_HREF}" target="_blank" rel="noopener">{BRAND_TEXT}</a></div>
   </div>
 </body>
 </html>"""

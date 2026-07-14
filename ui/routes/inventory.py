@@ -3294,8 +3294,12 @@ function celerpPrintLabel(entityId, templateId) {
                      "status": d.get("status", "")}
                     for d in items
                 ])
-            elif doc_type == "list":
+            elif doc_type in ("list", "shipping_doc"):
                 params = {"limit": 20}
+                # A Shipping Document target only offers shipping-doc drafts; the generic
+                # List/Quotation target keeps offering every list type, as before.
+                if doc_type == "shipping_doc":
+                    params["list_type"] = "shipping_doc"
                 if q:
                     params["q"] = q
                 else:
@@ -3369,7 +3373,7 @@ function celerpPrintLabel(entityId, templateId) {
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
                     await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
-                elif doc_type == "list":
+                elif doc_type in ("list", "shipping_doc"):
                     new_lines = await _line_items_from_inventory(token, entity_ids)
                     lst = await api.get_list(token, target_id)
                     combined = (lst.get("line_items") or []) + new_lines
@@ -3399,9 +3403,10 @@ function celerpPrintLabel(entityId, templateId) {
                     result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
-                elif doc_type == "list":
+                elif doc_type in ("list", "shipping_doc"):
                     line_items = await _line_items_from_inventory(token, entity_ids)
-                    result = await api.create_list(token, {"list_type": "quotation", "status": "draft", "line_items": line_items})
+                    _lt = "shipping_doc" if doc_type == "shipping_doc" else "quotation"
+                    result = await api.create_list(token, {"list_type": _lt, "status": "draft", "line_items": line_items})
                     list_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":

@@ -154,6 +154,77 @@ def test_select_all_then_delete(page, ui_server, api):
     assert api.get(f"/docs/{id2}").status_code == 404
 
 
+def _issued_invoice(api, contact: str) -> str:
+    r = api.post("/docs", json={"doc_type": "invoice", "contact_name": contact,
+                                "line_items": [{"name": "W", "quantity": 1, "unit_price": 10, "line_total": 10}],
+                                "subtotal": 10, "total": 10})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    r = api.post(f"/docs/{doc_id}/finalize")
+    assert r.status_code == 200, r.text
+    return r.json().get("new_entity_id") or doc_id
+
+
+def test_bulk_ship_mixed_customers_confirms_first(page, ui_server, api):
+    """BULK-DOC-06: Consolidating invoices for DIFFERENT customers pops a confirm
+    (the shipment will have no customer details); Cancel aborts, OK creates the
+    shipping document with a blank consignee."""
+    id_a = _issued_invoice(api, "Alpha Ltd")
+    id_b = _issued_invoice(api, "Beta GmbH")
+
+    page.goto(f"{ui_server}/docs?type=invoice", wait_until="domcontentloaded")
+    for did in (id_a, id_b):
+        cb = page.locator(f"input.doc-row-select[value='{did}']")
+        assert cb.count() > 0, f"No checkbox for {did}"
+        cb.click()
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+    page.locator("#doc-bulk-select").select_option("doc-ship")
+    page.wait_for_selector("#doc-bulk-ship-btn:not([style*='none'])", timeout=2000)
+
+    # Cancel first: the dialog explains the blank consignee; dismissing aborts.
+    seen = {}
+    page.once("dialog", lambda d: (seen.update(message=d.message), d.dismiss()))
+    page.locator("#doc-bulk-ship-btn").click()
+    page.wait_for_timeout(500)
+    assert "more than one customer" in seen.get("message", ""), f"dialog text: {seen}"
+    assert "/docs" in page.url, "Cancel must stay on the invoice list"
+
+    # Accept: one shipping document, consignee left blank for manual entry.
+    page.once("dialog", lambda d: d.accept())
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-ship-btn").click()
+    _no_crash(page, "BULK-DOC-06")
+    assert "/lists/" in page.url, f"Expected the new shipping document, got {page.url}"
+    ship_id = page.url.split("/lists/")[1].split("?")[0]
+    state = api.get(f"/lists/{ship_id}").json()
+    assert state["list_type"] == "shipping_doc"
+    assert not state.get("contact_name") and not state.get("customer_name")
+    # ids arrive in table (DOM) order, not click order - compare as a set
+    assert sorted(state["source_docs"]) == sorted([id_a, id_b])
+
+
+def test_bulk_ship_single_customer_needs_no_confirm(page, ui_server, api):
+    """BULK-DOC-07: One customer's invoices consolidate without any dialog."""
+    id_a = _issued_invoice(api, "Gamma Co")
+    id_b = _issued_invoice(api, "Gamma Co")
+    page.goto(f"{ui_server}/docs?type=invoice", wait_until="domcontentloaded")
+    for did in (id_a, id_b):
+        page.locator(f"input.doc-row-select[value='{did}']").click()
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+    page.locator("#doc-bulk-select").select_option("doc-ship")
+    page.wait_for_selector("#doc-bulk-ship-btn:not([style*='none'])", timeout=2000)
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-ship-btn").click()
+    _no_crash(page, "BULK-DOC-07")
+    assert not dialogs, f"No dialog expected for a single customer, got {dialogs}"
+    assert "/lists/" in page.url
+    ship_id = page.url.split("/lists/")[1].split("?")[0]
+    state = api.get(f"/lists/{ship_id}").json()
+    assert state.get("contact_name") == "Gamma Co" or state.get("customer_name") == "Gamma Co"
+
+
 def test_auto_redirect_drafts_when_no_finals(page, ui_server, fresh_company):
     """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view.
 

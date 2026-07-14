@@ -42,6 +42,8 @@ class ListBehavior:
     finalize_milestone: str | None = None   # timestamp set on finalize, or "freeze_onhand" sentinel
     terminal: tuple[TerminalAction, ...] = ()
     scan_finalized: str = "noop"            # scan behaviour once finalized: count | receive | noop
+    customs: bool = False                   # value-bearing but non-accounting: per-line customs
+                                            # value/HS/origin columns, declared total, no disc/tax
 
 
 # THE table. One row per type — the only place a type's behaviour is declared.
@@ -72,10 +74,12 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             manager=True),),
         scan_finalized="count",
     ),
-    # "shipping": ListBehavior(label="Shipping", money=False, extra_columns=("packed",),
-    #     finalize_label="Pack", finalize_milestone="packed_at",
-    #     terminal=(TerminalAction("ship", "Ship", "shipped"),), scan_finalized="pack"),
-    #   ^ Phase 4 proof: adding shipping is this row + a print template + a ship body. Nothing else.
+    "shipping_doc": ListBehavior(
+        # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)
+        # and the Commercial Invoice (customs values + declaration, for cross-border carriers).
+        label="Shipping Document", money=False, customs=True, finalize_label="Issue",
+        finalize_milestone="issued_at", terminal=(), scan_finalized="noop",
+    ),
 }
 
 LIST_TYPES: tuple[str, ...] = tuple(LIST_BEHAVIOR.keys())
@@ -120,6 +124,8 @@ def status_label(state: dict) -> str:
         return "Counting"
     if lt == "transfer":
         return "In transit"
+    if lt == "shipping_doc":
+        return "Issued"
     if lt == "quotation":
         if state.get("accepted_at"):
             return "Accepted"

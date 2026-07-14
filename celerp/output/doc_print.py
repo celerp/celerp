@@ -19,7 +19,9 @@ from fasthtml.common import (
     Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
 )
 
+from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.services.line_measures import measure_sublines, qty_label
+from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
 EMPTY = "--"
@@ -31,8 +33,7 @@ INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"}
 # Import-into-Celerp footer link (an import link on a memo would just 422).
 IMPORTABLE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "purchase_order", "quotation", "list"})
 
-_BRAND_URL = "https://www.celerp.com"
-_BRAND_LABEL = "Powered by Celerp.com - Downloadable ERP for Serious Businesses"
+_BRAND_URL = _brand_url("doc-print")
 
 CURRENCY_SYMBOLS = {
     "AED": "AED ", "ARS": "AR$", "AUD": "A$", "BDT": "৳", "BRL": "R$",
@@ -138,6 +139,28 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 .dp-totals tr.grand td { border-top: 2px solid #111; font-size: 11pt; font-weight: 700; padding-top: 2mm; }
 .dp-notes { margin-top: 4mm; font-size: 9pt; color: #444; border-top: 1px solid #ddd; padding-top: 3mm; }
 .dp-notes-label { font-weight: 700; color: #111; margin-bottom: 1mm; }
+/* Shipment paperwork (delivery note / commercial invoice) */
+.dp-shipmeta { display: flex; flex-wrap: wrap; gap: 3mm 8mm; margin-bottom: 6mm; padding: 3mm 4mm; border: 1px solid #ccc; }
+.dp-shipmeta-cell { min-width: 28mm; }
+.dp-shipmeta-lbl { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #888; }
+.dp-shipmeta-val { font-size: 9.5pt; font-weight: 600; min-height: 4mm; }
+/* FedEx-style bordered header grid + totals band for the commercial invoice. */
+.dp-fx { width: 100%; border-collapse: collapse; margin-bottom: 5mm; font-size: 9pt; table-layout: fixed; }
+.dp-fx > tbody > tr > td { border: 1px solid #999; padding: 1.5mm 2mm; vertical-align: top; }
+.dp-fx .lbl { display: block; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #666; margin-bottom: 0.5mm; }
+.dp-fx .val { font-size: 9.5pt; font-weight: 600; min-height: 4mm; line-height: 1.4; }
+.dp-fx .val p { margin: 0; font-weight: inherit; }
+.dp-fx-nest { padding: 0 !important; }
+.dp-fx--inner { margin-bottom: 0; height: 100%; }
+.dp-fx--inner > tbody > tr > td { border-width: 0 0 1px 0; }
+.dp-fx--inner > tbody > tr:last-child > td { border-bottom: 0; }
+.dp-fx--totals { margin-top: 2mm; }
+.dp-declaration { margin-top: 6mm; font-size: 9pt; color: #111; border-top: 1px solid #ddd; padding-top: 3mm; }
+/* Vertical signature: Name / Signature / Date, each on its own write-on line. */
+.dp-sign-v { margin-top: 4mm; max-width: 90mm; }
+.dp-sign-v > div { display: flex; align-items: flex-end; gap: 3mm; margin-top: 5mm; font-size: 8.5pt; color: #555; }
+.dp-sign-v > div > span:first-child { flex: 0 0 18mm; }
+.dp-sign-v .line { flex: 1; border-bottom: 1px solid #111; min-height: 5mm; }
 .dp-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 3mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; background: white; display: flex; justify-content: space-between; align-items: center; gap: 8mm; }
 .dp-footer a { color: #aaa; text-decoration: none; }
 .dp-footer a:hover { text-decoration: underline; }
@@ -190,7 +213,8 @@ def _pay_bar(pay_url: str | None, doc: dict, currency: str):
 
 
 def render_doc_print_html(doc: dict, *, import_url: str | None = None,
-                          pay_url: str | None = None, auto_print: bool = False) -> str:
+                          pay_url: str | None = None, auto_print: bool = False,
+                          layout: str | None = None) -> str:
     """Render the letterhead document page as a standalone HTML string.
 
     ``doc`` must already carry company_* letterhead fields, resolved contact
@@ -198,11 +222,28 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     UI print routes and the API share view prepare it the same way.
     ``pay_url`` adds the screen-only payment bar (public share view of a
     payable doc on a Stripe-connected instance).
+
+    A shipping document (list_type="shipping_doc") is one shipment record with
+    two paper renderings, chosen via ``layout``: "delivery_note" (the default -
+    quantities and logistics, structurally no prices) or "commercial_invoice"
+    (customs values, HS codes, origin, incoterms, declaration). ``layout`` is
+    only meaningful for shipping documents; passing it for anything else raises.
     """
     entity_id = doc.get("id") or doc.get("entity_id") or ""
     doc_type = doc.get("doc_type", "")
+    is_shipping = doc_type == "list" and doc.get("list_type") == SHIPPING_LIST_TYPE
+    if layout is not None and not is_shipping:
+        raise ValueError("layout is only valid for shipping documents")
+    if layout is not None and layout not in ("delivery_note", "commercial_invoice"):
+        raise ValueError(f"Unknown shipping layout: {layout}")
+    ship_layout = (layout or "delivery_note") if is_shipping else None
     doc_number = doc.get("doc_number") or doc.get("ref_id") or entity_id
-    title = doc_type.replace("_", " ").title() if doc_type else "Document"
+    source_doc_refs = [s.split(":", 1)[1] if ":" in s else s
+                       for s in (doc.get("source_docs") or []) if s]
+    if ship_layout:
+        title = "Delivery Note" if ship_layout == "delivery_note" else "Commercial Invoice"
+    else:
+        title = doc_type.replace("_", " ").title() if doc_type else "Document"
     issue_date = (doc.get("issue_date") or "")[:10]
     due_date = (doc.get("due_date") or "")[:10]
     currency = doc.get("currency") or "USD"
@@ -232,58 +273,232 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
 
     has_disc = any(li.get("discount_pct") for li in line_items)
     _print_umap = build_unit_map(DEFAULT_UNITS)
-    rows = []
-    for li in line_items:
-        qty = li.get("quantity") or li.get("qty") or 0
-        price = li.get("unit_price") or li.get("price") or 0
-        disc = li.get("discount_pct") or 0
-        line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
-        # Description holds only the description (the SKU has its own column) plus
-        # Pieces / Weight as labelled sub-lines when the line carries them.
-        desc = li.get("description") or li.get("name") or ""
-        sku = li.get("sku") or ""
-        _ls = "margin:0;font-size:8.5pt;"
-        _desc_parts = [P(f"- {desc}", style=_ls)]
-        # Pieces/Weight sub-lines are sales (invoice-layout) only; keep vendor docs clean.
-        if doc_type in INVOICE_LAYOUT_DOC_TYPES:
-            _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
-        rows.append(Tr(
-            Td(sku, cls="mono"),
-            Td(Div(*_desc_parts)),
-            Td(qty_label(li), cls="r"),
-            Td(fmt_rate(price, currency), cls="r"),
-            *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
-            Td(_money(line_total), cls="r"),
-        ))
 
-    headers = Tr(
-        Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
-        *([] if not has_disc else [Th("Disc%", cls="r")]),
-        Th("Amount", cls="r"),
-    )
+    def _line_weight(li: dict) -> str:
+        w = li.get("weight")
+        if w in (None, "", 0):
+            return ""
+        return f"{float(w):g} {li.get('weight_unit') or ''}".strip()
+
+    def _line_gross(li: dict) -> str:
+        w = li.get("gross_weight")
+        if w in (None, "", 0):
+            return ""
+        return f"{float(w):g} {li.get('gross_weight_unit') or ''}".strip()
+
+    def _weight_total(key: str, unit_key: str) -> str:
+        """Sum a per-line weight - but only when EVERY line carries it in one shared
+        unit. A partial sum would understate the shipment on customs paper, so
+        incomplete data prints blank instead."""
+        if not line_items or any(li.get(key) in (None, "", 0) for li in line_items):
+            return ""
+        units = {li.get(unit_key) or "" for li in line_items}
+        if len(units) != 1:
+            return ""
+        total = sum(float(li.get(key) or 0) for li in line_items)
+        return f"{total:g} {next(iter(units))}".strip() if total else ""
+
+    rows = []
+    if ship_layout:
+        # Shipment paperwork: customs columns per line. Missing HS code / origin /
+        # value print BLANK - never a fabricated placeholder on customs paper.
+        # Net weight = the goods (the line's own weight); gross adds the item's
+        # packaging (from the catalog's per-item gross weight).
+        for li in line_items:
+            qty = li.get("quantity") or li.get("qty") or 0
+            price = li.get("unit_price") or li.get("price") or 0
+            line_total = li.get("line_total") or (float(qty) * float(price))
+            base = [
+                Td(li.get("sku") or "", cls="mono"),
+                Td(li.get("description") or li.get("name") or ""),
+            ]
+            if ship_layout == "delivery_note":
+                # Receiver's checklist: goods and quantities only. Customs columns
+                # (HS code, origin, values) belong to the commercial invoice.
+                rows.append(Tr(*base, Td(_line_weight(li), cls="r"), Td(qty_label(li), cls="r")))
+            else:
+                rows.append(Tr(
+                    *base,
+                    Td(li.get("hs_code") or "", cls="mono"),
+                    Td(li.get("country_of_origin") or ""),
+                    Td(qty_label(li), cls="r"),
+                    Td(_line_weight(li), cls="r"),
+                    Td(_line_gross(li), cls="r"),
+                    Td(fmt_rate(price, currency) if float(price or 0) else "", cls="r"),
+                    Td(_money(line_total) if float(price or 0) else "", cls="r"),
+                ))
+        if ship_layout == "delivery_note":
+            headers = Tr(Th("SKU"), Th("Description"), Th("Net Weight", cls="r"), Th("Qty", cls="r"))
+        else:
+            headers = Tr(Th("SKU"), Th("Description"), Th("HS Code"), Th("Country of Origin"),
+                         Th("Qty", cls="r"), Th("Net Wt", cls="r"),
+                         Th("Gross Wt", cls="r"), Th("Unit Value", cls="r"), Th("Total Value", cls="r"))
+    else:
+        for li in line_items:
+            qty = li.get("quantity") or li.get("qty") or 0
+            price = li.get("unit_price") or li.get("price") or 0
+            disc = li.get("discount_pct") or 0
+            line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
+            # Description holds only the description (the SKU has its own column) plus
+            # Pieces / Weight as labelled sub-lines when the line carries them.
+            desc = li.get("description") or li.get("name") or ""
+            sku = li.get("sku") or ""
+            _ls = "margin:0;font-size:8.5pt;"
+            _desc_parts = [P(f"- {desc}", style=_ls)]
+            # Pieces/Weight sub-lines are sales (invoice-layout) only; keep vendor docs clean.
+            if doc_type in INVOICE_LAYOUT_DOC_TYPES:
+                _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
+            rows.append(Tr(
+                Td(sku, cls="mono"),
+                Td(Div(*_desc_parts)),
+                Td(qty_label(li), cls="r"),
+                Td(fmt_rate(price, currency), cls="r"),
+                *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
+                Td(_money(line_total), cls="r"),
+            ))
+
+        headers = Tr(
+            Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
+            *([] if not has_disc else [Th("Disc%", cls="r")]),
+            Th("Amount", cls="r"),
+        )
 
     subtotal = doc.get("subtotal") or 0
     tax_total = doc.get("tax_total") or doc.get("tax") or 0
     grand_total = doc.get("grand_total") or doc.get("total") or 0
     notes_text = doc.get("notes") or doc.get("terms") or ""
 
-    totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
-    # Header (whole-document) discount, when set. grand_total/total already reflects it.
-    _disc_amt = float(doc.get("discount_amount") or 0)
-    _disc_raw = float(doc.get("discount") or 0)
-    _disc_type = doc.get("discount_type") or "flat"
-    if not _disc_amt and _disc_raw:
-        _disc_amt = subtotal * _disc_raw / 100 if _disc_type == "percentage" else _disc_raw
-    if _disc_amt > 0.005:
-        _dlabel = f"Discount ({_disc_raw:g}%)" if _disc_type == "percentage" and _disc_raw else "Discount"
-        totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
-    if float(tax_total or 0):
-        totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
-    totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
+    if ship_layout == "delivery_note":
+        totals_section = None  # no money on the paper that travels with the goods
+    elif ship_layout == "commercial_invoice":
+        # FedEx-style totals band: packages, net + gross weight, declared value.
+        # Gross = the FINAL weighed package (typed on the shipment, box included);
+        # fallback = sum of per-line gross weights when they share a unit.
+        declared = sum(
+            float(li.get("line_total") or 0)
+            or float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)
+            for li in line_items
+        )
+        _total_gross = str(doc.get("gross_weight") or "").strip() or _weight_total("gross_weight", "gross_weight_unit")
+        _totals_cells = [
+            ("Total Packages", str(doc.get("package_count") or "")),
+            ("Total Net Weight", _weight_total("weight", "weight_unit")),
+            ("Total Gross Weight", _total_gross),
+            (f"Total Declared Value ({currency})", _money(declared)),
+        ]
+        totals_section = Table(Tr(*[
+            Td(Span(lbl, cls="lbl"), Div(val or " ", cls="val"))
+            for lbl, val in _totals_cells
+        ]), cls="dp-fx dp-fx--totals")
+    else:
+        totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
+        # Header (whole-document) discount, when set. grand_total/total already reflects it.
+        _disc_amt = float(doc.get("discount_amount") or 0)
+        _disc_raw = float(doc.get("discount") or 0)
+        _disc_type = doc.get("discount_type") or "flat"
+        if not _disc_amt and _disc_raw:
+            _disc_amt = subtotal * _disc_raw / 100 if _disc_type == "percentage" else _disc_raw
+        if _disc_amt > 0.005:
+            _dlabel = f"Discount ({_disc_raw:g}%)" if _disc_type == "percentage" and _disc_raw else "Discount"
+            totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
+        if float(tax_total or 0):
+            totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
+        totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
+        totals_section = Div(Table(*totals_rows), cls="dp-totals")
 
     is_purchasing = doc_type in ("bill", "purchase_order", "consignment_in")
 
-    if is_purchasing:
+    # Shipment paperwork blocks. The commercial invoice follows the layout of the
+    # standard carrier form (FedEx-style): a bordered header grid (date of export /
+    # references / shipper / recipient / countries / importer / AWB / currency), the
+    # goods table, a totals band, then the declaration with a vertical signature.
+    shipmeta_section = None
+    declaration_section = None
+    signature_section = None
+
+    def _sign_block(intro: str):
+        """Vertical signature: Name / Signature / Date, each its own write-on line."""
+        return Div(
+            P(intro),
+            Div(
+                *[Div(Span(_lbl + ":"), Span(cls="line"))
+                  for _lbl in ("Name", "Signature", "Date")],
+                cls="dp-sign-v",
+            ),
+            cls="dp-declaration",
+        )
+
+    if ship_layout == "commercial_invoice":
+        def _fx(label: str, value):
+            return Td(Span(label, cls="lbl"), Div(value if value else " ", cls="val"))
+
+        _exporter = Div(
+            P(company_name, style="font-weight:600;"),
+            P(company_address) if company_address else None,
+            P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
+            P(company_phone) if company_phone else None,
+        )
+        _deliver_addr = ship_to_address or contact_address
+        _recipient = Div(
+            P(contact_name, style="font-weight:600;") if contact_name else None,
+            P(contact_company) if contact_company and contact_company != contact_name else None,
+            P(shipping_attn) if shipping_attn else None,
+            P(_deliver_addr) if _deliver_addr else None,
+            P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
+        )
+        # Country of manufacture: one uniform line origin reads directly; mixed
+        # origins defer to the per-line column (never a guessed single country).
+        _origins = {li.get("country_of_origin") for li in line_items if li.get("country_of_origin")}
+        _manufacture = next(iter(_origins)) if len(_origins) == 1 else ("See line items" if _origins else "")
+        _refs = " / ".join(x for x in (doc_number, *source_doc_refs) if x)
+        _carrier_awb = " / ".join(x for x in (doc.get("carrier") or "", doc.get("tracking") or "") if x)
+        shipmeta_section = Table(
+            Tr(_fx("Date of Export", issue_date), _fx("Export References (order no., invoice no.)", _refs)),
+            Tr(_fx("Shipper / Exporter", _exporter), _fx("Recipient / Consignee", _recipient)),
+            Tr(Td(Table(
+                    Tr(_fx("Country of Export", doc.get("country_of_export") or "")),
+                    Tr(_fx("Country of Manufacture", _manufacture)),
+                    Tr(_fx("Country of Ultimate Destination", doc.get("country_of_destination") or "")),
+                    cls="dp-fx dp-fx--inner"),
+                  cls="dp-fx-nest"),
+               _fx("Importer - if other than recipient", doc.get("importer") or "")),
+            Tr(_fx("Carrier / Air Waybill No.", _carrier_awb), _fx("Currency", currency)),
+            Tr(_fx("Incoterms", doc.get("incoterms") or ""),
+               _fx("Reason for Export", REASON_EXPORT_LABELS.get(doc.get("reason_for_export") or "", ""))),
+            cls="dp-fx",
+        )
+        parties_section = None  # the grid IS the parties block
+        declaration_section = _sign_block(
+            "I declare all the information contained in this invoice to be true and correct.")
+    elif ship_layout == "delivery_note":
+        # The delivery note keeps a light strip and prints only the logistics that
+        # are actually set - it is a receiving document, not a customs form.
+        _gross = str(doc.get("gross_weight") or "").strip() or _weight_total("gross_weight", "gross_weight_unit")
+        _set = [(l, v) for l, v in (
+            ("Carrier", doc.get("carrier") or ""),
+            ("Tracking", doc.get("tracking") or ""),
+            ("Incoterms", doc.get("incoterms") or ""),
+            ("Packages", str(doc.get("package_count") or "")),
+            ("Gross Weight", _gross),
+        ) if v]
+        if _set:
+            shipmeta_section = Div(*[
+                Div(P(l, cls="dp-shipmeta-lbl"), P(v, cls="dp-shipmeta-val"), cls="dp-shipmeta-cell")
+                for l, v in _set], cls="dp-shipmeta")
+        _deliver_addr = ship_to_address or contact_address
+        parties_section = Div(Div(
+            P("Deliver To", cls="dp-party-label"),
+            P(contact_name, cls="dp-party-name") if contact_name else None,
+            Div(
+                P(contact_company) if contact_company and contact_company != contact_name else None,
+                P(shipping_attn) if shipping_attn else None,
+                P(_deliver_addr) if _deliver_addr else None,
+                P(contact_email) if contact_email else None,
+                cls="dp-party-sub",
+            ),
+        ), cls="dp-parties")
+        signature_section = _sign_block("Received in good order:")
+    elif is_purchasing:
         # Vendor = the contact (supplier); Bill To = us (the company)
         vendor_box = Div(
             P("Vendor", cls="dp-party-label"),
@@ -362,16 +577,19 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                     Div(
                         P(Strong("No.: "), doc_number),
                         P(Strong("Date: "), issue_date) if issue_date else None,
-                        P(Strong("Due: "), due_date) if due_date else None,
+                        P(Strong("Due: "), due_date) if due_date and not ship_layout else None,
                         cls="dp-doc-meta",
                     ),
                 ),
                 cls="dp-header",
             ),
             parties_section,
+            shipmeta_section,
             Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
-            Div(Table(*totals_rows), cls="dp-totals"),
+            totals_section,
             Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
+            declaration_section,
+            signature_section,
             _doc_footer(import_url),
             Script("window.onload = function() { window.print(); }") if auto_print else None,
         ),
