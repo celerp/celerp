@@ -31,7 +31,7 @@ PLUGIN_MANIFEST = {
             {"label": "Invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},
             {"label": "Consignment Out", "doc_type": "memo", "statuses": ["draft"]},
             {"label": "List/Quotation", "doc_type": "list", "statuses": ["draft", "sent"]},
-            {"label": "Delivery Note", "doc_type": "delivery_note", "statuses": ["draft", "sent"]},
+            {"label": "Shipping Document", "doc_type": "shipping_doc", "statuses": ["draft", "sent"]},
             {"label": "Purchase Order", "doc_type": "purchase_order", "statuses": ["draft"]},
         ],
     },

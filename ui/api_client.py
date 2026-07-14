@@ -1424,6 +1424,12 @@ async def convert_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/convert")).json()
 
 
+async def create_shipment_from_doc(token: str, entity_id: str) -> dict:
+    """Create a draft shipping document from an invoice or consignment-out memo."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/shipment")).json()
+
+
 # ---------------------------------------------------------------------------
 # T2: PO receive
 # ---------------------------------------------------------------------------

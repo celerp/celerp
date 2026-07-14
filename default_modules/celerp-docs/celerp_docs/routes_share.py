@@ -79,7 +79,7 @@ _DOC_STR_FIELDS = frozenset({
 })
 _LINE_STR_FIELDS = frozenset({
     "sku", "name", "description", "unit", "sell_by", "weight_unit",
-    "hs_code", "account_code", "tax_code",
+    "hs_code", "country_of_origin", "account_code", "tax_code",
 })
 _LINE_NUM_FIELDS = frozenset({
     "quantity", "unit_price", "pieces", "weight", "tax_rate", "discount_pct",
@@ -474,15 +474,18 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
 
 async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> None:
     """Source pieces/weight (and the weight's unit) from each line's item for
-    the shared view - the DB-side mirror of the UI print enrichment."""
+    the shared view - the DB-side mirror of the UI print enrichment. Shipping
+    documents also backfill HS code / country of origin from the item."""
     if state.get("doc_type") not in INVOICE_LAYOUT_DOC_TYPES:
         return
     from celerp.models.company import Company
     from celerp.services.line_measures import item_measure_meta, resolve_line_measures
+    from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
     units = ((company.settings or {}).get("units") if company else None) or DEFAULT_UNITS
     umap = build_unit_map(units)
+    is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
     for li in state.get("line_items") or []:
         eid = li.get("entity_id") or li.get("item_id")
         if not eid:
@@ -492,6 +495,10 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
             continue
         meta = item_measure_meta(irow.state or {}, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+        if is_shipping:
+            customs_backfill(li, irow.state or {})
+            li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
+                li, irow.state or {}, bool(meta.get("qty_is_weight")))
 
 
 @public_router.get("/share/{token}", response_class=HTMLResponse)

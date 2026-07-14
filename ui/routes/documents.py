@@ -101,6 +101,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "sell_by": meta["sell_by"] or None,
         "quantity": meta["quantity"] or 0,
         "hs_code": item.get("hs_code") or None,
+        "country_of_origin": item.get("country_of_origin") or None,
         "entity_id": item.get("entity_id") or item.get("id") or None,
         "allow_splitting": meta["allow_splitting"],
         "batch_no": item.get("batch_no") or None,
@@ -212,6 +213,9 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         counting = is_audit and status in (_LF, _LC)
         return {
             "no_money": not b.money,
+            # customs (shipping documents): value-bearing but non-accounting. The draft shows
+            # every field a printout needs (HS code, origin, customs value); disc/tax stay off.
+            "customs": b.customs,
             "show_onhand": "on_hand" in b.extra_columns,
             "show_counted": "counted" in b.extra_columns,
             "audit": is_audit,
@@ -220,6 +224,7 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         }
     return {
         "no_money": doc_type in _NO_MONEY_DOC_TYPES,
+        "customs": False,
         "show_onhand": False,
         "show_counted": False,
         "audit": False,
@@ -528,6 +533,7 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "sku": sku,
             "price_list": price_list,
             "hs_code": item.get("hs_code") or None,
+            "country_of_origin": item.get("country_of_origin") or None,
             "entity_id": eid,
             "allow_splitting": bool(item.get("allow_splitting")),
         })
@@ -1493,12 +1499,16 @@ def setup_routes(app):
         """Source pieces/weight (and the weight's unit) from each line's parcel for the
         printout. Invoice-layout docs (invoice / consignment-out / list) show those
         measures, and lines created before the PCS/WEIGHT feature don't store them
-        (notably the weight unit). No-op for other doc types."""
+        (notably the weight unit). Shipping documents additionally backfill each
+        line's HS code / country of origin from its catalog item - the item is the
+        durable home of customs data, the line only overrides. No-op for other types."""
         if doc.get("doc_type") not in _INVOICE_LAYOUT_DOC_TYPES:
             return
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
+        from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
         from celerp.services.units import build_unit_map
+        _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
         try:
             _umap = build_unit_map(await api.get_units(token))
         except Exception:
@@ -1514,6 +1524,11 @@ def setup_routes(app):
                 return
             meta = item_measure_meta(item, _umap)
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+            if _is_shipping:
+                customs_backfill(li, item)
+                # Net weight = the line's actual weight (above); gross adds the item's packaging.
+                li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
+                    li, item, bool(meta.get("qty_is_weight")))
         await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
 
     async def _print_import_url(token: str, entity_id: str) -> str | None:
@@ -1528,7 +1543,11 @@ def setup_routes(app):
     # Same export for lists
     @app.get("/lists/{entity_id}/print")
     async def list_print_view(request: Request, entity_id: str):
-        """Standalone printable HTML for a list - auto-triggers window.print()."""
+        """Standalone printable HTML for a list - auto-triggers window.print().
+
+        A shipping document prints as a Delivery Note by default; pass
+        ?layout=commercial_invoice for the customs rendering of the same record."""
+        from starlette.responses import HTMLResponse as _HR
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -1537,8 +1556,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            from starlette.responses import HTMLResponse as _HR
             return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
+        layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("contact_name"):
             lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
@@ -1550,9 +1569,13 @@ def setup_routes(app):
             except Exception:
                 pass
         await _enrich_print_lines(token, lst)
-        from starlette.responses import HTMLResponse as _HR
-        return _HR(render_doc_print_html(
-            lst, import_url=await _print_import_url(token, entity_id), auto_print=True))
+        try:
+            html = render_doc_print_html(
+                lst, import_url=await _print_import_url(token, entity_id), auto_print=True,
+                layout=layout)
+        except ValueError as e:
+            return _HR(f"<p>Error: {e}</p>", status_code=422)
+        return _HR(html)
 
     @app.get("/lists/{entity_id}/items/csv")
     async def list_items_export_csv(request: Request, entity_id: str):
@@ -2770,6 +2793,13 @@ celerpUpdateBulkAlloc();
                 result = await api.create_doc(token, cn_payload)
                 cn_id = result.get("entity_id") or result.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
+            elif action == "create-shipment":
+                # One step from "sold it" to "ship it": a draft shipping document
+                # prefilled from this invoice/memo, ready to print as a Delivery
+                # Note or Commercial Invoice.
+                result = await api.create_shipment_from_doc(token, entity_id)
+                ship_id = result.get("entity_id") or result.get("id", "")
+                return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
             else:
                 return _R("", status_code=400)
         except APIError as e:
@@ -3641,11 +3671,13 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
         # Audits are location-bound, not blank drafts: send the user through the location picker.
-        _new_btn = (
-            A("New audit", href="/lists/new-audit", cls="btn btn--primary")
-            if list_type == "audit"
-            else Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft")
-        )
+        if list_type == "audit":
+            _new_btn = A("New audit", href="/lists/new-audit", cls="btn btn--primary")
+        elif list_type == "shipping_doc":
+            _new_btn = Button(t("page.new_shipping_doc"), hx_post="/lists/create-blank?type=shipping_doc",
+                              hx_swap="none", cls="btn btn--primary", title="Create a blank draft shipping document")
+        else:
+            _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft")
         return base_shell(
             page_header(
                 t("page.lists", lang),
@@ -3658,6 +3690,8 @@ celerpUpdateBulkAlloc();
             _date_filter_bar("/lists", date_from, date_to, preset,
                              extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
             _list_type_tabs(list_type),
+            # Self-explanatory page: the shipping tab says what these are and what to do next.
+            (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
             _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
             _list_table(lists, lang=lang),
             pagination(page, filtered_total, _PER_PAGE, "/lists",
@@ -3726,8 +3760,11 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        _lt = request.query_params.get("type") or "quotation"
+        if _lt not in _LIST_TYPES:
+            return _R("", status_code=422)
         try:
-            result = await api.create_list(token, {"list_type": "quotation", "status": "draft"})
+            result = await api.create_list(token, {"list_type": _lt, "status": "draft"})
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
             logger.warning("API error on create_blank_list: %s", e.detail)
@@ -4007,7 +4044,7 @@ celerpUpdateBulkAlloc();
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         if field == "list_type":
             input_el = Select(
-                *[Option(lt.replace("_", " ").title(), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
+                *[Option(_list_behavior(lt).label, value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML", hx_trigger="change",
                 cls="cell-input cell-input--select", autofocus=True,
@@ -4912,6 +4949,55 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     )
 
 
+def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
+    """Shipment section rows for a shipping document (list_type="shipping_doc").
+
+    The draft exposes every header field the two printouts (Delivery Note /
+    Commercial Invoice) can render - a printout never carries a field the user
+    could not see and edit here first. Closed-set fields (incoterms, reason for
+    export) are fixed selects; free-form ones use the standard editable cell.
+    """
+    from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+
+    def _fixed_select(field: str, options: list[tuple[str, str]]) -> FT:
+        current = str(doc.get(field) or "")
+        if not is_draft:
+            _label = dict(options).get(current, current)
+            return Span(_label or "--", cls="meta-value")
+        return Select(
+            Option("--", value="", selected=(not current)),
+            *[Option(label, value=val, selected=(val == current)) for val, label in options],
+            name="value",
+            hx_patch=f"/lists/{entity_id}/field/{field}",
+            hx_swap="none",
+            cls="form-select",
+        )
+
+    def _text_cell(field: str) -> FT:
+        return Div(Div(t(f"doc.{field}"), cls="form-label"),
+                   _doc_display_cell(entity_id, field, doc.get(field), "list"), cls="form-group")
+
+    rows = [
+        _text_cell("carrier"),
+        _text_cell("tracking"),
+        Div(Div(t("doc.incoterms"), cls="form-label"),
+            _fixed_select("incoterms", [(c, c) for c in INCOTERMS_2020]), cls="form-group"),
+        Div(Div(t("doc.reason_for_export"), cls="form-label"),
+            _fixed_select("reason_for_export", [(c, t(f"reason_export.{c}")) for c in REASONS_FOR_EXPORT]), cls="form-group"),
+        _text_cell("package_count"),
+        _text_cell("gross_weight"),
+        _text_cell("country_of_export"),
+        _text_cell("country_of_destination"),
+        _text_cell("importer"),
+    ]
+    _src = str(doc.get("source_doc") or "")
+    if _src:
+        _src_ref = _src.split(":", 1)[1] if ":" in _src else _src
+        rows.append(Div(Div(t("doc.source_doc"), cls="form-label"),
+                        A(_src_ref, href=f"/docs/{_src}", cls="auth-link"), cls="form-group"))
+    return rows
+
+
 def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list: bool = False) -> FT:
     """Purchasing-doc Ship To: dropdown of company locations, patches contact_shipping_address."""
     base = f"/lists/{doc_id}" if is_list else f"/docs/{doc_id}"
@@ -5218,7 +5304,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(
-                    *[Option(lt.replace("_", " ").title(), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
+                    *[Option(_list_behavior(lt).label, value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
                     hx_patch=f"/lists/{entity_id}/field/list_type",
                     hx_swap="none",
@@ -5230,7 +5316,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         else:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
-                Span(_current_lt.replace("_", " ").title(), cls=f"badge badge--{_current_lt}"),
+                Span(_list_behavior(_current_lt).label, cls=f"badge badge--{_current_lt}"),
                 cls="list-type-bar",
                 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;",
             )
@@ -5266,6 +5352,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    hx_swap="none", cls="btn btn--secondary",
                    title="Turn this memo into an invoice because the customer is keeping the goods.")
         )
+    # Invoices and consignment-out memos ship: one step to a prefilled shipping
+    # document (Delivery Note / Commercial Invoice printouts). Issued documents
+    # only - a draft's lines are still moving, so its paperwork would go stale.
+    if doc_type in ("invoice", "memo") and status not in ("draft", "void") and not suppress_doc_actions and _is_operator:
+        action_btns_left.append(
+            Button(t("btn.create_shipping_doc"),
+                   hx_post=f"/docs/{entity_id}/action/create-shipment",
+                   hx_swap="none", cls="btn btn--secondary",
+                   title="Create a shipping document from this document's lines. Print it as a Delivery Note (no prices) or a Commercial Invoice for customs.")
+        )
     # Issued consignment_in can be converted to vendor bills (vendor keeps goods)
     if doc_type == "consignment_in" and status in ("final", "sent", "received", "partially_received"):
         action_btns_left.append(
@@ -5280,7 +5376,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if is_list:
         if status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
-            _list_word = (list_type or "list").replace("_", " ")
+            _list_word = _list_behavior(list_type).label.lower() if list_type else "list"
             action_btns_left.append(Button("Issue", hx_post=f"/lists/{entity_id}/action/finalize",
                                            hx_swap="none", cls="btn btn--primary",
                                            title=f"Finalize this {_list_word} and lock its contents so it can be sent, converted, or acted on."))
@@ -5576,7 +5672,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
     if not suppress_pdf:
         _print_href = f"/lists/{entity_id}/print" if is_list else f"/docs/{entity_id}/print"
-        action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
+        if pol["customs"]:
+            # One shipment, two papers: each print action names the document it produces.
+            action_btns_print.append(A(t("btn.print_delivery_note"), href=_print_href,
+                                       target="_blank", cls="btn btn--secondary btn--sm"))
+            action_btns_print.append(A(t("btn.print_commercial_invoice"),
+                                       href=f"{_print_href}?layout=commercial_invoice",
+                                       target="_blank", cls="btn btn--secondary btn--sm"))
+        else:
+            action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
             A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
@@ -5858,6 +5962,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(category_cell)
             if receive_as_cell:
                 cells.append(receive_as_cell)
+            if pol["customs"]:
+                # Shipping documents edit customs data per line; other types keep hs_code
+                # as a hidden pass-through (see the col-total cell below).
+                cells.append(Td(Input(type="text", value=li.get("hs_code", "") or "",
+                                      data_name="hs_code", oninput="celerpFieldEdited(this)",
+                                      onblur="celerpAutoSave()", cls="cell-input cell-input--xs"),
+                              cls="col-hs"))
+                cells.append(Td(Input(type="text", value=li.get("country_of_origin", "") or "",
+                                      data_name="country_of_origin", oninput="celerpFieldEdited(this)",
+                                      onblur="celerpAutoSave()", cls="cell-input cell-input--xs"),
+                              cls="col-origin"))
             _unit_span = Span(li.get("unit", "") or "", data_name="unit",
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             if pol["counting"]:
@@ -5915,7 +6030,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpUpdateTotals(); celerpAutoSave()",
                          data_name="line_total"),
-                   Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
+                   # Customs rows carry hs_code as a visible column instead (one input per field).
+                   None if pol["customs"] else Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity"),
@@ -5989,6 +6105,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(_cat_cell)
             if _ra_cell:
                 cells.append(_ra_cell)
+            if pol["customs"]:
+                cells.append(Td(Input(type="text", value="", data_name="hs_code",
+                                      oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
+                                      cls="cell-input cell-input--xs"), cls="col-hs"))
+                cells.append(Td(Input(type="text", value="", data_name="country_of_origin",
+                                      oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
+                                      cls="cell-input cell-input--xs"), cls="col-origin"))
             _e_unit_span = Span("", data_name="unit", cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             _e_qty_input = Input(type="number", value="1", step="any", data_name="quantity",
                                  **{"data-qty-measure": ""},
@@ -6022,7 +6145,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpUpdateTotals(); celerpAutoSave()",
                          data_name="line_total"),
-                   Input(type="hidden", value="", data_name="hs_code"),
+                   None if pol["customs"] else Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
                    Input(type="hidden", value="", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity"),
@@ -6047,10 +6170,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category"), cls="col-cat"))
             _line_headers.append(Th(t("th.type"), cls="col-type"))
+        if pol["customs"]:
+            _line_headers.append(Th(t("th.hs_code"), cls="col-hs"))
+            _line_headers.append(Th(t("th.origin"), cls="col-origin"))
         _line_headers.append(Th(t("th.qty"), cls="col-qty"))
         if not is_invoice_layout:
             _line_headers.append(Th(t("th.unit"), cls="col-unit"))
-        _line_headers.extend([Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
+        _line_headers.extend([Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
@@ -6148,7 +6274,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
-                        + (" doc-lines--no-money" if pol["no_money"] else "")
+                        + (" doc-lines--no-money" if pol["no_money"] and not pol["customs"] else "")
+                        + (" doc-lines--customs" if pol["customs"] else "")
                     + (" doc-lines--audit" if pol["audit"] else ""),
                 ),
                 cls="table-scroll-wrap",
@@ -6282,12 +6409,14 @@ function celerpFillRow(row, data) {{
     const qtyEl = row.querySelector('[data-name="quantity"]');
     const skuEl = row.querySelector('[data-name="sku"]');
     const hsCodeEl = row.querySelector('[data-name="hs_code"]');
+    const cooEl = row.querySelector('[data-name="country_of_origin"]');
     const entityIdEl = row.querySelector('[data-name="entity_id"]');
     const allowSplitEl = row.querySelector('[data-name="allow_splitting"]');
     const itemQtyEl = row.querySelector('[data-name="item_quantity"]');
     if (skuEl && data.sku) skuEl.value = data.sku;
     if (descEl && data.description) descEl.value = data.description;
     if (hsCodeEl && data.hs_code) hsCodeEl.value = data.hs_code;
+    if (cooEl && data.country_of_origin) cooEl.value = data.country_of_origin;
     if (priceEl && data.unit_price != null) priceEl.value = data.unit_price;
     if (unitEl && data.sell_by) unitEl.textContent = data.sell_by;
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
@@ -6871,6 +7000,7 @@ function _celerpCollectLines() {{
         const rate = _celerpTaxRate(row);
         const code = _celerpTaxCode(row);
         const hsCode = row.querySelector('[data-name="hs_code"]')?.value || null;
+        const countryOfOrigin = row.querySelector('[data-name="country_of_origin"]')?.value || null;
         const entityId = row.querySelector('[data-name="entity_id"]')?.value || null;
         const taxLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
         const categoryEl = row.querySelector('[data-name="category"]');
@@ -6890,6 +7020,7 @@ function _celerpCollectLines() {{
             lines.push({{description: desc || '', sku: sku || '', quantity: qty || 1, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
+                         country_of_origin: countryOfOrigin || undefined,
                          entity_id: entityId || undefined,
                          ...(category ? {{category}} : {{}}),
                          ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
@@ -7157,13 +7288,25 @@ async function celerpCsvImport(input, entityId) {{
                 [Div(_ln, cls="li-measure") for _ln in measure_sublines(li, item_meta=_meta)]
                 if doc_type in _INVOICE_LAYOUT_DOC_TYPES else []
             )
+            # On a shipping document the catalog item is where HS code / origin are
+            # maintained, so the SKU links straight to it (one click to fix the source).
+            _sku_cell = (
+                Td(A(li.get("sku"), href=f"/inventory/{li_eid}", target="_blank",
+                     title="Open this item in the catalog (HS code and origin live there)",
+                     cls="auth-link"), cls="col-sku")
+                if pol["customs"] and li_eid and li.get("sku")
+                else Td(format_value(li.get("sku") or None), cls="col-sku")
+            )
             cells += [
-                Td(format_value(li.get("sku") or None), cls="col-sku"),
+                _sku_cell,
                 Td(_li_field_display_cell(entity_id, str(idx), "description", li.get("description") or li.get("name") or ""),
                    *_desc_extra, cls="col-desc"),
             ]
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
+            if pol["customs"]:
+                cells.append(Td(format_value(li.get("hs_code") or None), cls="col-hs"))
+                cells.append(Td(format_value(li.get("country_of_origin") or None), cls="col-origin"))
             cells.extend([
                 Td(qty_label(li), cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
@@ -7201,7 +7344,9 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.type"), cls="col-type")]
-        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
+        if pol["customs"]:
+            _thead_base += [Th(t("th.hs_code"), cls="col-hs"), Th(t("th.origin"), cls="col-origin")]
+        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
@@ -7219,7 +7364,8 @@ async function celerpCsvImport(input, entityId) {{
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
                 cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else "")
-                    + (" doc-lines--no-money" if pol["no_money"] else "")
+                    + (" doc-lines--no-money" if pol["no_money"] and not pol["customs"] else "")
+                    + (" doc-lines--customs" if pol["customs"] else "")
                     + (" doc-lines--audit" if pol["audit"] else ""),
             ),
             Script(f"""
@@ -7464,6 +7610,16 @@ async function celerpCsvImport(input, entityId) {{
     is_no_money = pol["no_money"]
     if is_no_money:
         total_panel = ""
+    if pol["customs"]:
+        # A shipment posts nothing, so no accounting totals - but customs cares about one
+        # number, the declared value, and the draft must show what the paper will say.
+        # #doc-total keeps the figure live while lines are edited (celerpUpdateTotals).
+        total_panel = Div(
+            Div(Span(f'{t("doc.total_declared_value")} ({currency}):', cls="total-label total-label--final"),
+                Span(fmt_money(float(subtotal_value or 0), currency), id="doc-total", cls="total-value total-value--final"),
+                cls="total-row total-row--final"),
+            cls="total-panel",
+        )
 
     contact_label = {
         "invoice": "Bill to", "purchase_order": "Vendor", "quotation": "Quote to",
@@ -7490,7 +7646,8 @@ async function celerpCsvImport(input, entityId) {{
     _status_field = P(_list_status_label(doc), cls="meta-value") if is_list else _cell("status", status)
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _status_field, *_slot_badges, cls="form-group"))
     # Currency row: always show (except money-less internal docs); rate row only when foreign.
-    if not is_no_money:
+    # Shipping documents keep it - the commercial invoice declares values in this currency.
+    if not is_no_money or pol["customs"]:
         _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))
         if currency != company_currency:
             _rate_val = doc.get("conversion_rate")
@@ -7501,8 +7658,26 @@ async function celerpCsvImport(input, entityId) {{
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
+    # Shipping documents: pre-print customs check. Warn, never block (GDR) - the
+    # printouts render blanks for whatever is listed here, they never invent values.
+    _customs_warn = ""
+    if pol["customs"] and status in ("draft", _LF):
+        from celerp.services.shipping import missing_customs_fields
+        _missing = missing_customs_fields(doc)
+        if _missing:
+            _parts = []
+            for _code in _missing:
+                _key, _, _n = _code.partition(":")
+                _lbl = t(f"shipment.missing.{_key}")
+                _parts.append(f"{_lbl} ({_n} {t('shipment.missing_lines')})" if _n else _lbl)
+            _customs_warn = P(f'{t("shipment.missing_warn")} {", ".join(_parts)}.',
+                              cls="flash flash--warning")
+
     return Div(
         list_type_selector,
+        # Self-explanatory page: what a shipping document is and what to do next.
+        (P(t("shipment.intro"), cls="section-hint") if pol["customs"] else ""),
+        _customs_warn,
         Div(
             Div(*(extra_left_actions or []), *action_btns_left, cls="doc-actions-left"),
             Div(
@@ -7581,6 +7756,15 @@ async function celerpCsvImport(input, entityId) {{
             ),
             cls="doc-row",
         ),
+        # Shipping documents: a full-width Shipment section right above the lines.
+        # The draft carries EVERY field the printouts need (draft shows more, the
+        # papers subtract), laid out as one unmissable grid.
+        (Div(
+            Div(Span("📦", cls="section-icon"), H3(t("page.shipment"), cls="section-title"), cls="section-header"),
+            P(t("shipment.section_hint"), cls="section-hint"),
+            Div(*_shipment_fields(doc, entity_id, is_draft), cls="shipment-grid"),
+            cls="doc-section",
+        ) if pol["customs"] else ""),
         # Inventory action button - appears just above the line items section, aligned right
         Div(
             _receive_return_el or "",
@@ -8052,7 +8236,7 @@ def _list_type_tabs(active: str) -> FT:
     tabs = [A(t("doc.all"), href="/lists", hx_get="/lists/search", hx_target="#list-table",
                hx_swap="outerHTML", hx_push_url="/lists", cls=all_cls)]
     for lt in _LIST_TYPES:
-        label = lt.replace("_", " ").title()
+        label = _list_behavior(lt).label
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
         tabs.append(A(
             label,

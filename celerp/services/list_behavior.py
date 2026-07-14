@@ -42,6 +42,8 @@ class ListBehavior:
     finalize_milestone: str | None = None   # timestamp set on finalize, or "freeze_onhand" sentinel
     terminal: tuple[TerminalAction, ...] = ()
     scan_finalized: str = "noop"            # scan behaviour once finalized: count | receive | noop
+    customs: bool = False                   # value-bearing but non-accounting: per-line customs
+                                            # value/HS/origin columns, declared total, no disc/tax
 
 
 # THE table. One row per type — the only place a type's behaviour is declared.
@@ -72,8 +74,10 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             manager=True),),
         scan_finalized="count",
     ),
-    "delivery_note": ListBehavior(
-        label="Delivery Note", money=False, finalize_label="Issue",
+    "shipping_doc": ListBehavior(
+        # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)
+        # and the Commercial Invoice (customs values + declaration, for cross-border carriers).
+        label="Shipping Document", money=False, customs=True, finalize_label="Issue",
         finalize_milestone="issued_at", terminal=(), scan_finalized="noop",
     ),
 }
@@ -120,6 +124,8 @@ def status_label(state: dict) -> str:
         return "Counting"
     if lt == "transfer":
         return "In transit"
+    if lt == "shipping_doc":
+        return "Issued"
     if lt == "quotation":
         if state.get("accepted_at"):
             return "Accepted"

@@ -32,7 +32,7 @@ _DOC_TYPE_LABELS = {
     "credit_note": "Credit Note",
     "bill": "Bill",
     "memo": "Memo",
-    "shipping_doc": "Shipping Doc",
+    "shipping_doc": "Shipping Document",
     "list": "List",
     "consignment_in": "Consignment In",
 }

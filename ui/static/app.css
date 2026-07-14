@@ -743,6 +743,16 @@ a:hover { text-decoration: underline; }
 /* No-money lists (audit/transfer/production) hide price/disc/tax/total; let the description absorb
    the freed width so the item name dominates rather than stretching the number columns. */
 .doc-lines--no-money th.col-desc, .doc-lines--no-money td.col-desc { width: 380px; }
+/* Shipping documents (customs lists): value-bearing but non-accounting. Keep the customs value
+   and amount columns, drop discount/tax (meaningless on shipment paperwork), and give the
+   per-line customs columns their own widths. */
+.doc-lines--customs th.col-disc, .doc-lines--customs td.col-disc,
+.doc-lines--customs th.col-tax,  .doc-lines--customs td.col-tax { display: none; }
+.doc-lines--customs th.col-hs,     .doc-lines--customs td.col-hs     { width: 80px; }
+.doc-lines--customs th.col-origin, .doc-lines--customs td.col-origin { width: 64px; }
+.doc-lines--customs th.col-desc,   .doc-lines--customs td.col-desc   { width: 260px; }
+/* Shipment section: all header fields the two printouts need, one visible grid. */
+.shipment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem 1.5rem; }
 /* All line-table headers are centered. !important + higher specificity beats both the per-column
    right-align rules and the global `.data-table th.cell--number { text-align:right !important }`
    (the Total header carries cell--number); cell bodies keep their own alignment. */

@@ -27,15 +27,29 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
-from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
+from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
+from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Closed-set shipment fields: unknown values never reach the event log ('' clears).
+_SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
+    "incoterms": frozenset(INCOTERMS_2020),
+    "reason_for_export": frozenset(REASONS_FOR_EXPORT),
+}
+
+
+def _validate_shipment_values(values: dict) -> None:
+    for field, allowed in _SHIPMENT_ENUM_FIELDS.items():
+        v = values.get(field)
+        if v and v not in allowed:
+            raise ValueError(f"Invalid {field}: {v!r}")
 
 
 class LineItem(BaseModel):
@@ -2130,6 +2144,74 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     return {"event_id": entry.id}
 
 
+@router.post("/{entity_id}/shipment")
+async def create_shipment_from_doc(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a draft shipping document (list_type="shipping_doc") from an invoice
+    or consignment-out memo - the "now I have to ship it" step.
+
+    Copies contact, ship-to, currency, and lines. Quantities and unit values carry
+    over (the unit value doubles as the customs value on the Commercial Invoice);
+    discounts and taxes do not - shipment paperwork is not an accounting document.
+    The shipment posts no journal entry and moves no stock; fulfillment stays on
+    the source document, which the shipment references via source_doc.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    doc_type = state.get("doc_type")
+    if doc_type not in ("invoice", "memo"):
+        raise HTTPException(status_code=422,
+                            detail="Only an invoice or consignment-out memo can be shipped")
+    if state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409,
+                            detail="Issue the document before creating its shipping paperwork")
+
+    lines = []
+    for li in state.get("line_items") or []:
+        qty = float(li.get("quantity") or 0)
+        price = float(li.get("unit_price") or 0)
+        lines.append({k: v for k, v in {
+            "item_id": li.get("item_id") or li.get("entity_id"),
+            "sku": li.get("sku"),
+            "name": li.get("name"),
+            "description": li.get("description") or li.get("name"),
+            "unit": li.get("unit"),
+            "quantity": qty,
+            "unit_price": price,
+            "line_total": qty * price,
+            "hs_code": li.get("hs_code"),
+            "country_of_origin": li.get("country_of_origin"),
+            "pieces": li.get("pieces"),
+            "weight": li.get("weight"),
+        }.items() if v is not None})
+
+    company = await session.get(Company, company_id)
+    ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
+    new_entity_id = f"list:{ref_id}"
+    data = {k: v for k, v in {
+        "list_type": "shipping_doc",
+        "status": "draft",
+        "ref_id": ref_id,
+        "source_doc": entity_id,
+        "line_items": lines,
+        "currency": state.get("currency"),
+        "contact_id": state.get("contact_id"),
+        "contact_name": state.get("contact_name"),
+        "customer_name": state.get("contact_name") or state.get("customer_name"),
+        "contact_shipping_address": state.get("contact_shipping_address"),
+        "shipping_attn": state.get("shipping_attn"),
+        # Consigned goods are still the sender's property: customs-wise "not for resale".
+        "reason_for_export": "not_for_resale" if doc_type == "memo" else "sale",
+    }.items() if v is not None}
+    entry = await _emit_list(session, company_id, new_entity_id, "list.created", data, user)
+    await session.commit()
+    return {"event_id": entry.id, "id": new_entity_id}
+
+
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -2599,6 +2681,8 @@ class ListCreatePayload(BaseModel):
     ref_id: str | None = None
     customer_id: str | None = None
     customer_name: str | None = None
+    contact_id: str | None = None
+    contact_name: str | None = None
     line_items: list[dict] = Field(default_factory=list)
     subtotal: float = 0
     discount: float = 0
@@ -2609,8 +2693,29 @@ class ListCreatePayload(BaseModel):
     notes: str | None = None
     status: str = "draft"
     share_token: str | None = None
+    # Shipment fields (list_type="shipping_doc"): one shipment record feeds both the
+    # Delivery Note and Commercial Invoice printouts. Declared - not extra="allow" -
+    # so the shipment contract is visible and the closed-set fields validate.
+    contact_shipping_address: str | None = None
+    shipping_attn: str | None = None
+    carrier: str | None = None
+    tracking: str | None = None
+    incoterms: str | None = None
+    package_count: int | None = None
+    gross_weight: str | None = None
+    reason_for_export: str | None = None
+    country_of_export: str | None = None
+    country_of_destination: str | None = None
+    importer: str | None = None
+    source_doc: str | None = None
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
+
+    @model_validator(mode="after")
+    def _validate_shipment_enums(self) -> "ListCreatePayload":
+        _validate_shipment_values({"incoterms": self.incoterms,
+                                   "reason_for_export": self.reason_for_export})
+        return self
 
 
 ListPatch = DocPatch
@@ -2782,7 +2887,6 @@ async def create_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
-    from celerp_docs.sequences import list_sequence_key
     ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
     entity_id = f"list:{ref_id}"
 
@@ -2810,6 +2914,11 @@ async def patch_list(
     row = await _get_list(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    try:
+        _validate_shipment_values({f: (c or {}).get("new")
+                                   for f, c in payload.fields_changed.items()})
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
@@ -2975,7 +3084,7 @@ async def duplicate_list(
     row = await _get_list(session, company_id, entity_id)
     state = row.state
     company = await session.get(Company, company_id)
-    ref_id = next_doc_ref(company, "list")
+    ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "ref_id", "share_token"}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id})
