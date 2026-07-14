@@ -1388,5 +1388,6 @@
   "reason_export.repair_return": "Repair / return",
   "reason_export.sale": "Sale",
   "reason_export.sample": "Sample",
-  "shipment.section_hint": "These details print on the Delivery Note and the Commercial Invoice."
+  "shipment.section_hint": "These details print on the Delivery Note and the Commercial Invoice.",
+  "shipment.mixed_confirm": "The selected documents belong to more than one customer. The shipping document will be created without customer details, and you will need to enter the consignee (for example your freight consolidator) on the document. Create it anyway?"
 }

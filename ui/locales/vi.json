@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Sửa chữa / trả lại",
   "reason_export.sale": "Bán hàng",
   "reason_export.sample": "Hàng mẫu",
-  "shipment.section_hint": "Các thông tin này được in trên phiếu giao hàng và hóa đơn thương mại."
+  "shipment.section_hint": "Các thông tin này được in trên phiếu giao hàng và hóa đơn thương mại.",
+  "shipment.mixed_confirm": "Các chứng từ đã chọn thuộc về nhiều khách hàng. Chứng từ vận chuyển sẽ được tạo mà không có thông tin khách hàng, và bạn cần tự nhập người nhận (ví dụ đơn vị gom hàng của bạn) trên chứng từ. Vẫn tạo chứ?"
 }

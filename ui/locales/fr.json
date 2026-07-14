@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Réparation / retour",
   "reason_export.sale": "Vente",
   "reason_export.sample": "Échantillon",
-  "shipment.section_hint": "Ces informations figurent sur le bon de livraison et la facture commerciale."
+  "shipment.section_hint": "Ces informations figurent sur le bon de livraison et la facture commerciale.",
+  "shipment.mixed_confirm": "Les documents sélectionnés appartiennent à plusieurs clients. Le document d'expédition sera créé sans coordonnées client ; vous devrez saisir le destinataire (par exemple votre groupeur de fret) sur le document. Le créer quand même ?"
 }

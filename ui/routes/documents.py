@@ -4522,6 +4522,9 @@ def _doc_table(
         outstanding = float(outstanding_amount or 0)
         checkbox_td = [Td(Input(type="checkbox", cls="doc-row-select", value=eid,
                      data_contact_id=d.get("contact_id") or "",
+                     # Consignee identity for the bulk-ship mixed-customer check;
+                     # mirrors how the API groups (id first, typed name as fallback).
+                     data_contact_key=d.get("contact_id") or d.get("contact_name") or d.get("customer_name") or "",
                      data_outstanding=str(outstanding)),
                      cls="col-checkbox")] if show_checkboxes else []
         money_tds = [] if no_money else [
@@ -4600,6 +4603,7 @@ def _doc_table(
 
     bulk_js = ""
     if show_checkboxes:
+        import json as _json
         bulk_js = Script(f"""
 (function() {{
     var table = document.getElementById('doc-table');
@@ -4632,6 +4636,19 @@ def _doc_table(
         if (payBtn) payBtn.style.display = action === 'doc-pay' ? '' : 'none';
         if (shipBtn) shipBtn.style.display = action === 'doc-ship' ? '' : 'none';
     }};
+    // Mixed-customer consolidation is deliberate (a freight consolidator's box),
+    // so it confirms first: the shipping document will have NO customer details
+    // and the consignee must be entered by hand. Cancel aborts the request.
+    if (shipBtn) {{
+        shipBtn.addEventListener('htmx:confirm', function(e) {{
+            var keys = new Set(getSelected().map(function(cb) {{
+                return cb.getAttribute('data-contact-key') || '';
+            }}));
+            if (keys.size <= 1) return;
+            e.preventDefault();
+            if (window.confirm({_json.dumps(t("shipment.mixed_confirm"))})) e.detail.issueRequest(true);
+        }});
+    }}
     // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
     // updateBar()/docBulkActionSelected() logic still populates #doc-bulk-ids and
     // toggles the button's visibility.

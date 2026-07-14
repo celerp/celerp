@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Perbaikan / retur",
   "reason_export.sale": "Penjualan",
   "reason_export.sample": "Sampel",
-  "shipment.section_hint": "Detail ini tercetak pada surat jalan dan faktur komersial."
+  "shipment.section_hint": "Detail ini tercetak pada surat jalan dan faktur komersial.",
+  "shipment.mixed_confirm": "Dokumen yang dipilih milik lebih dari satu pelanggan. Dokumen pengiriman akan dibuat tanpa data pelanggan, dan Anda perlu mengisi penerima (misalnya konsolidator kargo Anda) pada dokumen. Tetap buat?"
 }

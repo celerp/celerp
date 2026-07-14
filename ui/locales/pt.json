@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Reparo / devolução",
   "reason_export.sale": "Venda",
   "reason_export.sample": "Amostra",
-  "shipment.section_hint": "Estes dados são impressos na guia de remessa e na fatura comercial."
+  "shipment.section_hint": "Estes dados são impressos na guia de remessa e na fatura comercial.",
+  "shipment.mixed_confirm": "Os documentos selecionados pertencem a mais de um cliente. O documento de envio será criado sem os dados do cliente e você precisará informar o destinatário (por exemplo, seu consolidador de carga) no documento. Criar mesmo assim?"
 }

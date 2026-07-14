@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Reparatur / Rücksendung",
   "reason_export.sale": "Verkauf",
   "reason_export.sample": "Muster",
-  "shipment.section_hint": "Diese Angaben erscheinen auf Lieferschein und Handelsrechnung."
+  "shipment.section_hint": "Diese Angaben erscheinen auf Lieferschein und Handelsrechnung.",
+  "shipment.mixed_confirm": "Die ausgewählten Belege gehören zu mehreren Kunden. Das Versanddokument wird ohne Kundendaten erstellt; den Empfänger (zum Beispiel Ihren Sammelspediteur) tragen Sie im Dokument selbst ein. Trotzdem erstellen?"
 }

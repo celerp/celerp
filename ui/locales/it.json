@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "Riparazione / reso",
   "reason_export.sale": "Vendita",
   "reason_export.sample": "Campione",
-  "shipment.section_hint": "Questi dati vengono stampati sul documento di trasporto e sulla fattura commerciale."
+  "shipment.section_hint": "Questi dati vengono stampati sul documento di trasporto e sulla fattura commerciale.",
+  "shipment.mixed_confirm": "I documenti selezionati appartengono a più clienti. Il documento di spedizione verrà creato senza i dati del cliente e dovrai inserire il destinatario (ad esempio il tuo consolidatore merci) sul documento. Crearlo comunque?"
 }

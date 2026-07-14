@@ -1348,5 +1348,6 @@
   "reason_export.repair_return": "修理・返送",
   "reason_export.sale": "販売",
   "reason_export.sample": "サンプル",
-  "shipment.section_hint": "これらの情報は納品書とコマーシャルインボイスに印刷されます。"
+  "shipment.section_hint": "これらの情報は納品書とコマーシャルインボイスに印刷されます。",
+  "shipment.mixed_confirm": "選択した伝票は複数の顧客のものです。出荷書類は顧客情報なしで作成されるため、荷受人(混載業者など)を書類に手動で入力する必要があります。作成しますか?"
 }
