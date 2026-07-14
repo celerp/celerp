@@ -2207,3 +2207,34 @@ async def get_connector_authorize_url(token: str, platform: str, shop: str = "")
         params["shop"] = shop
     async with _api_client(token) as c:
         return _raise(await c.get(f"/settings/connectors/{platform}/authorize-url", params=params)).json()
+
+
+async def store_connector_credentials(
+    token: str, platform: str, consumer_key: str, consumer_secret: str, store_url: str = ""
+) -> dict:
+    """POST /connectors/{platform}/credentials - validate + store API-key credentials
+    via the API process (which holds the relay session). Returns {"ok": True} or
+    {"ok": False, "error": <code>, "detail": str}."""
+    async with _api_client(token, timeout=20.0) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/credentials",
+            json={
+                "consumer_key": consumer_key,
+                "consumer_secret": consumer_secret,
+                "store_url": store_url or None,
+            },
+        )).json()
+
+
+async def delete_connector_credentials(token: str, platform: str) -> dict:
+    """DELETE /connectors/{platform}/credentials - revoke stored credentials on the
+    relay via the API process. Returns {"ok": True} or {"ok": False, "error": <code>}."""
+    async with _api_client(token) as c:
+        return _raise(await c.delete(f"/connectors/{platform}/credentials")).json()
+
+
+async def get_connector_access_token(token: str, platform: str) -> dict:
+    """GET /connectors/{platform}/access-token - short-lived relay token via the API
+    process. Returns {access_token, store_handle, ...} or {"error": <code>, "detail": str}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/connectors/{platform}/access-token")).json()
