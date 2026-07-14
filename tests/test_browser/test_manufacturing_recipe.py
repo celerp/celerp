@@ -141,6 +141,10 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     _ghost_pick(page, "FL-GOLD")
     page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
     _set_cell(page, "recipe__components__0__quantity", "2")
+    # Let the quantity autosave's section re-render land before typing into the labor
+    # add-row: on a loaded runner the swap can arrive mid-typing and wipe the operation
+    # field (the same settle-wait every other _set_cell in this file uses). 2 x 10 = 20.
+    page.wait_for_selector("#recipe-cost-card:has-text('20')", timeout=8000)
     # Unit comes from the component's sell unit; there is no unit input anywhere.
     assert "gram" in page.locator(".comp-unit-cell").first.inner_text()
     assert page.locator("input[name=comp_unit_0]").count() == 0
