@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Reparación / devolución",
   "reason_export.sale": "Venta",
   "reason_export.sample": "Muestra",
-  "shipment.intro": "Este documento de envío contiene todo lo que necesita la documentación del envío. Complete los datos, emítalo y luego imprima un albarán (sin precios) o una factura comercial para la aduana.",
-  "shipment.missing.country_of_origin": "País de origen",
-  "shipment.missing.customs_value": "Valor en aduana",
-  "shipment.missing.hs_code": "Código HS",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Motivo de exportación",
-  "shipment.missing_lines": "líneas",
-  "shipment.missing_warn": "Aún no está listo para la aduana. Falta:",
   "shipment.section_hint": "Estos datos se imprimen en el albarán y en la factura comercial."
 }

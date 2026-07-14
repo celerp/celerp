@@ -800,6 +800,15 @@ _ICON_PRINT = (
     '<rect x="6" y="14" width="12" height="8"/></svg>'
 )
 
+# Globe: the commercial-invoice (customs) print action on shipping documents.
+_ICON_GLOBE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="12" cy="12" r="10"/>'
+    '<line x1="2" y1="12" x2="22" y2="12"/>'
+    '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>'
+)
+
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
     from starlette.responses import Response as _Res
@@ -4955,9 +4964,10 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
     The draft exposes every header field the two printouts (Delivery Note /
     Commercial Invoice) can render - a printout never carries a field the user
     could not see and edit here first. Closed-set fields (incoterms, reason for
-    export) are fixed selects; free-form ones use the standard editable cell.
+    export) are fixed selects; countries are searchable datalists (free text
+    still saves); the rest use the standard editable cell.
     """
-    from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+    from celerp.services.shipping import COUNTRIES, INCOTERMS_2020, REASONS_FOR_EXPORT
 
     def _fixed_select(field: str, options: list[tuple[str, str]]) -> FT:
         current = str(doc.get(field) or "")
@@ -4973,6 +4983,20 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
             cls="form-select",
         )
 
+    def _country_cell(field: str) -> FT:
+        current = str(doc.get(field) or "")
+        if not is_draft:
+            return Span(current or "--", cls="meta-value")
+        # Native searchable dropdown (same pattern as the setup currency picker);
+        # `change` fires on a datalist pick and on leaving a typed value.
+        return Input(
+            type="text", name="value", value=current, list="country-options",
+            autocomplete="off", placeholder="Type to search...",
+            hx_patch=f"/lists/{entity_id}/field/{field}",
+            hx_trigger="change", hx_swap="none",
+            cls="form-input",
+        )
+
     def _text_cell(field: str) -> FT:
         return Div(Div(t(f"doc.{field}"), cls="form-label"),
                    _doc_display_cell(entity_id, field, doc.get(field), "list"), cls="form-group")
@@ -4986,9 +5010,10 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
             _fixed_select("reason_for_export", [(c, t(f"reason_export.{c}")) for c in REASONS_FOR_EXPORT]), cls="form-group"),
         _text_cell("package_count"),
         _text_cell("gross_weight"),
-        _text_cell("country_of_export"),
-        _text_cell("country_of_destination"),
+        Div(Div(t("doc.country_of_export"), cls="form-label"), _country_cell("country_of_export"), cls="form-group"),
+        Div(Div(t("doc.country_of_destination"), cls="form-label"), _country_cell("country_of_destination"), cls="form-group"),
         _text_cell("importer"),
+        Datalist(*[Option(value=c) for c in COUNTRIES], id="country-options"),
     ]
     _src = str(doc.get("source_doc") or "")
     if _src:
@@ -5673,12 +5698,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if not suppress_pdf:
         _print_href = f"/lists/{entity_id}/print" if is_list else f"/docs/{entity_id}/print"
         if pol["customs"]:
-            # One shipment, two papers: each print action names the document it produces.
-            action_btns_print.append(A(t("btn.print_delivery_note"), href=_print_href,
-                                       target="_blank", cls="btn btn--secondary btn--sm"))
-            action_btns_print.append(A(t("btn.print_commercial_invoice"),
-                                       href=f"{_print_href}?layout=commercial_invoice",
-                                       target="_blank", cls="btn btn--secondary btn--sm"))
+            # One shipment, two papers: printer icon = delivery note, globe icon =
+            # commercial invoice; tooltips name the paper each one produces.
+            action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank",
+                                       cls="btn btn--ghost btn--icon", title=t("btn.print_delivery_note")))
+            action_btns_print.append(A(NotStr(_ICON_GLOBE), href=f"{_print_href}?layout=commercial_invoice",
+                                       target="_blank", cls="btn btn--ghost btn--icon",
+                                       title=t("btn.print_commercial_invoice")))
         else:
             action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
@@ -7658,26 +7684,8 @@ async function celerpCsvImport(input, entityId) {{
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
-    # Shipping documents: pre-print customs check. Warn, never block (GDR) - the
-    # printouts render blanks for whatever is listed here, they never invent values.
-    _customs_warn = ""
-    if pol["customs"] and status in ("draft", _LF):
-        from celerp.services.shipping import missing_customs_fields
-        _missing = missing_customs_fields(doc)
-        if _missing:
-            _parts = []
-            for _code in _missing:
-                _key, _, _n = _code.partition(":")
-                _lbl = t(f"shipment.missing.{_key}")
-                _parts.append(f"{_lbl} ({_n} {t('shipment.missing_lines')})" if _n else _lbl)
-            _customs_warn = P(f'{t("shipment.missing_warn")} {", ".join(_parts)}.',
-                              cls="flash flash--warning")
-
     return Div(
         list_type_selector,
-        # Self-explanatory page: what a shipping document is and what to do next.
-        (P(t("shipment.intro"), cls="section-hint") if pol["customs"] else ""),
-        _customs_warn,
         Div(
             Div(*(extra_left_actions or []), *action_btns_left, cls="doc-actions-left"),
             Div(

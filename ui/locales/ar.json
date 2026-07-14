@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "إصلاح / إرجاع",
   "reason_export.sale": "بيع",
   "reason_export.sample": "عينة",
-  "shipment.intro": "يحتوي مستند الشحن هذا على كل ما تحتاجه أوراق الشحنة. أكمل تفاصيل الشحنة، ثم أصدره، ثم اطبع إشعار تسليم (بدون أسعار) أو فاتورة تجارية للجمارك.",
-  "shipment.missing.country_of_origin": "بلد المنشأ",
-  "shipment.missing.customs_value": "القيمة الجمركية",
-  "shipment.missing.hs_code": "رمز HS",
-  "shipment.missing.incoterms": "إنكوترمز",
-  "shipment.missing.reason_for_export": "سبب التصدير",
-  "shipment.missing_lines": "سطور",
-  "shipment.missing_warn": "غير جاهز للجمارك بعد. الحقول الناقصة:",
   "shipment.section_hint": "تطبع هذه التفاصيل على إشعار التسليم والفاتورة التجارية."
 }

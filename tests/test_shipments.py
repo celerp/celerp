@@ -11,8 +11,8 @@ from httpx import AsyncClient
 from celerp.output.doc_print import render_doc_print_html
 from celerp.services.list_behavior import LIST_BEHAVIOR, LIST_TYPES, behavior, is_money_list
 from celerp.services.shipping import (
-    INCOTERMS_2020, REASONS_FOR_EXPORT, SHIPMENT_HEADER_FIELDS,
-    customs_backfill, line_gross_weight, missing_customs_fields,
+    COUNTRIES, INCOTERMS_2020, REASONS_FOR_EXPORT, SHIPMENT_HEADER_FIELDS,
+    customs_backfill, line_gross_weight,
 )
 
 
@@ -365,17 +365,13 @@ def test_line_gross_weight_multiplies_per_unit_packaged_weight():
     assert line_gross_weight({"quantity": 3}, item, qty_is_weight=True) == (None, "")
 
 
-def test_missing_customs_fields_reports_gaps_and_counts():
-    state = {"incoterms": "", "reason_for_export": "sale",
-             "line_items": [{"hs_code": "1", "country_of_origin": "US", "unit_price": 5},
-                            {"hs_code": "", "country_of_origin": "", "unit_price": 0}]}
-    missing = missing_customs_fields(state)
-    assert missing == ["incoterms", "hs_code:1", "country_of_origin:1", "customs_value:1"]
-    ready = {"incoterms": "DAP", "reason_for_export": "sale",
-             "line_items": [{"hs_code": "1", "country_of_origin": "US", "unit_price": 5}]}
-    assert missing_customs_fields(ready) == []
-
-
 def test_reason_for_export_covers_the_carrier_set():
     assert set(REASONS_FOR_EXPORT) == {"sale", "sample", "repair_return", "gift",
                                        "personal_effects", "not_for_resale"}
+
+
+def test_country_picker_list_is_usable():
+    assert len(COUNTRIES) > 190
+    assert COUNTRIES == tuple(sorted(COUNTRIES))  # datalist stays alphabetical
+    for c in ("Thailand", "Germany", "United States", "Vietnam"):
+        assert c in COUNTRIES

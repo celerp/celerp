@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Perbaikan / retur",
   "reason_export.sale": "Penjualan",
   "reason_export.sample": "Sampel",
-  "shipment.intro": "Dokumen pengiriman ini memuat semua yang dibutuhkan berkas pengiriman. Lengkapi detail pengiriman, terbitkan, lalu cetak surat jalan (tanpa harga) atau faktur komersial untuk bea cukai.",
-  "shipment.missing.country_of_origin": "Negara asal",
-  "shipment.missing.customs_value": "Nilai pabean",
-  "shipment.missing.hs_code": "Kode HS",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Alasan ekspor",
-  "shipment.missing_lines": "baris",
-  "shipment.missing_warn": "Belum siap untuk bea cukai. Kurang:",
   "shipment.section_hint": "Detail ini tercetak pada surat jalan dan faktur komersial."
 }

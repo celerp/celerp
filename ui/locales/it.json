@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Riparazione / reso",
   "reason_export.sale": "Vendita",
   "reason_export.sample": "Campione",
-  "shipment.intro": "Questo documento di spedizione contiene tutto ciò che serve ai documenti della spedizione. Compila i dettagli, emettilo e poi stampa un documento di trasporto (senza prezzi) o una fattura commerciale per la dogana.",
-  "shipment.missing.country_of_origin": "Paese di origine",
-  "shipment.missing.customs_value": "Valore doganale",
-  "shipment.missing.hs_code": "Codice HS",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Motivo dell'esportazione",
-  "shipment.missing_lines": "righe",
-  "shipment.missing_warn": "Non ancora pronto per la dogana. Manca:",
   "shipment.section_hint": "Questi dati vengono stampati sul documento di trasporto e sulla fattura commerciale."
 }

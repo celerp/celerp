@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Sửa chữa / trả lại",
   "reason_export.sale": "Bán hàng",
   "reason_export.sample": "Hàng mẫu",
-  "shipment.intro": "Chứng từ vận chuyển này chứa mọi thông tin mà giấy tờ của lô hàng cần. Điền chi tiết vận chuyển, phát hành, rồi in phiếu giao hàng (không có giá) hoặc hóa đơn thương mại cho hải quan.",
-  "shipment.missing.country_of_origin": "Nước xuất xứ",
-  "shipment.missing.customs_value": "Trị giá hải quan",
-  "shipment.missing.hs_code": "Mã HS",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Lý do xuất khẩu",
-  "shipment.missing_lines": "dòng",
-  "shipment.missing_warn": "Chưa sẵn sàng cho hải quan. Còn thiếu:",
   "shipment.section_hint": "Các thông tin này được in trên phiếu giao hàng và hóa đơn thương mại."
 }

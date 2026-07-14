@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Reparatur / Rücksendung",
   "reason_export.sale": "Verkauf",
   "reason_export.sample": "Muster",
-  "shipment.intro": "Dieses Versanddokument enthält alles, was die Papiere der Sendung brauchen. Versanddetails ausfüllen, ausstellen und dann als Lieferschein (ohne Preise) oder Handelsrechnung für den Zoll drucken.",
-  "shipment.missing.country_of_origin": "Ursprungsland",
-  "shipment.missing.customs_value": "Zollwert",
-  "shipment.missing.hs_code": "HS-Code",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Ausfuhrgrund",
-  "shipment.missing_lines": "Positionen",
-  "shipment.missing_warn": "Noch nicht zollfertig. Es fehlt:",
   "shipment.section_hint": "Diese Angaben erscheinen auf Lieferschein und Handelsrechnung."
 }

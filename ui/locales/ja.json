@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "修理・返送",
   "reason_export.sale": "販売",
   "reason_export.sample": "サンプル",
-  "shipment.intro": "この出荷書類には出荷に必要な情報がすべて含まれます。出荷情報を入力して発行し、納品書(価格なし)またはコマーシャルインボイスを印刷してください。",
-  "shipment.missing.country_of_origin": "原産国",
-  "shipment.missing.customs_value": "申告価格",
-  "shipment.missing.hs_code": "HSコード",
-  "shipment.missing.incoterms": "インコタームズ",
-  "shipment.missing.reason_for_export": "輸出理由",
-  "shipment.missing_lines": "行",
-  "shipment.missing_warn": "通関の準備がまだ整っていません。不足:",
   "shipment.section_hint": "これらの情報は納品書とコマーシャルインボイスに印刷されます。"
 }

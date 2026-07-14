@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "ซ่อม / ส่งคืน",
   "reason_export.sale": "ขาย",
   "reason_export.sample": "ตัวอย่างสินค้า",
-  "shipment.intro": "เอกสารการจัดส่งนี้รวมทุกอย่างที่เอกสารประกอบการจัดส่งต้องใช้ กรอกรายละเอียดการจัดส่ง ออกเอกสาร แล้วพิมพ์ใบส่งของ (ไม่แสดงราคา) หรืออินวอยซ์การค้าสำหรับศุลกากร",
-  "shipment.missing.country_of_origin": "ประเทศแหล่งกำเนิด",
-  "shipment.missing.customs_value": "มูลค่าศุลกากร",
-  "shipment.missing.hs_code": "พิกัด HS",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "เหตุผลการส่งออก",
-  "shipment.missing_lines": "รายการ",
-  "shipment.missing_warn": "ยังไม่พร้อมสำหรับศุลกากร ขาด:",
   "shipment.section_hint": "รายละเอียดเหล่านี้จะพิมพ์บนใบส่งของและอินวอยซ์การค้า"
 }

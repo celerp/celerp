@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Reparo / devolução",
   "reason_export.sale": "Venda",
   "reason_export.sample": "Amostra",
-  "shipment.intro": "Este documento de envio reúne tudo o que a papelada da remessa precisa. Preencha os detalhes, emita e depois imprima uma guia de remessa (sem preços) ou uma fatura comercial para a alfândega.",
-  "shipment.missing.country_of_origin": "País de origem",
-  "shipment.missing.customs_value": "Valor aduaneiro",
-  "shipment.missing.hs_code": "Código SH",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Motivo da exportação",
-  "shipment.missing_lines": "linhas",
-  "shipment.missing_warn": "Ainda não está pronto para a alfândega. Falta:",
   "shipment.section_hint": "Estes dados são impressos na guia de remessa e na fatura comercial."
 }

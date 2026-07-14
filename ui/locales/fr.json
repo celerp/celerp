@@ -1348,13 +1348,5 @@
   "reason_export.repair_return": "Réparation / retour",
   "reason_export.sale": "Vente",
   "reason_export.sample": "Échantillon",
-  "shipment.intro": "Ce document d'expédition contient tout ce dont les papiers de l'envoi ont besoin. Renseignez les détails, émettez-le, puis imprimez un bon de livraison (sans prix) ou une facture commerciale pour la douane.",
-  "shipment.missing.country_of_origin": "Pays d'origine",
-  "shipment.missing.customs_value": "Valeur en douane",
-  "shipment.missing.hs_code": "Code SH",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Motif d'exportation",
-  "shipment.missing_lines": "lignes",
-  "shipment.missing_warn": "Pas encore prêt pour la douane. Manque :",
   "shipment.section_hint": "Ces informations figurent sur le bon de livraison et la facture commerciale."
 }

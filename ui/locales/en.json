@@ -1388,13 +1388,5 @@
   "reason_export.repair_return": "Repair / return",
   "reason_export.sale": "Sale",
   "reason_export.sample": "Sample",
-  "shipment.intro": "This shipping document holds everything the shipment's paperwork needs. Fill in the shipment details, Issue it, then print a Delivery Note (no prices) or a Commercial Invoice for customs.",
-  "shipment.missing.country_of_origin": "Country of origin",
-  "shipment.missing.customs_value": "Customs value",
-  "shipment.missing.hs_code": "HS code",
-  "shipment.missing.incoterms": "Incoterms",
-  "shipment.missing.reason_for_export": "Reason for export",
-  "shipment.missing_lines": "lines",
-  "shipment.missing_warn": "Not yet customs-ready. Missing:",
   "shipment.section_hint": "These details print on the Delivery Note and the Commercial Invoice."
 }
