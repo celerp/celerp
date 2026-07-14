@@ -8,7 +8,8 @@
     "email": "support@celerp.com"
   },
   "homepage": "https://www.celerp.com",
-  "license": "BUSL-1.1",
+  "license": "SEE LICENSE IN LICENSING.md",
+  "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "start": "electron .",
@@ -63,6 +64,7 @@
           "MANIFEST.in",
           "LICENSE",
           "LICENSING.md",
+          "legal/**",
           "!**/__pycache__",
           "!**/*.pyc",
           "!tests/**",
@@ -156,6 +158,8 @@
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
+      "maintainer": "Data Universal Limited <support@celerp.com>",
+      "vendor": "Data Universal Limited",
       "target": [
         {
           "target": "AppImage",

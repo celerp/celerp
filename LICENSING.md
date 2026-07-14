@@ -1,5 +1,8 @@
 # Licensing
 
+Celerp is free to download, self-host, and use to run your own business. Different
+components use different licenses, as mapped below.
+
 Celerp is multi-licensed. This file is the authoritative map of which license applies to which part of
 the repository. Where a source file carries an `SPDX-License-Identifier` header, that header is the
 operative statement for that file; this map governs by path otherwise.
