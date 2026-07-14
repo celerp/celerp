@@ -3,8 +3,13 @@
   "version": "1.0.0",
   "description": "Free business software \u2014 inventory, invoicing, and operations in one place.",
   "main": "main.js",
-  "author": "Data Universal Limited",
-  "license": "BUSL-1.1",
+  "author": {
+    "name": "Data Universal Limited",
+    "email": "support@celerp.com"
+  },
+  "homepage": "https://www.celerp.com",
+  "license": "SEE LICENSE IN LICENSING.md",
+  "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "start": "electron .",
@@ -57,6 +62,9 @@
           "alembic.ini",
           "pyproject.toml",
           "MANIFEST.in",
+          "LICENSE",
+          "LICENSING.md",
+          "legal/**",
           "!**/__pycache__",
           "!**/*.pyc",
           "!tests/**",
@@ -150,6 +158,8 @@
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
+      "maintainer": "Data Universal Limited <support@celerp.com>",
+      "vendor": "Data Universal Limited",
       "target": [
         {
           "target": "AppImage",
