@@ -39,12 +39,15 @@ async def _make_list(client, tok, list_type, **extra) -> dict:
     return r.json()
 
 
-async def _issued_doc(client, tok, doc_type: str) -> str:
+async def _issued_doc(client, tok, doc_type: str, contact: str = "Buyer GmbH",
+                      currency: str = "USD") -> str:
     """Create and finalize an invoice or memo carrying one customs-complete line."""
     r = await client.post("/docs", json={
-        "doc_type": doc_type, "contact_name": "Buyer GmbH",
+        "doc_type": doc_type, "contact_name": contact,
         "contact_shipping_address": "1 Dock St, Hamburg, DE",
-        "currency": "USD",
+        "currency": currency,
+        # Foreign-currency docs need a rate to finalize (company currency is USD).
+        **({"conversion_rate": 1.1} if currency != "USD" else {}),
         "line_items": [dict(_LINE)],
         "subtotal": 31.5, "total": 31.5,
     }, headers=_h(tok))
@@ -53,6 +56,10 @@ async def _issued_doc(client, tok, doc_type: str) -> str:
     r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))
     assert r.status_code == 200, r.text
     return r.json().get("new_entity_id") or doc_id
+
+
+async def _ship_docs(client, tok, doc_ids: list[str]):
+    return await client.post("/docs/shipment", json={"doc_ids": doc_ids}, headers=_h(tok))
 
 
 # ── behavior registry ─────────────────────────────────────────────────────────
@@ -86,7 +93,7 @@ def test_shipment_fields_are_declared_on_the_payload():
     declared = set(ListCreatePayload.model_fields)
     missing = set(SHIPMENT_HEADER_FIELDS) - declared
     assert not missing, f"undeclared shipment fields: {missing}"
-    assert {"contact_shipping_address", "shipping_attn", "source_doc"} <= declared
+    assert {"contact_shipping_address", "shipping_attn", "source_docs"} <= declared
 
 
 # ── numbering ────────────────────────────────────────────────────────────────
@@ -173,14 +180,14 @@ async def test_finalize_posts_no_journal_entry_and_moves_no_stock(client: AsyncC
 async def test_shipment_from_invoice_copies_lines_contact_and_links_source(client: AsyncClient):
     tok = await _token(client)
     doc_id = await _issued_doc(client, tok, "invoice")
-    r = await client.post(f"/docs/{doc_id}/shipment", headers=_h(tok))
+    r = await _ship_docs(client, tok, [doc_id])
     assert r.status_code == 200, r.text
     ship_id = r.json()["id"]
     assert ship_id.startswith("list:SHIP-")
     state = (await client.get(f"/lists/{ship_id}", headers=_h(tok))).json()
     assert state["list_type"] == "shipping_doc"
     assert state["status"] == "draft"
-    assert state["source_doc"] == doc_id
+    assert state["source_docs"] == [doc_id]
     assert state["contact_name"] == "Buyer GmbH"
     assert state["contact_shipping_address"] == "1 Dock St, Hamburg, DE"
     assert state["reason_for_export"] == "sale"
@@ -195,24 +202,70 @@ async def test_shipment_from_invoice_copies_lines_contact_and_links_source(clien
 async def test_shipment_from_memo_defaults_not_for_resale(client: AsyncClient):
     tok = await _token(client)
     doc_id = await _issued_doc(client, tok, "memo")
-    r = await client.post(f"/docs/{doc_id}/shipment", headers=_h(tok))
+    r = await _ship_docs(client, tok, [doc_id])
     assert r.status_code == 200, r.text
     state = (await client.get(f"/lists/{r.json()['id']}", headers=_h(tok))).json()
     assert state["reason_for_export"] == "not_for_resale"
-    assert state["source_doc"] == doc_id
+    assert state["source_docs"] == [doc_id]
 
 
 @pytest.mark.asyncio
-async def test_shipment_rejects_wrong_type_and_draft(client: AsyncClient):
+async def test_consolidated_shipment_combines_invoices_for_one_customer(client: AsyncClient):
+    """Several orders, one box: the bulk path merges every document's lines into
+    ONE shipping document that references all its sources."""
+    tok = await _token(client)
+    inv_a = await _issued_doc(client, tok, "invoice")
+    inv_b = await _issued_doc(client, tok, "invoice")
+    memo = await _issued_doc(client, tok, "memo")
+    r = await _ship_docs(client, tok, [inv_a, inv_b, memo])
+    assert r.status_code == 200, r.text
+    state = (await client.get(f"/lists/{r.json()['id']}", headers=_h(tok))).json()
+    assert state["source_docs"] == [inv_a, inv_b, memo]
+    assert len(state["line_items"]) == 3           # one line per source doc, in order
+    assert state["subtotal"] == 94.5               # 3 x 31.50 declared value
+    assert state["reason_for_export"] == "sale"    # one sold item makes the box a sale
+
+
+@pytest.mark.asyncio
+async def test_mixed_customers_consolidate_with_a_blank_consignee(client: AsyncClient):
+    """A freight consolidator receives one box for many end customers: mixed
+    customers is allowed, but nothing prefills the consignee - the user enters
+    the consolidator's details on the draft."""
+    tok = await _token(client)
+    inv_a = await _issued_doc(client, tok, "invoice")
+    inv_other = await _issued_doc(client, tok, "invoice", contact="Someone Else Ltd")
+    r = await _ship_docs(client, tok, [inv_a, inv_other])
+    assert r.status_code == 200, r.text
+    state = (await client.get(f"/lists/{r.json()['id']}", headers=_h(tok))).json()
+    assert state["source_docs"] == [inv_a, inv_other]
+    assert len(state["line_items"]) == 2
+    for field in ("contact_id", "contact_name", "customer_name",
+                  "contact_shipping_address", "shipping_attn"):
+        assert not state.get(field), f"{field} must stay blank on a mixed-customer shipment"
+
+
+@pytest.mark.asyncio
+async def test_consolidation_rejects_mixed_currencies(client: AsyncClient):
+    """One declared total in one currency: mixed currencies stay a hard stop."""
+    tok = await _token(client)
+    inv_a = await _issued_doc(client, tok, "invoice")
+    inv_eur = await _issued_doc(client, tok, "invoice", currency="EUR")
+    r = await _ship_docs(client, tok, [inv_a, inv_eur])
+    assert r.status_code == 422 and "currencies" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_shipment_rejects_wrong_type_draft_and_empty(client: AsyncClient):
     tok = await _token(client)
     r = await client.post("/docs", json={"doc_type": "purchase_order",
                                          "line_items": [dict(_LINE)]}, headers=_h(tok))
     po_id = r.json()["id"]
-    assert (await client.post(f"/docs/{po_id}/shipment", headers=_h(tok))).status_code == 422
+    assert (await _ship_docs(client, tok, [po_id])).status_code == 422
     r = await client.post("/docs", json={"doc_type": "invoice",
                                          "line_items": [dict(_LINE)]}, headers=_h(tok))
     draft_id = r.json()["id"]
-    assert (await client.post(f"/docs/{draft_id}/shipment", headers=_h(tok))).status_code == 409
+    assert (await _ship_docs(client, tok, [draft_id])).status_code == 409
+    assert (await _ship_docs(client, tok, [])).status_code == 422
 
 
 # ── printouts: the two papers off one record ─────────────────────────────────
@@ -224,7 +277,7 @@ _PRINT_DOC = {
     "contact_name": "Buyer GmbH", "contact_tax_id": "DE123456789",
     "contact_shipping_address": "1 Dock St, Hamburg, DE",
     "carrier": "FedEx", "tracking": "FX123", "incoterms": "DAP", "package_count": 2,
-    "reason_for_export": "sale", "source_doc": "doc:INV-2607-0009",
+    "reason_for_export": "sale", "source_docs": ["doc:INV-2607-0009"],
     "country_of_export": "United States", "country_of_destination": "Germany",
     "line_items": [{"sku": "W1", "name": "Widget", "quantity": 3, "unit_price": 10.5,
                     "line_total": 31.5, "hs_code": "8471.30", "country_of_origin": "US",

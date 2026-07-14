@@ -2144,51 +2144,83 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/shipment")
-async def create_shipment_from_doc(
-    entity_id: str,
+class ShipmentFromDocsBody(BaseModel):
+    doc_ids: list[str]
+
+
+@router.post("/shipment")
+async def create_shipment_from_docs(
+    payload: ShipmentFromDocsBody,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a draft shipping document (list_type="shipping_doc") from an invoice
-    or consignment-out memo - the "now I have to ship it" step.
+    """Create ONE draft shipping document (list_type="shipping_doc") from one or
+    more issued invoices / consignment-out memos - the "now I have to ship it"
+    step, single order or consolidated box alike.
 
-    Copies contact, ship-to, currency, and lines. Quantities and unit values carry
-    over (the unit value doubles as the customs value on the Commercial Invoice);
-    discounts and taxes do not - shipment paperwork is not an accounting document.
+    Copies contact, ship-to, currency, and every document's lines in selection
+    order. Quantities and unit values carry over (the unit value doubles as the
+    customs value on the Commercial Invoice); discounts and taxes do not -
+    shipment paperwork is not an accounting document. A shipment goes to one
+    consignee in one currency, so mixed customers or currencies are rejected.
     The shipment posts no journal entry and moves no stock; fulfillment stays on
-    the source document, which the shipment references via source_doc.
+    the source documents, referenced via source_docs.
     """
-    row = await _get_doc(session, company_id, entity_id)
-    state = row.state
-    doc_type = state.get("doc_type")
-    if doc_type not in ("invoice", "memo"):
+    doc_ids = [i.strip() for i in payload.doc_ids if i.strip()]
+    if not doc_ids:
+        raise HTTPException(status_code=422, detail="Select at least one document to ship")
+
+    states = []
+    for eid in doc_ids:
+        row = await _get_doc(session, company_id, eid)
+        state = row.state
+        if state.get("doc_type") not in ("invoice", "memo"):
+            raise HTTPException(status_code=422,
+                                detail="Only invoices and consignment-out memos can be shipped")
+        if state.get("status") in ("draft", "void"):
+            raise HTTPException(status_code=409,
+                                detail="Issue every document before creating its shipping paperwork")
+        states.append(state)
+
+    # One consignee prefills the shipment. Several consignees is a real flow too
+    # (a freight consolidator receives one box for many end customers), so it is
+    # NOT an error - the shipment is created with a blank consignee and the user
+    # enters the consolidator's details on the draft.
+    consignees = {(s.get("contact_id") or "",
+                   s.get("contact_name") or s.get("customer_name") or "") for s in states}
+    single_consignee = len(consignees) == 1
+    # Currencies stay a hard stop: a commercial invoice declares one total in one
+    # currency, so mixed-currency lines would produce a wrong declared value.
+    currencies = {s.get("currency") or "" for s in states}
+    if len(currencies) > 1:
         raise HTTPException(status_code=422,
-                            detail="Only an invoice or consignment-out memo can be shipped")
-    if state.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409,
-                            detail="Issue the document before creating its shipping paperwork")
+                            detail="Selected documents use different currencies - a shipping document declares one")
 
     lines = []
-    for li in state.get("line_items") or []:
-        qty = float(li.get("quantity") or 0)
-        price = float(li.get("unit_price") or 0)
-        lines.append({k: v for k, v in {
-            "item_id": li.get("item_id") or li.get("entity_id"),
-            "sku": li.get("sku"),
-            "name": li.get("name"),
-            "description": li.get("description") or li.get("name"),
-            "unit": li.get("unit"),
-            "quantity": qty,
-            "unit_price": price,
-            "line_total": qty * price,
-            "hs_code": li.get("hs_code"),
-            "country_of_origin": li.get("country_of_origin"),
-            "pieces": li.get("pieces"),
-            "weight": li.get("weight"),
-        }.items() if v is not None})
+    for state in states:
+        for li in state.get("line_items") or []:
+            qty = float(li.get("quantity") or 0)
+            price = float(li.get("unit_price") or 0)
+            lines.append({k: v for k, v in {
+                "item_id": li.get("item_id") or li.get("entity_id"),
+                "sku": li.get("sku"),
+                "name": li.get("name"),
+                "description": li.get("description") or li.get("name"),
+                "unit": li.get("unit"),
+                "quantity": qty,
+                "unit_price": price,
+                "line_total": qty * price,
+                "hs_code": li.get("hs_code"),
+                "country_of_origin": li.get("country_of_origin"),
+                "pieces": li.get("pieces"),
+                "weight": li.get("weight"),
+            }.items() if v is not None})
 
+    first = states[0]
+    _ship_to = next((s.get("contact_shipping_address") for s in states
+                     if s.get("contact_shipping_address")), None)
+    _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
     company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
     new_entity_id = f"list:{ref_id}"
@@ -2196,16 +2228,19 @@ async def create_shipment_from_doc(
         "list_type": "shipping_doc",
         "status": "draft",
         "ref_id": ref_id,
-        "source_doc": entity_id,
+        "source_docs": doc_ids,
         "line_items": lines,
-        "currency": state.get("currency"),
-        "contact_id": state.get("contact_id"),
-        "contact_name": state.get("contact_name"),
-        "customer_name": state.get("contact_name") or state.get("customer_name"),
-        "contact_shipping_address": state.get("contact_shipping_address"),
-        "shipping_attn": state.get("shipping_attn"),
-        # Consigned goods are still the sender's property: customs-wise "not for resale".
-        "reason_for_export": "not_for_resale" if doc_type == "memo" else "sale",
+        "currency": first.get("currency"),
+        "contact_id": first.get("contact_id") if single_consignee else None,
+        "contact_name": first.get("contact_name") if single_consignee else None,
+        "customer_name": (first.get("contact_name") or first.get("customer_name"))
+                         if single_consignee else None,
+        "contact_shipping_address": _ship_to if single_consignee else None,
+        "shipping_attn": _attn if single_consignee else None,
+        # Consigned goods are still the sender's property: customs-wise "not for
+        # resale" - but one sold item in the box makes the shipment a sale.
+        "reason_for_export": "sale" if any(s.get("doc_type") == "invoice" for s in states)
+                             else "not_for_resale",
     }.items() if v is not None}
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", data, user)
     await session.commit()
@@ -2707,7 +2742,7 @@ class ListCreatePayload(BaseModel):
     country_of_export: str | None = None
     country_of_destination: str | None = None
     importer: str | None = None
-    source_doc: str | None = None
+    source_docs: list[str] | None = None  # invoices/memos this shipment ships
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 

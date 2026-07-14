@@ -2805,8 +2805,9 @@ celerpUpdateBulkAlloc();
             elif action == "create-shipment":
                 # One step from "sold it" to "ship it": a draft shipping document
                 # prefilled from this invoice/memo, ready to print as a Delivery
-                # Note or Commercial Invoice.
-                result = await api.create_shipment_from_doc(token, entity_id)
+                # Note or Commercial Invoice. (Same endpoint the bulk consolidation
+                # uses - one mechanism, two entry points.)
+                result = await api.create_shipment_from_docs(token, [entity_id])
                 ship_id = result.get("entity_id") or result.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
             else:
@@ -3012,6 +3013,26 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         # Reload once the docs are actually gone (htmx triggers a full refresh).
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
+
+    @app.post("/docs/bulk-shipment")
+    async def bulk_shipment_route(request: Request):
+        """Consolidate the selected issued invoices/memos into ONE draft shipping
+        document (one customer, one currency - the API enforces both)."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        doc_ids_raw = str(form.get("doc_ids") or request.query_params.get("doc_ids", ""))
+        doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
+        if not doc_ids:
+            return _action_error("No documents selected.")
+        try:
+            result = await api.create_shipment_from_docs(token, doc_ids)
+        except APIError as e:
+            return _action_error(str(e.detail))
+        ship_id = result.get("entity_id") or result.get("id", "")
+        return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
     @app.post("/docs/bulk-payment")
     async def bulk_payment_route(request: Request):
@@ -4461,7 +4482,7 @@ def _doc_table(
     # Internal demand docs carry no money: drop the Total / Outstanding columns.
     no_money = doc_type in _NO_MONEY_DOC_TYPES
     # Checkboxes: invoice/bill for bulk payment; any doc type in draft view for bulk delete
-    show_checkboxes = doc_type in ("invoice", "bill") or is_drafts_view
+    show_checkboxes = doc_type in ("invoice", "bill", "memo") or is_drafts_view
 
     sort_keys = {
         "number": lambda d: str(d.get("doc_number") or d.get("ref") or ""),
@@ -4534,6 +4555,10 @@ def _doc_table(
             _action_opts.append(Option(t("btn.delete_selected"), value="doc-delete"))
         if doc_type in ("invoice", "bill") and not is_drafts_view:
             _action_opts.append(Option(t("btn.record_payment"), value="doc-pay"))
+        if doc_type in ("invoice", "memo") and not is_drafts_view:
+            # Consolidation: several orders for one customer ship as one box on
+            # one shipping document (same endpoint as the detail-page action).
+            _action_opts.append(Option(t("btn.create_shipping_doc"), value="doc-ship"))
         _bulk_children = [
             Span(t("doc.0_selected"), id="doc-bulk-count", cls="bulk-count"),
             Select(*_action_opts, id="doc-bulk-select", cls="form-input form-input--sm",
@@ -4557,6 +4582,17 @@ def _doc_table(
             Button(t("btn.record_payment"), type="button", id="doc-bulk-pay-btn",
                    cls="btn btn--primary btn--sm", style="display:none",
                    onclick="docBulkPayConfirmed()"),
+            Button(
+                Span(cls="spinner htmx-indicator",
+                     style="display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle;"),
+                t("btn.create_shipping_doc"),
+                type="button", id="doc-bulk-ship-btn",
+                cls="btn btn--primary btn--sm", style="display:none",
+                hx_post="/docs/bulk-shipment",
+                hx_include="#doc-bulk-ids",
+                hx_disabled_elt="this",
+                hx_swap="none",
+            ),
             Div(id="bulk-payment-panel"),
             Input(type="hidden", id="doc-bulk-ids", name="doc_ids", value=""),
         ]
@@ -4574,6 +4610,7 @@ def _doc_table(
     var sel_input = document.getElementById('doc-bulk-select');
     var delBtn = document.getElementById('doc-bulk-delete-btn');
     var payBtn = document.getElementById('doc-bulk-pay-btn');
+    var shipBtn = document.getElementById('doc-bulk-ship-btn');
     var idsInput = document.getElementById('doc-bulk-ids');
     function getSelected() {{
         return Array.from(table.querySelectorAll('.doc-row-select:checked'));
@@ -4588,10 +4625,12 @@ def _doc_table(
         if (sel_input) {{ sel_input.value = ''; }}
         if (delBtn) delBtn.style.display = 'none';
         if (payBtn) payBtn.style.display = 'none';
+        if (shipBtn) shipBtn.style.display = 'none';
     }}
     window.docBulkActionSelected = function(action) {{
         if (delBtn) delBtn.style.display = action === 'doc-delete' ? '' : 'none';
         if (payBtn) payBtn.style.display = action === 'doc-pay' ? '' : 'none';
+        if (shipBtn) shipBtn.style.display = action === 'doc-ship' ? '' : 'none';
     }};
     // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
     // updateBar()/docBulkActionSelected() logic still populates #doc-bulk-ids and
@@ -5015,11 +5054,16 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
         _text_cell("importer"),
         Datalist(*[Option(value=c) for c in COUNTRIES], id="country-options"),
     ]
-    _src = str(doc.get("source_doc") or "")
-    if _src:
-        _src_ref = _src.split(":", 1)[1] if ":" in _src else _src
+    _srcs = [str(s) for s in (doc.get("source_docs") or []) if s]
+    if _srcs:
+        _links = []
+        for _s in _srcs:
+            _ref = _s.split(":", 1)[1] if ":" in _s else _s
+            if _links:
+                _links.append(Span(", "))
+            _links.append(A(_ref, href=f"/docs/{_s}", cls="auth-link"))
         rows.append(Div(Div(t("doc.source_doc"), cls="form-label"),
-                        A(_src_ref, href=f"/docs/{_src}", cls="auth-link"), cls="form-group"))
+                        Div(*_links), cls="form-group"))
     return rows
 
 

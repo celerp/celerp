@@ -238,8 +238,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         raise ValueError(f"Unknown shipping layout: {layout}")
     ship_layout = (layout or "delivery_note") if is_shipping else None
     doc_number = doc.get("doc_number") or doc.get("ref_id") or entity_id
-    _src = str(doc.get("source_doc") or "")
-    source_doc_ref = _src.split(":", 1)[1] if ":" in _src else _src
+    source_doc_refs = [s.split(":", 1)[1] if ":" in s else s
+                       for s in (doc.get("source_docs") or []) if s]
     if ship_layout:
         title = "Delivery Note" if ship_layout == "delivery_note" else "Commercial Invoice"
     else:
@@ -450,7 +450,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         # origins defer to the per-line column (never a guessed single country).
         _origins = {li.get("country_of_origin") for li in line_items if li.get("country_of_origin")}
         _manufacture = next(iter(_origins)) if len(_origins) == 1 else ("See line items" if _origins else "")
-        _refs = " / ".join(x for x in (doc_number, source_doc_ref) if x)
+        _refs = " / ".join(x for x in (doc_number, *source_doc_refs) if x)
         _carrier_awb = " / ".join(x for x in (doc.get("carrier") or "", doc.get("tracking") or "") if x)
         shipmeta_section = Table(
             Tr(_fx("Date of Export", issue_date), _fx("Export References (order no., invoice no.)", _refs)),
