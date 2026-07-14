@@ -190,30 +190,14 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-async def _fetch_access_token(relay_url: str, platform: str) -> dict:
-    """Fetch decrypted access token from relay for a platform."""
-    import os
-    import httpx
-    from celerp.gateway.state import relay_session_headers
-    if not relay_url.startswith("https://"):
-        if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
-            raise RuntimeError("Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(
-                f"{relay_url}/tokens/{platform}/access-token",
-                headers=relay_session_headers(),
-            )
-            if r.status_code == 404:
-                raise RuntimeError(f"No {platform} connection found. Complete the OAuth flow first.")
-            if r.status_code == 401:
-                raise RuntimeError(f"{platform} token expired. Please reconnect.")
-            r.raise_for_status()
-            return r.json()
-    except httpx.HTTPStatusError as exc:
-        raise RuntimeError(f"Relay returned {exc.response.status_code}: {exc.response.text}") from exc
-    except httpx.ConnectError:
-        raise RuntimeError("Cannot reach relay server. Check your internet connection.")
+async def _fetch_access_token(platform: str, token: str) -> dict:
+    """Fetch a short-lived access token via the API process proxy (which holds the
+    relay session - the UI process has none). Raises RuntimeError on failure."""
+    from ui.api_client import get_connector_access_token
+    data = await get_connector_access_token(token, platform)
+    if data.get("error"):
+        raise RuntimeError(data.get("detail") or data["error"])
+    return data
 
 
 async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str]:
@@ -330,17 +314,16 @@ def _spawn(coro) -> None:
     task.add_done_callback(_BG_TASKS.discard)
 
 
-async def _kickoff_connector_sync(iid: str, platform: str) -> None:
+async def _kickoff_connector_sync(iid: str, platform: str, token: str) -> None:
     """Fetch the live token and start a background sync of all supported entities.
     Raises on setup failure (bad token, unknown connector); per-entity errors are captured
     in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.registry import get as get_connector
     from celerp.connectors.sync_runner import run_sync
-    from ui.config import RELAY_URL
 
     connector = get_connector(platform)
-    token_data = await _fetch_access_token(RELAY_URL, platform)
+    token_data = await _fetch_access_token(platform, token)
     ctx = ConnectorContext(
         company_id=iid,
         access_token=token_data["access_token"],
@@ -357,10 +340,10 @@ async def _kickoff_connector_sync(iid: str, platform: str) -> None:
     _spawn(_do_sync())
 
 
-async def _autosync_once(iid: str, platform: str) -> None:
+async def _autosync_once(iid: str, platform: str, token: str) -> None:
     """Best-effort background sync kickoff that never raises into a render path."""
     try:
-        await _kickoff_connector_sync(iid, platform)
+        await _kickoff_connector_sync(iid, platform, token)
     except Exception:
         log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
 
@@ -716,7 +699,7 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
-async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
+async def connectors_tab_content(lang: str, token: str) -> FT:
     """Render the full connectors tab (catalog grouped by category)."""
     from celerp.config import ensure_instance_id
     from celerp.gateway.client import get_client
@@ -751,7 +734,7 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     # re-render, and once any run exists this branch no longer fires.
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            _spawn(_autosync_once(iid, c["id"]))
+            _spawn(_autosync_once(iid, c["id"], token))
 
     # Group by category, labelled by what the sync does for the customer
     group_labels = {
@@ -801,7 +784,7 @@ def setup_routes(app):
             return r
         from ui.i18n import get_lang
         lang = get_lang(request)
-        return await connectors_tab_content(lang)
+        return await connectors_tab_content(lang, token=token)
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
@@ -946,18 +929,14 @@ def setup_routes(app):
         from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
-        import httpx
 
         iid = ensure_instance_id()
         lang = get_lang(request)
 
-        from celerp.gateway.state import relay_session_headers
+        # Revoke on the relay via the API process proxy (which holds the relay session).
+        from ui.api_client import delete_connector_credentials
         try:
-            async with httpx.AsyncClient(timeout=5.0) as c:
-                r = await c.delete(
-                    f"{RELAY_URL}/tokens/{platform}",
-                    headers=relay_session_headers(),
-                )
+            await delete_connector_credentials(token, platform)
         except Exception as exc:
             return Div(
                 Span(f"✗ {exc}", cls="flash flash--warning"),
@@ -997,7 +976,7 @@ def setup_routes(app):
         lang = get_lang(request)
 
         try:
-            await _kickoff_connector_sync(iid, platform)
+            await _kickoff_connector_sync(iid, platform, token)
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
@@ -1091,7 +1070,6 @@ def setup_routes(app):
         from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
-        import httpx
 
         iid = ensure_instance_id()
         lang = get_lang(request)
@@ -1120,47 +1098,14 @@ def setup_routes(app):
                 id=f"connector-card-{platform}", cls="connector-card",
             )
 
-        if not RELAY_URL.startswith("https://"):
-            if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
-                return Div(
-                    Span(t("settings.relay_url_must_use_https_set_celerpallowhttprelay1"),
-                         cls="flash flash--warning"),
-                    id=f"connector-card-{platform}",
-                    cls="connector-card",
-                )
-
-        # Validate the credentials against the store BEFORE storing them, so a bad
-        # key/secret/URL fails here with a clear message instead of silently failing on
-        # the first background sync.
-        if platform == "woocommerce":
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as c:
-                    probe = await c.get(
-                        f"{store_url}/wp-json/wc/v3/products",
-                        params={"per_page": 1}, auth=(consumer_key, consumer_secret),
-                    )
-                if probe.status_code == 401:
-                    raise RuntimeError("store rejected the consumer key/secret (401)")
-                probe.raise_for_status()
-            except Exception as exc:
-                return Div(
-                    Span(t("connectors.connect_check_failed", lang,
-                           default=f"Could not connect to the store: {exc}"), cls="flash flash--warning"),
-                    id=f"connector-card-{platform}", cls="connector-card",
-                )
-
-        from celerp.gateway.state import relay_session_headers
+        # Validation + storage run in the API process, which holds the live relay
+        # session (the UI process has none). The proxy probes the store first, so a
+        # bad key/secret/URL fails here with a clear message instead of silently
+        # failing on the first background sync.
+        from ui.api_client import store_connector_credentials
         try:
-            async with httpx.AsyncClient(timeout=5.0) as c:
-                r = await c.post(
-                    f"{RELAY_URL}/tokens/{platform}",
-                    json={
-                        "consumer_key": consumer_key,
-                        "consumer_secret": consumer_secret,
-                        "store_url": store_url or None,
-                    },
-                    headers=relay_session_headers(),
-                )
+            result = await store_connector_credentials(
+                token, platform, consumer_key, consumer_secret, store_url)
         except Exception as exc:
             return Div(
                 Span(f"✗ {exc}", cls="flash flash--warning"),
@@ -1168,12 +1113,18 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
-        if r.status_code != 200:
+        if not result.get("ok"):
             # Surface a failed store rather than silently rendering "connected".
+            err = result.get("error", "")
+            detail = result.get("detail", "")
+            if err == "subscription_required":
+                msg = t("connectors.no_subscription", lang)
+            elif err in ("store_rejected", "store_unreachable"):
+                msg = t("connectors.connect_check_failed", lang, detail=detail)
+            else:
+                msg = t("connectors.connect_failed", lang)
             return Div(
-                Span(t("connectors.connect_failed", lang,
-                       default=f"Could not store credentials (relay returned {r.status_code}). Please retry."),
-                     cls="flash flash--warning"),
+                Span(msg, cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
@@ -1194,7 +1145,7 @@ def setup_routes(app):
         # Auto-sync on connect so the merchant's data appears without a manual step
         # (the activation moment). Best-effort: a failure here doesn't block the connect.
         try:
-            await _kickoff_connector_sync(iid, platform)
+            await _kickoff_connector_sync(iid, platform, token)
         except Exception:
             log.warning("auto-sync on connect failed (non-fatal) for %s", platform, exc_info=True)
 
