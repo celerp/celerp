@@ -29,7 +29,7 @@ operative statement for that file; this map governs by path otherwise.
 Notes:
 - The BSL components use the SPDX identifier `BUSL-1.1` (the official short identifier for Business
   Source License 1.1). They are source-available, not open source, until the Change Date, on which they
-  convert to the Change License stated in `LICENSE` (Apache-2.0), at the latest. BSL also converts the
+  convert to the Change License stated in `LICENSE` (Apache-2.0), at the latest. BUSL also converts the
   fourth anniversary of each version's first public distribution, whichever is earlier.
 - The MIT modules depend on the BUSL-1.1 engine at runtime; redistributing an MIT module does not change
   the license of the engine it requires, and using the engine remains governed by `LICENSE`.
