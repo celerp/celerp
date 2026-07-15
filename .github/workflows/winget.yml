@@ -25,4 +25,7 @@ jobs:
         with:
           identifier: Celerp.Celerp
           installers-regex: 'Celerp-Setup\.exe$'
+          # Point each winget version's ReleaseNotesUrl at its GitHub release
+          # (which carries the auto-generated changelog).
+          release-notes-url: ${{ github.event.release.html_url }}
           token: ${{ secrets.WINGET_TOKEN }}
