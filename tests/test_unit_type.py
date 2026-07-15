@@ -3,7 +3,7 @@
 Covers:
 - is_weight_unit / is_pieces_unit helpers (units.py)
 - UnitRecord model validation (unit_type field)
-- _DEFAULT_UNITS has unit_type on every entry
+- DEFAULT_UNITS has unit_type on every entry
 - _validate_units rejects invalid unit_type
 - _inventory_cell_renderers derivation logic (weight, pieces)
 - field_schema.py column ordering (qty → weight → pieces)
@@ -77,28 +77,29 @@ class TestIsPiecesUnit:
 
 class TestDefaultUnits:
     def test_all_default_units_have_unit_type(self):
-        from celerp.routers.companies import _DEFAULT_UNITS
-        for u in _DEFAULT_UNITS:
+        from celerp.services.units import DEFAULT_UNITS
+        for u in DEFAULT_UNITS:
             assert "unit_type" in u, f"Unit '{u['name']}' missing unit_type"
 
     def test_unit_types_are_valid_values(self):
-        from celerp.routers.companies import _DEFAULT_UNITS, _VALID_UNIT_TYPES
-        for u in _DEFAULT_UNITS:
+        from celerp.routers.companies import _VALID_UNIT_TYPES
+        from celerp.services.units import DEFAULT_UNITS
+        for u in DEFAULT_UNITS:
             assert u["unit_type"] in _VALID_UNIT_TYPES, f"Unit '{u['name']}' has invalid unit_type '{u['unit_type']}'"
 
     def test_piece_is_pieces_type(self):
-        from celerp.routers.companies import _DEFAULT_UNITS
-        piece = next(u for u in _DEFAULT_UNITS if u["name"] == "piece")
+        from celerp.services.units import DEFAULT_UNITS
+        piece = next(u for u in DEFAULT_UNITS if u["name"] == "piece")
         assert piece["unit_type"] == "pieces"
 
     def test_carat_is_weight_type(self):
-        from celerp.routers.companies import _DEFAULT_UNITS
-        carat = next(u for u in _DEFAULT_UNITS if u["name"] == "carat")
+        from celerp.services.units import DEFAULT_UNITS
+        carat = next(u for u in DEFAULT_UNITS if u["name"] == "carat")
         assert carat["unit_type"] == "weight"
 
     def test_liter_is_quantity_type(self):
-        from celerp.routers.companies import _DEFAULT_UNITS
-        liter = next(u for u in _DEFAULT_UNITS if u["name"] == "liter")
+        from celerp.services.units import DEFAULT_UNITS
+        liter = next(u for u in DEFAULT_UNITS if u["name"] == "liter")
         assert liter["unit_type"] == "quantity"
 
 

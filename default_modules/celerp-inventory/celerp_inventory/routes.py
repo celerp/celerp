@@ -19,12 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, viewer_read_only, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp_inventory.projections import is_item_available
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 
 # ---------------------------------------------------------------------------
@@ -33,18 +33,8 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
-_DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
-
-
-async def _get_company_units(session: AsyncSession, company_id) -> list[dict]:
-    """Return the company's units config (falls back to default seed)."""
-    from celerp.models.company import Company
-    company = await session.get(Company, company_id)
-    if company:
-        units = (company.settings or {}).get("units")
-        if units:
-            return units
-    return DEFAULT_UNITS
+# Company units config lives in celerp.services.units (shared with labels + CSV export).
+_get_company_units = get_company_units
 
 
 def _to_int_pieces(val) -> int:
@@ -2876,11 +2866,22 @@ async def export_items_csv(
         # No timezone info — assume UTC, append Z
         return s.rstrip() + "Z"
 
+    unit_map = build_unit_map(await _get_company_units(session, company_id))
+
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=_COLS, extrasaction="ignore")
     writer.writeheader()
     for it in items:
         row = {c: it.get(c, "") for c in _COLS}
+        # The measure the sell unit already IS derives from quantity: the stored
+        # companion field is absent on fresh items and can go stale after sales.
+        # Matches the inventory table's derived weight/pieces columns.
+        sell_by = it.get("sell_by")
+        if is_weight_unit(sell_by, unit_map):
+            row["weight"] = it.get("quantity", "")
+            row["weight_unit"] = sell_by
+        elif is_pieces_unit(sell_by, unit_map):
+            row["pieces"] = it.get("quantity", "")
         row["created_at"] = _fmt_ts(it.get("created_at"))
         row["updated_at"] = _fmt_ts(it.get("updated_at"))
         writer.writerow(row)

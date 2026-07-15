@@ -1800,6 +1800,12 @@ function celerpPrintLabel(entityId, templateId) {
             )
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["operator"]:
+            # Viewers are read-only: swap back a non-editable display cell.
+            from ui.components.table import display_cell
+            _f = next((x for x in schema if x.get("key") == field), {})
+            return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+                                cell_type=_f.get("type", "text"), editable=False)
         locations = locs.get("items", [])
 
         # Virtual total field (e.g. cost_price_total): show editable cell with computed value

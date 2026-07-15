@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
-from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
+from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
@@ -88,6 +88,21 @@ def _measure_weight_field(val, unit, *, locked: bool, show: bool, avail=None):
         Span(unit or "", cls="unit-label js-weight-unit", title=_title),
         cls="measure-weight", style=("" if show else "display:none"),
     )
+
+
+def _ident_mode_from(company: dict) -> str:
+    """The company's line_item_identifier setting; 'sku' unless validly configured."""
+    from celerp.services.line_measures import LINE_IDENTIFIER_MODES
+    mode = company.get("line_item_identifier") or (company.get("settings") or {}).get("line_item_identifier")
+    return mode if mode in LINE_IDENTIFIER_MODES else "sku"
+
+
+async def _line_identifier_mode(token: str) -> str:
+    """Fetch-and-resolve variant of _ident_mode_from for handlers without a company in hand."""
+    try:
+        return _ident_mode_from(await api.get_company(token))
+    except Exception:
+        return "sku"
 
 
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
@@ -958,6 +973,8 @@ def setup_routes(app):
         new_label = _doc_type_new_label(doc_type, lang)
         search_url = f"/docs/search?type={doc_type}" if doc_type else "/docs/search"
         create_type = doc_type or "invoice"
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        _lvl = _RLV.get(_get_role(request), 0)
         return base_shell(
             page_header(
                 page_title,
@@ -972,9 +989,9 @@ def setup_routes(app):
                     hx_post=f"/docs/create-blank?type={create_type}",
                     hx_swap="none",
                     cls="btn btn--primary",
-                ),
-                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary"),
-                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary"),
+                ) if _lvl >= _RLV["operator"] else "",
+                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
@@ -1504,14 +1521,18 @@ def setup_routes(app):
 
         return _J({"ok": True, "imported": len(new_lines)})
 
-    async def _enrich_print_lines(token: str, doc: dict) -> None:
+    async def _enrich_print_lines(token: str, doc: dict, line_identifier_mode: str = "sku") -> None:
         """Source pieces/weight (and the weight's unit) from each line's parcel for the
         printout. Invoice-layout docs (invoice / consignment-out / list) show those
         measures, and lines created before the PCS/WEIGHT feature don't store them
         (notably the weight unit). Shipping documents additionally backfill each
         line's HS code / country of origin from its catalog item - the item is the
-        durable home of customs data, the line only overrides. No-op for other types."""
-        if doc.get("doc_type") not in _INVOICE_LAYOUT_DOC_TYPES:
+        durable home of customs data, the line only overrides. When the company
+        shows barcodes on lines, every doc type also backfills barcodes onto lines
+        saved before barcode stamping. No-op otherwise for non-invoice types."""
+        _needs_ident = line_identifier_mode != "sku"
+        _invoice_layout = doc.get("doc_type") in _INVOICE_LAYOUT_DOC_TYPES
+        if not _invoice_layout and not _needs_ident:
             return
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
@@ -1530,6 +1551,10 @@ def setup_routes(app):
             try:
                 item = await api.get_item(token, eid)
             except Exception:
+                return
+            if _needs_ident:
+                identifier_backfill(li, item)
+            if not _invoice_layout:
                 return
             meta = item_measure_meta(item, _umap)
             li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
@@ -1577,11 +1602,12 @@ def setup_routes(app):
                 lst.update(await _company_letterhead(token))
             except Exception:
                 pass
-        await _enrich_print_lines(token, lst)
+        _ident_mode = await _line_identifier_mode(token)
+        await _enrich_print_lines(token, lst, _ident_mode)
         try:
             html = render_doc_print_html(
                 lst, import_url=await _print_import_url(token, entity_id), auto_print=True,
-                layout=layout)
+                layout=layout, line_identifier=_ident_mode)
         except ValueError as e:
             return _HR(f"<p>Error: {e}</p>", status_code=422)
         return _HR(html)
@@ -1628,11 +1654,12 @@ def setup_routes(app):
             except Exception:
                 pass
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
-        await _enrich_print_lines(token, doc)
+        _ident_mode = await _line_identifier_mode(token)
+        await _enrich_print_lines(token, doc, _ident_mode)
         _imp = (await _print_import_url(token, entity_id)
                 if doc.get("doc_type") in _IMPORTABLE_DOC_TYPES else None)
         from starlette.responses import HTMLResponse as _HR
-        return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True))
+        return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True, line_identifier=_ident_mode))
 
     @app.get("/docs/{entity_id}/pdf")
     async def doc_pdf_redirect(request: Request, entity_id: str):
@@ -1894,10 +1921,12 @@ celerpUpdateBulkAlloc();
         # Fetch company timezone for notes display
         tz: str = "UTC"
         company_currency: str = "USD"
+        _ident_mode = "sku"
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
             company_currency = _co.get("currency") or "USD"
+            _ident_mode = _ident_mode_from(_co)
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -1955,7 +1984,8 @@ celerpUpdateBulkAlloc();
         # regardless of status.
         item_meta_map: dict[str, dict] = {}
         _need_status = (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",)
-        if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES:
+        # Showing barcodes also needs the items (legacy lines predate barcode stamping).
+        if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku":
             try:
                 _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
@@ -1984,6 +2014,13 @@ celerpUpdateBulkAlloc();
                     if item.get("status"):
                         item_status_map[eid] = item["status"]
                     item_meta_map[eid] = item_measure_meta(item, _unit_map)
+                if _ident_mode != "sku":
+                    # Lines saved before barcodes were stamped: fill from the catalog item.
+                    _items_by_eid = {eid: item for eid, item in results if item}
+                    for _li in doc.get("line_items", []):
+                        _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
+                        if _it:
+                            identifier_backfill(_li, _it)
             except Exception:
                 pass
         # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
@@ -1993,7 +2030,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2022,6 +2059,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            # Viewers are read-only: return the display state instead of an input.
+            return await doc_field_display(request, entity_id, field)
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
@@ -2394,6 +2435,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            return await doc_li_field_display(request, entity_id, li_index, field)
         try:
             doc = await api.get_doc(token, entity_id)
             line_items = doc.get("line_items") or []
@@ -3700,6 +3744,8 @@ celerpUpdateBulkAlloc();
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
         _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        _lvl = _RLV.get(_get_role(request), 0)
         # Audits are location-bound, not blank drafts: send the user through the location picker.
         if list_type == "audit":
             _new_btn = A("New audit", href="/lists/new-audit", cls="btn btn--primary")
@@ -3713,9 +3759,9 @@ celerpUpdateBulkAlloc();
                 t("page.lists", lang),
                 _list_drafts_tab(draft_count, is_drafts_view, list_type),
                 search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search"),
-                _new_btn,
-                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary"),
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
+                _new_btn if _lvl >= _RLV["operator"] else "",
+                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
             ),
             _date_filter_bar("/lists", date_from, date_to, preset,
                              extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
@@ -3974,9 +4020,11 @@ celerpUpdateBulkAlloc();
 
         # Fetch company timezone for notes display
         tz: str = "UTC"
+        _ident_mode = "sku"
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
+            _ident_mode = _ident_mode_from(_co)
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -4017,6 +4065,13 @@ celerpUpdateBulkAlloc();
                     for eid, item in _results:
                         if item:
                             item_meta_map[eid] = item_measure_meta(item, _unit_map)
+                    if _ident_mode != "sku":
+                        # Lines saved before barcodes were stamped: fill from the catalog item.
+                        _items_by_eid = {eid: item for eid, item in _results if item}
+                        for _li in lst.get("line_items", []):
+                            _it = _items_by_eid.get(_li.get("item_id") or _li.get("entity_id") or "")
+                            if _it:
+                                identifier_backfill(_li, _it)
             except Exception:
                 pass
 
@@ -4048,7 +4103,8 @@ celerpUpdateBulkAlloc();
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request),
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
-                        relay_connected=_list_relay, share_enabled=_list_share, share_active=_list_share_active),
+                        relay_connected=_list_relay, share_enabled=_list_share, share_active=_list_share_active,
+                        line_identifier_mode=_ident_mode),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -4059,6 +4115,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            return await list_field_display(request, entity_id, field)
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
@@ -4257,12 +4316,13 @@ celerpUpdateBulkAlloc();
         # This fast tbody swap only runs for a finalized audit (the locked counting manifest); a draft
         # audit reloads instead. Counts are editable only while finalized.
         _counted_editable = lst.get("status") == _LF
-        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable) for li in line_items]
+        _ident_mode = await _line_identifier_mode(token)
+        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable, _ident_mode) for li in line_items]
         if not rows:
             rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
-    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True) -> FT:
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True, line_identifier_mode: str = "sku") -> FT:
         """Shared audit row builder for the finalized-audit scan re-render. On-hand prefers the
         snapshot frozen at Finalize (else live); Counted is click-to-edit only while counting."""
         from ui.components.table import EMPTY as _EMPTY
@@ -4297,9 +4357,12 @@ celerpUpdateBulkAlloc();
         # Must mirror the editable header's FULL column structure (checkbox + hidden money cells) so
         # the scan-swapped tbody stays aligned. Audit identity is static text (never inputs); the
         # money/total cells are empty placeholders hidden by the doc-lines--no-money CSS.
+        _ident_1st, _ident_2nd = line_identifier(li, line_identifier_mode)
         return Tr(
             Td(Input(type="checkbox", cls="li-select", value=item_key), cls="col-checkbox li-checkbox-cell"),
-            Td(li.get("sku") or _EMPTY, cls="col-sku"),
+            Td(_ident_1st or _EMPTY,
+               Div(_ident_2nd, cls="li-ident-2nd", title=_ident_2nd) if _ident_2nd else None,
+               cls="col-sku"),
             Td(li.get("name") or li.get("description") or _EMPTY, cls="col-desc"),
             Td(f"{qty:g}" if qty else "--", cls="col-qty"),
             Td("", cls="col-unit-price"), Td("", cls="col-disc"), Td("", cls="col-tax"),
@@ -5332,7 +5395,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5352,16 +5415,26 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _pay_due = 0.0
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
-    # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
-    # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
-    # audit only gates the Counted cells open (pol["counted_editable"]).
-    is_editable = is_draft or (pol["audit"] and status == _LF)
-    _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
-    ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
     from celerp.services.auth import ROLE_LEVELS as _RL
     _user_level = _RL.get(role, _RL["owner"])
     _is_manager = _user_level >= _RL["manager"]
     _is_operator = _user_level >= _RL["operator"]
+    # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
+    # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
+    # audit only gates the Counted cells open (pol["counted_editable"]). Viewers are read-only
+    # everywhere (the API enforces it; the UI must not offer controls that would 403).
+    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _is_operator
+
+    def _static_ident_cell_content(li: dict):
+        """Identifier for a read-only line cell per the company mode: the primary
+        text, with the secondary (SKU under barcode) as a muted second line."""
+        primary, secondary = line_identifier(li, line_identifier_mode)
+        if not secondary:
+            return primary or "--"
+        return Div(Div(primary, cls="li-ident-1st"), Div(secondary, cls="li-ident-2nd", title=secondary))
+
+    _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
+    ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
 
     def _cell(field: str, value) -> FT:
         """Editable display cell, routing to the correct /docs/ or /lists/ URL."""
@@ -5848,13 +5921,21 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Line items section ---
     line_body_id = "line-body"
     if is_editable:
-        def _sku_input(val: str = "", entity_id: str = "") -> FT:
+        def _sku_input(val: str = "", entity_id: str = "", barcode: str = "") -> FT:
             eye_cls = "item-link item-link--active" if entity_id else "item-link item-link--inactive"
             eye_href = f"/inventory/{entity_id}" if entity_id else "#"
             eye = A("👁", href=eye_href, target="_blank" if entity_id else "",
                      cls=eye_cls, data_name="item_link",
                      title="View item details" if entity_id else "No linked item",
                      onclick="" if entity_id else "event.preventDefault();")
+            # Barcode is stamped on every line (hidden input) regardless of the display
+            # mode, so the stored data never depends on the company's identifier setting.
+            # The visible line under the SKU input exists only when barcodes are shown.
+            barcode_display = (
+                Div(barcode, cls="li-ident-2nd", data_name="barcode_display",
+                    style="" if barcode else "display:none")
+                if line_identifier_mode != "sku" else None
+            )
             return Div(
                 eye,
                 Input(type="text", value=val, data_name="sku", placeholder="SKU...",
@@ -5865,6 +5946,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                       onblur="celerpAcBlur(this)",
                       onkeydown="celerpAcKey(event,this)"),
                 Div(cls="catalog-ac-list", style="display:none"),
+                Input(type="hidden", value=barcode, data_name="barcode"),
+                barcode_display,
                 cls="catalog-ac-wrap",
             )
 
@@ -6042,7 +6125,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
-                Td((li.get("sku") or "--") if pol["counting"] else _sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
+                Td(_static_ident_cell_content(li) if pol["counting"]
+                   else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
+                   cls="col-sku"),
                 _desc_cell,
             ]
             if category_cell:
@@ -6509,6 +6594,15 @@ function celerpFillRow(row, data) {{
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
+    // Stamp the picked/scanned item's barcode on the line (always stored; the
+    // visible secondary line exists only when the company shows barcodes).
+    const barcodeEl = row.querySelector('[data-name="barcode"]');
+    if (barcodeEl) barcodeEl.value = data.barcode || '';
+    const barcodeDisp = row.querySelector('[data-name="barcode_display"]');
+    if (barcodeDisp) {{
+        barcodeDisp.textContent = data.barcode || '';
+        barcodeDisp.style.display = data.barcode ? '' : 'none';
+    }}
     const receiveAsEl = row.querySelector('[data-name="receive_as"]');
     if (receiveAsEl) receiveAsEl.value = data.entity_id ? 'stock' : 'expense';
     const categoryEl = row.querySelector('[data-name="category"]');
@@ -7096,6 +7190,7 @@ function _celerpCollectLines() {{
         const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
+        const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
         const piecesEl = row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const weightEl = row.querySelector('[data-name="weight"]');
@@ -7109,6 +7204,7 @@ function _celerpCollectLines() {{
                          line_total: discounted, hs_code: hsCode || undefined,
                          country_of_origin: countryOfOrigin || undefined,
                          entity_id: entityId || undefined,
+                         ...(barcode ? {{barcode}} : {{}}),
                          ...(category ? {{category}} : {{}}),
                          ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
                          ...(accountCode ? {{account_code: accountCode}} : {{}}),
@@ -7377,12 +7473,14 @@ async function celerpCsvImport(input, entityId) {{
             )
             # On a shipping document the catalog item is where HS code / origin are
             # maintained, so the SKU links straight to it (one click to fix the source).
+            _ident_1st, _ident_2nd = line_identifier(li, line_identifier_mode)
+            _ident_2nd_div = Div(_ident_2nd, cls="li-ident-2nd", title=_ident_2nd) if _ident_2nd else None
             _sku_cell = (
-                Td(A(li.get("sku"), href=f"/inventory/{li_eid}", target="_blank",
+                Td(A(_ident_1st, href=f"/inventory/{li_eid}", target="_blank",
                      title="Open this item in the catalog (HS code and origin live there)",
-                     cls="auth-link"), cls="col-sku")
-                if pol["customs"] and li_eid and li.get("sku")
-                else Td(format_value(li.get("sku") or None), cls="col-sku")
+                     cls="auth-link"), _ident_2nd_div, cls="col-sku")
+                if pol["customs"] and li_eid and _ident_1st
+                else Td(format_value(_ident_1st or None), _ident_2nd_div, cls="col-sku")
             )
             cells += [
                 _sku_cell,

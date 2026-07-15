@@ -858,3 +858,130 @@ def test_print_bulk_sku_prefix_dedup():
     skus = [v[4:] for v in raw if v.startswith("sku:")]
     deduped = list(dict.fromkeys(skus))
     assert deduped == ["SKU-A", "SKU-B"]
+
+
+# ── Derived weight/pieces label fields (the sell-by measure IS the quantity) ──
+
+def test_weight_derives_from_quantity_for_weight_sold_item():
+    """A carat-sold item has no stored `weight`; the Weight field must print the
+    quantity (which IS the weight) instead of silently disappearing."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Tourmaline Parcel", "sku": "LOT-1", "quantity": 38.60, "sell_by": "carat"}
+    template = {"fields": [{"key": "weight", "type": "text", "label": "Weight"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Weight: 38.60 carat" in html
+
+
+def test_pieces_derives_from_quantity_for_piece_sold_item():
+    """A piece-sold item has no stored `pieces`; the Pieces field must print the
+    quantity instead of silently disappearing."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Diamond", "sku": "DIA-1", "quantity": 3, "sell_by": "piece"}
+    template = {"fields": [{"key": "pieces", "type": "text", "label": "Pieces"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Pieces: 3" in html
+
+
+def test_stored_weight_ignored_when_quantity_is_the_weight():
+    """Stored weight on a weight-sold item can be stale (quantity adjustments from
+    sales don't rewrite it); quantity always wins, matching the inventory table."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Parcel", "quantity": 12.5, "sell_by": "carat", "weight": 99}
+    template = {"fields": [{"key": "weight", "type": "text", "label": "Weight"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Weight: 12.50 carat" in html
+    assert "Weight: 99" not in html
+
+
+def test_weight_uses_stored_value_for_piece_sold_item():
+    """A piece-sold item's independent weight field still prints as stored."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Ring", "quantity": 1, "sell_by": "piece", "weight": 2.5}
+    template = {"fields": [{"key": "weight", "type": "text", "label": "Weight"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Weight: 2.5" in html
+
+
+def test_pieces_uses_stored_attribute_for_weight_sold_item():
+    """A weight-sold parcel's independent pieces count (attributes.pieces) still prints."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Parcel", "quantity": 38.6, "sell_by": "carat", "attributes": {"pieces": 25}}
+    template = {"fields": [{"key": "pieces", "type": "text", "label": "Pieces"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Pieces: 25" in html
+
+
+def test_unit_field_falls_back_to_sell_by():
+    """The Unit field maps to the item's sell_by (items store no `unit` key)."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"name": "Parcel", "quantity": 38.6, "sell_by": "carat"}
+    template = {"fields": [{"key": "unit", "type": "text", "label": "Unit"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "Unit: carat" in html
+
+
+def test_render_label_text_derives_weight_and_pieces():
+    """The PDF/text render path derives the sell-by measure like the HTML path."""
+    from celerp_labels.service import render_label_text
+    template = {"name": "T", "fields": [
+        {"key": "weight", "type": "text", "label": "Weight"},
+        {"key": "pieces", "type": "text", "label": "Pieces"},
+    ]}
+    carat = render_label_text([{"quantity": 38.6, "sell_by": "carat"}], template)
+    assert "Weight: 38.60 carat" in carat
+    piece = render_label_text([{"quantity": 3, "sell_by": "piece"}], template)
+    assert "Pieces: 3" in piece
+
+
+def test_resolve_field_value_respects_company_unit_map():
+    """Custom company units drive the derivation (not the built-in defaults)."""
+    from celerp_labels.service import resolve_field_value
+    unit_map = {"tola": {"name": "tola", "decimals": 1, "unit_type": "weight"}}
+    item = {"quantity": 5.5, "sell_by": "tola"}
+    assert resolve_field_value(item, "weight", unit_map) == "5.5 tola"
+
+
+@pytest.mark.asyncio
+async def test_print_pdf_contains_derived_weight_for_carat_item(client: AsyncClient):
+    """End-to-end API path: a real carat item printed with a Weight template field
+    puts the derived weight into the PDF content stream."""
+    headers = await _headers(client)
+    r_item = await client.post(
+        "/items",
+        json={"sku": "CT-LBL", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6},
+        headers=headers,
+    )
+    assert r_item.status_code == 200, r_item.text
+    entity_id = r_item.json()["id"]
+
+    r_tpl = await client.post(
+        "/api/labels/templates",
+        json={"name": "WeightTpl", "fields": [{"key": "weight", "label": "Weight", "type": "text"}]},
+        headers=headers,
+    )
+    assert r_tpl.status_code == 201, r_tpl.text
+    tid = r_tpl.json()["id"]
+
+    r_pdf = await client.post(f"/api/labels/print/{entity_id}?template_id={tid}", headers=headers)
+    assert r_pdf.status_code == 200
+    assert r_pdf.content[:4] == b"%PDF"
+
+    # reportlab encodes content streams as ASCII85 + Flate; unwrap both to
+    # reach the drawn text.
+    import base64
+    import re
+    import zlib
+    decoded = b""
+    for stream in re.findall(rb"stream\r?\n(.*?)endstream", r_pdf.content, re.DOTALL):
+        raw = stream.strip(b"\r\n")
+        try:
+            raw = base64.a85decode(raw, adobe=True)
+        except ValueError:
+            pass
+        try:
+            decoded += zlib.decompress(raw)
+        except zlib.error:
+            decoded += raw
+    assert b"38.60 carat" in decoded, (
+        "derived weight (quantity + sell unit) must appear on the printed label"
+    )

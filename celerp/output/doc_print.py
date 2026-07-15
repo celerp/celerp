@@ -20,7 +20,7 @@ from fasthtml.common import (
 )
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
-from celerp.services.line_measures import measure_sublines, qty_label
+from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
@@ -214,7 +214,8 @@ def _pay_bar(pay_url: str | None, doc: dict, currency: str):
 
 def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                           pay_url: str | None = None, auto_print: bool = False,
-                          layout: str | None = None) -> str:
+                          layout: str | None = None,
+                          line_identifier: str = "sku") -> str:
     """Render the letterhead document page as a standalone HTML string.
 
     ``doc`` must already carry company_* letterhead fields, resolved contact
@@ -274,6 +275,18 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     has_disc = any(li.get("discount_pct") for li in line_items)
     _print_umap = build_unit_map(DEFAULT_UNITS)
 
+    # Identifier column: barcode (never truncated - it verifies the physical
+    # piece) optionally stacked over the SKU, per the company setting.
+    _ident_header = {"sku": "SKU", "barcode": "Barcode", "barcode_sku": "Barcode / SKU"}.get(line_identifier, "SKU")
+
+    def _ident_cell(li: dict):
+        primary, secondary = _line_identifier(li, line_identifier)
+        if secondary:
+            return Td(P(primary, style="margin:0;"),
+                      P(secondary, style="margin:0;font-size:7pt;color:#666;"),
+                      cls="mono")
+        return Td(primary, cls="mono")
+
     def _line_weight(li: dict) -> str:
         w = li.get("weight")
         if w in (None, "", 0):
@@ -309,7 +322,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             price = li.get("unit_price") or li.get("price") or 0
             line_total = li.get("line_total") or (float(qty) * float(price))
             base = [
-                Td(li.get("sku") or "", cls="mono"),
+                _ident_cell(li),
                 Td(li.get("description") or li.get("name") or ""),
             ]
             if ship_layout == "delivery_note":
@@ -328,9 +341,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                     Td(_money(line_total) if float(price or 0) else "", cls="r"),
                 ))
         if ship_layout == "delivery_note":
-            headers = Tr(Th("SKU"), Th("Description"), Th("Net Weight", cls="r"), Th("Qty", cls="r"))
+            headers = Tr(Th(_ident_header), Th("Description"), Th("Net Weight", cls="r"), Th("Qty", cls="r"))
         else:
-            headers = Tr(Th("SKU"), Th("Description"), Th("HS Code"), Th("Country of Origin"),
+            headers = Tr(Th(_ident_header), Th("Description"), Th("HS Code"), Th("Country of Origin"),
                          Th("Qty", cls="r"), Th("Net Wt", cls="r"),
                          Th("Gross Wt", cls="r"), Th("Unit Value", cls="r"), Th("Total Value", cls="r"))
     else:
@@ -342,14 +355,13 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             # Description holds only the description (the SKU has its own column) plus
             # Pieces / Weight as labelled sub-lines when the line carries them.
             desc = li.get("description") or li.get("name") or ""
-            sku = li.get("sku") or ""
             _ls = "margin:0;font-size:8.5pt;"
             _desc_parts = [P(f"- {desc}", style=_ls)]
             # Pieces/Weight sub-lines are sales (invoice-layout) only; keep vendor docs clean.
             if doc_type in INVOICE_LAYOUT_DOC_TYPES:
                 _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
             rows.append(Tr(
-                Td(sku, cls="mono"),
+                _ident_cell(li),
                 Td(Div(*_desc_parts)),
                 Td(qty_label(li), cls="r"),
                 Td(fmt_rate(price, currency), cls="r"),
@@ -358,7 +370,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             ))
 
         headers = Tr(
-            Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
+            Th(_ident_header), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
             *([] if not has_disc else [Th("Disc%", cls="r")]),
             Th("Amount", cls="r"),
         )

@@ -671,13 +671,16 @@ def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Reque
     schema = _contact_schema(contact_type)
     et = f"{contact_type}s"
 
+    from celerp.services.auth import ROLE_LEVELS as _RLV
+    from ui.config import get_role as _role_of
+    _lvl = _RLV.get(_role_of(request), 0)
     return base_shell(
         page_header(
             label,
             search_bar(placeholder=f"Search {label.lower()}...", target="#contacts-content", url=search_url),
-            Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary"),
-            A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary"),
-            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary"),
+            Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _lvl >= _RLV["operator"] else "",
+            A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(contact_type),
@@ -1674,6 +1677,11 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        from ui.config import get_role as _get_role_c
+        if _RLV.get(_get_role_c(request), 0) < _RLV["operator"]:
+            # Viewers are read-only: return the display state instead of an input.
+            return await contact_field_display(request, contact_id, field)
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:

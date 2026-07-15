@@ -26,7 +26,7 @@ from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
+from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator, viewer_read_only
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
@@ -36,7 +36,7 @@ from celerp.services.list_behavior import (
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 # Closed-set shipment fields: unknown values never reach the event log ('' clears).
 _SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
@@ -56,6 +56,9 @@ class LineItem(BaseModel):
     item_id: str | None = None
     entity_id: str | None = None  # alias sent by the frontend; resolved to item_id below
     sku: str | None = None
+    # Stamped from the catalog item when the line is added; the identifier a
+    # finalized document keeps showing even if the item is later re-barcoded.
+    barcode: str | None = None
     name: str | None = None
     description: str | None = None
     quantity: float = 0
@@ -599,6 +602,18 @@ async def get_doc_pdf(
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
 
+    # When the company shows barcodes on lines, backfill lines saved before
+    # barcode stamping from their catalog items (mirror of the share view).
+    from celerp.services.line_measures import LINE_IDENTIFIER_MODES, identifier_backfill
+    if company.get("line_item_identifier") in LINE_IDENTIFIER_MODES and company["line_item_identifier"] != "sku":
+        for li in doc.get("line_items") or []:
+            eid = li.get("entity_id") or li.get("item_id")
+            if li.get("barcode") or not eid:
+                continue
+            irow = await session.get(Projection, (company_id, eid))
+            if irow is not None:
+                identifier_backfill(li, irow.state or {})
+
     # Footer import link only while the share link is live, so saved PDFs
     # never carry a URL that 404s.
     from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
@@ -1125,6 +1140,17 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
+    # Goods must be back before the paper can go void, or the stock records point
+    # at a dead document with no UI path to bring the items home (the fulfillment
+    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
+    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot void a document with fulfilled items; revert fulfillment (receive the goods back) first")
+    if row.state.get("received_items"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot void a document with received items; return the goods first")
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
@@ -2708,7 +2734,7 @@ async def export_docs_csv(
 # List routes (formerly list_routes.py) - merged here to eliminate WET copy
 # ---------------------------------------------------------------------------
 
-lists_router = APIRouter(dependencies=[Depends(get_current_user)])
+lists_router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 
 class ListCreatePayload(BaseModel):

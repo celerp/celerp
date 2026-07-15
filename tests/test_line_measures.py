@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 from celerp.services.line_measures import (
+    identifier_backfill,
     item_measure_meta,
+    line_identifier,
     measure_locks,
     measure_sublines,
     qty_label,
@@ -84,6 +86,43 @@ def test_item_measure_meta():
     assert meta["qty_is_pieces"] is False
     assert meta["weight_unit"] == "carat"
     assert meta["pieces"] == 3
+
+
+def test_line_identifier_sku_mode_is_todays_rendering():
+    line = {"sku": "GEM-001", "barcode": "2130060000068"}
+    assert line_identifier(line, "sku") == ("GEM-001", None)
+
+
+def test_line_identifier_barcode_mode():
+    assert line_identifier({"sku": "GEM-001", "barcode": "2130060000068"}, "barcode") == ("2130060000068", None)
+    # No barcode on the line: fall back to SKU rather than print nothing.
+    assert line_identifier({"sku": "GEM-001"}, "barcode") == ("GEM-001", None)
+
+
+def test_line_identifier_barcode_sku_mode_stacks():
+    assert line_identifier({"sku": "GEM-001", "barcode": "2130060000068"}, "barcode_sku") == ("2130060000068", "GEM-001")
+    # Collapses to the SKU alone when the line has no barcode.
+    assert line_identifier({"sku": "GEM-001"}, "barcode_sku") == ("GEM-001", None)
+    # Barcode with no SKU: no empty secondary line.
+    assert line_identifier({"barcode": "123"}, "barcode_sku") == ("123", None)
+
+
+def test_line_identifier_unknown_mode_falls_back_to_sku():
+    assert line_identifier({"sku": "A", "barcode": "1"}, "nonsense") == ("A", None)
+    assert line_identifier({}, "sku") == ("", None)
+
+
+def test_identifier_backfill_fills_only_when_missing():
+    line: dict = {"sku": "GEM-001"}
+    identifier_backfill(line, {"barcode": "999"})
+    assert line["barcode"] == "999"
+    # Never overwrites the stamped value: a finalized doc keeps what was scanned.
+    identifier_backfill(line, {"barcode": "111"})
+    assert line["barcode"] == "999"
+    # No barcode on the item: leaves the line untouched.
+    line2: dict = {"sku": "X"}
+    identifier_backfill(line2, {})
+    assert "barcode" not in line2
 
 
 def test_measure_locks():

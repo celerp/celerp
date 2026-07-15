@@ -39,7 +39,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
@@ -49,7 +49,7 @@ from celerp.output.share_render import _not_found_page
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 # Public router — share token lookup and recipient import require no auth
 public_router = APIRouter()
@@ -472,18 +472,29 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
     state["contact_tax_id"] = contact.get("tax_id") or ""
 
 
-async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> None:
+async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> str:
     """Source pieces/weight (and the weight's unit) from each line's item for
     the shared view - the DB-side mirror of the UI print enrichment. Shipping
-    documents also backfill HS code / country of origin from the item."""
-    if state.get("doc_type") not in INVOICE_LAYOUT_DOC_TYPES:
-        return
+    documents also backfill HS code / country of origin from the item. When the
+    company shows barcodes on lines, every doc type backfills barcodes onto
+    lines saved before barcode stamping.
+
+    Returns the company's line_item_identifier mode (it loads Company anyway),
+    so the caller can pass it to the renderer without a second lookup."""
     from celerp.models.company import Company
-    from celerp.services.line_measures import item_measure_meta, resolve_line_measures
+    from celerp.services.line_measures import (
+        LINE_IDENTIFIER_MODES, identifier_backfill, item_measure_meta, resolve_line_measures)
     from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     company = await session.get(Company, company_id)
-    units = ((company.settings or {}).get("units") if company else None) or DEFAULT_UNITS
+    settings = (company.settings or {}) if company else {}
+    ident_mode = settings.get("line_item_identifier")
+    if ident_mode not in LINE_IDENTIFIER_MODES:
+        ident_mode = "sku"
+    invoice_layout = state.get("doc_type") in INVOICE_LAYOUT_DOC_TYPES
+    if not invoice_layout and ident_mode == "sku":
+        return ident_mode
+    units = settings.get("units") or DEFAULT_UNITS
     umap = build_unit_map(units)
     is_shipping = state.get("list_type") == SHIPPING_LIST_TYPE
     for li in state.get("line_items") or []:
@@ -493,12 +504,17 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         irow = await session.get(Projection, (company_id, eid))
         if irow is None:
             continue
+        if ident_mode != "sku":
+            identifier_backfill(li, irow.state or {})
+        if not invoice_layout:
+            continue
         meta = item_measure_meta(irow.state or {}, umap)
         li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
         if is_shipping:
             customs_backfill(li, irow.state or {})
             li["gross_weight"], li["gross_weight_unit"] = line_gross_weight(
                 li, irow.state or {}, bool(meta.get("qty_is_weight")))
+    return ident_mode
 
 
 @public_router.get("/share/{token}", response_class=HTMLResponse)
@@ -528,7 +544,7 @@ async def view_shared_doc(
     if not state.get("company_name"):
         state.update(await _letterhead(session, share_row.company_id))
     await _resolve_share_contact(session, share_row.company_id, state)
-    await _enrich_share_lines(session, share_row.company_id, state)
+    ident_mode = await _enrich_share_lines(session, share_row.company_id, state)
 
     importable = state.get("doc_type") in IMPORTABLE_DOC_TYPES
     # Online payment: offered on money-carrying, payable doc types when this
@@ -542,6 +558,7 @@ async def view_shared_doc(
         state,
         import_url=_share_url(token) if importable else None,
         pay_url=pay_url,
+        line_identifier=ident_mode,
     )
     return HTMLResponse(html, headers={"Access-Control-Allow-Origin": "*"})
 

@@ -45,6 +45,7 @@ def _sales_tabs(active: str, enabled_modules: set[str], lang: str = "en") -> FT:
         ("taxes", t("settings.tab_taxes", lang)),
         ("terms-conditions", "Terms & Conditions"),
         ("numbering", "Numbering"),
+        ("line-items", t("settings.tab_line_items", lang)),
     ]
     if "celerp-connectors" in enabled_modules:
         tabs.append(("connectors", t("settings.tab_connectors", lang)))
@@ -117,6 +118,62 @@ def _numbering_tab(sequences: list[dict]) -> FT:
     )
 
 
+# Line item identifier: what the identifier column shows on document lines.
+_LINE_IDENT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("sku", "SKU"),
+    ("barcode", "Barcode"),
+    ("barcode_sku", "Barcode + SKU"),
+)
+
+# One sample line for the preview rows (a lot barcode over a product-type SKU).
+_LINE_IDENT_SAMPLE = {"sku": "GEM-001", "barcode": "2130060000068"}
+
+
+def _line_items_tab(company: dict, lang: str = "en") -> FT:
+    """How line items identify the piece, on every document (screen, print, PDF, share)."""
+    from celerp.services.line_measures import LINE_IDENTIFIER_MODES, line_identifier
+
+    current = company.get("line_item_identifier") or (company.get("settings") or {}).get("line_item_identifier")
+    if current not in LINE_IDENTIFIER_MODES:
+        current = "sku"
+
+    def _preview_cell(mode: str) -> FT:
+        primary, secondary = line_identifier(_LINE_IDENT_SAMPLE, mode)
+        return Td(Div(primary, cls="li-ident-1st"),
+                  Div(secondary, cls="li-ident-2nd") if secondary else None,
+                  cls="col-sku")
+
+    preview_rows = [
+        Tr(Td(label), _preview_cell(val))
+        for val, label in _LINE_IDENT_OPTIONS
+    ]
+    return Div(
+        H3(t("page.line_items", lang), cls="settings-section-title"),
+        P(t("msg.line_item_identifier_hint", lang), cls="settings-hint"),
+        Div(
+            Label(t("label.line_item_identifier", lang), fr="line-item-identifier"),
+            Select(
+                *[Option(label, value=val, selected=(val == current))
+                  for val, label in _LINE_IDENT_OPTIONS],
+                name="value", id="line-item-identifier",
+                hx_patch="/settings/sales/line-identifier",
+                hx_target="#li-ident-saved", hx_swap="innerHTML", hx_include="this",
+                hx_trigger="change",
+                cls="cell-input cell-input--select",
+            ),
+            Span("", id="li-ident-saved", cls="settings-hint"),
+            cls="settings-field-row",
+            style="display:flex;align-items:center;gap:10px;margin-bottom:14px;",
+        ),
+        Table(
+            Thead(Tr(Th(t("th.options", lang)), Th(t("btn.preview", lang)))),
+            Tbody(*preview_rows),
+            cls="data-table", style="max-width:420px;",
+        ),
+        cls="settings-card",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings/sales")
@@ -152,6 +209,12 @@ def setup_routes(app):
             except (APIError, Exception):
                 sequences = []
             content = _numbering_tab([s for s in sequences if s.get("doc_type") in _SALES_DOC_TYPES])
+        elif tab == "line-items":
+            try:
+                company = await api.get_company(token)
+            except (APIError, Exception):
+                company = {}
+            content = _line_items_tab(company, lang=lang)
         elif tab == "connectors":
             content = _connectors_tab()
         else:
@@ -258,6 +321,23 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
         return _numbering_row(seq)
+
+    @app.patch("/settings/sales/line-identifier")
+    async def line_identifier_patch(request: Request):
+        """Save the company's line item identifier mode; returns the saved note."""
+        from celerp.services.line_measures import LINE_IDENTIFIER_MODES
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        value = str(form.get("value", ""))
+        if value not in LINE_IDENTIFIER_MODES:
+            return Span(t("error.invalid_value"), cls="cell-error")
+        try:
+            await api.patch_company(token, {"line_item_identifier": value})
+        except APIError as e:
+            return Span(str(e.detail), cls="cell-error")
+        return Span(t("msg.saved"))
 
 
 def _numbering_row(seq: dict) -> FT:

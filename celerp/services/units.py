@@ -51,6 +51,15 @@ def build_unit_map(units: list[dict]) -> dict[str, dict]:
     return {u["name"]: u for u in units}
 
 
+async def get_company_units(session, company_id) -> list[dict]:
+    """Return the company's units config, falling back to DEFAULT_UNITS."""
+    from celerp.models.company import Company
+
+    company = await session.get(Company, company_id)
+    units = (company.settings or {}).get("units") if company else None
+    return units or DEFAULT_UNITS
+
+
 def is_weight_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
     """Return True if the named unit has unit_type='weight'."""
     if not unit_name:

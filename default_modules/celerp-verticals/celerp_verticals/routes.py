@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.company import Company
 from celerp.services.auth import get_current_company_id, get_current_user, require_admin
+from celerp.services.units import DEFAULT_UNITS
 
 _PRESETS_DIR = Path(__file__).parent / "presets"
 _CATEGORIES_DIR = Path(__file__).parent / "categories"
@@ -73,20 +74,6 @@ def _all_presets() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Default units seed (kept in sync with celerp_inventory/routes.py)
-# ---------------------------------------------------------------------------
-
-_DEFAULT_UNITS: list[dict] = [
-    {"name": "piece", "label": "Piece", "decimals": 0},
-    {"name": "carat", "label": "Carat (ct)", "decimals": 2},
-    {"name": "gram", "label": "Gram (g)", "decimals": 2},
-    {"name": "kg", "label": "Kilogram (kg)", "decimals": 3},
-    {"name": "oz", "label": "Ounce (oz)", "decimals": 2},
-    {"name": "liter", "label": "Liter (L)", "decimals": 2},
-    {"name": "meter", "label": "Meter (m)", "decimals": 2},
-]
-
-# ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
 
@@ -123,12 +110,13 @@ def _ensure_unit_seeded(settings: dict, unit_name: str) -> None:
     """Add unit_name to company units from the default seed if not already present.
 
     Mutates settings in place. No-op if company already has custom units that include it,
-    or if the unit is not in the default seed.
+    or if the unit is not in the default seed. Seeds from the canonical DEFAULT_UNITS so
+    every seeded unit carries its unit_type (weight/pieces classification depends on it).
     """
-    seed_by_name = {u["name"]: u for u in _DEFAULT_UNITS}
+    seed_by_name = {u["name"]: u for u in DEFAULT_UNITS}
     if unit_name not in seed_by_name:
         return  # Unknown unit - nothing to seed
-    current_units: list[dict] = list(settings.get("units") or _DEFAULT_UNITS)
+    current_units: list[dict] = list(settings.get("units") or DEFAULT_UNITS)
     if not any(u["name"] == unit_name for u in current_units):
         current_units.append(seed_by_name[unit_name])
         settings["units"] = current_units

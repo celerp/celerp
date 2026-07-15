@@ -76,6 +76,7 @@ _COMMON_FIELDS = [
     ("status", "Status", "text"),
     ("location_name", "Location", "text"),
     ("weight", "Weight", "text"),
+    ("pieces", "Pieces", "text"),
     ("unit", "Unit", "text"),
     ("cost_price", "Cost Price", "text"),
     ("sale_price", "Sale Price", "text"),
@@ -105,6 +106,7 @@ _SAMPLE_DATA = {
     "status": "Available",
     "location_name": "Head Office",
     "weight": "2.5",
+    "pieces": "3",
     "unit": "pcs",
     "cost_price": "150.00",
     "sale_price": "299.00",
@@ -982,10 +984,32 @@ def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_b
     )
 
 
-def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
+async def _fetch_unit_map(api_base: str, token: str) -> dict[str, dict]:
+    """Company units via the API; drives the derived weight/pieces label fields."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(
+                f"{api_base}/companies/me/units",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code == 200 and isinstance(r.json(), list):
+                return build_unit_map(r.json())
+    except Exception as exc:
+        log.warning("Could not fetch company units for label print: %s", exc)
+    return build_unit_map(DEFAULT_UNITS)
+
+
+def _printable_label_sheet(
+    items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None
+) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print()."""
     import base64
 
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+
+    unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
     if not template:
         fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
         w_mm, h_mm = _FORMAT_MM_DEFAULT
@@ -998,7 +1022,7 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
         )
 
     from starlette.responses import HTMLResponse
-    from celerp_labels.service import _make_barcode_image, _make_qr_image
+    from celerp_labels.service import _make_barcode_image, _make_qr_image, resolve_field_value
 
     def _barcode_img_tag(val: str, module_height: int = 8, wrap_style: str = "", width_mm: float | None = None) -> str:
         buf = _make_barcode_image(val, module_height=module_height)
@@ -1041,11 +1065,7 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
             key = f.get("key", "")
             ftype = f.get("type", "text")
             field_label = str(f.get("label", "") or key).strip()
-            # qr/barcode/barcode_text fields: fall back to item's barcode field then sku
-            if key in ("qr", "barcode", "barcode_text"):
-                val = str(item.get("barcode", "") or item.get("sku", "") or "")
-            else:
-                val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
+            val = resolve_field_value(item, key, unit_map)
             if not val:
                 continue
             # Honor the designer's saved coordinates: place each field absolutely at its (x, y) in mm.
@@ -1433,7 +1453,8 @@ def setup_ui_routes(app) -> None:
         if not template:
             templates = await _seed_presets_if_empty(request)
             template = templates[0] if templates else None
-        return _printable_label_sheet([item_data] if item_data else [], template)
+        unit_map = await _fetch_unit_map(_api_base(request), token)
+        return _printable_label_sheet([item_data] if item_data else [], template, unit_map)
 
     @app.get("/labels/print-doc/{doc_id}")
     async def labels_print_doc(request: Request, doc_id: str):
@@ -1485,7 +1506,8 @@ def setup_ui_routes(app) -> None:
         if not template:
             templates = await _seed_presets_if_empty(request)
             template = templates[0] if templates else None
-        return _printable_label_sheet(items_data, template)
+        unit_map = await _fetch_unit_map(api_base, token)
+        return _printable_label_sheet(items_data, template, unit_map)
 
     @app.get("/labels/template-options")
     async def labels_template_options(request: Request):
@@ -1623,7 +1645,8 @@ def setup_ui_routes(app) -> None:
         if not template:
             templates = await _seed_presets_if_empty(request)
             template = templates[0] if templates else None
-        return _printable_label_sheet(items_data, template)
+        unit_map = await _fetch_unit_map(_api_base(request), token)
+        return _printable_label_sheet(items_data, template, unit_map)
 
     log.info("celerp-labels: UI routes registered")
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -213,3 +213,19 @@ def get_current_role(token: str = Depends(oauth2_scheme)) -> str:
     claims = _decode_token(token)
     raw_role = claims.get("role", "viewer")
     return _ROLE_MIGRATION.get(raw_role, raw_role)
+
+
+def viewer_read_only(request: Request, token: str = Depends(oauth2_scheme)) -> None:
+    """Router-level baseline: a viewer may only read.
+
+    Raise 403 on any write method (POST/PATCH/PUT/DELETE) when the role is
+    viewer. Attached to whole routers so every mutation endpoint - present and
+    future - is covered without per-endpoint guards; endpoints keep their own
+    stricter require_operator/require_manager checks on top."""
+    if request.method in ("POST", "PATCH", "PUT", "DELETE"):
+        claims = _decode_token(token)
+        raw_role = claims.get("role", "viewer")
+        role = _ROLE_MIGRATION.get(raw_role, raw_role)
+        if ROLE_LEVELS.get(role, 0) <= ROLE_LEVELS["viewer"]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Viewers have read-only access")
