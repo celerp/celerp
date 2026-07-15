@@ -500,15 +500,19 @@ jobs:
           cd electron
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
-            # Electron's SUID sandbox helper must be owned by root with mode 4755;
-            # the unpacked tree ships it owned by the runner (real AppImage/deb
-            # installs set this), so fix it here or the sandbox aborts on launch.
-            sudo chown root:root dist/linux-unpacked/chrome-sandbox
-            sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+            # Install the actual .deb so ITS postinst runs and sets chrome-sandbox's
+            # mode, then boot the installed /opt/Celerp/celerp below. Booting
+            # dist/linux-unpacked with a hand-applied chmod (what we used to do) never
+            # exercised the postinst, so it could not catch the postinst leaving
+            # chrome-sandbox at 0755 on Ubuntu 24.04 - where the namespace sandbox is
+            # blocked and the SUID helper must be 4755, or the app aborts on launch.
+            # Installing for real means that misconfiguration fails the build here
+            # instead of shipping.
+            sudo apt-get install -y -qq "$PWD/dist/Celerp.deb"
           fi
           case "$RUNNER_OS" in
             macOS)   APP_BIN="$(ls -d dist/mac*/Celerp.app | head -1)/Contents/MacOS/Celerp" ;;
-            Linux)   APP_BIN="$(find dist/linux-unpacked -maxdepth 1 -type f -executable ! -name 'chrome*' ! -name '*.so*' | head -1)" ;;
+            Linux)   APP_BIN="/opt/Celerp/celerp" ;;
           esac
           echo "smoke: launching $APP_BIN"
           API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
