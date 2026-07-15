@@ -103,6 +103,14 @@ Every business domain is a self-contained module. The full set ships with the do
 
 The onboarding wizard lets you pick your industry. Modules can be toggled any time at **Settings > Modules**.
 
+### Build your own
+
+Every feature above is a module on one loader API, and you can build against the same API. A module is a Python package you drop into Celerp's `modules/` folder; it adds its own tables, API routes, and UI pages, no fork or build step.
+
+- [**celerp-module-template**](https://github.com/celerp/celerp-module-template) - a working example module you can run in about ten minutes, plus a lint script
+- [**Build a module**](https://www.celerp.com/docs/modules) - the guide
+- [**community-modules**](https://github.com/celerp/community-modules) - a directory of community-built modules, and how to list yours
+
 ---
 
 ## Architecture
