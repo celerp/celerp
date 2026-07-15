@@ -256,8 +256,9 @@ def test_no_legacy_references_in_ui(page, ui_server):
         assert "celerp-fulfillment" not in html, f"Found 'celerp-fulfillment' in {path}"
 
 
-def test_void_does_not_change_fulfillment_status(api):
-    """FULFILL-08: Voiding a fulfilled doc does NOT change its fulfillment_status."""
+def test_void_blocked_while_fulfilled(api):
+    """FULFILL-08: Voiding a fulfilled doc is refused until fulfillment is
+    reverted (goods back first); the refused attempt changes nothing."""
     sku = f"FULFILL-VOID-{uuid.uuid4().hex[:6]}"
     item_id = _create_item(api, sku, qty=5)
     r = api.post("/docs", json={
@@ -284,12 +285,23 @@ def test_void_does_not_change_fulfillment_status(api):
     assert fs_before in ("fulfilled", "partial"), f"Expected fulfilled, got: {fs_before}"
 
     r4 = api.post(f"/docs/{doc_id}/void", json={"reason": "test"})
-    assert r4.status_code in {200, 201}, f"Void failed: {r4.text}"
+    assert r4.status_code == 409, f"Void must be blocked while fulfilled, got {r4.status_code}: {r4.text}"
 
     doc_after = api.get(f"/docs/{doc_id}").json()
     fs_after = doc_after.get("fulfillment_status")
     assert fs_after == fs_before, \
-        f"Void must NOT change fulfillment_status. Was {fs_before!r}, now {fs_after!r}"
+        f"A refused void must not change fulfillment_status. Was {fs_before!r}, now {fs_after!r}"
+    assert doc_after.get("status") != "void"
+
+    # Reverting fulfillment unblocks the void. A partial draw splits off a child
+    # parcel and rebinds the line to it, so revert targets the doc's CURRENT line ids.
+    line_ids = [li.get("entity_id") or li.get("item_id")
+                for li in (doc_after.get("line_items") or [])]
+    r5 = api.post(f"/docs/{doc_id}/revert-lines",
+                  json={"line_entity_ids": [i for i in line_ids if i]})
+    assert r5.status_code in {200, 201}, f"Revert failed: {r5.text}"
+    r6 = api.post(f"/docs/{doc_id}/void", json={"reason": "test"})
+    assert r6.status_code in {200, 201}, f"Void after revert failed: {r6.text}"
 
 
 def test_stock_shortage_returns_409_with_details(api):

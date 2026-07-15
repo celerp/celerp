@@ -1123,17 +1123,18 @@ class TestNavMinRole:
                     f"Finance nav item {item.get('key')} should require manager, got {item.get('min_role')}"
                 )
 
-    def test_operational_nav_requires_operator(self):
-        operator_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
-        # Inventory nav entries vary: core inventory pages are viewer-accessible,
-        # operator-level tools (labels) may also live in this group.
+    def test_document_and_contact_nav_allows_viewer(self):
+        """The roles table promises 'View documents & contacts' at viewer level, so
+        the document/contact sections must be visible to viewers. Writing is still
+        blocked by the API's viewer_read_only guard - visibility is not capability."""
+        viewer_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
         inventory_viewer_keys = {"inventory", "inventory_sold", "inventory_archived"}
         for item in self._load_nav_items():
             group = item.get("group")
             key = item.get("key")
-            if group in operator_groups:
-                assert item.get("min_role") == "operator", (
-                    f"Nav item {key} in {group} should require operator, got {item.get('min_role')}"
+            if group in viewer_groups:
+                assert item.get("min_role") == "viewer", (
+                    f"Nav item {key} in {group} should allow viewer, got {item.get('min_role')}"
                 )
             elif key in inventory_viewer_keys:
                 assert item.get("min_role") == "viewer", (
