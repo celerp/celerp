@@ -1382,15 +1382,7 @@ async def import_purchasing_payment_terms_batch(
 
 import re as _re
 
-_DEFAULT_UNITS: list[dict] = [
-    {"name": "piece",  "label": "Piece",         "decimals": 0, "unit_type": "pieces"},
-    {"name": "carat",  "label": "Carat (ct)",     "decimals": 2, "unit_type": "weight"},
-    {"name": "gram",   "label": "Gram (g)",        "decimals": 2, "unit_type": "weight"},
-    {"name": "kg",     "label": "Kilogram (kg)",   "decimals": 3, "unit_type": "weight"},
-    {"name": "oz",     "label": "Ounce (oz)",      "decimals": 2, "unit_type": "weight"},
-    {"name": "liter",  "label": "Liter (L)",       "decimals": 2, "unit_type": "quantity"},
-    {"name": "meter",  "label": "Meter (m)",       "decimals": 2, "unit_type": "quantity"},
-]
+from celerp.services.units import DEFAULT_UNITS
 
 _UNIT_NAME_RE = _re.compile(r"^[a-z0-9_]+$")
 
@@ -1417,7 +1409,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return company.settings.get("units") or _DEFAULT_UNITS
+    return company.settings.get("units") or DEFAULT_UNITS
 
 
 @router.put("/me/units")

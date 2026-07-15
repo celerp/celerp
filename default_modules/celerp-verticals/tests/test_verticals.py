@@ -345,3 +345,17 @@ async def test_apply_category_requires_admin(client: AsyncClient, session):
         headers=_auth(mgr_token),
     )
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Unit seeding uses the canonical DEFAULT_UNITS
+# ---------------------------------------------------------------------------
+
+def test_ensure_unit_seeded_carries_unit_type():
+    """Seeded units must include unit_type: weight/pieces classification
+    (derived label/table/export columns) depends on it."""
+    from celerp_verticals.routes import _ensure_unit_seeded
+    settings = {"units": [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"}]}
+    _ensure_unit_seeded(settings, "carat")
+    carat = next(u for u in settings["units"] if u["name"] == "carat")
+    assert carat["unit_type"] == "weight"
