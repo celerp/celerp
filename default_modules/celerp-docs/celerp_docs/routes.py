@@ -26,7 +26,7 @@ from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
+from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator, viewer_read_only
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
@@ -36,7 +36,7 @@ from celerp.services.list_behavior import (
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 # Closed-set shipment fields: unknown values never reach the event log ('' clears).
 _SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
@@ -2723,7 +2723,7 @@ async def export_docs_csv(
 # List routes (formerly list_routes.py) - merged here to eliminate WET copy
 # ---------------------------------------------------------------------------
 
-lists_router = APIRouter(dependencies=[Depends(get_current_user)])
+lists_router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 
 class ListCreatePayload(BaseModel):

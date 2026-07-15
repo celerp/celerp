@@ -18,9 +18,9 @@ from celerp.events.engine import emit_event
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager
+from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 # Default Thai chart of accounts seeded on company creation.
 # Follows Thai Accounting Standards (TAS) structure.

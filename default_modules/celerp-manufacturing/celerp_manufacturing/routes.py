@@ -28,7 +28,7 @@ from celerp.events.schemas import (
 from celerp.models.company import Company, WorkCenter
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
@@ -38,7 +38,7 @@ DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
 
-router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
+router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user), Depends(viewer_read_only)], tags=["manufacturing"])
 
 
 # ---------------------------------------------------------------------------

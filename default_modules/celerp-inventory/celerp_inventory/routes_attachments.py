@@ -41,9 +41,9 @@ from celerp.services.attachments import (
     resolve_preview_image_id,
     store_upload,
 )
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 _VALID_TYPES: set[str] = {"image", "video", "certificate", "view_360"}
 

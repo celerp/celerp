@@ -29,11 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.gateway.state import get_session_token
-from celerp.services.auth import get_current_user
+from celerp.services.auth import get_current_user, viewer_read_only
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 
 # ---------------------------------------------------------------------------

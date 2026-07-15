@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, require_operator
 from celerp_labels.models import LabelTemplate
 
 log = logging.getLogger(__name__)
@@ -101,6 +101,7 @@ async def list_templates(
 async def create_template(
     body: TemplateCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_operator),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     t = LabelTemplate(
@@ -129,6 +130,7 @@ async def update_template(
     template_id: uuid.UUID,
     body: TemplateUpdate,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_operator),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     t = await _get_or_404(session, company_id, template_id)
@@ -142,6 +144,7 @@ async def update_template(
 async def delete_template(
     template_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_operator),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     t = await _get_or_404(session, company_id, template_id)

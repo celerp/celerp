@@ -39,7 +39,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
@@ -49,7 +49,7 @@ from celerp.output.share_render import _not_found_page
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
 # Public router — share token lookup and recipient import require no auth
 public_router = APIRouter()

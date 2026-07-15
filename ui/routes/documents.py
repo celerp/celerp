@@ -973,6 +973,8 @@ def setup_routes(app):
         new_label = _doc_type_new_label(doc_type, lang)
         search_url = f"/docs/search?type={doc_type}" if doc_type else "/docs/search"
         create_type = doc_type or "invoice"
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        _lvl = _RLV.get(_get_role(request), 0)
         return base_shell(
             page_header(
                 page_title,
@@ -987,9 +989,9 @@ def setup_routes(app):
                     hx_post=f"/docs/create-blank?type={create_type}",
                     hx_swap="none",
                     cls="btn btn--primary",
-                ),
-                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary"),
-                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary"),
+                ) if _lvl >= _RLV["operator"] else "",
+                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
@@ -2057,6 +2059,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            # Viewers are read-only: return the display state instead of an input.
+            return await doc_field_display(request, entity_id, field)
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
@@ -2429,6 +2435,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            return await doc_li_field_display(request, entity_id, li_index, field)
         try:
             doc = await api.get_doc(token, entity_id)
             line_items = doc.get("line_items") or []
@@ -3735,6 +3744,8 @@ celerpUpdateBulkAlloc();
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
         _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        _lvl = _RLV.get(_get_role(request), 0)
         # Audits are location-bound, not blank drafts: send the user through the location picker.
         if list_type == "audit":
             _new_btn = A("New audit", href="/lists/new-audit", cls="btn btn--primary")
@@ -3748,9 +3759,9 @@ celerpUpdateBulkAlloc();
                 t("page.lists", lang),
                 _list_drafts_tab(draft_count, is_drafts_view, list_type),
                 search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search"),
-                _new_btn,
-                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary"),
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
+                _new_btn if _lvl >= _RLV["operator"] else "",
+                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
             ),
             _date_filter_bar("/lists", date_from, date_to, preset,
                              extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
@@ -4104,6 +4115,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        from celerp.services.auth import ROLE_LEVELS as _RLV
+        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+            return await list_field_display(request, entity_id, field)
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
@@ -5401,10 +5415,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _pay_due = 0.0
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
+    from celerp.services.auth import ROLE_LEVELS as _RL
+    _user_level = _RL.get(role, _RL["owner"])
+    _is_manager = _user_level >= _RL["manager"]
+    _is_operator = _user_level >= _RL["operator"]
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
     # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
-    # audit only gates the Counted cells open (pol["counted_editable"]).
-    is_editable = is_draft or (pol["audit"] and status == _LF)
+    # audit only gates the Counted cells open (pol["counted_editable"]). Viewers are read-only
+    # everywhere (the API enforces it; the UI must not offer controls that would 403).
+    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _is_operator
 
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
@@ -5416,10 +5435,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
-    from celerp.services.auth import ROLE_LEVELS as _RL
-    _user_level = _RL.get(role, _RL["owner"])
-    _is_manager = _user_level >= _RL["manager"]
-    _is_operator = _user_level >= _RL["operator"]
 
     def _cell(field: str, value) -> FT:
         """Editable display cell, routing to the correct /docs/ or /lists/ URL."""
