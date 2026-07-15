@@ -1140,6 +1140,17 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
+    # Goods must be back before the paper can go void, or the stock records point
+    # at a dead document with no UI path to bring the items home (the fulfillment
+    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
+    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot void a document with fulfilled items; revert fulfillment (receive the goods back) first")
+    if row.state.get("received_items"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot void a document with received items; return the goods first")
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
