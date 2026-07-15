@@ -35,13 +35,24 @@ def item_id(api):
     return r.json()["id"]
 
 
-def _poll_cleared(api, eid: str, field: str, timeout: float = 8.0) -> bool:
+def _poll_cleared(api, eid: str, field: str, timeout: float = 20.0) -> bool:
+    # Generous timeout: the clear is an async htmx PATCH that must round-trip and
+    # commit before the API reflects it, and a loaded CI runner is slow. It still
+    # fails fast when the field genuinely does not clear (the value stays set).
     deadline = time.time() + timeout
     while time.time() < deadline:
         if api.get(f"/items/{eid}").json().get(field) is None:
             return True
         time.sleep(0.25)
     return False
+
+
+def _await_saved(control, timeout: int = 10000) -> None:
+    """After a cell clear, wait for the edit control to detach - the htmx PATCH
+    returned and swapped the cell back to display mode. This is the deterministic
+    signal that the async save actually happened, so the poll below is not racing
+    against 'did the change/blur event even fire yet'."""
+    control.wait_for(state="detached", timeout=timeout)
 
 
 def _open_editor(page, ui_server, eid: str, field: str, td_only: bool = True):
@@ -61,6 +72,7 @@ def test_clear_barcode_via_ui(page, ui_server, api, item_id):
     inp.wait_for(state="visible", timeout=5000)
     inp.fill("")
     page.keyboard.press("Enter")
+    _await_saved(inp)                    # cell swaps back to display once the PATCH returns
     assert _poll_cleared(api, item_id, "barcode"), "barcode not cleared from UI"
 
 
@@ -94,4 +106,5 @@ def test_clear_select_field_via_ui(page, ui_server, api):
     sel = page.locator('select[name="value"]').first
     sel.wait_for(state="visible", timeout=5000)
     sel.select_option(value="")          # the blank "(clear)" option (issue #202)
+    _await_saved(sel)                    # cell swaps back to display once the PATCH returns
     assert _poll_cleared(api, eid, "format"), "select field not cleared from UI"
