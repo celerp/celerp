@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 from datetime import datetime
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -283,13 +284,23 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     usable = page_w - 2 * margin
     line_items = doc.get("line_items") or []
 
+    # Identifier column per the company setting. A 13-digit barcode must never
+    # wrap mid-number (it verifies the physical piece), so barcode modes shift
+    # width from Description (the flexible column) into the identifier column.
+    from celerp.services.line_measures import LINE_IDENTIFIER_MODES, line_identifier
+    _ident_mode = (company or {}).get("line_item_identifier")
+    if _ident_mode not in LINE_IDENTIFIER_MODES:
+        _ident_mode = "sku"
+    _ident_header = {"sku": "SKU", "barcode": "Barcode", "barcode_sku": "Barcode / SKU"}[_ident_mode]
+    _ident_extra = 0.03 if _ident_mode != "sku" else 0.0
+
     # Show discount column only if any line has a non-zero discount
     has_discount = any(float(li.get("discount_pct") or 0) != 0 for li in line_items)
 
     if has_discount:
         col_widths = [
-            usable * 0.21,  # Description
-            usable * 0.13,  # SKU
+            usable * (0.21 - _ident_extra),  # Description
+            usable * (0.13 + _ident_extra),  # SKU / identifier
             usable * 0.10,  # Qty (now includes the unit, e.g. "5 carat")
             usable * 0.14,  # Unit Price
             usable * 0.10,  # Discount %
@@ -298,7 +309,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         ]
         rows = [[
             Paragraph("Description", s["th"]),
-            Paragraph("SKU", s["th"]),
+            Paragraph(_ident_header, s["th"]),
             Paragraph("Qty", s["th"]),
             Paragraph("Unit Price", s["th"]),
             Paragraph("Discount", s["th"]),
@@ -307,8 +318,8 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         ]]
     else:
         col_widths = [
-            usable * 0.23,  # Description
-            usable * 0.15,  # SKU
+            usable * (0.23 - _ident_extra),  # Description
+            usable * (0.15 + _ident_extra),  # SKU / identifier
             usable * 0.11,  # Qty (now includes the unit, e.g. "5 carat")
             usable * 0.16,  # Unit Price
             usable * 0.12,  # Tax %
@@ -316,7 +327,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         ]
         rows = [[
             Paragraph("Description", s["th"]),
-            Paragraph("SKU", s["th"]),
+            Paragraph(_ident_header, s["th"]),
             Paragraph("Qty", s["th"]),
             Paragraph("Unit Price", s["th"]),
             Paragraph("Tax %", s["th"]),
@@ -348,9 +359,13 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         for _ln in measure_sublines(li, unit_map=_pdf_umap):
             _desc_html += f"<br/>{_ln}"
         _qty_html = qty_label(li)
+        _id1, _id2 = line_identifier(li, _ident_mode)
+        _ident_html = _xml_escape(_id1) or "-"
+        if _id2:
+            _ident_html += f'<br/><font size="6.5" color="#666666">{_xml_escape(_id2)}</font>'
         rows.append([
             Paragraph(_desc_html, s["td"]),
-            Paragraph(str(li.get("sku") or "-"), s["td"]),
+            Paragraph(_ident_html, s["td"]),
             Paragraph(_qty_html, s["td_num"]),
             Paragraph(_fmt_rate(price, currency), s["td_num"]),  # unit price is a rate: show enough precision to reconcile
             *([Paragraph(f"{discount_pct:.1f}%", s["td_num"])] if has_discount else []),

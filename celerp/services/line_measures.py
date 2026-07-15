@@ -100,6 +100,44 @@ def qty_label(line: dict) -> str:
     return f"{_g(qty)} {unit}".strip()
 
 
+LINE_IDENTIFIER_MODES: tuple[str, ...] = ("sku", "barcode", "barcode_sku")
+
+
+def line_identifier(line: dict, mode: str) -> tuple[str, str | None]:
+    """(primary, secondary) identifier text for a doc line under the company's
+    line_item_identifier mode.
+
+    - "sku": the SKU alone (default; the historical rendering)
+    - "barcode": the line's barcode, falling back to SKU when it has none
+    - "barcode_sku": barcode stacked over SKU; collapses to the SKU alone
+      when the line has no barcode
+
+    The barcode is never truncated by any renderer: it is a verification
+    artifact (barcode carries physical-lot identity; SKU may repeat).
+    """
+    sku = str(line.get("sku") or "")
+    barcode = str(line.get("barcode") or "")
+    if mode == "barcode":
+        return (barcode or sku, None)
+    if mode == "barcode_sku" and barcode:
+        return (barcode, sku or None)
+    return (sku, None)
+
+
+def identifier_backfill(line: dict, item_state: dict) -> None:
+    """Fill a line's barcode from its catalog item when the line lacks it.
+
+    Lines saved before barcodes were stamped at add time carry none; the
+    linked item is the only source. Never overwrites a stamped value, so a
+    finalized document keeps showing the barcode that was actually scanned.
+    Same shape as customs_backfill (celerp.services.shipping).
+    """
+    if not line.get("barcode"):
+        v = item_state.get("barcode")
+        if v:
+            line["barcode"] = str(v)
+
+
 def measure_locks(meta: dict, *, allow_split: bool | None = None) -> dict:
     """Editability of the draft PCS / WEIGHT / QTY cells for a parcel.
 

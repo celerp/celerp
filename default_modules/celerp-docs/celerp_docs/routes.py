@@ -56,6 +56,9 @@ class LineItem(BaseModel):
     item_id: str | None = None
     entity_id: str | None = None  # alias sent by the frontend; resolved to item_id below
     sku: str | None = None
+    # Stamped from the catalog item when the line is added; the identifier a
+    # finalized document keeps showing even if the item is later re-barcoded.
+    barcode: str | None = None
     name: str | None = None
     description: str | None = None
     quantity: float = 0
@@ -598,6 +601,18 @@ async def get_doc_pdf(
 
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
+
+    # When the company shows barcodes on lines, backfill lines saved before
+    # barcode stamping from their catalog items (mirror of the share view).
+    from celerp.services.line_measures import LINE_IDENTIFIER_MODES, identifier_backfill
+    if company.get("line_item_identifier") in LINE_IDENTIFIER_MODES and company["line_item_identifier"] != "sku":
+        for li in doc.get("line_items") or []:
+            eid = li.get("entity_id") or li.get("item_id")
+            if li.get("barcode") or not eid:
+                continue
+            irow = await session.get(Projection, (company_id, eid))
+            if irow is not None:
+                identifier_backfill(li, irow.state or {})
 
     # Footer import link only while the share link is live, so saved PDFs
     # never carry a URL that 404s.

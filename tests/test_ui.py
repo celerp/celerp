@@ -9963,7 +9963,8 @@ class TestUnitsSettings:
         names = [u["name"] for u in units]
         assert "piece" in names
         assert "carat" in names
-        assert len(units) == 7
+        from celerp.services.units import DEFAULT_UNITS
+        assert len(units) == len(DEFAULT_UNITS)
 
     # ── API: PUT /companies/me/units ─────────────────────────────────
 
