@@ -7,16 +7,28 @@ PDF when reportlab is not installed (e.g. in stripped test environments).
 
 Public API
 ----------
-render_label_pdf(items, template) -> bytes
+render_label_pdf(items, template, unit_map) -> bytes
     Render a PDF byte stream for one or more items using the given template.
 
-render_label_text(items, template) -> str
+render_label_text(items, template, unit_map) -> str
     Plain-text representation (for testing / no-reportlab fallback).
+
+resolve_field_value(item, key, unit_map) -> str
+    Resolve a template field key against item state (shared with the HTML
+    print path in ui_routes).
 """
 from __future__ import annotations
 
 import io
 from typing import Any
+
+from celerp.services.units import (
+    DEFAULT_UNITS,
+    build_unit_map,
+    format_qty,
+    is_pieces_unit,
+    is_weight_unit,
+)
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
@@ -85,15 +97,44 @@ def _resolve_size(template: dict[str, Any]) -> tuple[float, float]:
 
 
 def _item_val(item: dict[str, Any], key: str) -> str:
-    """Resolve a field key against item state, checking attributes sub-dict as fallback."""
+    """Raw field lookup against item state, checking attributes sub-dict as fallback."""
     top = item.get(key)
     if top is not None and top != "":
         return str(top)
     return str((item.get("attributes") or {}).get(key, "") or "")
 
 
-def render_label_text(items: list[dict[str, Any]], template: dict[str, Any]) -> str:
+def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict]) -> str:
+    """Resolve a template field key against item state.
+
+    For the measure the sell unit already IS, `quantity` is the single source of
+    truth (the stored companion field is absent on freshly created items and can
+    go stale after sales), so derive it, exactly like the inventory table, the
+    split preview, and doc-line rendering do:
+
+    - weight on a weight-sold item -> quantity + its unit (e.g. "38.60 carat")
+    - pieces on a pieces-sold item -> quantity
+    - unit -> the item's sell_by
+    - qr / barcode / barcode_text -> the item's barcode, falling back to SKU
+    """
+    sell_by = item.get("sell_by")
+    if key in ("qr", "barcode", "barcode_text"):
+        return str(item.get("barcode", "") or item.get("sku", "") or "")
+    if key == "weight" and is_weight_unit(sell_by, unit_map):
+        qty = format_qty(item.get("quantity"), sell_by, unit_map)
+        return f"{qty} {sell_by}" if qty else ""
+    if key == "pieces" and is_pieces_unit(sell_by, unit_map):
+        return format_qty(item.get("quantity"), sell_by, unit_map)
+    if key == "unit":
+        return _item_val(item, key) or str(sell_by or "")
+    return _item_val(item, key)
+
+
+def render_label_text(
+    items: list[dict[str, Any]], template: dict[str, Any], unit_map: dict[str, dict] | None = None
+) -> str:
     """Plain-text label render — used in tests and as no-PDF fallback."""
+    unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
     fields = template.get("fields") or [{"key": "name", "label": "Name", "type": "text"}]
     copies = int(template.get("copies", 1))
     lines = []
@@ -107,7 +148,7 @@ def render_label_text(items: list[dict[str, Any]], template: dict[str, Any]) -> 
                 else:
                     key = str(field)
                     label = key
-                val = _item_val(item, key)
+                val = resolve_field_value(item, key, unit_map)
                 lines.append(f"  {label}: {val}")
             lines.append("")
     return "\n".join(lines)
@@ -157,15 +198,18 @@ def _make_qr_image(value: str) -> io.BytesIO | None:
         return None
 
 
-def render_label_pdf(items: list[dict[str, Any]], template: dict[str, Any]) -> bytes:
+def render_label_pdf(
+    items: list[dict[str, Any]], template: dict[str, Any], unit_map: dict[str, dict] | None = None
+) -> bytes:
     """Render a PDF byte stream for labels.
 
     Falls back to a minimal stub PDF if reportlab is not installed.
     Each field is placed using x/y coordinates if provided; otherwise
     fields are stacked vertically from the top of the label.
     """
+    unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
     if not _REPORTLAB:
-        return _stub_pdf(items, template)
+        return _stub_pdf(items, template, unit_map)
 
     fields = template.get("fields") or [{"key": "name", "label": "Name", "type": "text"}]
     copies = int(template.get("copies", 1))
@@ -188,11 +232,7 @@ def render_label_pdf(items: list[dict[str, Any]], template: dict[str, Any]) -> b
 
                 key = field.get("key", "")
                 ftype = field.get("type", "text")
-                # Special keys: 'qr' and 'barcode' use the item's barcode/SKU value
-                if key in ("qr", "barcode"):
-                    val = str(item.get("barcode", "") or item.get("sku", "") or "")
-                else:
-                    val = _item_val(item, key)
+                val = resolve_field_value(item, key, unit_map)
                 font_size = float(field.get("fontSize") or default_font_size)
                 line_h = font_size * mm * 1.4
 
@@ -249,9 +289,11 @@ def render_label_pdf(items: list[dict[str, Any]], template: dict[str, Any]) -> b
     return buf.getvalue()
 
 
-def _stub_pdf(items: list[dict[str, Any]], template: dict[str, Any]) -> bytes:
+def _stub_pdf(
+    items: list[dict[str, Any]], template: dict[str, Any], unit_map: dict[str, dict] | None = None
+) -> bytes:
     """Minimal valid PDF — returned when reportlab is absent."""
-    text = render_label_text(items, template)
+    text = render_label_text(items, template, unit_map)
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     content = (
         "%PDF-1.4\n"

@@ -162,7 +162,7 @@ async def print_single(
     template_id_str = request.query_params.get("template_id")
     template = await _resolve_template(session, company_id, template_id_str)
     item = await _fetch_item(session, company_id, entity_id)
-    pdf = render_label_pdf([item], template)
+    pdf = render_label_pdf([item], template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -181,7 +181,7 @@ async def bulk_print(
 
     template = await _resolve_template(session, company_id, body.template_id)
     items = [await _fetch_item(session, company_id, eid) for eid in body.entity_ids]
-    pdf = render_label_pdf(items, template)
+    pdf = render_label_pdf(items, template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -190,6 +190,13 @@ async def bulk_print(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _unit_map(session: AsyncSession, company_id: uuid.UUID) -> dict[str, dict]:
+    """Name-keyed company units; drives the derived weight/pieces label fields."""
+    from celerp.services.units import build_unit_map, get_company_units
+
+    return build_unit_map(await get_company_units(session, company_id))
+
 
 async def _get_or_404(session: AsyncSession, company_id: uuid.UUID, template_id: uuid.UUID) -> LabelTemplate:
     t = (

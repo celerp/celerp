@@ -173,6 +173,32 @@ async def test_items_export_csv_timestamps_no_offset_naive(client):
     assert "+00:00" not in r_csv.text, "timestamps must use Z suffix, not +00:00"
 
 
+@pytest.mark.asyncio
+async def test_items_export_csv_derives_sell_by_measure(client):
+    """The measure the sell unit already IS derives from quantity in the export:
+    a carat item's weight column shows the quantity (with weight_unit = carat),
+    a piece item's pieces column shows the quantity. Matches the inventory table's
+    derived columns; stored companions are absent on fresh items."""
+    tok = await _reg(client)
+    r_ct = await client.post("/items", json={"sku": "CSV-CT", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6}, headers=_h(tok))
+    assert r_ct.status_code == 200, r_ct.text
+    r_pc = await client.post("/items", json={"sku": "CSV-PC", "name": "Piece Item", "sell_by": "piece", "quantity": 3}, headers=_h(tok))
+    assert r_pc.status_code == 200, r_pc.text
+
+    r_csv = await client.get("/items/export/csv", headers=_h(tok))
+    assert r_csv.status_code == 200
+
+    import csv, io
+    rows = {row["sku"]: row for row in csv.DictReader(io.StringIO(r_csv.text))}
+
+    carat_row = rows["CSV-CT"]
+    assert float(carat_row["weight"]) == 38.6
+    assert carat_row["weight_unit"] == "carat"
+
+    piece_row = rows["CSV-PC"]
+    assert float(piece_row["pieces"]) == 3
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: Search scope tests
 # ---------------------------------------------------------------------------
