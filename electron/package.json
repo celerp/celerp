@@ -33,7 +33,7 @@
   "build": {
     "appId": "com.celerp.app",
     "productName": "Celerp",
-    "copyright": "Copyright \u00a9 2026 Data Universal Limited",
+    "copyright": "Copyright \u00a9 2026 Noah Severs",
     "directories": {
       "output": "dist"
     },
