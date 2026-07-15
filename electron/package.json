@@ -198,7 +198,8 @@
       "artifactName": "Celerp.AppImage"
     },
     "deb": {
-      "artifactName": "Celerp.deb"
+      "artifactName": "Celerp.deb",
+      "afterInstall": "build/deb-after-install.sh"
     },
     "afterPack": "./after-pack.js",
     "publish": {
