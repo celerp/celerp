@@ -557,7 +557,14 @@ function startUi(dbUrl, cfg) {
 function openProcessLog(name) {
   try {
     fs.mkdirSync(LOG_DIR, { recursive: true });
-    const s = fs.createWriteStream(path.join(LOG_DIR, name), { flags: "w" });
+    const logPath = path.join(LOG_DIR, name);
+    // Keep the previous process's log: a respawn (e.g. after a backup restore) used to
+    // truncate it, destroying exactly the evidence needed to diagnose what that
+    // process did last.
+    try {
+      if (fs.existsSync(logPath)) fs.renameSync(logPath, `${logPath}.prev`);
+    } catch { /* non-fatal */ }
+    const s = fs.createWriteStream(logPath, { flags: "w" });
     s.write(`=== ${name} — ${new Date().toISOString()} ===\n`);
     return s;
   } catch (e) {
@@ -1189,6 +1196,11 @@ app.whenReady().then(async () => {
       setUiProcess: (p) => { uiProcess = p; },
       startApi: async (url) => {
         if (uiPort) formerUiPorts.add(uiPort);  // remember the dying port: see classifyNavigation
+        // A restart can follow a backup restore that replaced the database wholesale
+        // (possibly with an older schema). Reconcile it before the servers come back,
+        // exactly like a cold boot; skipping this leaves the code querying columns
+        // the restored schema does not have.
+        runMigrations(url);
         apiPort = await getFreePort();
         uiPort = await getFreePort();
         return startApi(url, readConfig());

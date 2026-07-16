@@ -282,18 +282,37 @@ async def _run_pg_restore(dump_bytes: bytes, database_url: str) -> None:
     )
 
 
-async def _run_alembic() -> None:
-    """Reconcile schema after pg_restore via alembic upgrade head."""
+async def _reconcile_schema() -> str | None:
+    """Bring the restored database up to the current schema; returns a warning on failure.
+
+    A restored dump can be stamped behind (or ahead of) its actual DDL - a
+    develop-origin source database, for example - and raw ``alembic upgrade head``
+    then re-applies DDL that already exists and dies on DuplicateColumn, leaving the
+    schema silently stale while the running code queries newer columns. Run the same
+    stamp-repair walker, grants, and develop-to-release reconcile the CLI's
+    ``celerp migrate`` uses, and surface any failure to the user instead of only
+    logging it: with a stale schema every data read fails, which reads as
+    "the import lost my data".
+    """
+    import asyncio
+    from celerp.config import settings
+
+    def _sync() -> None:
+        from celerp.cli import _apply_migrations, _post_migration_grants, _reconcile_after_migrate
+        _apply_migrations(settings.database_url)
+        _post_migration_grants(settings.database_url)
+        _reconcile_after_migrate(settings.database_url)
+
     try:
-        import asyncio
-        from celerp.alembic_config import build_alembic_config as _build_alembic_config
-        from alembic import command as _alembic_cmd
-        _cfg = _build_alembic_config()
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
-        log.info("Alembic upgrade head completed after pg_restore")
-    except Exception as alembic_exc:
-        log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+        await asyncio.get_event_loop().run_in_executor(None, _sync)
+        log.info("Schema reconcile completed after pg_restore")
+        return None
+    except Exception as exc:
+        log.warning("Schema reconcile after pg_restore failed: %s", exc)
+        return (
+            f"Database restored, but the schema could not be brought up to date: {exc}. "
+            f"Restart the app (or run 'celerp migrate') before using the restored data."
+        )
 
 
 async def _extract_files(path: Path) -> None:
@@ -402,7 +421,7 @@ async def run_import(path: Path):
         await _run_pg_restore(dump_bytes, settings.database_url)
 
         # Reconcile schema — run any missing migrations after pg_restore
-        await _run_alembic()
+        schema_warning = await _reconcile_schema()
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)
@@ -434,7 +453,8 @@ async def run_import(path: Path):
             except Exception as audit_exc:
                 log.warning("Module audit failed (non-fatal): %s", audit_exc)
 
-        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings)
+        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings,
+                            schema_warning=schema_warning)
 
     except ValueError as exc:
         log.error("Backup import validation error: %s", exc)

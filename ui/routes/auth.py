@@ -209,21 +209,29 @@ def setup_routes(app):
                 else:
                     detail = r.text[:300] or "Import failed."
                 return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
-            # Success — surface missing-module warnings (if any) on the form
+            # Success — surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
+            schema_warning: str | None = None
             try:
-                warnings = list(r.json().get("warnings") or [])
+                payload = r.json()
+                warnings = list(payload.get("warnings") or [])
+                schema_warning = payload.get("schema_warning") or None
             except Exception:
                 warnings = []
-            if warnings:
+            if warnings or schema_warning:
                 # Show a non-blocking warning page with "Continue anyway" link
-                names = ", ".join(warnings)
-                warn_msg = (
-                    f"Restore complete, but {len(warnings)} module(s) enabled on the "
-                    f"source are not installed on this server: {names}. "
-                    f"Install the missing module packages, or continue to login "
-                    f"(those features will be unavailable until installed)."
-                )
+                parts: list[str] = []
+                if schema_warning:
+                    parts.append(schema_warning)
+                if warnings:
+                    names = ", ".join(warnings)
+                    parts.append(
+                        f"{len(warnings)} module(s) enabled on the "
+                        f"source are not installed on this server: {names}. "
+                        f"Install the missing module packages, or continue to login "
+                        f"(those features will be unavailable until installed)."
+                    )
+                warn_msg = "Restore complete, but: " + " ".join(parts)
                 return auth_shell(
                     _setup_import_form(
                         warning=warn_msg,

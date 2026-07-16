@@ -110,6 +110,9 @@ class BackupResult:
     # on the source that aren't installed on the destination). Distinct
     # from `error` (which means the operation failed).
     warnings: list[str] = field(default_factory=list)
+    # Set when the restored database could not be migrated to the current
+    # schema: the data is present but unreadable until migrations run.
+    schema_warning: str | None = None
 
 
 def _parse_key(b64_key: str) -> bytes:

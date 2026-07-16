@@ -226,6 +226,8 @@ async def import_backup(request: Request, file: UploadFile = File(...), session:
     if result.warnings:
         names = ", ".join(result.warnings)
         msg += f" Note: {len(result.warnings)} module(s) enabled on the source are not installed on this server ({names})."
+    if result.schema_warning:
+        msg += f" Warning: {result.schema_warning}"
     return _flash(msg)
 
 
@@ -277,4 +279,5 @@ async def import_backup_bootstrap(
         "ok": True,
         "company_name": meta.company_name,
         "warnings": result.warnings,
+        "schema_warning": result.schema_warning,
     }

@@ -509,12 +509,14 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
     raise RuntimeError("Migration auto-stamp loop exceeded safety cap.")
 
 
-def _run_migrations(db_url: str) -> None:
-    """Run alembic upgrade head programmatically.
+def _apply_migrations(db_url: str) -> None:
+    """Run alembic upgrade head programmatically; raises on failure.
 
     Detects a corrupted alembic_version stamp (stamp head without actually running
     migrations) by cross-checking recorded revision against actual DB columns.
     Repairs by re-stamping to the last known-good revision before upgrading.
+    Callable outside the CLI (the backup restore reconciles the restored schema
+    through this same path); ``_run_migrations`` wraps it with CLI exit semantics.
     """
     import os as _os
     _os.environ["DATABASE_URL"] = db_url
@@ -525,59 +527,64 @@ def _run_migrations(db_url: str) -> None:
     import sqlalchemy as _sa
     from celerp.alembic_config import build_alembic_config as _build_alembic_config
 
+    alembic_cfg = _build_alembic_config()
+
+    # --- Repair the alembic stamp from the live schema before upgrading.
+    #
+    # Dev DBs are built by Base.metadata.create_all() from whatever models
+    # are checked out, so the stamp can be missing, behind, or ahead of
+    # the real schema. "Ahead" is the dangerous one: a stamp at head with
+    # a migration's DDL absent skips that migration forever and only
+    # surfaces as a runtime UndefinedColumn error. The walker
+    # (celerp.migrations._auto_stamp) introspects the live schema and
+    # returns the newest revision whose DDL is actually present; we stamp
+    # there — forward or back — and let alembic upgrade apply the rest.
+    # False negatives are safe: the re-applied revision fails with
+    # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
+    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
+    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
-        alembic_cfg = _build_alembic_config()
+        inspector = _sa.inspect(engine)
+        existing_tables = set(inspector.get_table_names())
+        if "alembic_version" in existing_tables:
+            with engine.connect() as conn:
+                stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
+        else:
+            stamped = None
 
-        # --- Repair the alembic stamp from the live schema before upgrading.
-        #
-        # Dev DBs are built by Base.metadata.create_all() from whatever models
-        # are checked out, so the stamp can be missing, behind, or ahead of
-        # the real schema. "Ahead" is the dangerous one: a stamp at head with
-        # a migration's DDL absent skips that migration forever and only
-        # surfaces as a runtime UndefinedColumn error. The walker
-        # (celerp.migrations._auto_stamp) introspects the live schema and
-        # returns the newest revision whose DDL is actually present; we stamp
-        # there — forward or back — and let alembic upgrade apply the rest.
-        # False negatives are safe: the re-applied revision fails with
-        # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
-        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
-        engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-        try:
-            inspector = _sa.inspect(engine)
-            existing_tables = set(inspector.get_table_names())
-            if "alembic_version" in existing_tables:
-                with engine.connect() as conn:
-                    stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
-            else:
-                stamped = None
-
-            if "companies" in existing_tables:
-                from celerp.migrations._auto_stamp import (
-                    extract_signatures, find_safe_stamp,
+        if "companies" in existing_tables:
+            from celerp.migrations._auto_stamp import (
+                extract_signatures, find_safe_stamp,
+            )
+            from pathlib import Path as _Path
+            script = ScriptDirectory.from_config(alembic_cfg)
+            versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
+            sigs_by_rev: dict = {}
+            for mig in versions_dir.glob("*.py"):
+                if mig.name == "__init__.py":
+                    continue
+                sigs = extract_signatures(mig)
+                if sigs:
+                    sigs_by_rev[sigs[0].rev] = sigs
+            # walk_revisions() yields head→base, the order the walker
+            # requires.
+            revs_newest_first = list(script.walk_revisions())
+            safe = find_safe_stamp(revs_newest_first, sigs_by_rev, inspector)
+            if safe != "base" and safe != stamped:
+                click.echo(
+                    f"  · Live schema matches revision {safe} — "
+                    f"restamping (was {stamped or 'unstamped'})..."
                 )
-                from pathlib import Path as _Path
-                script = ScriptDirectory.from_config(alembic_cfg)
-                versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
-                sigs_by_rev: dict = {}
-                for mig in versions_dir.glob("*.py"):
-                    if mig.name == "__init__.py":
-                        continue
-                    sigs = extract_signatures(mig)
-                    if sigs:
-                        sigs_by_rev[sigs[0].rev] = sigs
-                # walk_revisions() yields head→base, the order the walker
-                # requires.
-                revs_newest_first = list(script.walk_revisions())
-                safe = find_safe_stamp(revs_newest_first, sigs_by_rev, inspector)
-                if safe != "base" and safe != stamped:
-                    click.echo(
-                        f"  · Live schema matches revision {safe} — "
-                        f"restamping (was {stamped or 'unstamped'})..."
-                    )
-                    command.stamp(alembic_cfg, safe, purge=True)
-        finally:
-            engine.dispose()
-        _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+                command.stamp(alembic_cfg, safe, purge=True)
+    finally:
+        engine.dispose()
+    _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+
+
+def _run_migrations(db_url: str) -> None:
+    """CLI entrypoint: apply migrations, exiting non-zero with a readable message."""
+    try:
+        _apply_migrations(db_url)
     except Exception as e:
         click.echo(f"  ✗ Migration failed: {e}", err=True)
         sys.exit(1)

@@ -231,9 +231,9 @@ class TestRunImportMissingModuleWarnings:
                 pass
             monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
 
-            async def fake_alembic():
+            async def fake_reconcile():
                 pass
-            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+            monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
 
             async def fake_extract(path):
                 pass
@@ -275,13 +275,13 @@ class TestRunImportMissingModuleWarnings:
         try:
             async def fake_restore(dump, url): return None
             async def fake_dispose(): pass
-            async def fake_alembic(): pass
+            async def fake_reconcile(): return None
             async def fake_extract(path): pass
             async def fake_activate(m): return None
             async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
             monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
             monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+            monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
             monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
             monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
             monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
@@ -318,13 +318,13 @@ class TestRunImportActivateModules:
             captured["modules"] = list(modules)
         async def fake_restore(dump, url): return None
         async def fake_dispose(): pass
-        async def fake_alembic(): pass
+        async def fake_reconcile(): return None
         async def fake_extract(path): pass
         async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
         monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
         monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
         monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
         monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
 
@@ -347,13 +347,13 @@ class TestRunImportActivateModules:
             activate_called["v"] = True
         async def fake_restore(dump, url): return None
         async def fake_dispose(): pass
-        async def fake_alembic(): pass
+        async def fake_reconcile(): return None
         async def fake_extract(path): pass
         async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
         monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
         monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
         monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
         monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
 
@@ -386,12 +386,16 @@ class TestAlembicConfigHelperUsed:
             "Use celerp.alembic_config.build_alembic_config() instead."
         )
 
-    def test_backup_import_uses_shared_helper(self):
-        """Positive check: backup_import.py imports and uses build_alembic_config."""
+    def test_backup_import_uses_cli_migration_path(self):
+        """Positive check: backup_import delegates to the CLI migration sequence
+        (stamp-repair walker + grants + reconcile), which itself uses the shared
+        alembic config lookup. Raw `alembic upgrade head` dies on restored dumps
+        whose stamp is behind their actual DDL."""
         from pathlib import Path
         src = (Path(__file__).parent.parent / "celerp" / "services" / "backup_import.py").read_text()
-        assert "build_alembic_config" in src, (
-            "backup_import.py must use celerp.alembic_config.build_alembic_config()."
+        assert "_apply_migrations" in src, (
+            "backup_import.py must reconcile the restored schema via "
+            "celerp.cli._apply_migrations (the stamp-repair walker), not raw alembic."
         )
 
     def test_cli_uses_shared_helper(self):
@@ -483,3 +487,50 @@ class TestActivateModulesRestarts:
 
         assert config_written == [], "Empty list should not write config"
         assert kill_calls == [], "Empty list should not trigger restart"
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_schema — restored dumps must migrate through the stamp-repair
+# walker, and a failure must surface to the user, not just the log
+# ---------------------------------------------------------------------------
+
+class TestReconcileSchema:
+    @pytest.mark.asyncio
+    async def test_runs_cli_migration_sequence(self, monkeypatch):
+        """Restore reconciles via the same walker path as `celerp migrate`:
+        stamp repair + upgrade, grants, then the develop-to-release reconcile."""
+        import celerp.cli as cli
+        from celerp.services import backup_import
+
+        calls: list[str] = []
+        monkeypatch.setattr(cli, "_apply_migrations", lambda url: calls.append("migrate"))
+        monkeypatch.setattr(cli, "_post_migration_grants", lambda url: calls.append("grants"))
+        monkeypatch.setattr(cli, "_reconcile_after_migrate", lambda url: calls.append("reconcile"))
+
+        warning = await backup_import._reconcile_schema()
+        assert warning is None
+        assert calls == ["migrate", "grants", "reconcile"]
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_user_facing_warning(self, monkeypatch):
+        """A failed reconcile leaves the schema stale (every read breaks), so the
+        import result must carry a warning instead of claiming a clean success."""
+        import celerp.cli as cli
+        from celerp.services import backup_import
+
+        def boom(url):
+            raise RuntimeError("DuplicateColumn: column already exists")
+
+        monkeypatch.setattr(cli, "_apply_migrations", boom)
+        warning = await backup_import._reconcile_schema()
+        assert warning is not None
+        assert "schema" in warning.lower()
+        assert "celerp migrate" in warning
+
+    def test_backup_result_carries_schema_warning(self):
+        from celerp.services.backup import BackupResult
+
+        r = BackupResult(ok=True, size_bytes=1)
+        assert r.schema_warning is None
+        r = BackupResult(ok=True, size_bytes=1, schema_warning="stale")
+        assert r.schema_warning == "stale"
