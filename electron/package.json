@@ -157,6 +157,12 @@
     },
     "linux": {
       "icon": "assets/icon.png",
+      "executableName": "celerp",
+      "desktop": {
+        "Comment": "Free local-first ERP: inventory, invoicing, CRM, and accounting",
+        "GenericName": "Business Management",
+        "Keywords": "erp;inventory;invoicing;accounting;crm;warehouse;"
+      },
       "category": "Office",
       "maintainer": "Data Universal Limited <support@celerp.com>",
       "vendor": "Data Universal Limited",
@@ -199,7 +205,10 @@
     },
     "deb": {
       "artifactName": "Celerp.deb",
-      "afterInstall": "build/deb-after-install.sh"
+      "afterInstall": "build/deb-after-install.sh",
+      "fpm": [
+        "build/com.celerp.Celerp.metainfo.xml=/usr/share/metainfo/com.celerp.Celerp.metainfo.xml"
+      ]
     },
     "afterPack": "./after-pack.js",
     "publish": {
