@@ -745,9 +745,11 @@ class TestSettingsSectionTabs:
     def test_general_tabs_admin_sees_kernel_tabs(self):
         from ui.routes.settings_general import _general_tabs
         html = self._xml(_general_tabs("company", is_admin=True))
-        for tab in ("company", "users", "modules", "backup"):
+        for tab in ("company", "users", "backup"):
             assert f"tab={tab}" in html, f"kernel tab '{tab}' missing for admin"
         assert "tab=password" in html
+        # Modules moved to its own sidebar section; no longer a settings tab.
+        assert "tab=modules" not in html
         # Payments lives under Web Access (_cloud_tabs), not Global Config.
         assert "/settings/payments" not in html
 
@@ -755,8 +757,9 @@ class TestSettingsSectionTabs:
         from ui.routes.settings_general import _general_tabs
         html = self._xml(_general_tabs("password", is_admin=False))
         assert "tab=password" in html
-        for tab in ("company", "users", "modules", "backup"):
+        for tab in ("company", "users", "backup"):
             assert f"tab={tab}" not in html
+        assert "tab=modules" not in html
         assert "/settings/payments" not in html
 
     def test_general_tabs_active_class_marks_correct_tab(self):

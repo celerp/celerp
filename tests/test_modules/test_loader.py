@@ -583,15 +583,80 @@ class TestElectronTrustedModuleDirs:
             "_resolve_bundled_dirs must include CELERP_TRUSTED_MODULE_DIRS path"
         )
 
-    def test_module_with_bsl_import_accepted_when_dir_is_module_dir(
-        self, tmp_path, monkeypatch
-    ):
-        """Module in MODULE_DIR is trusted (Electron seeded destination)."""
+    def test_module_dir_is_not_blanket_trusted(self, tmp_path, monkeypatch):
+        """MODULE_DIR must NOT be trusted by directory.
+
+        Blanket-trusting MODULE_DIR would exempt user-imported third-party
+        modules from the BSL import checks. Seeded first-party copies are
+        trusted by NAME instead (next test).
+        """
         from celerp.modules import loader as _loader
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
         monkeypatch.setenv("MODULE_DIR", str(tmp_path))
         new_trusted = _loader._resolve_bundled_dirs()
-        assert tmp_path.resolve() in new_trusted, (
-            "_resolve_bundled_dirs must include MODULE_DIR path as trusted"
+        assert tmp_path.resolve() not in new_trusted, (
+            "MODULE_DIR must not be blanket-trusted: that would exempt "
+            "user-imported modules from the BSL import checks"
+        )
+
+    def test_seeded_first_party_copy_trusted_by_name(self, tmp_path, monkeypatch):
+        """Electron regression, name-based: a bundled module seeded into
+        DATA_DIR/modules (an untrusted directory) still loads with its BSL
+        imports, because its name appears in the bundled source listing."""
+        from celerp.modules import loader as _loader
+        src = tmp_path / "bundled_src"
+        (src / "celerp-ai-sim").mkdir(parents=True)
+        (src / "celerp-ai-sim" / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0'}\n"
+        )
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(src))
+        monkeypatch.setattr(
+            _loader, "_BUNDLED_MODULES_DIRS", _loader._resolve_bundled_dirs()
+        )
+
+        seeded = tmp_path / "data_modules"
+        pkg = seeded / "celerp-ai-sim"
+        inner = pkg / "celerp_ai_sim"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "def setup_api_routes(app): pass\n"
+        )
+        (pkg / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0', "
+            "'api_routes': 'celerp_ai_sim.routes'}\n"
+        )
+        result = _loader.load_all(seeded, {"celerp-ai-sim"})
+        assert any(m["name"] == "celerp-ai-sim" for m in result), (
+            "seeded copy of a bundled module must be trusted by name"
+        )
+
+    def test_third_party_in_module_dir_still_checked(self, tmp_path, monkeypatch):
+        """A NON-bundled name in the seeded/module dir keeps full BSL checks."""
+        from celerp.modules import loader as _loader
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        monkeypatch.setenv("MODULE_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            _loader, "_BUNDLED_MODULES_DIRS", _loader._resolve_bundled_dirs()
+        )
+        # Inner-package layout so the AST scanner finds the routes file
+        # (same shape as test_module_with_bsl_import_rejected_when_not_trusted).
+        pkg = tmp_path / "sneaky-tools"
+        inner = pkg / "sneaky_tools"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "def setup_api_routes(app): pass\n"
+        )
+        (pkg / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'sneaky-tools', 'version': '1.0', "
+            "'api_routes': 'sneaky_tools.routes'}\n"
+        )
+        result = _loader.load_all(tmp_path, {"sneaky-tools"})
+        assert not any(m["name"] == "sneaky-tools" for m in result), (
+            "third-party module in MODULE_DIR must still fail BSL checks"
         )
 
     def test_resolve_bundled_dirs_always_includes_default_bundled(self, monkeypatch):
