@@ -32,8 +32,9 @@ from celerp.services.units import (
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode import createBarcodeDrawing
     from reportlab.lib.units import mm
-    from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas as rl_canvas
 
     _REPORTLAB = True
@@ -51,7 +52,6 @@ except ImportError:
 # barcode is optional
 try:
     import barcode
-    from barcode.writer import ImageWriter
 
     _BARCODE = True
 except ImportError:
@@ -154,48 +154,91 @@ def render_label_text(
     return "\n".join(lines)
 
 
-def _make_barcode_image(value: str, module_height: int = 8) -> io.BytesIO | None:
-    """Render a Code128 barcode to PNG bytes (bars only, no text - text rendered separately).
+_BC_MODULE_MM = 0.2  # Code128 X-dimension (width of one bar module)
+_BC_QUIET_MM = 1.0   # quiet zone on either side of the bars
+QR_SIZE_MM = 10.0    # QR codes are a fixed 10mm square on labels (minimum scannable size)
 
-    module_height: bar height in mm-equivalent units (4-30). Default 8.
+
+def _svg_markup(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, stretch: bool) -> str:
+    """Wrap barcode/QR rects in an SVG root element.
+
+    stretch=True fills the parent box (print sheet inlines the SVG in a sized
+    div); otherwise the SVG carries its intrinsic mm size (designer preview
+    loads it via <img>). preserveAspectRatio="none" lets both stretch freely,
+    and shape-rendering="crispEdges" suppresses anti-aliased module edges.
+    """
+    size = 'width="100%" height="100%"' if stretch else f'width="{w_mm:.2f}mm" height="{h_mm:.2f}mm"'
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:g} {vb_h:g}" '
+        f'{size} preserveAspectRatio="none" shape-rendering="crispEdges">{inner}</svg>'
+    )
+
+
+def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False) -> tuple[str, float, float] | None:
+    """Render a Code128 barcode as vector SVG (bars only, no text).
+
+    Vector output rasterizes sharply at the printer's own dot grid; a raster
+    resampled by the print HTML thresholds into merged or dropped bars on
+    low-DPI 1-bit label printers.
+
+    module_height: bar height in mm (1-30). Default 8.
+    Returns (svg_markup, natural_width_mm, height_mm), or None if the barcode
+    library is missing or the value cannot be encoded.
     """
     if not _BARCODE:
         return None
     try:
-        buf = io.BytesIO()
-        code128 = barcode.get("code128", str(value or "0"), writer=ImageWriter())
-        code128.write(buf, options={
-            "module_height": max(1, min(30, int(module_height))),
-            "font_size": 0,      # No text in barcode image
-            "text_distance": 0,
-            "quiet_zone": 1,
-            "write_text": False,  # Bars only
-        })
-        buf.seek(0)
-        return buf
+        pattern = barcode.get("code128", str(value or "0")).build()[0]
     except Exception:
         return None
+    h_mm = float(max(1, min(30, int(module_height))))
+    w_mm = len(pattern) * _BC_MODULE_MM + 2 * _BC_QUIET_MM
+    bars = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "1":
+            j = i
+            while j < len(pattern) and pattern[j] == "1":
+                j += 1
+            x = _BC_QUIET_MM + i * _BC_MODULE_MM
+            bars.append(f'<rect x="{x:.1f}" y="0" width="{(j - i) * _BC_MODULE_MM:.1f}" height="{h_mm:g}"/>')
+            i = j
+        else:
+            i += 1
+    inner = f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{"".join(bars)}</g>'
+    return _svg_markup(inner, w_mm, h_mm, w_mm, h_mm, stretch), w_mm, h_mm
 
 
-def _make_qr_image(value: str) -> io.BytesIO | None:
-    """Render a QR code to PNG bytes. Returns None on failure."""
+def _make_qr_svg(value: str, stretch: bool = False) -> str | None:
+    """Render a QR code as vector SVG (fixed 10mm square). Returns None on failure.
+
+    Same rationale as _make_barcode_svg: vector modules stay crisp at any
+    printer resolution.
+    """
     if not _QRCODE:
         return None
     try:
-        qr = qrcode.QRCode(
-            error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=4,
-            border=1,
-        )
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=1)
         qr.add_data(str(value or ""))
         qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return buf
+        matrix = qr.get_matrix()
     except Exception:
         return None
+    n = len(matrix)
+    cells = []
+    for r, row in enumerate(matrix):
+        c0 = 0
+        while c0 < n:
+            if row[c0]:
+                c1 = c0
+                while c1 < n and row[c1]:
+                    c1 += 1
+                cells.append(f'<rect x="{c0}" y="{r}" width="{c1 - c0}" height="1"/>')
+                c0 = c1
+            else:
+                c0 += 1
+    inner = f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{"".join(cells)}</g>'
+    return _svg_markup(inner, n, n, QR_SIZE_MM, QR_SIZE_MM, stretch)
 
 
 def render_label_pdf(
@@ -247,33 +290,33 @@ def render_label_pdf(
                     auto_y -= line_h + 1 * mm
 
                 if ftype == "barcode":
-                    img_buf = _make_barcode_image(val)
-                    if img_buf:
-                        img_w = max(20, min(w_mm - 4, 30)) * mm
+                    try:
+                        # Vector barcode: crisp at any printer DPI. Natural width
+                        # (bar-perfect) preferred; squeeze only when the label is
+                        # too narrow. Same rule as the HTML print sheet.
                         img_h = max(6, min(8, h_mm / 4)) * mm
-                        c.drawImage(
-                            ImageReader(img_buf), x_pt, y_pt,
-                            width=img_w, height=img_h,
-                            preserveAspectRatio=False,
-                        )
+                        bc = createBarcodeDrawing("Code128", value=str(val), barHeight=img_h, humanReadable=False)
+                        avail = (w_mm - 2) * mm - x_pt
+                        img_w = min(avail, max(20 * mm, bc.width))
+                        if img_w != bc.width:
+                            bc = createBarcodeDrawing(
+                                "Code128", value=str(val), barHeight=img_h,
+                                humanReadable=False, width=img_w, height=img_h,
+                            )
+                        renderPDF.draw(bc, c, x_pt, y_pt)
                         # Human-readable text below barcode (industry standard)
                         bc_text_size = max(4, font_size * 0.6)
                         c.setFont("Helvetica", bc_text_size)
                         c.drawString(x_pt, y_pt - bc_text_size * 0.4, val[:30])
-                    else:
+                    except Exception:
                         c.setFont("Helvetica", font_size)
                         c.drawString(x_pt, y_pt + line_h * 0.2, f"[BC:{val[:20]}]")
                 elif ftype == "qr":
-                    img_buf = _make_qr_image(val)
-                    if img_buf:
-                        # QR code: always exactly 10mm (minimum scannable size)
-                        side = 10 * mm
-                        c.drawImage(
-                            ImageReader(img_buf), x_pt, y_pt - side + line_h,
-                            width=side, height=side,
-                            preserveAspectRatio=True,
-                        )
-                    else:
+                    try:
+                        side = QR_SIZE_MM * mm
+                        qr_drawing = createBarcodeDrawing("QR", value=str(val), width=side, height=side)
+                        renderPDF.draw(qr_drawing, c, x_pt, y_pt - side + line_h)
+                    except Exception:
                         c.setFont("Helvetica", font_size)
                         c.drawString(x_pt, y_pt + line_h * 0.2, f"[QR:{val[:20]}]")
                 else:

@@ -10998,20 +10998,22 @@ class TestCsvImportSellByValidation:
         assert 'name="copies"' not in html
 
     @pytest.mark.asyncio
-    async def test_barcode_preview_returns_png(self, label_client):
-        """GET /api/labels/preview/barcode returns a valid PNG image."""
+    async def test_barcode_preview_returns_svg(self, label_client):
+        """GET /api/labels/preview/barcode returns a vector SVG with intrinsic mm size."""
         r = await label_client.get("/api/labels/preview/barcode?value=TEST123")
         assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
-        assert r.content[:4] == b"\x89PNG"
+        assert r.headers["content-type"].startswith("image/svg+xml")
+        assert r.content.startswith(b"<svg")
+        assert b"viewBox" in r.content and b"mm" in r.content
 
     @pytest.mark.asyncio
-    async def test_qr_preview_returns_png(self, label_client):
-        """GET /api/labels/preview/qr returns a valid PNG image."""
+    async def test_qr_preview_returns_svg(self, label_client):
+        """GET /api/labels/preview/qr returns a vector SVG with intrinsic mm size."""
         r = await label_client.get("/api/labels/preview/qr?value=HELLO")
         assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
-        assert r.content[:4] == b"\x89PNG"
+        assert r.headers["content-type"].startswith("image/svg+xml")
+        assert r.content.startswith(b"<svg")
+        assert b"viewBox" in r.content and b"mm" in r.content
 
     @pytest.mark.asyncio
     async def test_preview_endpoints_no_auth_required(self, label_client):

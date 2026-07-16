@@ -499,28 +499,28 @@ async def test_qr_field_resolves_barcode_key(client: AsyncClient):
     }
     resp = _printable_label_sheet([item], template)
     html = resp.body.decode()
-    # Must contain a base64 image (QR rendered) or at minimum the barcode value in alt attr
-    assert "data:image/png;base64," in html or "1234567890128" in html, (
+    # The resolved value is carried on the wrap div (data-value) and in the
+    # no-library fallback text; the literal key "qr" would mean it was skipped.
+    assert "1234567890128" in html, (
         "QR field should resolve to item barcode value, not be silently skipped"
     )
 
 
-def test_make_barcode_image_module_height_param():
-    """_make_barcode_image should accept module_height and return different-height images."""
-    from celerp_labels.service import _make_barcode_image
-    buf_short = _make_barcode_image("TEST123", module_height=1)
-    buf_tall = _make_barcode_image("TEST123", module_height=20)
-    if buf_short is None or buf_tall is None:
+def test_make_barcode_svg_module_height_param():
+    """_make_barcode_svg should accept module_height and return different-height SVGs."""
+    from celerp_labels.service import _make_barcode_svg
+    short = _make_barcode_svg("TEST123", module_height=1)
+    tall = _make_barcode_svg("TEST123", module_height=20)
+    if short is None or tall is None:
         pytest.skip("python-barcode not installed")
-    short_bytes = buf_short.read()
-    tall_bytes = buf_tall.read()
-    # Both must be valid PNGs
-    assert short_bytes[:4] == b'\x89PNG'
-    assert tall_bytes[:4] == b'\x89PNG'
-    # Taller bar height produces a larger image
-    assert len(tall_bytes) > len(short_bytes), (
-        "module_height=20 should produce a taller (larger) PNG than module_height=1"
-    )
+    svg_short, w_short, h_short = short
+    svg_tall, w_tall, h_tall = tall
+    assert svg_short.startswith("<svg") and "viewBox" in svg_short
+    assert h_short == 1.0 and h_tall == 20.0
+    # Bar height must not change the barcode's natural width
+    assert w_short == w_tall
+    # Same value encodes the same bars regardless of height
+    assert svg_short.count("<rect") == svg_tall.count("<rect")
 
 
 async def test_barcode_height_saved_and_retrieved(client: AsyncClient):
@@ -581,8 +581,8 @@ def test_extract_fields_from_form_includes_barcode_height():
     )
 
 
-def test_barcode_img_tag_height_proportional():
-    """_barcode_img_tag: height=1 must produce a shorter img than height=8 in the HTML."""
+def test_barcode_tag_height_proportional():
+    """_barcode_tag: height=1 must produce a shorter barcode box than height=8 in the HTML."""
     from celerp_labels.ui_routes import _printable_label_sheet
     import re
 
