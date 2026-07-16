@@ -318,29 +318,27 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
-def _status_error(status_id: str, message: str, oob: FT | None = None):
-    """Error for an auto-saving control: toast the message (auto-dismisses) and reset the
-    inline status span, so no stale error text persists next to the control. ``oob``
-    optionally re-syncs a related element (e.g. a select showing a rejected choice)."""
+def _toast_response(message: str, *fragments: FT):
+    """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
+    so no stale error text persists in the page."""
     import json as _json
     from starlette.responses import HTMLResponse as _HR
-    body = to_xml(Span("", id=status_id, cls="settings-hint"))
-    if oob is not None:
-        body += to_xml(oob)
+    body = "".join(to_xml(f) for f in fragments)
     return _HR(body, headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})})
 
 
+def _status_error(status_id: str, message: str, oob: FT | None = None):
+    """Error for an auto-saving control: toast the message and reset the inline status
+    span. ``oob`` optionally re-syncs a related element (e.g. a select showing a
+    rejected choice)."""
+    span = Span("", id=status_id, cls="settings-hint")
+    return _toast_response(message, span, oob) if oob is not None else _toast_response(message, span)
+
+
 def _pl_cell_error(idx: int, field: str, pl: dict, prefix: str, message: str):
-    """Failed cell save: swap the saved display value back into the cell and surface the
-    error as a toast. The toast auto-dismisses, so no stale error text lingers in the
-    table, and the cell stays click-to-edit for a retry."""
-    import json as _json
-    from starlette.responses import HTMLResponse as _HR
-    cell = _price_list_display_cell(idx, field, pl, prefix=prefix)
-    return _HR(
-        to_xml(cell),
-        headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})},
-    )
+    """Failed cell save: swap the saved display value back into the cell and toast the
+    error. The cell stays click-to-edit for a retry."""
+    return _toast_response(message, _price_list_display_cell(idx, field, pl, prefix=prefix))
 
 
 def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
@@ -415,12 +413,9 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
             value = str(form.get("value", ""))
             try:
                 price_lists = await getattr(api, gname)(token)
-                base_name = await api.get_base_price_list(token)
-                default_name = await api.get_default_price_list(token)
-                old_name = ""
                 renamed_base: str | None = None
+                renamed_default = False
                 if idx < len(price_lists):
-                    old_name = price_lists[idx].get("name", "")
                     if field in ("multiplier", "rounding"):
                         if value.strip() == "":
                             price_lists[idx].pop(field, None)
@@ -434,17 +429,18 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                                 return _pl_cell_error(idx, field, price_lists[idx], pfx,
                                                       t("settings.enter_a_number_greater_than_0"))
                     else:
+                        if field == "name":
+                            # Base and default are stored by name; a rename must carry them along
+                            # (the base atomically, so validation holds through the write).
+                            old_name = price_lists[idx].get("name", "")
+                            if old_name == await api.get_base_price_list(token):
+                                renamed_base = value
+                            renamed_default = old_name == await api.get_default_price_list(token)
                         price_lists[idx][field] = value
-                    if field == "name" and old_name == base_name:
-                        # The base is stored by name; rename both in one write so validation holds.
-                        renamed_base = value
                 await getattr(api, pname)(token, price_lists, base_price_list=renamed_base)
-                if field == "name" and old_name == default_name:
-                    # The default is stored by name too; keep it pointing at the renamed list.
+                if renamed_default:
                     await api.patch_default_price_list(token, value)
                 price_lists = await getattr(api, gname)(token)
-                base_name = await api.get_base_price_list(token)
-                default_name = await api.get_default_price_list(token)
             except APIError as e:
                 # Re-fetch so the cell reverts to the value the server actually holds.
                 try:
@@ -459,6 +455,11 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 # Re-render both selectors OOB so they reflect the new name. Returned as
                 # sibling fragments, NOT wrapped in a Div: an HTML5 parser drops a <td>
                 # nested inside a <div>, which would destroy the swapped name cell.
+                try:
+                    base_name = await api.get_base_price_list(token)
+                    default_name = await api.get_default_price_list(token)
+                except APIError:
+                    return cell
                 visible_names = [p.get("name", "") for p in price_lists if p.get("name") != "Cost"]
                 all_names = [p.get("name", "") for p in price_lists]
                 return (

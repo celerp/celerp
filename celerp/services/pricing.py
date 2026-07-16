@@ -214,6 +214,18 @@ def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict])
     return None
 
 
+def price_config_error(price_lists: list[dict], explicit_base: str | None,
+                       stored_price_lists: list[dict]) -> str | None:
+    """The full write gate for a price-lists config: structural validation plus the
+    reserved-cost-name rule. Every door that stores price config must call this, so the
+    two checks can never drift apart between endpoints."""
+    return validate_price_lists(
+        price_lists,
+        explicit_base or DEFAULT_PRICE_LIST_NAME,
+        base_explicit=explicit_base is not None,
+    ) or new_cost_name_error(price_lists, stored_price_lists)
+
+
 def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
     """Canonicalize a validated config for storage: factors and rounding as plain floats,
     so the read path never re-parses strings or exotic JSON types."""

@@ -17,7 +17,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
-from celerp.services.pricing import resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -509,7 +509,7 @@ def _calculate_due_date(issue_date: str | None, payment_terms_name: str | None, 
     return (base + _timedelta(days=int(days))).isoformat()
 
 
-async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = "Retail") -> list[dict]:
+async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME) -> list[dict]:
     """Fetch inventory items and build doc/list line items."""
     line_items = []
     for eid in entity_ids:
@@ -1199,7 +1199,7 @@ def setup_routes(app):
         code = request.query_params.get("sku", "").strip()
         if not code:
             return JSONResponse({})
-        price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        price_list = request.query_params.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
         is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         from celerp.services.units import build_unit_map
         try:
@@ -1264,7 +1264,7 @@ def setup_routes(app):
         if not token:
             return _J({"error": "unauthorized"}, status_code=401)
         q = request.query_params.get("q", "").strip()
-        price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        price_list = request.query_params.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
         is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         if not q:
             return _J([])
@@ -1408,7 +1408,7 @@ def setup_routes(app):
 
         # Parse rows
         new_lines: list[dict] = []
-        price_list = form.get("price_list") or "Retail"
+        price_list = form.get("price_list") or DEFAULT_PRICE_LIST_NAME
         for row in reader:
             mapped_row: dict[str, str] = {}
             for csv_col, canon in col_map.items():

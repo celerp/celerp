@@ -30,6 +30,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, get_price_config, resolve_price
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -4556,10 +4557,9 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     else:
         line["quantity"] = 1
         if is_money_list(list_type):
-            from celerp.services.pricing import resolve_price
             from celerp_inventory.routes import _flatten_item
             flat = _flatten_item(st, item.entity_id, price_config=price_config)
-            line["unit_price"] = resolve_price(flat, price_list or "Retail")
+            line["unit_price"] = resolve_price(flat, price_list or DEFAULT_PRICE_LIST_NAME)
     return line
 
 
@@ -4639,7 +4639,6 @@ async def scan_list(
                 lines.insert(0, _scan_line_from_item(item, lt, None))
                 result_state = "added"
         else:
-            from celerp.services.pricing import get_price_config
             lines.append(_scan_line_from_item(item, lt, payload.price_list,
                                               price_config=await get_price_config(session, company_id)))
             result_state = "added"

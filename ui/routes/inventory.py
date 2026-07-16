@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl
@@ -1341,7 +1341,7 @@ def setup_routes(app):
         # Build pricing_keys dynamically from company price lists
         pl_names = {pl.get("name", "") for pl in price_lists}
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
-        pl_conventional = {f"{n.lower()}_price" for n in pl_names}
+        pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
         detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
@@ -2403,7 +2403,7 @@ function celerpPrintLabel(entityId, templateId) {
             schema = schema + extra
         # Build pricing_keys to exclude from detail_fields
         pl_names = {pl.get("name", "") for pl in price_lists}
-        pl_conventional = {f"{n.lower()}_price" for n in pl_names}
+        pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
         detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
         right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
@@ -3519,7 +3519,7 @@ function celerpPrintLabel(entityId, templateId) {
             cost_changed = False
             for pl in price_lists:
                 pl_name = pl.get("name", "")
-                conventional_key = f"{pl_name.lower()}_price"
+                conventional_key = price_key(pl_name)
                 if conventional_key not in form:
                     continue  # field not submitted — leave it untouched
                 val = str(form.get(conventional_key, "")).strip()
@@ -6231,7 +6231,6 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     Derived price lists render read-only the same way: their values are computed from the base
     price list, and the schema (config-driven) marks their columns non-editable for every role.
     """
-    from celerp.services.pricing import is_derived as _is_derived, resolve_price as _resolve_price
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
@@ -6258,9 +6257,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     schema_editable = {f.get("key") for f in (pricing_fields or []) if f.get("editable")}
 
     def _row(pl_name: str, editable: bool) -> FT:
-        conventional_key = f"{pl_name.lower()}_price"
+        conventional_key = price_key(pl_name)
         editable = editable and (not pricing_fields or conventional_key in schema_editable)
-        price_val = _resolve_price(item, pl_name)
+        price_val = resolve_price(item, pl_name)
         unit_val = _num(price_val) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
         if not editable:
@@ -6300,16 +6299,15 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             cls="detail-card",
         )
 
-    from celerp.services.pricing import is_cost_list_name as _is_cost_name
-    cost_lists = [pl for pl in price_lists if _is_cost_name(pl.get("name", ""))]
-    sell_lists = [pl for pl in price_lists if not _is_cost_name(pl.get("name", ""))]
+    cost_lists = [pl for pl in price_lists if is_cost_list_name(pl.get("name", ""))]
+    sell_lists = [pl for pl in price_lists if not is_cost_list_name(pl.get("name", ""))]
 
     cards = []
     if cost_lists:
         note = "Rolled up from the recipe and kept in sync automatically. Edit it on the Manufacturing tab." if has_recipe else None
         cards.append(_card("Cost", cost_lists, editable=not has_recipe, note=note))
     if sell_lists:
-        derived_lists = [pl for pl in sell_lists if _is_derived(pl)]
+        derived_lists = [pl for pl in sell_lists if is_derived(pl)]
         if derived_lists:
             base_label = base_price_list or "the base price list"
             sentences = []
@@ -6319,7 +6317,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                     s += f", rounded to the nearest {float(pl['rounding']):g}"
                 sentences.append(s)
             note = ". ".join(sentences) + ". Derived prices update automatically when the base price changes. Factors are edited in Settings under Price Lists."
-        elif pricing_fields and any(f"{pl.get('name', '').lower()}_price" not in schema_editable for pl in sell_lists):
+        elif pricing_fields and any(price_key(pl.get("name", "")) not in schema_editable for pl in sell_lists):
             # Factors are manager-only, but a read-only sell row still gets an explanation.
             note = "Computed automatically from the base price list."
         else:
@@ -6453,13 +6451,12 @@ _IMPORT_SPEC = CsvImportSpec(
 def _importable_price_lists(price_lists: list[dict]) -> list[dict]:
     """Price lists whose values can be imported. Derived lists are computed from the base
     price list at read time, so the import mapper never offers their columns."""
-    from celerp.services.pricing import is_derived
     return [pl for pl in price_lists if pl.get("name") and not is_derived(pl)]
 
 
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
-    price_cols = [f"{pl.get('name', '').lower()}_price" for pl in _importable_price_lists(price_lists)]
+    price_cols = [price_key(pl["name"]) for pl in _importable_price_lists(price_lists)]
     # Add virtual total cols (one per price col) - back-calculated at confirm time
     price_total_cols = [f"{col}_total" for col in price_cols]
     type_map = {"quantity": float, "weight": float, "pieces": float}
@@ -6477,7 +6474,7 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     labels: dict[str, str] = {}
     for pl in _importable_price_lists(price_lists):
         name = pl.get("name", "")
-        key = f"{name.lower()}_price"
+        key = price_key(name)
         labels[key] = f"{name} (Unit Price)"
         labels[f"{key}_total"] = f"{name} (Total)"
     return labels
@@ -6487,7 +6484,7 @@ def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
     """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
     groups = []
     for pl in _importable_price_lists(price_lists):
-        key = f"{pl['name'].lower()}_price"
+        key = price_key(pl["name"])
         groups.append([key, f"{key}_total"])
     return groups
 

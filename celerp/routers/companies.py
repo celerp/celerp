@@ -278,12 +278,8 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
             merged_lists = merged.get("price_lists") or []
-            explicit_base = merged.get("base_price_list")
-            error = validate_price_lists(
-                merged_lists,
-                explicit_base or DEFAULT_PRICE_LIST_NAME,
-                base_explicit=explicit_base is not None,
-            ) or new_cost_name_error(merged_lists, (company.settings or {}).get("price_lists") or [])
+            error = price_config_error(merged_lists, merged.get("base_price_list"),
+                                       (company.settings or {}).get("price_lists") or [])
             if error:
                 raise HTTPException(status_code=422, detail=error)
             if merged.get("price_lists"):
@@ -1657,9 +1653,8 @@ from celerp.services.pricing import (
     COST_PRICE_LIST_NAMES,
     DEFAULT_PRICE_LIST_NAME,
     is_derived,
-    new_cost_name_error,
     normalized_price_lists,
-    validate_price_lists,
+    price_config_error,
 )
 
 DEFAULT_PRICE_LISTS: list[dict] = [
@@ -1723,12 +1718,9 @@ async def patch_price_lists(
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
-    explicit_base = payload.base_price_list or settings.get("base_price_list")
-    error = validate_price_lists(
-        payload.price_lists,
-        explicit_base or DEFAULT_PRICE_LIST_NAME,
-        base_explicit=explicit_base is not None,
-    ) or new_cost_name_error(payload.price_lists, settings.get("price_lists") or [])
+    error = price_config_error(payload.price_lists,
+                               payload.base_price_list or settings.get("base_price_list"),
+                               settings.get("price_lists") or [])
     if error:
         raise HTTPException(status_code=422, detail=error)
     settings["price_lists"] = normalized_price_lists(payload.price_lists)
