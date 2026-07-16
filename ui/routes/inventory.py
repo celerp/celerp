@@ -24,6 +24,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl
@@ -757,7 +758,7 @@ def setup_routes(app):
         try:
             price_lists = await api.get_price_lists(token)
         except Exception:
-            price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+            price_lists = PRICE_LISTS_FALLBACK
         spec = _build_import_spec(price_lists)
         try:
             cat_schemas = await api.get_all_category_schemas(token)
@@ -815,7 +816,7 @@ def setup_routes(app):
         try:
             price_lists = await api.get_price_lists(token)
         except Exception:
-            price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+            price_lists = PRICE_LISTS_FALLBACK
         spec = _build_import_spec(price_lists)
         cat_schemas = await api.get_all_category_schemas(token)
         cat_attrs = _union_category_attr_keys(cat_schemas)
@@ -864,7 +865,7 @@ def setup_routes(app):
         try:
             price_lists = await api.get_price_lists(token)
         except Exception:
-            price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+            price_lists = PRICE_LISTS_FALLBACK
         spec = _build_import_spec(price_lists)
 
         # Parse original CSV columns for validation
@@ -1316,6 +1317,9 @@ def setup_routes(app):
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp = [], {}, [], [], {}, {}, [], {}
+        # The base price list name (used by the pricing tab's derivation note) rides on the
+        # company payload; the settings tab manages it through its dedicated endpoint.
+        base_price_list = (company.get("settings") or {}).get("base_price_list") or DEFAULT_PRICE_LIST_NAME
 
         currency = company.get("currency")
         # Inject category options into the schema's category field
@@ -1363,7 +1367,7 @@ def setup_routes(app):
                     cls="header-actions",
                 ),
             ),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -3507,7 +3511,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             price_lists = await api.get_price_lists(token)
         except Exception:
-            price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+            price_lists = PRICE_LISTS_FALLBACK
         try:
             # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
@@ -6146,6 +6150,7 @@ def _item_detail_tabs(
     active_tab: str,
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
+    base_price_list: str = "",
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
@@ -6163,7 +6168,7 @@ def _item_detail_tabs(
     if active_tab == "pricing":
         if price_lists:
             # _pricing_form owns its own Cost / Sell-prices grid; no single-column wrapper.
-            panel = _pricing_form(entity_id, item, price_lists, currency)
+            panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list)
         else:
             panel = Div(
                 _detail_table(entity_id, item, pricing_fields, title="Pricing", currency=currency),
@@ -6216,14 +6221,17 @@ def _item_detail_tabs(
     )
 
 
-def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None) -> FT:
+def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
+                  pricing_fields: list[dict] | None = None, base_price_list: str = "") -> FT:
     """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
 
     Each input autosaves on change (no Save button), consistent with the rest of the system.
     For a manufactured item the cost is rolled from the recipe and shown read-only here — it is
     edited on the Manufacturing tab — so the single source of truth stays the recipe.
+    Derived price lists render read-only the same way: their values are computed from the base
+    price list, and the schema (config-driven) marks their columns non-editable for every role.
     """
-    from ui.routes.documents import resolve_price as _resolve_price
+    from celerp.services.pricing import is_derived as _is_derived, resolve_price as _resolve_price
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
@@ -6245,13 +6253,19 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     def _cur(v):
         return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
 
+    # Schema editability is config-driven: derived lists' price columns are marked
+    # non-editable by the effective field schema for every role.
+    schema_editable = {f.get("key") for f in (pricing_fields or []) if f.get("editable")}
+
     def _row(pl_name: str, editable: bool) -> FT:
         conventional_key = f"{pl_name.lower()}_price"
+        editable = editable and (not pricing_fields or conventional_key in schema_editable)
         price_val = _resolve_price(item, pl_name)
         unit_val = _num(price_val) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
         if not editable:
-            # Recipe-managed cost: read-only display (edited on the Manufacturing tab).
+            # Read-only display: recipe-managed cost (edited on the Manufacturing tab)
+            # or a derived price list (computed from the base price list).
             return Tr(
                 Td(pl_name, cls="detail-label"),
                 Td(_cur(Span(unit_val or EMPTY, cls="form-input form-input--readonly"))),
@@ -6286,16 +6300,31 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             cls="detail-card",
         )
 
-    is_cost = lambda pl: pl.get("name", "").lower() == "cost"
-    cost_lists = [pl for pl in price_lists if is_cost(pl)]
-    sell_lists = [pl for pl in price_lists if not is_cost(pl)]
+    from celerp.services.pricing import is_cost_list_name as _is_cost_name
+    cost_lists = [pl for pl in price_lists if _is_cost_name(pl.get("name", ""))]
+    sell_lists = [pl for pl in price_lists if not _is_cost_name(pl.get("name", ""))]
 
     cards = []
     if cost_lists:
         note = "Rolled up from the recipe and kept in sync automatically. Edit it on the Manufacturing tab." if has_recipe else None
         cards.append(_card("Cost", cost_lists, editable=not has_recipe, note=note))
     if sell_lists:
-        cards.append(_card("Sell prices", sell_lists, editable=True))
+        derived_lists = [pl for pl in sell_lists if _is_derived(pl)]
+        if derived_lists:
+            base_label = base_price_list or "the base price list"
+            sentences = []
+            for pl in derived_lists:
+                s = f"{pl.get('name', '')} is {base_label} × {float(pl['multiplier']):g}"
+                if pl.get("rounding") is not None:
+                    s += f", rounded to the nearest {float(pl['rounding']):g}"
+                sentences.append(s)
+            note = ". ".join(sentences) + ". Derived prices update automatically when the base price changes. Factors are edited in Settings under Price Lists."
+        elif pricing_fields and any(f"{pl.get('name', '').lower()}_price" not in schema_editable for pl in sell_lists):
+            # Factors are manager-only, but a read-only sell row still gets an explanation.
+            note = "Computed automatically from the base price list."
+        else:
+            note = None
+        cards.append(_card("Sell prices", sell_lists, editable=True, note=note))
 
     return Div(
         Script("""
@@ -6421,9 +6450,16 @@ _IMPORT_SPEC = CsvImportSpec(
 )
 
 
+def _importable_price_lists(price_lists: list[dict]) -> list[dict]:
+    """Price lists whose values can be imported. Derived lists are computed from the base
+    price list at read time, so the import mapper never offers their columns."""
+    from celerp.services.pricing import is_derived
+    return [pl for pl in price_lists if pl.get("name") and not is_derived(pl)]
+
+
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
-    price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
+    price_cols = [f"{pl.get('name', '').lower()}_price" for pl in _importable_price_lists(price_lists)]
     # Add virtual total cols (one per price col) - back-calculated at confirm time
     price_total_cols = [f"{col}_total" for col in price_cols]
     type_map = {"quantity": float, "weight": float, "pieces": float}
@@ -6439,10 +6475,8 @@ def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
 def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     """Human-readable labels for price columns in the import mapping UI."""
     labels: dict[str, str] = {}
-    for pl in price_lists:
+    for pl in _importable_price_lists(price_lists):
         name = pl.get("name", "")
-        if not name:
-            continue
         key = f"{name.lower()}_price"
         labels[key] = f"{name} (Unit Price)"
         labels[f"{key}_total"] = f"{name} (Total)"
@@ -6452,11 +6486,8 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
 def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
     """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
     groups = []
-    for pl in price_lists:
-        name = pl.get("name", "")
-        if not name:
-            continue
-        key = f"{name.lower()}_price"
+    for pl in _importable_price_lists(price_lists):
+        key = f"{pl['name'].lower()}_price"
         groups.append([key, f"{key}_total"])
     return groups
 

@@ -4543,9 +4543,10 @@ def _normalize_line_item_ids(lines: list) -> None:
             l["item_id"] = l["entity_id"]
 
 
-def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None) -> dict:
+def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None,
+                         price_config: tuple[list[dict], str] | None = None) -> dict:
     """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
-    price list (mirrors resolve_price: the list name, then the conventional `<name>_price` key)."""
+    price list via the shared resolver, on flattened state so derived lists price correctly."""
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode")}
@@ -4555,11 +4556,10 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     else:
         line["quantity"] = 1
         if is_money_list(list_type):
-            pl = price_list or "Retail"
-            val = st.get(pl)
-            if val is None:
-                val = st.get(f"{pl.lower()}_price")
-            line["unit_price"] = float(val or 0)
+            from celerp.services.pricing import resolve_price
+            from celerp_inventory.routes import _flatten_item
+            flat = _flatten_item(st, item.entity_id, price_config=price_config)
+            line["unit_price"] = resolve_price(flat, price_list or "Retail")
     return line
 
 
@@ -4639,7 +4639,9 @@ async def scan_list(
                 lines.insert(0, _scan_line_from_item(item, lt, None))
                 result_state = "added"
         else:
-            lines.append(_scan_line_from_item(item, lt, payload.price_list))
+            from celerp.services.pricing import get_price_config
+            lines.append(_scan_line_from_item(item, lt, payload.price_list,
+                                              price_config=await get_price_config(session, company_id)))
             result_state = "added"
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()

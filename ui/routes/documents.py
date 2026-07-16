@@ -17,6 +17,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
+from celerp.services.pricing import resolve_price
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -506,23 +507,6 @@ def _calculate_due_date(issue_date: str | None, payment_terms_name: str | None, 
     except (ValueError, TypeError):
         return None
     return (base + _timedelta(days=int(days))).isoformat()
-
-
-def resolve_price(item: dict, price_list: str) -> float:
-    """Deterministic price lookup. No fallback chain.
-
-    Checks the price list name directly on the item, then the conventional
-    {name.lower()}_price key (e.g. "retail_price" for "Retail").
-    Returns 0.0 if no price is found for this list.
-    """
-    val = item.get(price_list)
-    if val is not None:
-        return float(val)
-    conventional_key = f"{price_list.lower()}_price"
-    val = item.get(conventional_key)
-    if val is not None:
-        return float(val)
-    return 0.0
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = "Retail") -> list[dict]:
