@@ -2960,3 +2960,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .enh-page-hidden { display: none; }
 .enh-pager { display: flex; align-items: center; gap: 10px; margin-top: 8px; justify-content: flex-end; }
 .enh-page-info { font-size: 12px; color: var(--c-text2); }
+
+/* Discreet reload control beside the doc price-list select (repulls current prices). */
+.reprice-refresh { display: flex; align-items: center; justify-content: center; padding: 2px; background: none; border: none; border-radius: var(--radius); cursor: pointer; color: var(--c-text2); }
+.reprice-refresh:hover { color: var(--c-text); background: var(--c-bg2); }

@@ -499,6 +499,25 @@ def test_pricing_form_renders_derived_row_readonly_with_note():
     assert "Trade is Retail × 0.7, rounded to the nearest 5" in html
     assert 'name="retail_price"' in html      # manual list stays an editable input
     assert 'name="trade_price"' not in html   # derived list renders read-only
+    # The derived value spans carry ids so a base-price save can refresh them in place
+    assert 'id="derived_unit_trade_price"' in html
+    assert 'id="derived_total_trade_price"' in html
+
+
+def test_readonly_price_cells_oob_refresh_fragments():
+    """After a base-price save, the same spans return as out-of-band swaps: the open
+    pricing form updates derived rows immediately, with no reload and no focus loss."""
+    from fasthtml.common import to_xml
+    from ui.routes.inventory import _readonly_price_cells
+
+    unit, total = _readonly_price_cells("trade_price", 505.0, 2.0, True, 6, oob=True)
+    html = to_xml(unit) + to_xml(total)
+    assert 'id="derived_unit_trade_price"' in html and "505" in html
+    assert 'id="derived_total_trade_price"' in html and "1010.00" in html
+    assert html.count('hx-swap-oob="true"') == 2
+    # An unpriced derived list refreshes to the empty placeholder, not a stale number
+    unit_empty, _ = _readonly_price_cells("trade_price", 0.0, 2.0, True, 6, oob=True)
+    assert "--" in to_xml(unit_empty)
 
 
 # ---------------------------------------------------------------------------

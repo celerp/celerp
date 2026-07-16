@@ -3558,8 +3558,30 @@ function celerpPrintLabel(entityId, templateId) {
             # OOB so the message lands in the save-status (inputs use hx_swap="none").
             return Div(f"Not saved: {e.detail}", id="pricing-save-status",
                        cls="recipe-save-status hint error", hx_swap_oob="true")
+        # Derived lists recompute from the base at read time; push their fresh values into
+        # the open pricing form as out-of-band swaps (inputs save with hx_swap="none", so
+        # the user's focus never moves and no reload is needed).
+        oob_cells: list = []
+        derived_lists = [pl for pl in price_lists if is_derived(pl)]
+        if derived_lists:
+            try:
+                item_after = await api.get_item(token, entity_id)
+                company_after = await api.get_company(token)
+                from celerp.services.money import rate_dp as _rate_dp
+                rdp = _rate_dp((company_after.get("currency") or "").strip() or "USD")
+                qty_after = float(item_after.get("quantity") or 0)
+                for pl in derived_lists:
+                    name = pl.get("name", "")
+                    unit, total = _readonly_price_cells(
+                        price_key(name), resolve_price(item_after, name),
+                        qty_after, qty_after > 0, rdp, oob=True,
+                    )
+                    oob_cells.extend([unit, total])
+            except APIError:
+                pass  # refresh is cosmetic; the save itself already succeeded
         # Autosave: a transient saved indicator, no page reload (consistent with the rest of the UI).
-        return Div("Saved ✓", id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true")
+        return (Div("Saved ✓", id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
+                *oob_cells)
 
     @app.post("/api/items/{entity_id}/status")
     async def item_status(request: Request, entity_id: str):
@@ -6221,6 +6243,30 @@ def _item_detail_tabs(
     )
 
 
+def _fmt_rate(v: float, rdp: int) -> str:
+    """Plain numeric string for a unit price: full saved rate precision, trailing
+    zeros trimmed (15.285, not 15.28 and not 15.2850)."""
+    s = f"{v:.{rdp}f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def _readonly_price_cells(conventional_key: str, price_val: float, qty: float,
+                          has_qty: bool, rdp: int, oob: bool = False):
+    """The unit/total value spans of a read-only pricing row.
+
+    Shared by the pricing form render and the price-save response: after a base
+    price saves, the same spans return as out-of-band swaps so derived rows update
+    immediately without re-rendering the form or moving the user's focus."""
+    unit_val = _fmt_rate(price_val, rdp) if price_val else ""
+    total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
+    oob_kw = {"hx_swap_oob": "true"} if oob else {}
+    unit = Span(unit_val or EMPTY, cls="form-input form-input--readonly",
+                id=f"derived_unit_{conventional_key}", **oob_kw)
+    total = Span(total_val or EMPTY, cls="form-input form-input--readonly",
+                 id=f"derived_total_{conventional_key}", **oob_kw)
+    return unit, total
+
+
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
                   pricing_fields: list[dict] | None = None, base_price_list: str = "") -> FT:
     """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
@@ -6240,12 +6286,6 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     from celerp.services.money import currency_dp as _currency_dp, rate_dp as _rate_dp
     cdp, rdp = _currency_dp(currency or "USD"), _rate_dp(currency or "USD")
 
-    def _num(v: float) -> str:
-        """Plain numeric string for an input: the unit price at its full saved rate
-        precision, trailing zeros trimmed (15.285, not 15.28 and not 15.2850)."""
-        s = f"{v:.{rdp}f}"
-        return s.rstrip("0").rstrip(".") if "." in s else s
-
     unit_hdr = f"Unit ({cur_sym} / {sell_by})" if cur_sym else f"Unit / {sell_by}"
     total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else "Total (no stock)"
 
@@ -6260,15 +6300,17 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         conventional_key = price_key(pl_name)
         editable = editable and (not pricing_fields or conventional_key in schema_editable)
         price_val = resolve_price(item, pl_name)
-        unit_val = _num(price_val) if price_val else ""
+        unit_val = _fmt_rate(price_val, rdp) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
         if not editable:
             # Read-only display: recipe-managed cost (edited on the Manufacturing tab)
-            # or a derived price list (computed from the base price list).
+            # or a derived price list (computed from the base price list). The value spans
+            # carry ids so a base-price save can refresh them out-of-band.
+            unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
             return Tr(
                 Td(pl_name, cls="detail-label"),
-                Td(_cur(Span(unit_val or EMPTY, cls="form-input form-input--readonly"))),
-                Td(_cur(Span(total_val or EMPTY, cls="form-input form-input--readonly")) if has_qty else Span(EMPTY)),
+                Td(_cur(unit_span)),
+                Td(_cur(total_span) if has_qty else Span(EMPTY)),
             )
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the

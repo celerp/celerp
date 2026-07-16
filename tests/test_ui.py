@@ -11475,6 +11475,31 @@ class TestPriceLists:
     # resolve_price unit tests live in tests/test_pricing.py with the shared resolver.
 
     @pytest.mark.asyncio
+    async def test_price_save_refreshes_derived_rows_in_place(self, ui_client):
+        """Saving a base price returns the recomputed derived rows as out-of-band swaps,
+        so the pricing tab updates immediately without a page refresh."""
+        item_after = {"entity_id": "item:1", "quantity": 2, "sell_by": "piece",
+                      "retail_price": 100, "trade_price": 70}
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Retail"}, {"name": "Wholesale"},
+                {"name": "Trade", "multiplier": 0.7, "rounding": 5},
+            ])),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item_after)),
+            patch("ui.api_client.set_item_price", new=AsyncMock(return_value={})) as mock_set,
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+        ):
+            r = await ui_client.post("/api/items/item:1/price",
+                                     data={"retail_price": "100"}, cookies=_authed())
+        assert r.status_code == 200
+        assert mock_set.await_count == 1
+        html = r.text
+        assert 'id="derived_unit_trade_price"' in html
+        assert 'hx-swap-oob="true"' in html
+        assert ">70<" in html            # refreshed unit value
+        assert "140.00" in html          # refreshed total (70 x 2)
+
+    @pytest.mark.asyncio
     async def test_price_lists_settings_tab_renders(self, ui_client):
         """Contacts settings price-lists tab renders the table."""
         with (
@@ -11532,6 +11557,50 @@ class TestPriceLists:
         html = r.content.decode()
         assert "Price list:" in html
         assert "Retail" in html
+
+    @pytest.mark.asyncio
+    async def test_draft_doc_shows_reprice_refresh_icon(self, ui_client):
+        """Draft docs get a discreet browser-style refresh control beside the price-list
+        dropdown: line prices are snapshots, and this repulls current prices without the
+        switch-lists-and-back workaround."""
+        doc = {**_BLANK_DOC, "price_list": "Retail"}
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Retail"}, {"name": "Wholesale"},
+            ])),
+        ):
+            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert 'title="Get current prices"' in html
+        assert "celerpReprice(document.getElementById(&#x27;doc-price-list&#x27;).value)" in html or \
+               "celerpReprice(document.getElementById('doc-price-list').value)" in html
+        assert "M21 12a9 9 0 1 1-2.64-6.36" in html  # the browser-reload glyph
+
+    @pytest.mark.asyncio
+    async def test_finalized_doc_has_no_reprice_icon(self, ui_client):
+        """Finalized docs are immutable snapshots; no reprice control is offered."""
+        doc = {**_BLANK_DOC, "price_list": "Retail", "status": "sent"}
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Retail"}, {"name": "Wholesale"},
+            ])),
+        ):
+            r = await ui_client.get("/docs/doc:1", cookies=_authed())
+        assert r.status_code == 200
+        assert 'title="Get current prices"' not in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_line_items_from_inventory_uses_price_list(self, ui_client):

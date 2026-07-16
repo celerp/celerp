@@ -411,6 +411,7 @@
   "doc.export_line_items_csv": "Export line items to CSV",
   "doc.fulfilled": "Fulfilled",
   "doc.fully_received": "Fully received",
+  "doc.get_current_prices": "Get current prices",
   "doc.goods_received": "Goods Received",
   "doc.import_csv": "Import CSV",
   "doc.import_line_items_csv": "Import line items from CSV",
