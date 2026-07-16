@@ -201,3 +201,58 @@ describe("watchForRestart", () => {
     expect(onCrash).not.toHaveBeenCalled();
   });
 });
+
+// ── classifyNavigation ────────────────────────────────────────────────────────
+
+describe("classifyNavigation", () => {
+  const { classifyNavigation } = require("../restart");
+
+  test("current UI port is allowed in-window", () => {
+    expect(classifyNavigation("http://127.0.0.1:36303/login?imported=1", 36303)).toBe("allow");
+  });
+
+  test("a FORMER UI port is denied, never opened externally", () => {
+    // The restore-restart bug: a redirect issued before the restart still points at
+    // the dead old port; it must be dropped, not handed to the OS browser.
+    const former = new Set([36303]);
+    expect(classifyNavigation("http://127.0.0.1:36303/login?imported=1", 41211, former)).toBe("deny");
+  });
+
+  test("loopback ports the app never served stay external (user links to local tools)", () => {
+    const former = new Set([36303]);
+    expect(classifyNavigation("http://127.0.0.1:3000/dashboard", 41211, former)).toBe("external");
+    expect(classifyNavigation("http://127.0.0.1:631/", 41211, former)).toBe("external");
+  });
+
+  test("port reuse: current port wins even if it was formerly used", () => {
+    const former = new Set([36303]);
+    expect(classifyNavigation("http://127.0.0.1:36303/", 36303, former)).toBe("allow");
+  });
+
+  test("ports compare exactly, not by string prefix", () => {
+    // startsWith("http://127.0.0.1:" + 3630) would wrongly match :36303
+    expect(classifyNavigation("http://127.0.0.1:36303/x", 3630)).toBe("external");
+    expect(classifyNavigation("http://127.0.0.1:3630/x", 3630)).toBe("allow");
+  });
+
+  test("non-loopback http(s) is external", () => {
+    expect(classifyNavigation("https://celerp.com/docs", 36303)).toBe("external");
+    expect(classifyNavigation("http://192.168.1.10:8080/", 36303)).toBe("external");
+    expect(classifyNavigation("http://localhost:9000/", 36303)).toBe("external");
+  });
+
+  test("non-http(s) schemes and garbage are denied", () => {
+    expect(classifyNavigation("javascript:alert(1)", 36303)).toBe("deny");
+    expect(classifyNavigation("file:///etc/passwd", 36303)).toBe("deny");
+    expect(classifyNavigation("mailto:a@b.c", 36303)).toBe("deny");
+    expect(classifyNavigation("not a url", 36303)).toBe("deny");
+  });
+
+  test("pre-boot phase (uiPort null): loopback stays external, like before", () => {
+    expect(classifyNavigation("http://127.0.0.1:8080/", null)).toBe("external");
+  });
+
+  test("loopback with no explicit port is external (port 80 is never ours)", () => {
+    expect(classifyNavigation("http://127.0.0.1/", 36303)).toBe("external");
+  });
+});

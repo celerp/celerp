@@ -165,8 +165,11 @@ let apiProcess = null;
 let uiProcess = null;
 let apiPort = null;
 let uiPort = null;
+// UI ports used earlier in this session. A restart re-allocates uiPort; navigations
+// still pointing at an old port are stale self-references, not external links.
+const formerUiPorts = new Set();
 
-const { watchForRestart } = require("./restart");
+const { watchForRestart, classifyNavigation } = require("./restart");
 const { migrateArgs } = require("./migrate_cmd");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
@@ -948,9 +951,12 @@ function createWindow() {
 
   // Open external links in the default browser, not in the app. Validate the scheme
   // first so a hostile link can never hand file:/javascript: to the OS via openExternal.
+  // Stale self-references (a former uiPort from before a restart) are dropped, not sent
+  // to the OS browser: their server is gone and the restart flow reloads the window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(`http://127.0.0.1:${uiPort}`)) return { action: "allow" };
-    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+    const verdict = classifyNavigation(url, uiPort, formerUiPorts);
+    if (verdict === "allow") return { action: "allow" };
+    if (verdict === "external") shell.openExternal(url);
     return { action: "deny" };
   });
 
@@ -958,9 +964,11 @@ function createWindow() {
   // attempt to navigate the top frame elsewhere is blocked; real external links go
   // out to the OS browser (validated scheme), never inside the app.
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (url.startsWith(`http://127.0.0.1:${uiPort}`) || url.startsWith("file://")) return;
+    if (url.startsWith("file://")) return;
+    const verdict = classifyNavigation(url, uiPort, formerUiPorts);
+    if (verdict === "allow") return;
     event.preventDefault();
-    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+    if (verdict === "external") shell.openExternal(url);
   });
 
   // On macOS, hide the window instead of destroying it when the user clicks
@@ -1179,7 +1187,12 @@ app.whenReady().then(async () => {
       getApiProcess: () => apiProcess,
       getUiProcess: () => uiProcess,
       setUiProcess: (p) => { uiProcess = p; },
-      startApi: async (url) => { apiPort = await getFreePort(); uiPort = await getFreePort(); return startApi(url, readConfig()); },
+      startApi: async (url) => {
+        if (uiPort) formerUiPorts.add(uiPort);  // remember the dying port: see classifyNavigation
+        apiPort = await getFreePort();
+        uiPort = await getFreePort();
+        return startApi(url, readConfig());
+      },
       startUi: (url) => startUi(url, readConfig()),
       // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent
       // resolves to the same directory that Electron watches.
