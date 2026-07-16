@@ -4544,7 +4544,7 @@ def _normalize_line_item_ids(lines: list) -> None:
 
 
 def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None,
-                         price_config: tuple[list[dict], str] | None = None) -> dict:
+                         price_config: tuple[list[dict], str, str] | None = None) -> dict:
     """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
     price list via the shared resolver, on flattened state so derived lists price correctly."""
     st = item.state

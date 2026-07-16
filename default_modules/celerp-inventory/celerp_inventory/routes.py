@@ -144,12 +144,12 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str] | None = None) -> dict:
+def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields.
 
-    When ``price_config`` (``(price_lists, base_price_list)`` from ``get_price_config``) is
-    given, derived price lists are computed onto the result after the cost roll-up, so a
-    Cost base prices from the same unit cost every other consumer sees.
+    When ``price_config`` (``(price_lists, base_price_list, currency)`` from
+    ``get_price_config``) is given, derived price lists are computed onto the result after
+    the cost roll-up, so a Cost base prices from the same unit cost every other consumer sees.
     """
     flat = dict(state)
     flat["id"] = entity_id
@@ -179,7 +179,7 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
         flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
     # else: both remain absent (item has no cost set)
     if price_config is not None:
-        inject_derived_prices(flat, price_config[0], price_config[1])
+        inject_derived_prices(flat, *price_config)
     return flat
 
 
@@ -988,7 +988,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
 
     # Derived price lists are computed from the base price list; their keys are never stored.
-    _price_lists, _base_name = await get_price_config(session, company_id)
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
     derived_blocked = changed_keys & derived_price_keys(_price_lists)
     if derived_blocked:
         raise HTTPException(
@@ -2428,7 +2428,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 @router.post("/{entity_id}/price")
 async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    _price_lists, _base_name = await get_price_config(session, company_id)
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
     if payload.price_type in derived_price_keys(_price_lists):
         raise HTTPException(
             status_code=422,

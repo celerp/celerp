@@ -14,6 +14,8 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.services.money import round_rate
+
 # Price list names treated as cost (restricted to manager+ and never derivable).
 COST_PRICE_LIST_NAMES: frozenset[str] = frozenset({"cost", "cost price", "landed", "landed cost"})
 
@@ -78,13 +80,17 @@ def derived_price(base_value: float, pl: dict) -> float:
     return round_half_up_to_increment(raw, float(rounding) if rounding is not None else None)
 
 
-def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str) -> dict:
+def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str, currency: str) -> dict:
     """Set every derived list's computed price on a flattened item dict.
 
     The formula always wins: stored leftovers under a derived list's keys (from before
     the list became derived) are overwritten or removed, so a derived list can never
     show a stale stored value. With no positive base value the keys are absent and the
-    list reads as unpriced, like any other missing price. Mutates and returns ``flat``.
+    list reads as unpriced, like any other missing price.
+
+    Every injected value obeys the rate ceiling (``round_rate``): a unit price must not
+    carry more decimals than ``rate_dp(currency)``, or ``round(rate × qty)`` loses the
+    ability to reconcile against entered totals. Mutates and returns ``flat``.
     """
     base_value = resolve_price(flat, base_name)
     for pl in price_lists:
@@ -93,7 +99,7 @@ def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str) -
         name = pl.get("name", "")
         flat.pop(name, None)
         if base_value > 0:
-            flat[price_key(name)] = derived_price(base_value, pl)
+            flat[price_key(name)] = float(round_rate(derived_price(base_value, pl), currency))
         else:
             flat.pop(price_key(name), None)
     return flat
@@ -134,12 +140,13 @@ def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit:
     return None
 
 
-async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str]:
-    """The company's ``(price_lists, base_price_list)`` in one settings read."""
+async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str, str]:
+    """The company's ``(price_lists, base_price_list, currency)`` in one settings read."""
     from celerp.models.company import Company
 
     co = await session.get(Company, company_id)
     settings = (co.settings if co else {}) or {}
     price_lists = settings.get("price_lists") or PRICE_LISTS_FALLBACK
     base_name = settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
-    return price_lists, base_name
+    currency = settings.get("currency") or "USD"
+    return price_lists, base_name, currency

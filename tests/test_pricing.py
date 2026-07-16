@@ -97,41 +97,51 @@ _CONFIG = [
 class TestInjectDerivedPrices:
     def test_injects_computed_key(self):
         flat = {"retail_price": 719}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert flat["trade_price"] == 505.0
 
     def test_manual_lists_untouched(self):
         flat = {"retail_price": 719, "wholesale_price": 600}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert flat["wholesale_price"] == 600
 
     def test_missing_base_leaves_key_absent(self):
         flat = {"wholesale_price": 600}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert "trade_price" not in flat
 
     def test_zero_base_leaves_key_absent(self):
         flat = {"retail_price": 0}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert "trade_price" not in flat
 
     def test_formula_wins_over_stale_stored_value(self):
         """A value stored before the list became derived is overwritten (or removed)."""
         flat = {"retail_price": 100, "trade_price": 999, "Trade": 888}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert flat["trade_price"] == 70.0
         assert "Trade" not in flat
 
     def test_stale_stored_value_removed_when_base_missing(self):
         flat = {"trade_price": 999}
-        inject_derived_prices(flat, _CONFIG, "Retail")
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
         assert "trade_price" not in flat
 
     def test_cost_as_base(self):
         flat = {"cost_price": 100}
         config = [{"name": "Cost"}, {"name": "Retail", "multiplier": 2.5}]
-        inject_derived_prices(flat, config, "Cost")
+        inject_derived_prices(flat, config, "Cost", "USD")
         assert flat["retail_price"] == 250.0
+
+    def test_derived_value_obeys_rate_ceiling(self):
+        """A derived unit price never exceeds rate_dp(currency), so round(rate × qty) can
+        still reconcile against entered totals; the base's dynamic decimals stay untouched."""
+        flat = {"retail_price": 15.285}  # dynamic-decimal rate, e.g. back-calculated from a total
+        config = [{"name": "Retail"}, {"name": "Trade", "multiplier": 0.333333}]
+        inject_derived_prices(flat, config, "Retail", "USD")
+        # Raw product is 5.094994905 (9 dp); USD rate ceiling is 6 dp
+        assert flat["trade_price"] == 5.094995
+        assert flat["retail_price"] == 15.285
 
 
 class TestValidatePriceLists:
@@ -429,9 +439,9 @@ def test_scan_line_prices_derived_list():
         entity_id="item:scan",
         state={"sku": "S-1", "name": "Widget", "barcode": "123", "retail_price": 719, "quantity": 3},
     )
-    line = _scan_line_from_item(proj, "quotation", "Trade", price_config=(_CONFIG, "Retail"))
+    line = _scan_line_from_item(proj, "quotation", "Trade", price_config=(_CONFIG, "Retail", "USD"))
     assert line["unit_price"] == 505.0
-    line = _scan_line_from_item(proj, "quotation", "Retail", price_config=(_CONFIG, "Retail"))
+    line = _scan_line_from_item(proj, "quotation", "Retail", price_config=(_CONFIG, "Retail", "USD"))
     assert line["unit_price"] == 719.0
 
 
