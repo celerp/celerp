@@ -5904,8 +5904,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             onclick="celerpReprice(document.getElementById('doc-price-list').value)",
         )
         _pl_bar = Div(
-            Span(t("doc.price_list"), cls="meta-label"),
             _reprice_icon,
+            Span(t("doc.price_list"), cls="meta-label"),
             _pl_select,
             cls="price-list-bar",
             style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;padding-right:8px;",
