@@ -351,7 +351,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/2", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_cost(self, ui_client):
@@ -365,7 +365,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/0", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_wholesale(self, ui_client):
@@ -379,7 +379,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/1", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_can_delete_custom_price_list(self, ui_client):
@@ -389,6 +389,7 @@ class TestProtectedPriceListDeletion:
                 {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}, {"name": "VIP"},
             ])),
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="Retail")),
             patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
         ):
             resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
@@ -397,6 +398,21 @@ class TestProtectedPriceListDeletion:
         if resp.status_code == 200:
             assert "flash--error" not in resp.text
 
+    @pytest.mark.asyncio
+    async def test_cannot_delete_base_price_list(self, ui_client):
+        """DELETE /settings/price-lists/<idx> for the base price list must return error fragment."""
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}, {"name": "VIP"},
+            ])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="VIP")),
+            patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
+        ):
+            resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
+        assert resp.status_code == 200
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
+        assert "base price list" in resp.headers.get("HX-Trigger", "")
 
 # ── Restore journey: restart continuation + post-restart notice ───────────────
 

@@ -30,6 +30,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, get_price_config, resolve_price
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -4543,9 +4544,10 @@ def _normalize_line_item_ids(lines: list) -> None:
             l["item_id"] = l["entity_id"]
 
 
-def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None) -> dict:
+def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None,
+                         price_config: tuple[list[dict], str, str] | None = None) -> dict:
     """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
-    price list (mirrors resolve_price: the list name, then the conventional `<name>_price` key)."""
+    price list via the shared resolver, on flattened state so derived lists price correctly."""
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode")}
@@ -4555,11 +4557,9 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     else:
         line["quantity"] = 1
         if is_money_list(list_type):
-            pl = price_list or "Retail"
-            val = st.get(pl)
-            if val is None:
-                val = st.get(f"{pl.lower()}_price")
-            line["unit_price"] = float(val or 0)
+            from celerp_inventory.routes import _flatten_item
+            flat = _flatten_item(st, item.entity_id, price_config=price_config)
+            line["unit_price"] = resolve_price(flat, price_list or DEFAULT_PRICE_LIST_NAME)
     return line
 
 
@@ -4639,7 +4639,8 @@ async def scan_list(
                 lines.insert(0, _scan_line_from_item(item, lt, None))
                 result_state = "added"
         else:
-            lines.append(_scan_line_from_item(item, lt, payload.price_list))
+            lines.append(_scan_line_from_item(item, lt, payload.price_list,
+                                              price_config=await get_price_config(session, company_id)))
             result_state = "added"
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()

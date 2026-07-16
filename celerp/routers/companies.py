@@ -273,7 +273,18 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
     # and category_schemas whenever a caller sent only one field (the UI happens
     # to pre-merge, but partial callers — and a name-only patch — must be safe).
     if payload.settings:
-        company.settings = {**(company.settings or {}), **payload.settings}
+        merged = {**(company.settings or {}), **payload.settings}
+        # Price config must pass the same gate as the dedicated endpoints: the read
+        # path trusts stored config, so no door may store what the validator rejects.
+        if "price_lists" in payload.settings or "base_price_list" in payload.settings:
+            merged_lists = merged.get("price_lists") or []
+            error = price_config_error(merged_lists, merged.get("base_price_list"),
+                                       (company.settings or {}).get("price_lists") or [])
+            if error:
+                raise HTTPException(status_code=422, detail=error)
+            if merged.get("price_lists"):
+                merged["price_lists"] = normalized_price_lists(merged["price_lists"])
+        company.settings = merged
     await session.commit()
     return {"ok": True}
 
@@ -1638,22 +1649,28 @@ async def reactivate_company(
 # Price lists
 # ---------------------------------------------------------------------------
 
+from celerp.services.pricing import (
+    COST_PRICE_LIST_NAMES,
+    DEFAULT_PRICE_LIST_NAME,
+    is_derived,
+    normalized_price_lists,
+    price_config_error,
+)
+
 DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Retail", "description": "Standard retail price"},
     {"name": "Wholesale", "description": "Wholesale / trade price"},
 ]
-DEFAULT_PRICE_LIST_NAME: str = "Retail"
 
 
 class PriceListsPatch(BaseModel):
     price_lists: list[dict]
+    # Set together with price_lists so renaming the base list stays consistent in one write.
+    base_price_list: str | None = None
 
 
-class DefaultPriceListPatch(BaseModel):
+class PriceListNamePatch(BaseModel):
     name: str
-
-
-_COST_PL_NAMES: frozenset[str] = frozenset({"cost", "cost price", "landed", "landed cost"})
 
 
 @router.get("/me/price-lists")
@@ -1680,7 +1697,13 @@ async def get_price_lists(
         await session.commit()
         price_lists = seeded
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        price_lists = [pl for pl in price_lists if pl.get("name", "").lower() not in _COST_PL_NAMES]
+        # Below manager: no cost lists, and names/descriptions only. A derived list's
+        # factor stays manager+ because price ÷ factor would reveal a cost-based base.
+        price_lists = [
+            {"name": pl.get("name", ""), "description": pl.get("description", "")}
+            for pl in price_lists
+            if pl.get("name", "").lower() not in COST_PRICE_LIST_NAMES
+        ]
     return price_lists
 
 
@@ -1695,7 +1718,51 @@ async def patch_price_lists(
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings)
-    settings["price_lists"] = payload.price_lists
+    error = price_config_error(payload.price_lists,
+                               payload.base_price_list or settings.get("base_price_list"),
+                               settings.get("price_lists") or [])
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+    settings["price_lists"] = normalized_price_lists(payload.price_lists)
+    if payload.base_price_list is not None:
+        settings["base_price_list"] = payload.base_price_list
+    company.settings = settings
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/me/base-price-list")
+async def get_base_price_list(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return company.settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
+
+
+@router.patch("/me/base-price-list")
+async def patch_base_price_list(
+    payload: PriceListNamePatch,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings)
+    price_lists = settings.get("price_lists") or []
+    target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
+    if target is None:
+        raise HTTPException(status_code=422, detail=f"Base price list '{payload.name}' does not exist")
+    if is_derived(target):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{payload.name}' is derived from the base price list and cannot be the base itself",
+        )
+    settings["base_price_list"] = payload.name
     company.settings = settings
     await session.commit()
     return {"ok": True}
@@ -1714,7 +1781,7 @@ async def get_default_price_list(
 
 @router.patch("/me/default-price-list")
 async def patch_default_price_list(
-    payload: DefaultPriceListPatch,
+    payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
     _=Depends(require_admin),
     session: AsyncSession = Depends(get_session),

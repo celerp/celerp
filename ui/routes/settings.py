@@ -21,7 +21,9 @@ from ui.components.phone import phone_input_td as _phone_input_td, phone_head_it
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang
+from ui.routes.documents import _action_error
 
 
 def _check_role(request: Request, min_role: str = "admin") -> RedirectResponse | None:
@@ -316,6 +318,29 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
+def _toast_response(message: str, *fragments: FT):
+    """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
+    so no stale error text persists in the page."""
+    import json as _json
+    from starlette.responses import HTMLResponse as _HR
+    body = "".join(to_xml(f) for f in fragments)
+    return _HR(body, headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})})
+
+
+def _status_error(status_id: str, message: str, oob: FT | None = None):
+    """Error for an auto-saving control: toast the message and reset the inline status
+    span. ``oob`` optionally re-syncs a related element (e.g. a select showing a
+    rejected choice)."""
+    span = Span("", id=status_id, cls="settings-hint")
+    return _toast_response(message, span, oob) if oob is not None else _toast_response(message, span)
+
+
+def _pl_cell_error(idx: int, field: str, pl: dict, prefix: str, message: str):
+    """Failed cell save: swap the saved display value back into the cell and toast the
+    error. The cell stays click-to-edit for a retry."""
+    return _toast_response(message, _price_list_display_cell(idx, field, pl, prefix=prefix))
+
+
 def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
     """Register GET edit, PATCH, POST new, DELETE for price list CRUD at /settings/{prefix}/..."""
 
@@ -330,6 +355,42 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 return P(f"Error: {e.detail}", cls="cell-error")
             pl = price_lists[idx] if idx < len(price_lists) else {}
             val = str(pl.get(field, "") or "")
+            if field == "multiplier":
+                return Td(
+                    Input(
+                        type="number", name="value", value=val, step="any", min="0",
+                        placeholder=EMPTY,
+                        title=t("settings.factor_tooltip"),
+                        # Validate before sending: an unparseable entry reads as "" from a
+                        # number input and would otherwise save as an unintended clear.
+                        hx_validate="true",
+                        hx_patch=f"/settings/{pfx}/{idx}/{field}",
+                        hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                        hx_trigger="blur delay:200ms, keyup[key=='Enter']",
+                        cls="cell-input",
+                        autofocus=True,
+                    ),
+                    cls="cell cell--editing",
+                )
+            if field == "rounding":
+                def _selected(choice: str) -> bool:
+                    try:
+                        return val != "" and float(val) == float(choice)
+                    except ValueError:
+                        return False
+                return Td(
+                    Select(
+                        Option(EMPTY, value="", selected=(val == "")),
+                        *[Option(c, value=c, selected=_selected(c)) for c in ROUNDING_CHOICES],
+                        name="value",
+                        title=t("settings.rounding_tooltip"),
+                        hx_patch=f"/settings/{pfx}/{idx}/{field}",
+                        hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                        hx_trigger="change",
+                        cls="cell-input cell-input--select", autofocus=True,
+                    ),
+                    cls="cell cell--editing",
+                )
             return Td(
                 Input(
                     type="text", name="value", value=val,
@@ -352,30 +413,62 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
             value = str(form.get("value", ""))
             try:
                 price_lists = await getattr(api, gname)(token)
+                renamed_base: str | None = None
+                renamed_default = False
                 if idx < len(price_lists):
-                    price_lists[idx][field] = value
-                await getattr(api, pname)(token, price_lists)
+                    if field in ("multiplier", "rounding"):
+                        if value.strip() == "":
+                            price_lists[idx].pop(field, None)
+                            if field == "multiplier":
+                                # Rounding only applies to a derived list; clearing the factor clears it too.
+                                price_lists[idx].pop("rounding", None)
+                        else:
+                            try:
+                                price_lists[idx][field] = float(value)
+                            except ValueError:
+                                return _pl_cell_error(idx, field, price_lists[idx], pfx,
+                                                      t("settings.enter_a_number_greater_than_0"))
+                    else:
+                        if field == "name":
+                            # Base and default are stored by name; a rename must carry them along
+                            # (the base atomically, so validation holds through the write).
+                            old_name = price_lists[idx].get("name", "")
+                            if old_name == await api.get_base_price_list(token):
+                                renamed_base = value
+                            renamed_default = old_name == await api.get_default_price_list(token)
+                        price_lists[idx][field] = value
+                await getattr(api, pname)(token, price_lists, base_price_list=renamed_base)
+                if renamed_default:
+                    await api.patch_default_price_list(token, value)
                 price_lists = await getattr(api, gname)(token)
-                default_name = await api.get_default_price_list(token)
             except APIError as e:
-                return P(str(e.detail), cls="cell-error")
+                # Re-fetch so the cell reverts to the value the server actually holds.
+                try:
+                    price_lists = await getattr(api, gname)(token)
+                    pl = price_lists[idx] if idx < len(price_lists) else {}
+                except APIError:
+                    pl = {}
+                return _pl_cell_error(idx, field, pl, pfx, str(e.detail))
             pl = price_lists[idx] if idx < len(price_lists) else {}
             cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
             if field == "name":
-                # Re-render default price list selector OOB so it reflects the new name
+                # Re-render both selectors OOB so they reflect the new name. Returned as
+                # sibling fragments, NOT wrapped in a Div: an HTML5 parser drops a <td>
+                # nested inside a <div>, which would destroy the swapped name cell.
+                try:
+                    base_name = await api.get_base_price_list(token)
+                    default_name = await api.get_default_price_list(token)
+                except APIError:
+                    return cell
                 visible_names = [p.get("name", "") for p in price_lists if p.get("name") != "Cost"]
-                oob_select = Select(
-                    *[Option(n, value=n, selected=(n == default_name)) for n in visible_names],
-                    name="name", id="default-price-list-select",
-                    cls="form-select",
-                    hx_post="/settings/default-price-list",
-                    hx_target="#default-price-list-status",
-                    hx_swap="outerHTML",
-                    hx_trigger="change",
-                    hx_swap_oob="true",
+                all_names = [p.get("name", "") for p in price_lists]
+                return (
+                    cell,
+                    _pl_select("default-price-list-select", "/settings/default-price-list",
+                               "#default-price-list-status", visible_names, default_name, oob=True),
+                    _pl_select("base-price-list-select", "/settings/base-price-list",
+                               "#base-price-list-status", all_names, base_name, oob=True),
                 )
-                from fasthtml.common import Div as _Div
-                return _Div(cell, oob_select)
             return cell
         return price_list_field_patch
 
@@ -387,10 +480,15 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             try:
                 price_lists = await getattr(api, gname)(token)
-                price_lists.append({"name": "New Price List", "description": ""})
+                # Unique placeholder name: list names key derivation, default, and base.
+                names = {pl.get("name", "") for pl in price_lists}
+                name, n = "New Price List", 2
+                while name in names:
+                    name, n = f"New Price List {n}", n + 1
+                price_lists.append({"name": name, "description": ""})
                 await getattr(api, pname)(token, price_lists)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_price_list
 
@@ -406,25 +504,18 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 if 0 <= idx < len(price_lists):
                     name = price_lists[idx].get("name", "")
                     if name == "Retail":
-                        return Div(
-                            Span(t("settings.retail_price_list_cannot_be_deleted"), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.retail_price_list_cannot_be_deleted"))
                     if name in ("Cost", "Wholesale"):
-                        return Div(
-                            Span(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name))
                     if name == default_name:
-                        # Return error fragment instead of redirect
-                        return Div(
-                            Span(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name))
+                    base_name = await api.get_base_price_list(token)
+                    if name == base_name:
+                        return _action_error(t("settings.base_price_list_cannot_be_deleted").replace("{name}", name))
                     price_lists.pop(idx)
                     await getattr(api, pname)(token, price_lists)
-            except APIError:
-                return _R("", status_code=500)
+            except APIError as e:
+                return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_price_list
 
@@ -1031,12 +1122,38 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
-            return Span(t("settings.name_required"), id="default-price-list-status", cls="flash flash--error")
+            return _status_error("default-price-list-status", t("settings.name_required"))
         try:
             await api.patch_default_price_list(token, name)
         except APIError as e:
-            return Span(str(e.detail), id="default-price-list-status", cls="flash flash--error")
+            return _status_error("default-price-list-status", str(e.detail))
         return Span(t("settings._saved"), id="default-price-list-status", cls="flash flash--success")
+
+    @app.post("/settings/base-price-list")
+    async def set_base_price_list(request: Request):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        name = str(form.get("name", "")).strip()
+        if not name:
+            return _status_error("base-price-list-status", t("settings.name_required"))
+        try:
+            await api.patch_base_price_list(token, name)
+        except APIError as e:
+            # Re-sync the select out-of-band: without it the rejected choice would keep
+            # displaying as if it had been saved.
+            oob = None
+            try:
+                price_lists = await api.get_price_lists(token)
+                base_name = await api.get_base_price_list(token)
+                oob = _pl_select("base-price-list-select", "/settings/base-price-list",
+                                 "#base-price-list-status",
+                                 [pl.get("name", "") for pl in price_lists], base_name, oob=True)
+            except APIError:
+                pass
+            return _status_error("base-price-list-status", str(e.detail), oob)
+        return Span(t("settings._saved"), id="base-price-list-status", cls="flash flash--success")
 
     # ── Terms & Conditions CRUD endpoints ────────────────────────────
     _register_tc_crud(app, "terms-conditions", "get_terms_conditions", "patch_terms_conditions", "/settings/sales?tab=terms-conditions", scope_doc_types=_TC_DOC_TYPES_SALES)
@@ -3401,22 +3518,39 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
-def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: str = "price-lists") -> FT:
+def _pl_select(select_id: str, post_url: str, status_id: str, names: list[str], selected: str, oob: bool = False) -> FT:
+    """Auto-saving price-list <select>, used inline and for out-of-band refreshes after renames."""
+    oob_kw = {"hx_swap_oob": "true"} if oob else {}
+    return Select(
+        *[Option(name, value=name, selected=(name == selected)) for name in names],
+        name="name",
+        id=select_id,
+        cls="form-select",
+        hx_post=post_url,
+        hx_target=status_id,
+        hx_swap="outerHTML",
+        hx_trigger="change",
+        **oob_kw,
+    )
+
+
+def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_price_list: str, prefix: str = "price-lists") -> FT:
     def _row(idx: int, pl: dict) -> FT:
         name = pl.get("name", "")
         is_protected = name in ("Retail", "Wholesale")
+        # Success navigates via HX-Redirect; failures surface as an auto-dismissing toast.
         delete_cell = Td(cls="cell") if is_protected else Td(
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
                    hx_confirm=f"Delete price list '{name}'?",
-                   hx_target="#price-list-error",
-                   hx_swap="outerHTML",
-                   hx_on__after_request="if(this.closest('tr')) window.location.reload()"),
+                   hx_swap="none"),
             cls="cell",
         )
         return Tr(
             _price_list_display_cell(idx, "name", pl, prefix=prefix),
             _price_list_display_cell(idx, "description", pl, prefix=prefix),
+            _price_list_display_cell(idx, "multiplier", pl, prefix=prefix),
+            _price_list_display_cell(idx, "rounding", pl, prefix=prefix),
             delete_cell,
             cls="data-row",
         )
@@ -3424,37 +3558,41 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
     # Filter out Cost - it's a system field, not a user-facing price list
     visible_price_lists = [(i, pl) for i, pl in enumerate(price_lists) if pl.get("name") != "Cost"]
     pl_names = [pl.get("name", "") for _, pl in visible_price_lists]
+    all_names = [pl.get("name", "") for pl in price_lists]
 
     return Div(
-        Div(id="price-list-error"),
         H3(t("page.price_lists"), cls="settings-section-title"),
         P(t("settings.define_your_companys_price_tiers_these_names_are_u"),
           cls="settings-hint"),
+        P(t("settings.derived_price_lists_hint"), cls="settings-hint"),
         Div(
+            # Success navigates via HX-Redirect; failures surface as an auto-dismissing toast.
             Button(t("btn.add_price_list"), cls="btn btn--primary",
-                   hx_post=f"/settings/{prefix}/new", hx_swap="none",
-                   hx_on__after_request="window.location.reload()"),
+                   hx_post=f"/settings/{prefix}/new", hx_swap="none"),
             cls="page-actions mb-md",
         ),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.description")), Th(""))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.description")),
+                     Th(t("th.factor"), title=t("settings.factor_tooltip")),
+                     Th(t("th.rounding"), title=t("settings.rounding_tooltip")),
+                     Th(""))),
             Tbody(*[_row(i, pl) for i, pl in visible_price_lists]),
             cls="data-table",
+        ),
+        H3(t("page.base_price_list"), cls="settings-section-title mt-lg"),
+        P(t("settings.base_price_list_hint"), cls="settings-hint"),
+        Form(
+            _pl_select("base-price-list-select", "/settings/base-price-list",
+                       "#base-price-list-status", all_names, base_price_list),
+            Span("", id="base-price-list-status", cls="settings-hint"),
+            cls="form-inline",
         ),
         H3(t("page.default_price_list"), cls="settings-section-title mt-lg"),
         P(t("settings.used_when_a_contact_has_no_price_list_assigned_and"),
           cls="settings-hint"),
         Form(
-            Select(
-                *[Option(name, value=name, selected=(name == default_price_list)) for name in pl_names],
-                name="name",
-                id="default-price-list-select",
-                cls="form-select",
-                hx_post="/settings/default-price-list",
-                hx_target="#default-price-list-status",
-                hx_swap="outerHTML",
-                hx_trigger="change",
-            ),
+            _pl_select("default-price-list-select", "/settings/default-price-list",
+                       "#default-price-list-status", pl_names, default_price_list),
             Span("", id="default-price-list-status", cls="settings-hint"),
             cls="form-inline",
         ),

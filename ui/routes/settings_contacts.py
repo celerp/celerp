@@ -156,11 +156,12 @@ def setup_routes(app):
             try:
                 price_lists = await api.get_price_lists(token)
                 default_price_list = await api.get_default_price_list(token)
+                base_price_list = await api.get_base_price_list(token)
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                price_lists, default_price_list = [], "Retail"
-            content = _price_lists_tab(price_lists, default_price_list)
+                price_lists, default_price_list, base_price_list = [], "Retail", "Retail"
+            content = _price_lists_tab(price_lists, default_price_list, base_price_list)
         elif tab == "defaults":
             try:
                 defaults = await api.get_contact_defaults(token)

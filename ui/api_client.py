@@ -422,9 +422,23 @@ async def get_price_lists(token: str) -> list[dict]:
         return _raise(await c.get("/companies/me/price-lists")).json()
 
 
-async def patch_price_lists(token: str, price_lists: list[dict]) -> dict:
+async def patch_price_lists(token: str, price_lists: list[dict], base_price_list: str | None = None) -> dict:
+    body: dict = {"price_lists": price_lists}
+    if base_price_list is not None:
+        # Sent together so renaming the base list stays consistent in one write.
+        body["base_price_list"] = base_price_list
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/price-lists", json={"price_lists": price_lists})).json()
+        return _raise(await c.patch("/companies/me/price-lists", json=body)).json()
+
+
+async def get_base_price_list(token: str) -> str:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/companies/me/base-price-list")).json()
+
+
+async def patch_base_price_list(token: str, name: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch("/companies/me/base-price-list", json={"name": name})).json()
 
 
 async def restart_system(token: str) -> dict:

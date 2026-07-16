@@ -12,6 +12,7 @@ import uuid as _uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
+from celerp.services.pricing import is_cost_list_name, is_derived, price_key
 
 # Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
 # of items holding different values for a dropdown or custom attribute). There is ONE canonical form,
@@ -67,21 +68,20 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
     This column displays ``unit_price × quantity`` and is never stored.
     """
     existing_keys = {f["key"] for f in base}
-    # "Cost" price list is restricted to admin/manager
-    cost_names = {"cost", "cost price", "landed", "landed cost"}
     price_cols = []
     for i, pl in enumerate(price_lists):
         name = pl.get("name", "")
-        key = f"{name.lower()}_price"
+        key = price_key(name)
         if key in existing_keys:
             continue  # already present (stored schema round-trip)
-        restricted = name.lower() in cost_names
+        # "Cost" price lists are restricted to admin/manager
+        restricted = is_cost_list_name(name)
         pos = 6 + i
         price_cols.append({
             "key": key,
             "label": name,
             "type": "rate",  # a unit price is a rate (may carry > currency precision); total stays money
-            "editable": True,
+            "editable": not is_derived(pl),  # derived lists are computed, never edited per item
             "required": False,
             "options": [],
             "visible_to_roles": ["admin", "manager"] if restricted else [],
@@ -138,6 +138,15 @@ async def get_effective_field_schema(
     stored_keys = {f["key"] for f in stored_with_prices}
     full_defaults = _inject_price_columns(_BASE_FIELDS, price_lists)
     base_schema = stored_with_prices + [f for f in full_defaults if f["key"] not in stored_keys]
+
+    # Price-column editability is config-driven only: a derived list's column is read-only,
+    # a manual list's is editable. This must win over any stored schema round-trip captured
+    # while the list's derived state was different.
+    editable_by_key = {price_key(pl.get("name", "")): not is_derived(pl) for pl in price_lists}
+    base_schema = [
+        {**f, "editable": editable_by_key[f["key"]]} if f["key"] in editable_by_key else f
+        for f in base_schema
+    ]
 
     if category:
         cat_schemas: dict[str, list[dict]] = settings.get("category_schemas") or {}

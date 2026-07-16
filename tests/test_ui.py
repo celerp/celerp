@@ -11472,33 +11472,7 @@ class TestFieldSchemaBarcode:
 # ===========================================================================
 
 class TestPriceLists:
-
-    def test_resolve_price_by_name(self):
-        """resolve_price checks item[price_list] first."""
-        from ui.routes.documents import resolve_price
-        item = {"Retail": 100, "Wholesale": 65}
-        assert resolve_price(item, "Retail") == 100.0
-        assert resolve_price(item, "Wholesale") == 65.0
-
-    def test_resolve_price_conventional_key(self):
-        """resolve_price falls back to {name.lower()}_price key."""
-        from ui.routes.documents import resolve_price
-        item = {"retail_price": 99, "cost_price": 40}
-        assert resolve_price(item, "Retail") == 99.0
-        assert resolve_price(item, "Cost") == 40.0
-
-    def test_resolve_price_no_match_returns_zero(self):
-        """resolve_price returns 0.0 when no price exists for the list."""
-        from ui.routes.documents import resolve_price
-        item = {"retail_price": 50}
-        assert resolve_price(item, "VIP") == 0.0
-        assert resolve_price(item, "Dealer") == 0.0
-
-    def test_resolve_price_prefers_direct_over_conventional(self):
-        """If item has both 'Retail' and 'retail_price', direct key wins."""
-        from ui.routes.documents import resolve_price
-        item = {"Retail": 200, "retail_price": 150}
-        assert resolve_price(item, "Retail") == 200.0
+    # resolve_price unit tests live in tests/test_pricing.py with the shared resolver.
 
     @pytest.mark.asyncio
     async def test_price_lists_settings_tab_renders(self, ui_client):
@@ -11509,9 +11483,10 @@ class TestPriceLists:
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
                 {"name": "Retail", "description": "Standard"},
-                {"name": "Wholesale", "description": "Trade"},
+                {"name": "Wholesale", "description": "Trade", "multiplier": 0.7, "rounding": 5},
             ])),
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.get_base_price_list", new=AsyncMock(return_value="Retail")),
         ):
             r = await ui_client.get("/settings/contacts?tab=price-lists", cookies=_authed())
         assert r.status_code == 200
@@ -11520,6 +11495,8 @@ class TestPriceLists:
         assert "Retail" in html
         assert "Wholesale" in html
         assert "Default Price List" in html
+        assert "Base Price List" in html
+        assert "Factor" in html and "Rounding" in html
 
     @pytest.mark.asyncio
     async def test_contact_detail_shows_price_list(self, ui_client):
