@@ -7,8 +7,10 @@ Two tabs:
   - Local Modules: what is on this machine — enable/disable, Import Module
     (zip upload or desktop folder picker), Open Modules Folder, a working
     Restart button, load-error surfacing, and a build-your-own card.
-  - Marketplace: the catalog (relay-backed fragment today; the repo-direct
-    catalog lands with marketplace M0).
+  - Marketplace: the catalog, read straight from the community-modules repo
+    (index.json is public data; the relay is not in the read path). Official
+    and verified modules show first; community listings sit behind a one-time
+    trust acknowledgment and always carry the grey unverified icon.
 
 Restart is ONE endpoint for both modes: POST /system/restart writes the
 sentinel and SIGTERMs. In desktop mode Electron's restart manager respawns
@@ -23,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
 import ui.api_client as api
+import ui.marketplace_catalog as catalog
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.config import get_role as _get_role
@@ -277,6 +280,101 @@ def _restarting_panel(lang: str) -> FT:
 
 # ── routes ─────────────────────────────────────────────────────────────────────
 
+# One trust icon, two states (decided: as lean as possible). Black = a review
+# happened (verified/official), grey = it did not (community). The tooltip and
+# aria-label carry the words; the luminance difference carries the glance.
+_SHIELD_SVG = (
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" '
+    'aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5l8-3z"/></svg>'
+)
+
+
+def _trust_icon(tier: str, lang: str):
+    if tier == "community":
+        tip, state = t("marketplace.unverified_tip", lang), "unverified"
+    elif tier == "official":
+        tip, state = t("marketplace.official_tip", lang), "trusted"
+    else:
+        tip, state = t("marketplace.verified_tip", lang), "trusted"
+    return Span(NotStr(_SHIELD_SVG), cls=f"trust-icon trust-icon--{state}",
+                title=tip, aria_label=tip, role="img")
+
+
+def _catalog_price(m: dict, lang: str) -> str:
+    if m.get("price_monthly"):
+        return f"${m['price_monthly']:g}/mo"
+    if m.get("price_once"):
+        return f"${m['price_once']:g}"
+    return t("marketplace.free", lang)
+
+
+def _catalog_card(m: dict, lang: str, installed: set[str]):
+    """One catalog entry: summary row, detail drawer with disclosures first."""
+    tier = m["tier"]
+    body = []
+    body.append(P(m["description"], cls="text-muted small", style="margin-top:8px;"))
+    # Disclosures first (what it touches, what it calls), labeled self-declared
+    # for community listings - the index copy is the author's own statement.
+    declared = f' ({t("marketplace.self_declared", lang)})' if tier == "community" else ""
+    if m.get("data_access"):
+        body.append(P(Strong(t("marketplace.data_access", lang)), f"{declared}: ", m["data_access"], cls="small"))
+    if m.get("network_calls"):
+        body.append(P(Strong(t("marketplace.network_calls", lang)), f"{declared}: ", m["network_calls"], cls="small"))
+    body.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="small"))
+    links = []
+    if m.get("repo"):
+        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank"))
+    links.append(A(t("marketplace.feedback", lang),
+                   href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
+                   target="_blank"))
+    body.append(Div(*links, cls="marketplace-card__links"))
+    # CTA per tier. One-click install of vaulted artifacts is the verified
+    # milestone; today official links out and community hands off to Import.
+    if m["id"] in installed:
+        body.append(Span(t("settings.installed", lang), cls="badge badge--green"))
+    elif tier == "community":
+        body.append(Div(
+            A(t("marketplace.get_from_author", lang), href=m.get("repo", "#"),
+              target="_blank", cls="btn btn--sm btn--secondary"),
+            A(t("btn.import_module", lang), href="/modules?import=1",
+              cls="btn btn--sm btn--secondary"),
+            style="display:flex;gap:8px;",
+        ))
+    else:
+        body.append(A(t("settings.view_install", lang),
+                      href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
+                      target="_blank", cls="btn btn--sm btn--primary"))
+    return Details(
+        Summary(
+            _trust_icon(tier, lang),
+            Strong(m["name"]),
+            Span(m["author"], cls="text-muted small"),
+            Span(_catalog_price(m, lang), cls="marketplace-card__price"),
+        ),
+        Div(*body, cls="marketplace-card__body"),
+        cls="marketplace-card",
+    )
+
+
+def _community_zone(n: int, lang: str):
+    """The collapsed community row. The grey world stays one click away."""
+    if not n:
+        return Div(id="community-zone")
+    return Div(
+        Button(t("marketplace.show_community", lang, n=n),
+            hx_get="/modules/community-panel",
+            hx_target="#community-zone", hx_swap="outerHTML",
+            cls="btn btn--sm btn--secondary", style="margin-top:12px;"),
+        id="community-zone",
+    )
+
+
+def _cached_community() -> list[dict]:
+    cached = catalog.read_cached() or []
+    return [m for m in cached if m["tier"] == "community"]
+
+
 def setup_routes(app):
 
     async def _guard(request: Request):
@@ -299,15 +397,13 @@ def setup_routes(app):
             content = Div(
                 H3(t("page.explore_marketplace", lang), cls="section-title"),
                 P(t("settings.browse_premium_and_community_modules_available_for", lang), cls="text-muted mb-sm"),
-                Button(t("btn.load_available_modules", lang),
+                Div(
+                    Span(t("modules.loading_catalog", lang), cls="text-muted small"),
                     hx_get="/modules/marketplace-panel",
-                    hx_target="#marketplace-panel",
+                    hx_trigger="load",
                     hx_swap="outerHTML",
-                    hx_indicator="#mkt-loading",
-                    cls="btn btn--sm btn--secondary",
+                    id="marketplace-panel",
                 ),
-                Span(" ", id="mkt-loading", cls="htmx-indicator text-muted"),
-                Div(id="marketplace-panel"),
                 cls="settings-card",
             )
         else:
@@ -416,62 +512,95 @@ def setup_routes(app):
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):
-        """HTMX fragment: fetch and render available marketplace modules."""
-        import httpx
-        from ui.config import RELAY_URL
-
+        """HTMX fragment: the catalog, fetched repo-direct and cached."""
         token = _token(request)
         if not token or not _is_admin(request):
             return Div(id="marketplace-panel")
         lang = get_lang(request)
         try:
-            async with httpx.AsyncClient(timeout=5.0) as c:
-                r = await c.get(f"{RELAY_URL}/marketplace/modules")
-                modules_list = (r.json().get("items") or []) if r.status_code == 200 else []
+            modules_list, from_cache = await catalog.fetch_catalog()
         except Exception:
             return Div(
-                P(t("settings.could_not_reach_the_celerp_marketplace_check_your", lang), cls="text-muted"),
+                P(t("marketplace.could_not_load", lang), cls="text-muted"),
                 id="marketplace-panel",
             )
 
         installed = set()
         try:
             installed = {m["name"] for m in await api.get_modules(token)}
-        except Exception:
+        except APIError:
             pass
 
-        if not modules_list:
-            return Div(
-                P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"),
-                id="marketplace-panel",
-            )
+        trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
+        community = [m for m in modules_list if m["tier"] == "community"]
 
-        rows = []
-        for m in modules_list:
-            slug = m.get("slug", "")
-            price = m.get("price_monthly")
-            already = slug in installed
-            install_btn = (
-                Span(t("settings.installed", lang), cls="badge badge--green")
-                if already
-                else A(t("settings.view_install", lang),
-                    href=f"https://celerp.com/marketplace/{slug}",
-                    target="_blank",
-                    cls="btn btn--sm btn--primary",
-                )
+        children = []
+        if from_cache:
+            children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
+        if not modules_list:
+            children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
+        children.extend(_catalog_card(m, lang, installed) for m in trusted)
+        children.append(_community_zone(len(community), lang))
+        children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
+        return Div(*children, id="marketplace-panel")
+
+    @app.get("/modules/community-panel")
+    async def community_panel(request: Request):
+        """HTMX fragment: reveal community listings (after the one-time ack)."""
+        token = _token(request)
+        if not token or not _is_admin(request):
+            return Div(id="community-zone")
+        lang = get_lang(request)
+        community = _cached_community()
+        if request.query_params.get("hide"):
+            return _community_zone(len(community), lang)
+        if not catalog.community_acked():
+            # First reveal: the trust warning, acknowledged explicitly.
+            return Div(
+                P(t("modules.import_warning", lang), cls="small"),
+                Label(
+                    Input(type="checkbox", id="community-ack-box",
+                        onchange="document.getElementById('community-continue').disabled=!this.checked;"),
+                    " " + t("marketplace.ack_label", lang),
+                    cls="small",
+                ),
+                Div(
+                    Button(t("btn.continue", lang), id="community-continue", disabled=True,
+                        hx_post="/modules/community-ack",
+                        hx_target="#community-zone", hx_swap="outerHTML",
+                        cls="btn btn--sm btn--primary"),
+                    Button(t("btn.cancel", lang),
+                        hx_get="/modules/community-panel?hide=1",
+                        hx_target="#community-zone", hx_swap="outerHTML",
+                        cls="btn btn--sm btn--secondary"),
+                    style="display:flex;gap:8px;margin-top:8px;",
+                ),
+                cls="marketplace-community-warning",
+                id="community-zone",
             )
-            rows.append(Tr(
-                Td(Div(Strong(m.get("display_name", slug)), Div(m.get("description", ""), cls="text-muted small"), cls="module-name-cell")),
-                Td(f"v{m.get('latest_version', '')}"),
-                Td(m.get("author", "")),
-                Td(f"${price:.2f}/mo" if price else "Free"),
-                Td(install_btn),
-            ))
+        return await _community_open(request, lang)
+
+    @app.post("/modules/community-ack")
+    async def community_ack(request: Request):
+        token = _token(request)
+        if not token or not _is_admin(request):
+            return Div(id="community-zone")
+        catalog.set_community_ack()
+        return await _community_open(request, get_lang(request))
+
+    async def _community_open(request: Request, lang: str):
+        token = _token(request)
+        installed = set()
+        try:
+            installed = {m["name"] for m in await api.get_modules(token)}
+        except APIError:
+            pass
+        community = _cached_community()
         return Div(
-            Table(
-                Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.price", lang)), Th(""))),
-                Tbody(*rows),
-                cls="data-table",
-            ),
-            id="marketplace-panel",
+            Button(t("btn.hide", lang),
+                hx_get="/modules/community-panel?hide=1",
+                hx_target="#community-zone", hx_swap="outerHTML",
+                cls="btn btn--sm btn--secondary"),
+            *(_catalog_card(m, lang, installed) for m in community),
+            id="community-zone",
         )

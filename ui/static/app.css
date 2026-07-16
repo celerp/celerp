@@ -2964,3 +2964,17 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* Discreet reload control beside the doc price-list select (repulls current prices). */
 .reprice-refresh { display: flex; align-items: center; justify-content: center; padding: 2px; background: none; border: none; border-radius: var(--radius); cursor: pointer; color: var(--c-text2); }
 .reprice-refresh:hover { color: var(--c-text); background: var(--c-bg2); }
+
+/* ── Marketplace catalog (repo-direct) ─────────────────────────────────── */
+/* One trust icon, two states: black = verified/official, grey = unverified.
+   Luminance difference, safe for color blindness; tooltips get aria-labels. */
+.trust-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; cursor: help; }
+.trust-icon--trusted { color: var(--c-text); }
+.trust-icon--unverified { color: #9aa0a6; }
+.marketplace-card { margin-top: 8px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg); }
+.marketplace-card > summary { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; list-style: none; }
+.marketplace-card > summary::-webkit-details-marker { display: none; }
+.marketplace-card__price { margin-left: auto; color: var(--c-text2); font-size: 12px; white-space: nowrap; }
+.marketplace-card__body { padding: 0 14px 12px; border-top: 1px solid var(--c-border); }
+.marketplace-card__links { display: flex; gap: 14px; margin: 8px 0; font-size: 12px; }
+.marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }

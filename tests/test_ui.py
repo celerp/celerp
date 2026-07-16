@@ -8149,6 +8149,100 @@ class TestModulesUI:
         assert "/login" in r.headers.get("location", "")
 
 
+_CATALOG_FIXTURE = [
+    {"id": "celerp-budgeting", "name": "Budgeting", "description": "Budgets and forecasting.",
+     "tier": "official", "homepage": "https://celerp.com/marketplace/celerp-budgeting",
+     "author": "Celerp", "license": "Proprietary", "price_monthly": 15.0},
+    {"id": "equipment-maintenance", "name": "Equipment Maintenance",
+     "description": "Track equipment service.", "tier": "community",
+     "repo": "https://github.com/celerp/celerp-module-template",
+     "author": "Celerp", "license": "MIT",
+     "data_access": "Equipment records it creates.", "network_calls": "None."},
+]
+
+
+class TestMarketplaceUI:
+    """Marketplace tab, repo-direct catalog: tiers, trust icons, the community
+    collapse with its one-time acknowledgment, cache and failure states."""
+
+    @pytest.mark.asyncio
+    async def test_panel_lists_trusted_hides_community(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Budgeting" in r.content
+        assert b"$15/mo" in r.content
+        assert b"trust-icon--trusted" in r.content
+        # community entries stay behind the collapsed row
+        assert b"Equipment Maintenance" not in r.content
+        assert b"community modules" in r.content
+        # the one-line legal footer is always present
+        assert b"not an endorsement" in r.content
+
+    @pytest.mark.asyncio
+    async def test_panel_cache_banner(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, True))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"saved copy" in r.content
+
+    @pytest.mark.asyncio
+    async def test_panel_unreachable_shows_error(self, ui_client):
+        with patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(side_effect=OSError("offline"))):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert r.status_code == 200
+        assert b"could not be loaded" in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_reveal_requires_ack(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.community_acked", new=lambda: False),
+            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+        ):
+            r = await ui_client.get("/modules/community-panel", cookies=_authed())
+        assert r.status_code == 200
+        assert b"I understand" in r.content
+        assert b"disabled" in r.content          # Continue starts disabled
+        assert b"Equipment Maintenance" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_ack_reveals_with_grey_icon(self, ui_client):
+        acks = []
+        with (
+            patch("ui.marketplace_catalog.set_community_ack", new=lambda: acks.append(1)),
+            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.post("/modules/community-ack", cookies=_authed())
+        assert r.status_code == 200
+        assert acks == [1]
+        assert b"Equipment Maintenance" in r.content
+        assert b"trust-icon--unverified" in r.content
+        assert b"Get it from the author" in r.content
+
+    @pytest.mark.asyncio
+    async def test_already_acked_skips_warning(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.community_acked", new=lambda: True),
+            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/community-panel", cookies=_authed())
+        assert b"Equipment Maintenance" in r.content
+        assert b"I understand" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_panel_requires_admin(self, ui_client):
+        r = await ui_client.get("/modules/marketplace-panel",
+                                cookies=_authed(role="manager"))
+        assert b"Budgeting" not in r.content
+
+
 # ---------------------------------------------------------------------------
 # Module slot injection tests
 # Tests that module slot contributions actually appear in rendered UI.
