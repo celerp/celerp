@@ -273,7 +273,22 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
     # and category_schemas whenever a caller sent only one field (the UI happens
     # to pre-merge, but partial callers — and a name-only patch — must be safe).
     if payload.settings:
-        company.settings = {**(company.settings or {}), **payload.settings}
+        merged = {**(company.settings or {}), **payload.settings}
+        # Price config must pass the same gate as the dedicated endpoints: the read
+        # path trusts stored config, so no door may store what the validator rejects.
+        if "price_lists" in payload.settings or "base_price_list" in payload.settings:
+            merged_lists = merged.get("price_lists") or []
+            explicit_base = merged.get("base_price_list")
+            error = validate_price_lists(
+                merged_lists,
+                explicit_base or DEFAULT_PRICE_LIST_NAME,
+                base_explicit=explicit_base is not None,
+            ) or new_cost_name_error(merged_lists, (company.settings or {}).get("price_lists") or [])
+            if error:
+                raise HTTPException(status_code=422, detail=error)
+            if merged.get("price_lists"):
+                merged["price_lists"] = normalized_price_lists(merged["price_lists"])
+        company.settings = merged
     await session.commit()
     return {"ok": True}
 
@@ -1642,6 +1657,8 @@ from celerp.services.pricing import (
     COST_PRICE_LIST_NAMES,
     DEFAULT_PRICE_LIST_NAME,
     is_derived,
+    new_cost_name_error,
+    normalized_price_lists,
     validate_price_lists,
 )
 
@@ -1711,10 +1728,10 @@ async def patch_price_lists(
         payload.price_lists,
         explicit_base or DEFAULT_PRICE_LIST_NAME,
         base_explicit=explicit_base is not None,
-    )
+    ) or new_cost_name_error(payload.price_lists, settings.get("price_lists") or [])
     if error:
         raise HTTPException(status_code=422, detail=error)
-    settings["price_lists"] = payload.price_lists
+    settings["price_lists"] = normalized_price_lists(payload.price_lists)
     if payload.base_price_list is not None:
         settings["base_price_list"] = payload.base_price_list
     company.settings = settings

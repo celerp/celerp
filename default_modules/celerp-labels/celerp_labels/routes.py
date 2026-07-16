@@ -264,7 +264,14 @@ async def _resolve_template(
 
 
 async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: str) -> dict:
-    """Fetch item data from projections; fall back to minimal stub if not found."""
+    """Fetch item data from projections; fall back to minimal stub if not found.
+
+    Flattened through the inventory serializer so labels print the same values every
+    other surface shows: recipe-rolled cost and computed derived price lists included.
+    """
+    from celerp.services.pricing import get_price_config
+    from celerp_inventory.routes import _flatten_item
+
     proj = (
         await session.execute(
             select(Projection).where(
@@ -275,7 +282,8 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
         )
     ).scalar_one_or_none()
     if proj and proj.state:
-        return dict(proj.state)
+        return _flatten_item(proj.state, entity_id,
+                             price_config=await get_price_config(session, company_id))
     return {"entity_id": entity_id, "name": entity_id, "sku": entity_id}
 
 

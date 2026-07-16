@@ -499,3 +499,207 @@ def test_pricing_form_renders_derived_row_readonly_with_note():
     assert "Trade is Retail × 0.7, rounded to the nearest 5" in html
     assert 'name="retail_price"' in html      # manual list stays an editable input
     assert 'name="trade_price"' not in html   # derived list renders read-only
+
+
+# ---------------------------------------------------------------------------
+# Hardening: the validation gate must be at least as strict as the read path,
+# and the read path must never fail a whole item read on a bad config or value.
+# ---------------------------------------------------------------------------
+
+class TestValidationGateHardening:
+    def test_rejects_non_finite_factors(self):
+        for bad in (float("inf"), "inf", "Infinity", 1e309, float("nan"), "nan"):
+            err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": bad}], "Retail")
+            assert err and "Factor" in err, bad
+
+    def test_rejects_boolean_factor_and_rounding(self):
+        err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": True}], "Retail")
+        assert err and "Factor" in err
+        err = validate_price_lists(
+            [{"name": "Retail"}, {"name": "Trade", "multiplier": 0.7, "rounding": True}], "Retail"
+        )
+        assert err and "Rounding" in err
+
+    def test_rejects_oversized_factor_and_rounding(self):
+        err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": 2_000_000}], "Retail")
+        assert err and "at most" in err
+        err = validate_price_lists(
+            [{"name": "Retail"}, {"name": "Trade", "multiplier": 0.7, "rounding": 2_000_000}], "Retail"
+        )
+        assert err and "at most" in err
+
+    def test_rejects_empty_and_duplicate_names(self):
+        assert "empty" in validate_price_lists([{"name": "  "}, {"name": "Retail"}], "Retail")
+        err = validate_price_lists([{"name": "Retail"}, {"name": "retail"}], "Retail")
+        assert err and "unique" in err
+
+    def test_new_cost_name_rejected_existing_grandfathered(self):
+        from celerp.services.pricing import new_cost_name_error
+
+        stored = [{"name": "Cost"}, {"name": "Retail"}]
+        assert new_cost_name_error([{"name": "Cost"}, {"name": "Retail"}], stored) is None
+        err = new_cost_name_error([{"name": "Landed Cost"}, {"name": "Retail"}], stored)
+        assert err and "reserved" in err
+
+    def test_normalized_price_lists_coerces_to_float(self):
+        from celerp.services.pricing import normalized_price_lists
+
+        out = normalized_price_lists([{"name": "Trade", "multiplier": "0.7", "rounding": "5"}])
+        assert out[0]["multiplier"] == 0.7 and isinstance(out[0]["multiplier"], float)
+        assert out[0]["rounding"] == 5.0 and isinstance(out[0]["rounding"], float)
+
+
+class TestCoercePrice:
+    def test_garbage_reads_as_missing(self):
+        from celerp.services.pricing import coerce_price
+
+        for garbage in (None, True, False, "abc", "", [1], {}, float("nan"), float("inf"), "inf"):
+            assert coerce_price(garbage) is None, garbage
+        assert coerce_price("12.5") == 12.5
+        assert coerce_price(7) == 7.0
+
+    def test_resolve_price_survives_garbage_state(self):
+        assert resolve_price({"vip_price": "abc"}, "VIP") == 0.0
+        assert resolve_price({"vip_price": [1]}, "VIP") == 0.0
+        assert resolve_price({"VIP": True, "vip_price": 9}, "VIP") == 9.0  # bool is not a price
+
+
+class TestInjectDefensive:
+    """Invalid configs that bypass validation (e.g. a raw settings write) must degrade
+    per list to 'unpriced', never crash a read or overwrite cost/base keys."""
+
+    def test_infinite_factor_degrades_to_unpriced(self):
+        flat = {"retail_price": 10}
+        inject_derived_prices(flat, [{"name": "Retail"}, {"name": "VIP", "multiplier": float("inf")}], "Retail", "USD")
+        assert "vip_price" not in flat
+
+    def test_junk_factor_degrades_to_unpriced(self):
+        flat = {"retail_price": 10}
+        inject_derived_prices(flat, [{"name": "Retail"}, {"name": "VIP", "multiplier": "abc"}], "Retail", "USD")
+        assert "vip_price" not in flat
+
+    def test_overflow_factor_degrades_to_unpriced(self):
+        flat = {"retail_price": 10}
+        inject_derived_prices(flat, [{"name": "Retail"}, {"name": "VIP", "multiplier": 1e300}], "Retail", "USD")
+        assert "vip_price" not in flat
+
+    def test_sub_ceiling_value_reads_unpriced_not_free(self):
+        flat = {"retail_price": 10}
+        inject_derived_prices(flat, [{"name": "Retail"}, {"name": "VIP", "multiplier": 1e-8}], "Retail", "USD")
+        assert "vip_price" not in flat  # would collapse to 0.0 at the USD rate ceiling
+
+    def test_cost_list_never_overwritten(self):
+        flat = {"cost_price": 10.0, "retail_price": 25.0}
+        inject_derived_prices(flat, [{"name": "Retail"}, {"name": "Cost", "multiplier": 2.5}], "Retail", "USD")
+        assert flat["cost_price"] == 10.0
+
+    def test_base_list_never_overwritten(self):
+        flat = {"retail_price": 50.0}
+        inject_derived_prices(flat, [{"name": "Retail", "multiplier": 2.0}], "Retail", "USD")
+        assert flat["retail_price"] == 50.0
+
+    def test_garbage_base_value_degrades_to_unpriced(self):
+        flat = {"retail_price": "abc"}
+        inject_derived_prices(flat, _CONFIG, "Retail", "USD")
+        assert "trade_price" not in flat
+
+
+# ---------------------------------------------------------------------------
+# Hardening: every settings door validates; every item write door is guarded
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_company_settings_merge_validates_price_config(client):
+    h = _auth(await _register(client))
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"price_lists": [{"name": "Retail"}, {"name": "Cost", "multiplier": 0.5}]}},
+        headers=h,
+    )
+    assert r.status_code == 422
+    # Valid config through the same door is normalized to floats
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"price_lists": [
+            {"name": "Retail"}, {"name": "Wholesale"}, {"name": "Trade", "multiplier": "0.7"},
+        ]}},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    lists = (await client.get("/companies/me/price-lists", headers=h)).json()
+    trade = next(pl for pl in lists if pl["name"] == "Trade")
+    assert trade["multiplier"] == 0.7 and isinstance(trade["multiplier"], float)
+
+
+@pytest.mark.asyncio
+async def test_patch_price_lists_rejects_exotic_factors_and_new_cost_names(client):
+    h = _auth(await _register(client))
+    r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Trade", "multiplier": "inf"}])
+    assert r.status_code == 422
+    r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Trade", "multiplier": True}])
+    assert r.status_code == 422
+    r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Landed Cost"}])
+    assert r.status_code == 422
+    assert "reserved" in r.json()["detail"]
+    r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "retail"}])
+    assert r.status_code == 422
+    assert "unique" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_item_rejects_non_numeric_price(client):
+    h = _auth(await _register(client))
+    item_id = await _create_item(client, h, retail_price=100)
+    r = await client.patch(
+        f"/items/{item_id}",
+        json={"fields_changed": {"retail_price": {"new": "abc"}}},
+        headers=h,
+    )
+    assert r.status_code == 422
+    assert "must be a number" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_write_guards_block_direct_list_name(client):
+    h = _auth(await _register(client))
+    assert (await _set_config(client, h)).status_code == 200
+    item_id = await _create_item(client, h, retail_price=100)
+    r = await client.post(
+        f"/items/{item_id}/price",
+        json={"price_type": "Trade", "new_price": 50},
+        headers=h,
+    )
+    assert r.status_code == 422
+    r = await client.patch(
+        f"/items/{item_id}",
+        json={"fields_changed": {"Trade": {"new": 50}}},
+        headers=h,
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_batch_import_drops_derived_keys(client):
+    h = _auth(await _register(client))
+    assert (await _set_config(client, h)).status_code == 200
+    record = {
+        "entity_id": f"item:imp-{uuid.uuid4().hex[:8]}",
+        "event_type": "item.created",
+        "data": {"sku": f"IMP-{uuid.uuid4().hex[:6]}", "name": "Imported", "sell_by": "piece",
+                 "quantity": 1, "retail_price": 100, "trade_price": 999},
+        "source": "csv_import",
+        "idempotency_key": f"test:imp:{uuid.uuid4()}",
+    }
+    r = await client.post("/items/import/batch", headers=h, json={"records": [record]})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1
+    item = (await client.get(f"/items/{record['entity_id']}", headers=h)).json()
+    assert item["trade_price"] == 70.0  # computed from the base, not the smuggled 999
+
+
+def test_settings_error_cell_is_recoverable():
+    from ui.routes.settings import _pl_error_cell
+
+    html = str(_pl_error_cell(2, "multiplier", "Factor for 'X' must be a number greater than 0", "price-lists"))
+    assert "cell--clickable" in html
+    assert "/settings/price-lists/2/multiplier/edit" in html

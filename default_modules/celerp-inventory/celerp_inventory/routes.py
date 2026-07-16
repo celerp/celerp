@@ -22,6 +22,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, viewer_read_only, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.pricing import (
+    coerce_price,
     derived_price_keys,
     get_price_config,
     inject_derived_prices,
@@ -677,10 +678,11 @@ async def get_field_values(
     rows = (await session.execute(stmt)).scalars().all()
     seen: set[str] = set()
     found_in_known_fields = field in _SUGGESTION_FIELDS
+    _price_config = await get_price_config(session, company_id)
     for row in rows:
         if row.entity_id in demo_eids:
             continue
-        flat = _flatten_item(row.state, row.entity_id)
+        flat = _flatten_item(row.state, row.entity_id, price_config=_price_config)
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -988,8 +990,11 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
 
     # Derived price lists are computed from the base price list; their keys are never stored.
+    # Both the conventional key ("trade_price") and the raw list name ("Trade") are blocked:
+    # resolve_price honors a direct-name key first, so storing one would shadow the formula.
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
-    derived_blocked = changed_keys & derived_price_keys(_price_lists)
+    _derived = derived_price_keys(_price_lists)
+    derived_blocked = {k for k in changed_keys if k in _derived or price_key(k) in _derived}
     if derived_blocked:
         raise HTTPException(
             status_code=422,
@@ -1005,6 +1010,15 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     for _f, _fc in payload.fields_changed.items():
         if _f not in _CLEAR_PROTECTED and isinstance(_fc, dict) and _fc.get("new") == "":
             _fc["new"] = None
+
+    # Price values must be finite numbers: a non-numeric value stored on a base list would
+    # make every derived read treat that item as unpriced, and NaN/Infinity break the
+    # Decimal arithmetic downstream.
+    for _f, _fc in payload.fields_changed.items():
+        if (_f.endswith("_price") or _f == "cost_total") and isinstance(_fc, dict):
+            _new = _fc.get("new")
+            if _new is not None and coerce_price(_new) is None:
+                raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
 
     # Validate sell_by change
     if "sell_by" in changed_keys:
@@ -2429,7 +2443,9 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 @router.post("/{entity_id}/price")
 async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
-    if payload.price_type in derived_price_keys(_price_lists):
+    # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
+    # resolve_price honors a direct-name key first, so storing one would shadow the formula.
+    if payload.price_type in derived_price_keys(_price_lists) or price_key(payload.price_type) in derived_price_keys(_price_lists):
         raise HTTPException(
             status_code=422,
             detail=f"'{payload.price_type}' is computed from the '{_base_name}' price list; "
@@ -2579,6 +2595,7 @@ async def batch_import_items(
     # Falls back to empty set (no validation) if units cannot be fetched.
     _units = await _get_company_units(session, company_id)
     _valid_units: frozenset[str] = frozenset(u["name"] for u in _units)
+    _derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
 
     created = skipped = updated = 0
     errors: list[str] = []
@@ -2592,6 +2609,10 @@ async def batch_import_items(
         # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
         rec.data.pop("created_at", None)
         rec.data.pop("updated_at", None)
+        # Derived price lists are computed at read time; a derived column riding along in an
+        # exported file must not be stored (same rule as item create).
+        for _dk in _derived_keys:
+            rec.data.pop(_dk, None)
         # Normalize allow_splitting to a real bool if the import provided one (CSV
         # gives strings like "Yes"/"No", and None means "unset"). Imports that omit
         # it default to no-split in the create branch below; the split guard

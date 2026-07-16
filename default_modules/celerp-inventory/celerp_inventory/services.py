@@ -126,6 +126,13 @@ async def upsert_from_connector(company_id: str, item) -> str:
         data["description"] = item.description
 
     async with AsyncSessionLocal() as session:
+        # Derived price lists are computed from the base at read time; a store-synced price
+        # must not be stored under a derived key (it would be masked on every read, then
+        # resurface as a stale manual price if the factor is ever removed).
+        from celerp.services.pricing import derived_price_keys, get_price_config
+        derived = derived_price_keys((await get_price_config(session, company_id))[0])
+        for key in derived:
+            data.pop(key, None)
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data,
