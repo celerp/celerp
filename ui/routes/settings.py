@@ -23,6 +23,7 @@ from ui.config import get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang
+from ui.routes.documents import _action_error
 
 
 def _check_role(request: Request, min_role: str = "admin") -> RedirectResponse | None:
@@ -317,15 +318,28 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
-def _pl_error_cell(idx: int, field: str, message: str, prefix: str) -> FT:
-    """Inline cell error that stays click-to-edit, so the row remains usable after a
-    rejected save (a bare error paragraph would leave a dead cell until a reload)."""
-    return Td(
-        Span(message, cls="cell-error"),
-        title="Click to edit",
-        hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
-        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        cls="cell cell--clickable",
+def _status_error(status_id: str, message: str, oob: FT | None = None):
+    """Error for an auto-saving control: toast the message (auto-dismisses) and reset the
+    inline status span, so no stale error text persists next to the control. ``oob``
+    optionally re-syncs a related element (e.g. a select showing a rejected choice)."""
+    import json as _json
+    from starlette.responses import HTMLResponse as _HR
+    body = to_xml(Span("", id=status_id, cls="settings-hint"))
+    if oob is not None:
+        body += to_xml(oob)
+    return _HR(body, headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})})
+
+
+def _pl_cell_error(idx: int, field: str, pl: dict, prefix: str, message: str):
+    """Failed cell save: swap the saved display value back into the cell and surface the
+    error as a toast. The toast auto-dismisses, so no stale error text lingers in the
+    table, and the cell stays click-to-edit for a retry."""
+    import json as _json
+    from starlette.responses import HTMLResponse as _HR
+    cell = _price_list_display_cell(idx, field, pl, prefix=prefix)
+    return _HR(
+        to_xml(cell),
+        headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})},
     )
 
 
@@ -417,7 +431,8 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                             try:
                                 price_lists[idx][field] = float(value)
                             except ValueError:
-                                return _pl_error_cell(idx, field, t("settings.enter_a_number_greater_than_0"), pfx)
+                                return _pl_cell_error(idx, field, price_lists[idx], pfx,
+                                                      t("settings.enter_a_number_greater_than_0"))
                     else:
                         price_lists[idx][field] = value
                     if field == "name" and old_name == base_name:
@@ -431,7 +446,13 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 base_name = await api.get_base_price_list(token)
                 default_name = await api.get_default_price_list(token)
             except APIError as e:
-                return _pl_error_cell(idx, field, str(e.detail), pfx)
+                # Re-fetch so the cell reverts to the value the server actually holds.
+                try:
+                    price_lists = await getattr(api, gname)(token)
+                    pl = price_lists[idx] if idx < len(price_lists) else {}
+                except APIError:
+                    pl = {}
+                return _pl_cell_error(idx, field, pl, pfx, str(e.detail))
             pl = price_lists[idx] if idx < len(price_lists) else {}
             cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
             if field == "name":
@@ -466,10 +487,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 price_lists.append({"name": name, "description": ""})
                 await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return Div(
-                    Span(str(e.detail), cls="flash flash--error"),
-                    id="price-list-error",
-                )
+                return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_price_list
 
@@ -485,34 +503,18 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 if 0 <= idx < len(price_lists):
                     name = price_lists[idx].get("name", "")
                     if name == "Retail":
-                        return Div(
-                            Span(t("settings.retail_price_list_cannot_be_deleted"), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.retail_price_list_cannot_be_deleted"))
                     if name in ("Cost", "Wholesale"):
-                        return Div(
-                            Span(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name))
                     if name == default_name:
-                        # Return error fragment instead of redirect
-                        return Div(
-                            Span(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name))
                     base_name = await api.get_base_price_list(token)
                     if name == base_name:
-                        return Div(
-                            Span(t("settings.base_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
-                            id="price-list-error",
-                        )
+                        return _action_error(t("settings.base_price_list_cannot_be_deleted").replace("{name}", name))
                     price_lists.pop(idx)
                     await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return Div(
-                    Span(str(e.detail), cls="flash flash--error"),
-                    id="price-list-error",
-                )
+                return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_price_list
 
@@ -1119,11 +1121,11 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
-            return Span(t("settings.name_required"), id="default-price-list-status", cls="flash flash--error")
+            return _status_error("default-price-list-status", t("settings.name_required"))
         try:
             await api.patch_default_price_list(token, name)
         except APIError as e:
-            return Span(str(e.detail), id="default-price-list-status", cls="flash flash--error")
+            return _status_error("default-price-list-status", str(e.detail))
         return Span(t("settings._saved"), id="default-price-list-status", cls="flash flash--success")
 
     @app.post("/settings/base-price-list")
@@ -1134,21 +1136,22 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
-            return Span(t("settings.name_required"), id="base-price-list-status", cls="flash flash--error")
+            return _status_error("base-price-list-status", t("settings.name_required"))
         try:
             await api.patch_base_price_list(token, name)
         except APIError as e:
             # Re-sync the select out-of-band: without it the rejected choice would keep
             # displaying as if it had been saved.
-            error = Span(str(e.detail), id="base-price-list-status", cls="flash flash--error")
+            oob = None
             try:
                 price_lists = await api.get_price_lists(token)
                 base_name = await api.get_base_price_list(token)
-                return error, _pl_select("base-price-list-select", "/settings/base-price-list",
-                                         "#base-price-list-status",
-                                         [pl.get("name", "") for pl in price_lists], base_name, oob=True)
+                oob = _pl_select("base-price-list-select", "/settings/base-price-list",
+                                 "#base-price-list-status",
+                                 [pl.get("name", "") for pl in price_lists], base_name, oob=True)
             except APIError:
-                return error
+                pass
+            return _status_error("base-price-list-status", str(e.detail), oob)
         return Span(t("settings._saved"), id="base-price-list-status", cls="flash flash--success")
 
     # ── Terms & Conditions CRUD endpoints ────────────────────────────
@@ -3512,14 +3515,12 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
     def _row(idx: int, pl: dict) -> FT:
         name = pl.get("name", "")
         is_protected = name in ("Retail", "Wholesale")
+        # Success navigates via HX-Redirect; failures surface as an auto-dismissing toast.
         delete_cell = Td(cls="cell") if is_protected else Td(
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
                    hx_confirm=f"Delete price list '{name}'?",
-                   hx_target="#price-list-error",
-                   hx_swap="outerHTML",
-                   # Reload only on success (204); an error flash must stay readable.
-                   hx_on__after_request="if(event.detail.xhr.status===204) window.location.reload()"),
+                   hx_swap="none"),
             cls="cell",
         )
         return Tr(
@@ -3537,17 +3538,14 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
     all_names = [pl.get("name", "") for pl in price_lists]
 
     return Div(
-        Div(id="price-list-error"),
         H3(t("page.price_lists"), cls="settings-section-title"),
         P(t("settings.define_your_companys_price_tiers_these_names_are_u"),
           cls="settings-hint"),
         P(t("settings.derived_price_lists_hint"), cls="settings-hint"),
         Div(
+            # Success navigates via HX-Redirect; failures surface as an auto-dismissing toast.
             Button(t("btn.add_price_list"), cls="btn btn--primary",
-                   hx_post=f"/settings/{prefix}/new",
-                   hx_target="#price-list-error", hx_swap="outerHTML",
-                   # Reload only on success (204); an error flash must stay readable.
-                   hx_on__after_request="if(event.detail.xhr.status===204) window.location.reload()"),
+                   hx_post=f"/settings/{prefix}/new", hx_swap="none"),
             cls="page-actions mb-md",
         ),
         Table(

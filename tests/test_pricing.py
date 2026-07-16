@@ -697,9 +697,29 @@ async def test_batch_import_drops_derived_keys(client):
     assert item["trade_price"] == 70.0  # computed from the base, not the smuggled 999
 
 
-def test_settings_error_cell_is_recoverable():
-    from ui.routes.settings import _pl_error_cell
+def test_settings_cell_error_reverts_value_and_toasts():
+    """A rejected cell save swaps the saved value back (cell stays click-to-edit) and
+    carries the error as an auto-dismissing toast, so no stale error text persists."""
+    from ui.routes.settings import _pl_cell_error
 
-    html = str(_pl_error_cell(2, "multiplier", "Factor for 'X' must be a number greater than 0", "price-lists"))
-    assert "cell--clickable" in html
-    assert "/settings/price-lists/2/multiplier/edit" in html
+    resp = _pl_cell_error(2, "multiplier", {"name": "Trade", "multiplier": 0.7}, "price-lists",
+                          "Factor for 'Trade' must be a number greater than 0")
+    body = resp.body.decode()
+    assert "cell--clickable" in body                     # cell remains editable
+    assert "0.7" in body                                 # reverted to the saved value
+    assert "cell-error" not in body                      # no persistent inline error text
+    trigger = resp.headers["HX-Trigger"]
+    assert "celerpToast" in trigger and "greater than 0" in trigger
+
+
+def test_settings_status_error_resets_span_and_toasts():
+    """An auto-saving control's error resets its inline status span and toasts the
+    message; nothing error-colored persists next to the control."""
+    from ui.routes.settings import _status_error
+
+    resp = _status_error("base-price-list-status", "'Trade' is derived and cannot be the base")
+    body = resp.body.decode()
+    assert 'id="base-price-list-status"' in body
+    assert "flash--error" not in body
+    trigger = resp.headers["HX-Trigger"]
+    assert "celerpToast" in trigger and "cannot be the base" in trigger

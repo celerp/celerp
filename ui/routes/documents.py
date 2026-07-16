@@ -359,7 +359,7 @@ def _render_fulfillment_badge(doc: dict):
     return None
 
 
-def _action_error(msg: str, target_id: str = "action-error"):
+def _action_error(msg: str):
     """Fire a toast popup for action errors and restore any open editable cell to display mode."""
     import json as _json
     from starlette.responses import HTMLResponse as _HR
@@ -2936,7 +2936,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail), target_id="receive-action-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T7: Refund payment

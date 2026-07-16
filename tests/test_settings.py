@@ -351,7 +351,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/2", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_cost(self, ui_client):
@@ -365,7 +365,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/0", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_cannot_delete_wholesale(self, ui_client):
@@ -379,7 +379,7 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/1", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_can_delete_custom_price_list(self, ui_client):
@@ -411,4 +411,5 @@ class TestProtectedPriceListDeletion:
         ):
             resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
         assert resp.status_code == 200
-        assert "flash--error" in resp.text
+        assert "celerpToast" in resp.headers.get("HX-Trigger", "")
+        assert "base price list" in resp.headers.get("HX-Trigger", "")
