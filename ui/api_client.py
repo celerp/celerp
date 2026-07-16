@@ -2025,6 +2025,27 @@ async def disable_module(token: str, module_name: str) -> dict:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
 
 
+async def import_module_zip(token: str, filename: str, data: bytes) -> dict:
+    """POST /companies/me/modules/import — install a module from a .zip (admin only)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/companies/me/modules/import",
+            files={"file": (filename, data, "application/zip")},
+        )).json()
+
+
+async def import_module_path(token: str, path: str) -> dict:
+    """POST /companies/me/modules/import-path — install a module from a local folder."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
+
+
+async def restart_system(token: str) -> dict:
+    """POST /system/restart — graceful restart; the process manager respawns."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/system/restart")).json()
+
+
 # ---------------------------------------------------------------------------
 # Verticals / Category Library
 # ---------------------------------------------------------------------------

@@ -8008,73 +8008,86 @@ _SETTINGS_MOCKS_MODULES = {
 
 
 class TestModulesUI:
-    """Modules settings tab — list, enable, disable."""
+    """Modules page (top-level, owner/admin only) — list, enable, disable,
+    import, restart, load-error surfacing."""
 
     @pytest.mark.asyncio
-    async def test_modules_tab_lists_modules(self, ui_client):
-        """GET /settings?tab=modules shows installed modules."""
+    async def test_modules_page_lists_modules(self, ui_client):
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
+            r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
         assert b"celerp-labels" in r.content or b"Celerp Labels" in r.content
         assert b"celerp-verticals" in r.content or b"Celerp Verticals" in r.content
 
     @pytest.mark.asyncio
-    async def test_modules_tab_shows_running_badge(self, ui_client):
-        """Running module shows 'running' badge."""
+    async def test_modules_page_shows_badges_and_buttons(self, ui_client):
         from contextlib import ExitStack
         mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
         with ExitStack() as stack:
             for m in mocks.values():
                 stack.enter_context(m)
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
+            r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
         assert b"running" in r.content
-
-    @pytest.mark.asyncio
-    async def test_modules_tab_shows_disabled_badge(self, ui_client):
-        """Disabled module shows 'disabled' badge."""
-        from contextlib import ExitStack
-        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
-        with ExitStack() as stack:
-            for m in mocks.values():
-                stack.enter_context(m)
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
-        assert r.status_code == 200
         assert b"disabled" in r.content
-
-    @pytest.mark.asyncio
-    async def test_modules_tab_shows_enable_button_for_disabled(self, ui_client):
-        """Disabled module has Enable button; enabled has Disable button."""
-        from contextlib import ExitStack
-        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
-        with ExitStack() as stack:
-            for m in mocks.values():
-                stack.enter_context(m)
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
-        assert r.status_code == 200
         assert b"Enable" in r.content
         assert b"Disable" in r.content
 
     @pytest.mark.asyncio
-    async def test_modules_tab_empty_shows_placeholder(self, ui_client):
-        """No modules installed shows placeholder text."""
+    async def test_modules_page_empty_shows_onboarding(self, ui_client):
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=[])}
         with ExitStack() as stack:
             for k, v in mocks.items():
                 stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
+            r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
         assert b"No modules installed" in r.content
+        # the empty state IS the onboarding: import + build-your-own are present
+        assert b"/modules/import" in r.content
+        assert b"celerp-module-template" in r.content
+
+    @pytest.mark.asyncio
+    async def test_modules_page_requires_admin(self, ui_client):
+        """Viewer/operator/manager roles never see the page."""
+        r = await ui_client.get("/modules", cookies=_authed(role="manager"))
+        assert r.status_code in (302, 303)
+        assert "/dashboard" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_modules_page_shows_load_error(self, ui_client):
+        """An enabled module that failed to load shows a failed badge + message."""
+        broken = [{**_MODULES_LIST[1], "enabled": True, "running": False,
+                   "load_error": "Failed to import (RuntimeError: boom)"}]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=broken)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"boom" in r.content
+        assert b"badge--red" in r.content
+
+    @pytest.mark.asyncio
+    async def test_restart_banner_has_button_when_pending(self, ui_client):
+        """enabled != running derives the banner, and it carries a restart button."""
+        pending = [{**_MODULES_LIST[1], "enabled": True, "running": False}]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/restart" in r.content
 
     @pytest.mark.asyncio
     async def test_module_enable_htmx_returns_panel(self, ui_client):
-        """POST /settings/modules/{name}/enable returns updated #modules-panel."""
         refreshed = [
             {**_MODULES_LIST[0], "enabled": True, "running": False},
             {**_MODULES_LIST[1], "enabled": True, "running": False},
@@ -8083,17 +8096,13 @@ class TestModulesUI:
             patch("ui.api_client.enable_module", new=AsyncMock(return_value={"ok": True, "restart_required": True})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=refreshed)),
         ):
-            r = await ui_client.post(
-                "/settings/modules/celerp-verticals/enable",
-                cookies=_authed(),
-            )
+            r = await ui_client.post("/modules/celerp-verticals/enable", cookies=_authed())
         assert r.status_code == 200
-        assert b"modules-panel" in r.content
-        assert b"restart" in r.content.lower() or b"restart" in r.content
+        assert b"local-modules-panel" in r.content
+        assert b"restart" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_module_disable_htmx_returns_panel(self, ui_client):
-        """POST /settings/modules/{name}/disable returns updated #modules-panel."""
         refreshed = [
             {**_MODULES_LIST[0], "enabled": False, "running": True},
             _MODULES_LIST[1],
@@ -8102,25 +8111,40 @@ class TestModulesUI:
             patch("ui.api_client.disable_module", new=AsyncMock(return_value={"ok": True, "restart_required": True})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=refreshed)),
         ):
+            r = await ui_client.post("/modules/celerp-labels/disable", cookies=_authed())
+        assert r.status_code == 200
+        assert b"local-modules-panel" in r.content
+
+    @pytest.mark.asyncio
+    async def test_module_restart_returns_restarting_panel(self, ui_client):
+        with patch("ui.api_client.restart_system", new=AsyncMock(return_value={"ok": True, "restarting": True})):
+            r = await ui_client.post("/modules/restart", cookies=_authed())
+        assert r.status_code == 200
+        assert b"local-modules-panel" in r.content
+
+    @pytest.mark.asyncio
+    async def test_module_import_zip_success_flash(self, ui_client):
+        with (
+            patch("ui.api_client.import_module_zip", new=AsyncMock(return_value={"ok": True, "name": "my-module", "display_name": "My Module"})),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES_LIST)),
+        ):
             r = await ui_client.post(
-                "/settings/modules/celerp-labels/disable",
+                "/modules/import",
+                files={"file": ("my-module.zip", b"fake-zip-bytes", "application/zip")},
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"modules-panel" in r.content
-        assert b"restart" in r.content.lower()
+        assert b"My Module" in r.content
 
     @pytest.mark.asyncio
     async def test_module_enable_unauthenticated_redirects(self, ui_client):
-        """Unauthenticated module enable → redirect to login."""
-        r = await ui_client.post("/settings/modules/celerp-labels/enable")
+        r = await ui_client.post("/modules/celerp-labels/enable")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_module_disable_unauthenticated_redirects(self, ui_client):
-        """Unauthenticated module disable → redirect to login."""
-        r = await ui_client.post("/settings/modules/celerp-labels/disable")
+        r = await ui_client.post("/modules/celerp-labels/disable")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 

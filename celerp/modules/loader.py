@@ -69,14 +69,30 @@ def _resolve_bundled_dirs() -> tuple[Path, ...]:
     base = Path(__file__).resolve().parent.parent.parent / "default_modules"
     extra_raw = os.environ.get("CELERP_TRUSTED_MODULE_DIRS", "")
     extras = [Path(p.strip()).resolve() for p in extra_raw.split(",") if p.strip()]
-    # Include the seeded destination too: when Electron points MODULE_DIR at DATA_DIR/modules,
-    # those seeded copies must also be trusted.
-    module_dir_raw = os.environ.get("MODULE_DIR", "")
-    module_dirs = [Path(p.strip()).resolve() for p in module_dir_raw.split(",") if p.strip()]
-    return tuple({base.resolve(), *extras, *module_dirs})
+    return tuple({base.resolve(), *extras})
 
 
 _BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
+
+
+def _trusted_default_names() -> frozenset[str]:
+    """Names of first-party modules, taken from the bundled SOURCE directories.
+
+    Electron seeds default modules into DATA_DIR/modules (the user-writable
+    module dir). Trust for those seeded copies is granted BY NAME against the
+    bundled source listing - never by directory. Blanket-trusting MODULE_DIR
+    would exempt user-imported third-party modules from the BSL import checks,
+    which is exactly what those checks exist to prevent. The importer refuses
+    the celerp- prefix for imports, so a third-party package cannot take a
+    first-party name through the app.
+    """
+    names: set[str] = set()
+    for d in _BUNDLED_MODULES_DIRS:
+        if d.exists():
+            for p in d.iterdir():
+                if p.is_dir() and (p / "__init__.py").exists():
+                    names.add(p.name)
+    return frozenset(names)
 
 # Loaded manifests — populated by load_all()
 _loaded: list[dict] = []
@@ -113,7 +129,7 @@ def _read_depends_on(pkg_path: Path) -> list[str]:
     return []
 
 
-def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
+def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] | None = None) -> list[Path]:
     """Return pkg_paths sorted so dependencies come before dependents.
 
     Modules with unresolvable hard deps are excluded with a warning.
@@ -137,6 +153,8 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
                     "Module %r requires %r which is not enabled — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors[name] = f"Requires {dep!r}, which is not enabled."
                 skipped.add(name)
                 visited.discard(name)
                 return
@@ -145,6 +163,8 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
                     "Module %r requires %r which is not installed — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors[name] = f"Requires {dep!r}, which is not installed."
                 skipped.add(name)
                 visited.discard(name)
                 return
@@ -154,6 +174,8 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
                     "Module %r requires %r which was skipped — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors[name] = f"Requires {dep!r}, which failed to load."
                 skipped.add(name)
                 visited.discard(name)
                 return
@@ -163,6 +185,21 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
         _visit(p.name)
 
     return result
+
+
+# Per-module load failures from the last load_all() run: name -> message.
+# The modules UI surfaces these so a broken module fails loudly, not silently.
+_load_errors: dict[str, str] = {}
+
+
+def load_errors() -> dict[str, str]:
+    """Return {module_name: error message} for modules that failed to load."""
+    return dict(_load_errors)
+
+
+def default_module_names() -> frozenset[str]:
+    """Public: names of first-party bundled modules (in-tree or seeded copies)."""
+    return _trusted_default_names()
 
 
 def loaded_modules() -> list[dict]:
@@ -192,6 +229,7 @@ def is_running(pkg_name: str) -> bool:
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
     "display_name", "label", "version", "description", "author", "depends_on",
+    "license", "min_celerp_version",
 })
 
 
@@ -247,6 +285,7 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
         List of successfully loaded PLUGIN_MANIFEST dicts.
     """
     _loaded.clear()
+    _load_errors.clear()
 
     # Support comma-separated module directories
     raw = str(module_dir)
@@ -281,12 +320,16 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 sys.path.insert(0, p_str)
             candidate_paths.append(p)
 
-    # Sort by dependency order
-    ordered = _topo_sort(candidate_paths, enabled)
+    # Sort by dependency order (skip reasons land in _load_errors)
+    ordered = _topo_sort(candidate_paths, enabled, errors=_load_errors)
 
+    trusted_names = _trusted_default_names()
     for pkg_path in ordered:
         pkg_name = pkg_path.name
-        trusted = pkg_path.parent.resolve() in resolved_bundled
+        trusted = (
+            pkg_path.parent.resolve() in resolved_bundled
+            or pkg_name in trusted_names
+        )
         # License gate for premium modules (only when relay credentials configured)
         if is_premium_path(pkg_path):
             relay_url = os.environ.get("CELERP_RELAY_URL", "")
@@ -302,6 +345,7 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                     log.warning(
                         "Premium module %r skipped: no valid license", pkg_name
                     )
+                    _load_errors[pkg_name] = "Premium module: no valid license."
                     continue
             else:
                 log.debug(
@@ -310,7 +354,8 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 )
         try:
             manifest = _load_one(pkg_path, pkg_name, trusted=trusted)
-        except ModuleLoadError:
+        except ModuleLoadError as exc:
+            _load_errors[pkg_name] = str(exc)
             manifest = None
         if manifest is not None:
             _loaded.append(manifest)
@@ -346,14 +391,13 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         sys.modules[pkg_name] = mod
         spec.loader.exec_module(mod)
 
-    except ModuleLoadError as exc:
-        log.error("Module %r rejected: %s", pkg_name, exc)
+    except ModuleLoadError:
         sys.modules.pop(pkg_name, None)
-        return None
+        raise
     except Exception as exc:
         log.error("Module %r failed to import (%s: %s) — skipping", pkg_name, type(exc).__name__, exc)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
     # Revenue protection: reject modules that reference protected BSL internals.
     # Trusted (first-party bundled) modules are exempt — they ARE the internals.
@@ -398,14 +442,14 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     if not manifest:
         log.warning("Module %r has no PLUGIN_MANIFEST — skipping", pkg_name)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError("No PLUGIN_MANIFEST in __init__.py.")
 
     # Validate required manifest fields
     missing = [f for f in ("name", "version") if not manifest.get(f)]
     if missing:
         log.error("Module %r manifest missing required fields: %s — skipping", pkg_name, missing)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError(f"Manifest missing required fields: {', '.join(missing)}.")
 
     # Validate hard deps are loaded
     for dep in (manifest.get("depends_on") or []):

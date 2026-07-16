@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
@@ -1514,13 +1514,18 @@ async def list_modules(
     import asyncio
     import os
     from pathlib import Path
-    from celerp.modules.loader import is_running, loaded_modules, read_manifest_metadata
+    from celerp.modules.loader import (
+        default_module_names, is_running, load_errors, loaded_modules,
+        read_manifest_metadata,
+    )
     from celerp.modules.registry import get_enabled
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
     enabled_names = get_enabled(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
+    load_errs = load_errors()
+    default_names = default_module_names()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
 
     def _scan_modules() -> list[dict]:
@@ -1553,6 +1558,11 @@ async def list_modules(
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name — is_running() counts them.
                     "running": is_running(pkg_name),
+                    # Why an enabled module is not running (import error, missing
+                    # dependency, license) — the UI shows this instead of silence.
+                    "load_error": load_errs.get(pkg_name),
+                    # First-party bundled modules cannot be removed from the UI.
+                    "is_default": pkg_name in default_names,
                 })
         return results
 
@@ -1602,6 +1612,50 @@ async def disable_module(
     write_config(cfg)
     enabled_list = sorted(get_enabled(company.settings))
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
+
+
+class _ImportPathBody(BaseModel):
+    path: str
+
+
+@router.post("/me/modules/import", dependencies=[Depends(require_admin)])
+async def import_module_upload(file: UploadFile = File(...)) -> dict:
+    """Install a module package from an uploaded .zip archive. Admin only.
+
+    Validation and installation share one code path with every other way a
+    module package arrives (celerp.modules.importer), so the security posture
+    cannot drift between surfaces. The module lands DISABLED; enabling and
+    restarting are separate, deliberate steps in the modules UI.
+    """
+    import asyncio
+    from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
+
+    data = await file.read()
+    if len(data) > MAX_ARCHIVE_BYTES:
+        raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
+    try:
+        info = await asyncio.to_thread(install_from_zip, data)
+    except ModuleImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"ok": True, **info}
+
+
+@router.post("/me/modules/import-path", dependencies=[Depends(require_admin)])
+async def import_module_from_path(body: _ImportPathBody) -> dict:
+    """Install a module from a local folder path (desktop folder picker). Admin only.
+
+    The API runs on the user's own machine in desktop mode, so a path is the
+    natural handoff from the native folder picker. Same importer core as the
+    zip upload.
+    """
+    import asyncio
+    from celerp.modules.importer import ModuleImportError, install_from_folder
+
+    try:
+        info = await asyncio.to_thread(install_from_folder, body.path)
+    except ModuleImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"ok": True, **info}
 
 
 @router.delete("/me", dependencies=[Depends(require_admin)])

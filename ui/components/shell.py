@@ -1427,6 +1427,12 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
     settings_link.append(
         A(t("nav.settings", lang), href="/settings/general", cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
     )
+    # Modules is a top-level surface, not a settings tab: it sits between
+    # Global Config and Web Access, visible to owner/admin only.
+    if user_level >= ROLE_LEVELS["admin"]:
+        settings_link.append(
+            A(t("nav.modules", lang), href="/modules", cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
+        )
     if user_level >= ROLE_LEVELS["manager"]:
         settings_link.append(
             A(t("msg._web_access"), href="/settings/cloud", cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),
