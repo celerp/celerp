@@ -74,10 +74,20 @@ def round_half_up_to_increment(value: float, increment: float | None) -> float:
 
 
 def derived_price(base_value: float, pl: dict) -> float:
-    """Compute a derived list's value from the base value: multiplier, then rounding."""
+    """Compute a derived list's value from the base value: multiplier, then rounding.
+
+    A positive price never rounds to zero: when the increment is coarser than the raw
+    value (a 5-increment on a 1.47 raw price), the result floors at one increment
+    instead of pricing the item free.
+    """
     raw = float(Decimal(str(base_value)) * Decimal(str(pl["multiplier"])))
     rounding = pl.get("rounding")
-    return round_half_up_to_increment(raw, float(rounding) if rounding is not None else None)
+    if rounding is None:
+        return raw
+    rounded = round_half_up_to_increment(raw, float(rounding))
+    if rounded == 0 and raw > 0:
+        return float(rounding)
+    return rounded
 
 
 def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str, currency: str) -> dict:

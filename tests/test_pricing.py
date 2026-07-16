@@ -66,6 +66,13 @@ class TestDerivedPrice:
     def test_already_clean_value(self):
         assert derived_price(250, {"multiplier": 0.7, "rounding": 5}) == 175.0
 
+    def test_positive_price_never_rounds_to_zero(self):
+        """An increment coarser than the raw value floors at one increment, not free."""
+        assert derived_price(2.10, {"multiplier": 0.7, "rounding": 5}) == 5.0
+        assert derived_price(0.01, {"multiplier": 0.5, "rounding": 1}) == 1.0
+        # At or above the half-increment it rounds normally
+        assert derived_price(3.60, {"multiplier": 0.7, "rounding": 5}) == 5.0
+
 
 class TestResolvePrice:
     def test_by_direct_name(self):
@@ -403,6 +410,25 @@ async def test_valuation_includes_derived_totals(client):
     after = (await client.get("/items/valuation", headers=h)).json()["price_totals"]
     assert after["Retail"] - before.get("Retail", 0) == pytest.approx(100 * 2 + 719)
     assert after["Trade"] - before.get("Trade", 0) == pytest.approx(70 * 2 + 505)
+
+
+@pytest.mark.asyncio
+async def test_fractional_quantity_holds_end_to_end(client):
+    """Derivation is a unit-price operation; a decimal quantity (35.56 kg) multiplies the
+    derived unit exactly like a manual one, in item reads and in valuation."""
+    h = _auth(await _register(client))
+    assert (await _set_config(client, h)).status_code == 200
+    before = (await client.get("/items/valuation", headers=h)).json()["price_totals"]
+    item_id = await _create_item(client, h, retail_price=15.285, quantity=35.56, sell_by="kg")
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["quantity"] == 35.56
+    assert item["retail_price"] == 15.285          # dynamic-decimal base untouched
+    assert item["trade_price"] == 10.0             # 15.285 x 0.7 = 10.6995, rounded to nearest 5
+
+    after = (await client.get("/items/valuation", headers=h)).json()["price_totals"]
+    assert after["Retail"] - before.get("Retail", 0) == pytest.approx(15.285 * 35.56)
+    assert after["Trade"] - before.get("Trade", 0) == pytest.approx(10.0 * 35.56)
 
 
 @pytest.mark.asyncio
