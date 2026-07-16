@@ -113,6 +113,9 @@ class BackupResult:
     # Set when the restored database could not be migrated to the current
     # schema: the data is present but unreadable until migrations run.
     schema_warning: str | None = None
+    # True when the import scheduled an automatic server restart (the restored
+    # module set differed); the UI tells the user instead of dying silently.
+    restart_scheduled: bool = False
 
 
 def _parse_key(b64_key: str) -> bytes:

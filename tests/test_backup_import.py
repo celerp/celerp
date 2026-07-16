@@ -534,3 +534,84 @@ class TestReconcileSchema:
         assert r.schema_warning is None
         r = BackupResult(ok=True, size_bytes=1, schema_warning="stale")
         assert r.schema_warning == "stale"
+
+
+# ---------------------------------------------------------------------------
+# Restore journey — the outcome must survive the post-restore restart and the
+# user must always have a way to continue (GDR: no dead ends)
+# ---------------------------------------------------------------------------
+
+class TestRestoreNotice:
+    def test_notice_roundtrip_and_one_shot(self, monkeypatch, tmp_path):
+        """The importer persists the outcome; the login page consumes it exactly once,
+        so the banner survives the automatic restart but never becomes permanent."""
+        from celerp.config import settings
+        from celerp.services.backup_import import RESTORE_NOTICE_FILE, _write_restore_notice
+        from ui.routes.auth import _consume_restore_notice
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        _write_restore_notice("Acme", ["celerp-labels"], "schema stale", True)
+        assert (tmp_path / RESTORE_NOTICE_FILE).is_file()
+
+        notice = _consume_restore_notice()
+        assert notice is not None
+        assert notice["company_name"] == "Acme"
+        assert notice["warnings"] == ["celerp-labels"]
+        assert notice["schema_warning"] == "schema stale"
+        assert notice["restart_scheduled"] is True
+        assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # one-shot
+        assert _consume_restore_notice() is None
+
+    def test_notice_message_composes_all_parts(self):
+        from ui.routes.auth import _restore_notice_message
+
+        msg = _restore_notice_message({
+            "company_name": "Acme",
+            "warnings": ["celerp-labels"],
+            "schema_warning": "Database restored, but the schema could not be brought up to date.",
+        })
+        assert "Acme" in msg
+        assert "celerp-labels" in msg
+        assert "schema" in msg.lower()
+
+    def test_no_notice_file_means_no_banner(self, monkeypatch, tmp_path):
+        from celerp.config import settings
+        from ui.routes.auth import _consume_restore_notice
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        assert _consume_restore_notice() is None
+
+
+class TestRestoreFlashContinuation:
+    """A restore flash must always let the user continue: either the restart is
+    already happening (status + auto-reload) or there is a Restart Now button."""
+
+    def _result(self, **kw):
+        from celerp.services.backup import BackupResult
+        defaults = dict(ok=True, size_bytes=1)
+        defaults.update(kw)
+        return BackupResult(**defaults)
+
+    def test_manual_restart_offers_button(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(self._result(), "Restored.").body.decode()
+        assert "/backup/restart-app" in body
+        assert "Restart Now" in body
+
+    def test_scheduled_restart_shows_status_and_reload(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(self._result(restart_scheduled=True), "Restored.").body.decode()
+        assert "/backup/restart-app" not in body     # no button: restart already happening
+        assert "Restarting automatically" in body
+        assert "setInterval" in body                 # page recovers on its own
+
+    def test_warnings_render_as_warning_flash(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(
+            self._result(warnings=["celerp-labels"], schema_warning="stale"), "Restored."
+        ).body.decode()
+        assert "flash--warning" in body
+        assert "celerp-labels" in body and "stale" in body

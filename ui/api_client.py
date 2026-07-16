@@ -427,6 +427,12 @@ async def patch_price_lists(token: str, price_lists: list[dict]) -> dict:
         return _raise(await c.patch("/companies/me/price-lists", json={"price_lists": price_lists})).json()
 
 
+async def restart_system(token: str) -> dict:
+    """POST /system/restart — graceful server restart (admin)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/system/restart")).json()
+
+
 async def get_default_price_list(token: str) -> str:
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/default-price-list")).json()

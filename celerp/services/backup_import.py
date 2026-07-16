@@ -339,8 +339,9 @@ async def _extract_files(path: Path) -> None:
                     dest.write_bytes(src.read())
 
 
-async def _activate_modules(modules: list[str]) -> None:
+async def _activate_modules(modules: list[str]) -> bool:
     """After a successful restore, update config.toml and request a restart.
+    Returns True when a restart was scheduled, so the UI can say so.
 
     The destination may not have the same set of enabled modules as the
     source. We call celerp.config.set_enabled_modules() (idempotent) so
@@ -354,7 +355,7 @@ async def _activate_modules(modules: list[str]) -> None:
     No-op if modules is empty (backwards compat with old archives).
     """
     if not modules:
-        return
+        return False
     try:
         from celerp.config import set_enabled_modules as _set_enabled_modules
         changed = _set_enabled_modules(modules)
@@ -362,11 +363,11 @@ async def _activate_modules(modules: list[str]) -> None:
                  len(modules), modules)
     except Exception as exc:
         log.warning("Failed to update config.toml with enabled modules: %s", exc)
-        return
+        return False
 
     if not changed:
         log.info("Enabled modules unchanged — skipping restart")
-        return
+        return False
 
     # Request a restart so the loader picks up the new modules.
     # _send_sigterm writes the sentinel + sleeps 0.2s then SIGTERMs self.
@@ -381,8 +382,35 @@ async def _activate_modules(modules: list[str]) -> None:
         loop = asyncio.get_event_loop()
         loop.call_later(0.5, _send_sigterm)
         log.info("Restart scheduled (SIGTERM in 0.5s)")
+        return True
     except Exception as exc:
         log.warning("Failed to schedule restart: %s", exc)
+        return False
+
+
+RESTORE_NOTICE_FILE = "restore-notice.json"
+
+
+def _write_restore_notice(company_name: str | None, warnings: list[str],
+                          schema_warning: str | None, restart_scheduled: bool) -> None:
+    """Persist a one-shot restore notice for the login page.
+
+    The post-restore restart can replace the page that showed the result (the
+    desktop shell reloads the window to the respawned server), so the outcome and
+    any warnings must survive it; the login page renders and then clears this file.
+    """
+    from celerp.config import settings
+    try:
+        path = settings.data_dir / RESTORE_NOTICE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "company_name": company_name,
+            "warnings": warnings,
+            "schema_warning": schema_warning,
+            "restart_scheduled": restart_scheduled,
+        }))
+    except Exception as exc:
+        log.warning("Could not write restore notice: %s", exc)
 
 
 async def run_import(path: Path):
@@ -432,8 +460,9 @@ async def run_import(path: Path):
         # meta.enabled_modules is the primary source (new backups); fall back
         # to the restored DB row for old backups whose meta.json predates this field.
         effective_modules = meta.enabled_modules or await _read_modules_from_restored_db()
+        restart_scheduled = False
         if effective_modules:
-            await _activate_modules(effective_modules)
+            restart_scheduled = await _activate_modules(effective_modules)
 
         # Audit pass: surface modules that were enabled on the source but
         # have no on-disk package on the destination. Read-only — the import
@@ -453,8 +482,9 @@ async def run_import(path: Path):
             except Exception as audit_exc:
                 log.warning("Module audit failed (non-fatal): %s", audit_exc)
 
+        _write_restore_notice(meta.company_name, warnings, schema_warning, restart_scheduled)
         return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings,
-                            schema_warning=schema_warning)
+                            schema_warning=schema_warning, restart_scheduled=restart_scheduled)
 
     except ValueError as exc:
         log.error("Backup import validation error: %s", exc)

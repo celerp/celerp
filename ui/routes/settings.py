@@ -2524,6 +2524,28 @@ def setup_routes(app):
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
+    @app.post("/backup/restart-app")
+    async def backup_restart_app(request: Request):
+        """Restart the servers after a restore, then reload once they are back.
+
+        Only ever rendered as the continuation of a just-completed restore flash;
+        there is no standing restart control anywhere in the UI.
+        """
+        from starlette.responses import Response as _R
+        from ui.components.shell import RESTART_POLL_JS
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.restart_system(token)
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="backup-flash")
+        return Div(
+            Div(t("settings.restarting_the_application"), cls="flash flash--warning"),
+            Script(RESTART_POLL_JS),
+            id="backup-flash",
+        )
+
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
