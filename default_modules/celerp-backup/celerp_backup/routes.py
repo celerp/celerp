@@ -63,6 +63,42 @@ def _flash(msg: str, kind: str = "success") -> Response:
     return Response(content=html, media_type="text/html")
 
 
+def _restore_flash(result, base_msg: str) -> Response:
+    """Post-restore flash that always lets the user continue the journey.
+
+    A restart finishes applying a restore. When the import already scheduled one
+    (the module set changed), say so and reload the page once the server is back;
+    otherwise offer a Restart now button - the user is never told to restart
+    without a way to do it from where they stand.
+    """
+    from fasthtml.common import Button, Div, Script, to_xml
+    from ui.components.shell import RESTART_POLL_JS
+
+    from celerp.services.backup_import import missing_modules_sentence
+
+    msg = base_msg
+    if result.warnings:
+        msg += " " + missing_modules_sentence(result.warnings)
+    if result.schema_warning:
+        msg += f" Warning: {result.schema_warning}"
+    kind = "warning" if (result.warnings or result.schema_warning) else "success"
+    if result.restart_scheduled:
+        body = Div(
+            Div(f"{msg} {t('settings.restarting_automatically')}", cls=f"flash flash--{kind}"),
+            Script(RESTART_POLL_JS),
+            id="backup-flash",
+        )
+    else:
+        body = Div(
+            Div(msg, cls=f"flash flash--{kind}"),
+            Button(t("btn.restart_now"), cls="btn btn--primary mt-sm",
+                   hx_post="/backup/restart-app",
+                   hx_target="#backup-flash", hx_swap="outerHTML"),
+            id="backup-flash",
+        )
+    return Response(content=to_xml(body), media_type="text/html")
+
+
 def _backup_table(items: list[dict]):
     """Render a data-table of backup items."""
     from fasthtml.common import Button, Div, Table, Tbody, Td, Th, Thead, Tr
@@ -165,7 +201,7 @@ async def restore_backup(backup_id: str):
     result = await backup_repo.restore_snapshot(backup_id)
     if not result.ok:
         return _flash(f"Restore failed: {result.error or 'Unknown error'}", "error")
-    return _flash(t("settings.database_restored_restart_the_application_to_apply"))
+    return _restore_flash(result, t("settings.database_restored_restart_the_application_to_apply"))
 
 
 @router.get("/export")
@@ -219,14 +255,11 @@ async def import_backup(request: Request, file: UploadFile = File(...), session:
 
     if not result.ok:
         return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
-    msg = (
+    return _restore_flash(
+        result,
         f"Imported backup from {meta.company_name or 'unknown'}. "
-        "Restart the application to apply changes."
+        f"Restart the application to apply changes.",
     )
-    if result.warnings:
-        names = ", ".join(result.warnings)
-        msg += f" Note: {len(result.warnings)} module(s) enabled on the source are not installed on this server ({names})."
-    return _flash(msg)
 
 
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
@@ -277,4 +310,6 @@ async def import_backup_bootstrap(
         "ok": True,
         "company_name": meta.company_name,
         "warnings": result.warnings,
+        "schema_warning": result.schema_warning,
+        "restart_scheduled": result.restart_scheduled,
     }

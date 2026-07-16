@@ -31,6 +31,37 @@ from celerp.config import settings as _settings
 from ui.config import API_BASE
 
 
+def _consume_restore_notice() -> dict | None:
+    """Read and clear the one-shot restore notice the importer persists.
+
+    The post-restore restart replaces whatever page showed the import result, so
+    the outcome and any warnings are re-shown here, on the first login page after
+    the restart, where the user cannot miss them."""
+    from celerp.services.backup_import import RESTORE_NOTICE_FILE
+    path = _settings.data_dir / RESTORE_NOTICE_FILE
+    try:
+        if not path.is_file():
+            return None
+        notice = json.loads(path.read_text())
+        path.unlink(missing_ok=True)
+        return notice if isinstance(notice, dict) else None
+    except Exception:
+        return None
+
+
+def _restore_notice_message(notice: dict) -> str:
+    """One readable sentence block for the post-restore login banner."""
+    from celerp.services.backup_import import missing_modules_sentence
+    company = notice.get("company_name") or "backup"
+    parts = [f"Backup from {company} restored. Sign in with the credentials from the backup."]
+    if notice.get("schema_warning"):
+        parts.append(str(notice["schema_warning"]))
+    warnings = list(notice.get("warnings") or [])
+    if warnings:
+        parts.append(missing_modules_sentence(warnings))
+    return " ".join(parts)
+
+
 def setup_routes(app):
 
     # ── Pre-auth gate: check bootstrap state ────────────────────────────────
@@ -96,6 +127,11 @@ def setup_routes(app):
             notice = flash("Your session expired. Please sign in again.", kind="warning")
         elif reason == "idle":
             notice = flash("You were signed out after a period of inactivity. Please sign in again.", kind="warning")
+        elif (restore_notice := _consume_restore_notice()) is not None:
+            notice = flash(_restore_notice_message(restore_notice),
+                           kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
+        elif request.query_params.get("imported"):
+            notice = flash("Backup restored. Sign in with the credentials from the backup.", kind="success")
         else:
             notice = ""
         resp = auth_shell(_login_form(notice=notice, next_url=nxt), title="Sign in - Celerp")
@@ -209,21 +245,31 @@ def setup_routes(app):
                 else:
                     detail = r.text[:300] or "Import failed."
                 return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
-            # Success — surface missing-module warnings (if any) on the form
+            # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
+            schema_warning: str | None = None
+            restart_scheduled = False
             try:
-                warnings = list(r.json().get("warnings") or [])
+                payload = r.json()
+                warnings = list(payload.get("warnings") or [])
+                schema_warning = payload.get("schema_warning") or None
+                restart_scheduled = bool(payload.get("restart_scheduled"))
             except Exception:
                 warnings = []
-            if warnings:
+            if warnings or schema_warning:
                 # Show a non-blocking warning page with "Continue anyway" link
-                names = ", ".join(warnings)
-                warn_msg = (
-                    f"Restore complete, but {len(warnings)} module(s) enabled on the "
-                    f"source are not installed on this server: {names}. "
-                    f"Install the missing module packages, or continue to login "
-                    f"(those features will be unavailable until installed)."
-                )
+                parts: list[str] = []
+                if schema_warning:
+                    parts.append(schema_warning)
+                if warnings:
+                    from celerp.services.backup_import import missing_modules_sentence
+                    parts.append(missing_modules_sentence(warnings))
+                if restart_scheduled:
+                    parts.append(
+                        "The app is restarting to load the restored modules; if this page "
+                        "stops responding, these notes are shown again at the login screen."
+                    )
+                warn_msg = "Restore complete, but: " + " ".join(parts)
                 return auth_shell(
                     _setup_import_form(
                         warning=warn_msg,

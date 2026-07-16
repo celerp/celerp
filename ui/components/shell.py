@@ -1469,6 +1469,23 @@ def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     return Div(content, cls=f"flash flash--{kind}", id="flash")
 
 
+# Reload the page once the server is reachable again after a restart. The first poll
+# waits out the graceful shutdown so a still-dying server cannot answer and trigger a
+# premature reload. On the desktop app the shell reloads the window itself when the
+# servers respawn (possibly on a new port); this poll then simply never fires.
+RESTART_POLL_JS = """
+(function () {
+  setTimeout(function () {
+    var timer = setInterval(function () {
+      fetch("/login", { cache: "no-store" }).then(function (r) {
+        if (r.ok) { clearInterval(timer); window.location.href = "/"; }
+      }).catch(function () { /* still restarting */ });
+    }, 1500);
+  }, 4000);
+})();
+"""
+
+
 def spinner() -> FT:
     return Div(cls="spinner", id="spinner")
 

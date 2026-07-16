@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.celerp.Celerp</id>
+  <name>Celerp</name>
+  <summary>Free local-first ERP: inventory, invoicing, CRM, and accounting</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BUSL-1.1 AND MIT AND LicenseRef-proprietary</project_license>
+  <developer id="com.celerp">
+    <name>Data Universal Limited</name>
+  </developer>
+  <description>
+    <p>
+      Celerp is a free, downloadable, local-first ERP for small businesses. Inventory with
+      FIFO/FEFO/expiry tracking, invoicing, CRM, and accounting, running on your own machine.
+      No subscriptions, no lock-in.
+    </p>
+    <p>
+      Your data stays in a PostgreSQL database and file store you control. The business modules
+      are open-source (MIT); the engine is source-available and converts to Apache 2.0. Optional
+      services (Connect, AI, hosting) fund development.
+    </p>
+  </description>
+  <launchable type="desktop-id">celerp.desktop</launchable>
+  <url type="homepage">https://celerp.com</url>
+  <url type="help">https://celerp.com/docs/</url>
+  <url type="bugtracker">https://github.com/celerp/celerp/issues</url>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/celerp/celerp/main/docs/press-kit/screenshots/dashboard.png</image>
+      <caption>Dashboard with revenue trend, receivables aging, and inventory mix</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/celerp/celerp/main/docs/press-kit/screenshots/inventory.png</image>
+      <caption>Multi-location inventory with barcode scanning and valuation</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/celerp/celerp/main/docs/press-kit/screenshots/manufacturing-worksheet.png</image>
+      <caption>Celerp manufacturing cost worksheet</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/celerp/celerp/main/docs/press-kit/screenshots/trial-balance.png</image>
+      <caption>Double-entry trial balance that ties out to zero</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/celerp/celerp/main/docs/press-kit/screenshots/rest-api.png</image>
+      <caption>Built-in REST API for integrations</caption>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Office</category>
+    <category>Finance</category>
+  </categories>
+  <keywords>
+    <keyword>erp</keyword>
+    <keyword>inventory</keyword>
+    <keyword>invoicing</keyword>
+    <keyword>accounting</keyword>
+    <keyword>crm</keyword>
+    <keyword>warehouse</keyword>
+  </keywords>
+</component>

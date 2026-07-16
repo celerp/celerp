@@ -21,6 +21,15 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, viewer_read_only, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
+from celerp.services.pricing import (
+    coerce_price,
+    derived_price_keys,
+    get_price_config,
+    inject_derived_prices,
+    is_cost_list_name,
+    price_key,
+    resolve_price,
+)
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp_inventory.projections import is_item_available
 
@@ -136,8 +145,13 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None) -> dict:
-    """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
+def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+    """Flatten attributes dict to top-level so schema-driven UI sees all fields.
+
+    When ``price_config`` (``(price_lists, base_price_list, currency)`` from
+    ``get_price_config``) is given, derived price lists are computed onto the result after
+    the cost roll-up, so a Cost base prices from the same unit cost every other consumer sees.
+    """
     flat = dict(state)
     flat["id"] = entity_id
     attrs = flat.pop("attributes", None) or {}
@@ -165,6 +179,8 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     elif flat.get("cost_price") is not None:
         flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
     # else: both remain absent (item has no cost set)
+    if price_config is not None:
+        inject_derived_prices(flat, *price_config)
     return flat
 
 
@@ -341,12 +357,14 @@ async def list_items(
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}
 
+    price_config = await get_price_config(session, company_id)
     result = [
         _flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
                       created_at=r.created_at,
-                      updated_at=r.updated_at)
+                      updated_at=r.updated_at,
+                      price_config=price_config)
         for r in rows
     ]
 
@@ -507,10 +525,8 @@ async def get_valuation(
     ).scalars().all()
 
     # Compute price totals dynamically per price list
-    from celerp.models.company import Company as _Company
-    co = await session.get(_Company, company_id)
-    _settings = co.settings if co else {}
-    _price_lists: list[dict] = (_settings or {}).get("price_lists") or [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+    _price_config = await get_price_config(session, company_id)
+    _price_lists: list[dict] = _price_config[0]
 
     price_totals: dict[str, Decimal] = {}
     for pl in _price_lists:
@@ -569,29 +585,26 @@ async def get_valuation(
 
         active_item_count += 1
         qty = float(state.get("quantity") or 0)
+        # Value from the flattened item so cost (recipe standard / lot total) and derived
+        # lists price identically to every other consumer of item state.
+        flat = _flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
             pl_name = pl.get("name", "")
-            key = f"{pl_name.lower()}_price"
             try:
-                if pl_name.lower() in ("cost", "cost price", "landed"):
-                    # Recipe-backed item: value at the recipe's standard unit cost (single source of
-                    # truth, consistent with _flatten_item). Else stored cost_total (lot total),
-                    # else fallback to unit price * qty.
-                    _runit = _recipe_standard_unit_cost(state)
-                    if _runit is not None:
-                        price_totals[pl_name] += Decimal(str(_runit)) * Decimal(str(qty))
-                    elif state.get("cost_total") is not None:
-                        price_totals[pl_name] += Decimal(str(state.get("cost_total")))
-                    elif state.get(key) is not None:
-                        price_totals[pl_name] += Decimal(str(state[key])) * Decimal(str(qty))
+                if is_cost_list_name(pl_name):
+                    # Cost values at the lot total (recipe standard × qty when recipe-backed).
+                    if flat.get("cost_total") is not None:
+                        price_totals[pl_name] += Decimal(str(flat["cost_total"]))
+                    elif flat.get(price_key(pl_name)) is not None:
+                        price_totals[pl_name] += Decimal(str(flat[price_key(pl_name)])) * Decimal(str(qty))
                 else:
-                    v = state.get(key)
-                    if v is not None:
+                    v = resolve_price(flat, pl_name)
+                    if v:
                         price_totals[pl_name] += Decimal(str(v)) * Decimal(str(qty))
             except Exception:
                 pass
 
-    _cost_pl_names = {pl.get("name", "") for pl in _price_lists if pl.get("name", "").lower() in ("cost", "cost price", "landed")}
+    _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
     show_cost = ROLE_LEVELS.get(role, 0) >= ROLE_LEVELS["manager"]
 
     price_totals_out = {
@@ -665,10 +678,11 @@ async def get_field_values(
     rows = (await session.execute(stmt)).scalars().all()
     seen: set[str] = set()
     found_in_known_fields = field in _SUGGESTION_FIELDS
+    _price_config = await get_price_config(session, company_id)
     for row in rows:
         if row.entity_id in demo_eids:
             continue
-        flat = _flatten_item(row.state, row.entity_id)
+        flat = _flatten_item(row.state, row.entity_id, price_config=_price_config)
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -728,7 +742,8 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
                          created_at=row.created_at,
-                         updated_at=row.updated_at)
+                         updated_at=row.updated_at,
+                         price_config=await get_price_config(session, company_id))
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     filtered = _apply_field_visibility([flat], role, field_schema)
     return filtered[0]
@@ -918,6 +933,10 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # Strip price fields from create event data - they go via pricing events.
     # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
     price_fields = {k: data.pop(k) for k in list(data) if k.endswith("_price") and data[k] is not None}
+    # Derived lists are computed at read time; a derived column riding along in an imported
+    # or exported payload is dropped rather than stored.
+    _derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
+    price_fields = {k: v for k, v in price_fields.items() if k not in _derived_keys}
     if "cost_total" in data and data["cost_total"] is not None:
         # cost_total takes precedence over cost_price if both supplied
         price_fields["cost_total"] = data.pop("cost_total")
@@ -970,6 +989,19 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if blocked:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
 
+    # Derived price lists are computed from the base price list; their keys are never stored.
+    # Both the conventional key ("trade_price") and the raw list name ("Trade") are blocked:
+    # resolve_price honors a direct-name key first, so storing one would shadow the formula.
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
+    _derived = derived_price_keys(_price_lists)
+    derived_blocked = {k for k in changed_keys if k in _derived or price_key(k) in _derived}
+    if derived_blocked:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{sorted(derived_blocked)} are computed from the '{_base_name}' price list; "
+                   f"edit the base price, or change the factor in Settings",
+        )
+
     # Normalize "clear" gestures: an empty-string new value means "unset the field" -> None (issue #202).
     # Without this, an optional field can't be returned to None — barcode rejects "" (digit check), cost
     # crashes on float(""), and prices/category/text store "" instead of clearing. Required fields keep
@@ -978,6 +1010,15 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     for _f, _fc in payload.fields_changed.items():
         if _f not in _CLEAR_PROTECTED and isinstance(_fc, dict) and _fc.get("new") == "":
             _fc["new"] = None
+
+    # Price values must be finite numbers: a non-numeric value stored on a base list would
+    # make every derived read treat that item as unpriced, and NaN/Infinity break the
+    # Decimal arithmetic downstream.
+    for _f, _fc in payload.fields_changed.items():
+        if (_f.endswith("_price") or _f == "cost_total") and isinstance(_fc, dict):
+            _new = _fc.get("new")
+            if _new is not None and coerce_price(_new) is None:
+                raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
 
     # Validate sell_by change
     if "sell_by" in changed_keys:
@@ -2401,6 +2442,15 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 @router.post("/{entity_id}/price")
 async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _price_lists, _base_name, _ = await get_price_config(session, company_id)
+    # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
+    # resolve_price honors a direct-name key first, so storing one would shadow the formula.
+    if payload.price_type in derived_price_keys(_price_lists) or price_key(payload.price_type) in derived_price_keys(_price_lists):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{payload.price_type}' is computed from the '{_base_name}' price list; "
+                   f"edit the base price, or change the factor in Settings",
+        )
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2545,6 +2595,7 @@ async def batch_import_items(
     # Falls back to empty set (no validation) if units cannot be fetched.
     _units = await _get_company_units(session, company_id)
     _valid_units: frozenset[str] = frozenset(u["name"] for u in _units)
+    _derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
 
     created = skipped = updated = 0
     errors: list[str] = []
@@ -2558,6 +2609,10 @@ async def batch_import_items(
         # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
         rec.data.pop("created_at", None)
         rec.data.pop("updated_at", None)
+        # Derived price lists are computed at read time; a derived column riding along in an
+        # exported file must not be stored (same rule as item create).
+        for _dk in _derived_keys:
+            rec.data.pop(_dk, None)
         # Normalize allow_splitting to a real bool if the import provided one (CSV
         # gives strings like "Yes"/"No", and None means "unset"). Imports that omit
         # it default to no-split in the create branch below; the split guard
@@ -2818,7 +2873,8 @@ async def export_items_csv(
 ) -> StreamingResponse:
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
-    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at) for r in rows]
+    price_config = await get_price_config(session, company_id)
+    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:
@@ -2842,12 +2898,8 @@ async def export_items_csv(
     if status:
         items = [it for it in items if it.get("status") == status]
 
-    # Build price columns dynamically from company settings
-    from celerp.models.company import Company
-    co = await session.get(Company, company_id)
-    settings = co.settings if co else {}
-    price_lists: list[dict] = (settings or {}).get("price_lists") or [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
-    price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
+    # Build price columns dynamically from the price config fetched above
+    price_cols = [price_key(pl["name"]) for pl in price_config[0] if pl.get("name")]
 
     _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 

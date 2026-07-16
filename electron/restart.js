@@ -84,4 +84,38 @@ function watchForRestart(dbUrl, {
   });
 }
 
-module.exports = { restartSentinelPath, watchForRestart };
+/**
+ * Classify a navigation/window-open URL for the app frame.
+ *
+ * The app's own UI lives on http://127.0.0.1:<uiPort>, and a restart re-allocates
+ * that port. A URL pointing at a FORMER UI port is a stale self-reference (a redirect
+ * or link issued before the restart); its server is gone, so handing it to the OS
+ * browser just opens a dead tab. It must be dropped: the restart flow already reloads
+ * the window to the live port. Loopback URLs on ports we never served stay "external"
+ * (users legitimately link other local tools), as do all other http(s) URLs.
+ *
+ * Ports are compared exactly (not by string prefix, which would let :3630 match :36303).
+ *
+ * @param {string} url
+ * @param {number|null} uiPort - current UI port
+ * @param {Set<number>} [formerUiPorts] - UI ports used earlier in this app session
+ * @returns {"allow"|"deny"|"external"} allow in-window / drop / open in OS browser
+ */
+function classifyNavigation(url, uiPort, formerUiPorts = new Set()) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return "deny";
+  }
+  if (u.protocol === "http:" && u.hostname === "127.0.0.1") {
+    const port = Number(u.port);
+    if (uiPort !== null && port === Number(uiPort)) return "allow";
+    if (formerUiPorts.has(port)) return "deny";
+    return "external";
+  }
+  if (u.protocol === "https:" || u.protocol === "http:") return "external";
+  return "deny";
+}
+
+module.exports = { restartSentinelPath, watchForRestart, classifyNavigation };

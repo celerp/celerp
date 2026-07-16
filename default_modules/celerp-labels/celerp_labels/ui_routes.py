@@ -728,8 +728,9 @@ def _editor_panel(
     _drag = null;
   }});
 
-  // ── Preview renderer (uses server-generated barcode/QR images) ─────────
-  // Fixed QR size: always 10mm. Barcode: min 20mm wide, min 6mm tall.
+  // ── Preview renderer (uses server-generated barcode/QR SVGs) ─────────
+  // Fixed QR size: always 10mm. Barcode: natural width (from the SVG's
+  // intrinsic size, matching the print sheet), min 20mm, capped by label edge.
   var QR_SIZE_MM = 10;
   var BC_MIN_W_MM = 20;
   var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
@@ -777,7 +778,8 @@ def _editor_panel(
 
       if (ftype === 'barcode') {{
         block.className = 'label-field-block label-field-block--barcode';
-        var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(dims.wMm - xPos - 2, 30)) * dims.scale);
+        var bcMaxWMm = dims.wMm - xPos - 2;
+        var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, 30)) * dims.scale);
         var bhEl = row.querySelector('.fld-bh');
         var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
         var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
@@ -787,6 +789,14 @@ def _editor_panel(
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
+        img.onload = function() {{
+          // Match the print sheet: natural width (SVG intrinsic size, 96 CSS
+          // px per inch), squeezed only when the label edge is closer.
+          var naturalMm = img.naturalWidth * 25.4 / 96;
+          var wPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, naturalMm)) * dims.scale) + 'px';
+          img.style.width = wPx;
+          block.style.width = wPx;
+        }};
         block.appendChild(img);
       }} else if (ftype === 'barcode_text') {{
         block.className = 'label-field-block label-field-block--barcode-text';
@@ -1005,7 +1015,7 @@ def _printable_label_sheet(
     items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None
 ) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print()."""
-    import base64
+    from html import escape as html_escape
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
@@ -1022,37 +1032,32 @@ def _printable_label_sheet(
         )
 
     from starlette.responses import HTMLResponse
-    from celerp_labels.service import _make_barcode_image, _make_qr_image, resolve_field_value
+    from celerp_labels.service import QR_SIZE_MM, _make_barcode_svg, _make_qr_svg, resolve_field_value
 
-    def _barcode_img_tag(val: str, module_height: int = 8, wrap_style: str = "", width_mm: float | None = None) -> str:
-        buf = _make_barcode_image(val, module_height=module_height)
-        h_px = max(4, int(module_height) * 4)
-        # Width mirrors the editor preview: a fixed mm width so the printed barcode matches the
-        # designed footprint (the preview clamps to 20–30mm — see BC_MIN_W_MM).
-        if width_mm is not None:
-            wrap_style = f"{wrap_style}width:{width_mm}mm;"
-        if buf:
-            b64 = base64.b64encode(buf.read()).decode()
+    def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float) -> str:
+        res = _make_barcode_svg(val, module_height=module_height, stretch=True)
+        safe_val = html_escape(str(val), quote=True)
+        if res:
+            svg, natural_mm, _ = res
+            # Natural width keeps every bar a whole multiple of the 0.2mm module;
+            # squeeze only when the label is too narrow. The 20mm floor matches
+            # the editor preview (BC_MIN_W_MM).
+            bc_w = min(avail_mm, max(20.0, natural_mm))
+            h_px = max(4, int(module_height) * 4)
             return (
-                f'<div class="label-field label-field--barcode" style="{wrap_style}">'
-                f'<img src="data:image/png;base64,{b64}" alt="{val}"'
-                f' style="width:100%;height:{h_px}px;display:block;">'
-                f'</div>'
+                f'<div class="label-field label-field--barcode" data-value="{safe_val}"'
+                f' style="{wrap_style}width:{bc_w:.2f}mm;height:{h_px}px;">{svg}</div>'
             )
-        return f'<div class="label-field label-field--barcode" style="{wrap_style}">{val}</div>'
+        return f'<div class="label-field label-field--barcode" style="{wrap_style}">{safe_val}</div>'
 
-    def _qr_img_tag(val: str, wrap_style: str = "") -> str:
-        buf = _make_qr_image(val)
+    def _qr_tag(val: str, wrap_style: str = "") -> str:
+        svg = _make_qr_svg(val, stretch=True)
+        safe_val = html_escape(str(val), quote=True)
         # QR is a fixed 10mm square in the editor preview; match it here.
-        qr_style = f"{wrap_style}width:10mm;height:10mm;"
-        if buf:
-            b64 = base64.b64encode(buf.read()).decode()
-            return (
-                f'<div class="label-field label-field--qr" style="{qr_style}">'
-                f'<img src="data:image/png;base64,{b64}" alt="{val}" style="width:100%;height:100%;display:block;">'
-                f'</div>'
-            )
-        return f'<div class="label-field label-field--qr" style="{qr_style}">{val}</div>'
+        qr_style = f"{wrap_style}width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
+        if svg:
+            return f'<div class="label-field label-field--qr" data-value="{safe_val}" style="{qr_style}">{svg}</div>'
+        return f'<div class="label-field label-field--qr" style="{qr_style}">{safe_val}</div>'
 
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
     _auto_step_mm = {"text": 4.0, "barcode_text": 4.0, "barcode": 8.0, "qr": 11.0}
@@ -1080,14 +1085,13 @@ def _printable_label_sheet(
             pos = f"left:{left_mm}mm;top:{top_mm}mm;"
             if ftype == "barcode":
                 bc_height = int(f.get("barcode_height") or 8)
-                bc_w = max(20.0, min(w_mm - left_mm - 2.0, 30.0))
-                field_lines.append(_barcode_img_tag(val, module_height=bc_height, wrap_style=pos, width_mm=bc_w))
+                field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")
                 span_style = f' style="font-size:{float(fs)}pt;"' if fs not in (None, "") else ""
                 field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{val}</span></div>')
             elif ftype == "qr":
-                field_lines.append(_qr_img_tag(val, wrap_style=pos))
+                field_lines.append(_qr_tag(val, wrap_style=pos))
             else:
                 # Honor the designer's per-field font size (points) when set; otherwise the
                 # label-item default applies, so existing labels look exactly as before.
@@ -1117,7 +1121,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
   flex-shrink: 0;
 }}
 .label-field {{ position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }}
-.label-field--barcode img {{ display: block; }}
+.label-field--barcode svg, .label-field--qr svg {{ display: block; }}
 .bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
 .no-print {{ margin-bottom: 1rem; }}
 @media print {{
@@ -1272,27 +1276,27 @@ def setup_ui_routes(app) -> None:
             log.debug("Could not fetch field schema for labels: %s", exc)
         return global_extra, category_attrs
 
-    # ── Barcode/QR image preview endpoints (served from UI app) ─────────
+    # ── Barcode/QR preview endpoints (served from UI app as SVG) ────────
     from starlette.responses import Response as StarletteResponse
 
     @app.get("/api/labels/preview/barcode")
     async def barcode_preview(request: Request):
-        from celerp_labels.service import _make_barcode_image
+        from celerp_labels.service import _make_barcode_svg
         value = request.query_params.get("value", "0000000")
         height = int(request.query_params.get("height", "8"))
-        buf = _make_barcode_image(value, module_height=height)
-        if buf:
-            return StarletteResponse(content=buf.read(), media_type="image/png",
+        res = _make_barcode_svg(value, module_height=height)
+        if res:
+            return StarletteResponse(content=res[0], media_type="image/svg+xml",
                                      headers={"Cache-Control": "public, max-age=3600"})
         return StarletteResponse(content=b"", status_code=204)
 
     @app.get("/api/labels/preview/qr")
     async def qr_preview(request: Request):
-        from celerp_labels.service import _make_qr_image
+        from celerp_labels.service import _make_qr_svg
         value = request.query_params.get("value", "0000000")
-        buf = _make_qr_image(value)
-        if buf:
-            return StarletteResponse(content=buf.read(), media_type="image/png",
+        svg = _make_qr_svg(value)
+        if svg:
+            return StarletteResponse(content=svg, media_type="image/svg+xml",
                                      headers={"Cache-Control": "public, max-age=3600"})
         return StarletteResponse(content=b"", status_code=204)
 

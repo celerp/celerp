@@ -282,18 +282,37 @@ async def _run_pg_restore(dump_bytes: bytes, database_url: str) -> None:
     )
 
 
-async def _run_alembic() -> None:
-    """Reconcile schema after pg_restore via alembic upgrade head."""
+async def _reconcile_schema() -> str | None:
+    """Bring the restored database up to the current schema; returns a warning on failure.
+
+    A restored dump can be stamped behind (or ahead of) its actual DDL - a
+    develop-origin source database, for example - and raw ``alembic upgrade head``
+    then re-applies DDL that already exists and dies on DuplicateColumn, leaving the
+    schema silently stale while the running code queries newer columns. Run the same
+    stamp-repair walker, grants, and develop-to-release reconcile the CLI's
+    ``celerp migrate`` uses, and surface any failure to the user instead of only
+    logging it: with a stale schema every data read fails, which reads as
+    "the import lost my data".
+    """
+    import asyncio
+    from celerp.config import settings
+
+    def _sync() -> None:
+        from celerp.cli import _apply_migrations, _post_migration_grants, _reconcile_after_migrate
+        _apply_migrations(settings.database_url)
+        _post_migration_grants(settings.database_url)
+        _reconcile_after_migrate(settings.database_url)
+
     try:
-        import asyncio
-        from celerp.alembic_config import build_alembic_config as _build_alembic_config
-        from alembic import command as _alembic_cmd
-        _cfg = _build_alembic_config()
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
-        log.info("Alembic upgrade head completed after pg_restore")
-    except Exception as alembic_exc:
-        log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+        await asyncio.get_event_loop().run_in_executor(None, _sync)
+        log.info("Schema reconcile completed after pg_restore")
+        return None
+    except Exception as exc:
+        log.warning("Schema reconcile after pg_restore failed: %s", exc)
+        return (
+            f"Database restored, but the schema could not be brought up to date: {exc}. "
+            f"Restart the app (or run 'celerp migrate') before using the restored data."
+        )
 
 
 async def _extract_files(path: Path) -> None:
@@ -320,8 +339,9 @@ async def _extract_files(path: Path) -> None:
                     dest.write_bytes(src.read())
 
 
-async def _activate_modules(modules: list[str]) -> None:
+async def _activate_modules(modules: list[str]) -> bool:
     """After a successful restore, update config.toml and request a restart.
+    Returns True when a restart was scheduled, so the UI can say so.
 
     The destination may not have the same set of enabled modules as the
     source. We call celerp.config.set_enabled_modules() (idempotent) so
@@ -335,7 +355,7 @@ async def _activate_modules(modules: list[str]) -> None:
     No-op if modules is empty (backwards compat with old archives).
     """
     if not modules:
-        return
+        return False
     try:
         from celerp.config import set_enabled_modules as _set_enabled_modules
         changed = _set_enabled_modules(modules)
@@ -343,11 +363,11 @@ async def _activate_modules(modules: list[str]) -> None:
                  len(modules), modules)
     except Exception as exc:
         log.warning("Failed to update config.toml with enabled modules: %s", exc)
-        return
+        return False
 
     if not changed:
         log.info("Enabled modules unchanged — skipping restart")
-        return
+        return False
 
     # Request a restart so the loader picks up the new modules.
     # _send_sigterm writes the sentinel + sleeps 0.2s then SIGTERMs self.
@@ -362,8 +382,48 @@ async def _activate_modules(modules: list[str]) -> None:
         loop = asyncio.get_event_loop()
         loop.call_later(0.5, _send_sigterm)
         log.info("Restart scheduled (SIGTERM in 0.5s)")
+        return True
     except Exception as exc:
         log.warning("Failed to schedule restart: %s", exc)
+        return False
+
+
+RESTORE_NOTICE_FILE = "restore-notice.json"
+
+
+def missing_modules_sentence(warnings: list[str]) -> str:
+    """The one user-facing sentence for modules the source had but this install lacks.
+
+    Every surface that reports a restore (settings flash, bootstrap warning page,
+    post-restart login notice) uses this same wording."""
+    names = ", ".join(str(w) for w in warnings)
+    return (
+        f"{len(warnings)} module(s) enabled on the source are not installed on this "
+        f"server: {names}. Those features stay unavailable until the module packages "
+        f"are installed."
+    )
+
+
+def _write_restore_notice(company_name: str | None, warnings: list[str],
+                          schema_warning: str | None, restart_scheduled: bool) -> None:
+    """Persist a one-shot restore notice for the login page.
+
+    The post-restore restart can replace the page that showed the result (the
+    desktop shell reloads the window to the respawned server), so the outcome and
+    any warnings must survive it; the login page renders and then clears this file.
+    """
+    from celerp.config import settings
+    try:
+        path = settings.data_dir / RESTORE_NOTICE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "company_name": company_name,
+            "warnings": warnings,
+            "schema_warning": schema_warning,
+            "restart_scheduled": restart_scheduled,
+        }))
+    except Exception as exc:
+        log.warning("Could not write restore notice: %s", exc)
 
 
 async def run_import(path: Path):
@@ -402,7 +462,7 @@ async def run_import(path: Path):
         await _run_pg_restore(dump_bytes, settings.database_url)
 
         # Reconcile schema — run any missing migrations after pg_restore
-        await _run_alembic()
+        schema_warning = await _reconcile_schema()
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)
@@ -413,8 +473,9 @@ async def run_import(path: Path):
         # meta.enabled_modules is the primary source (new backups); fall back
         # to the restored DB row for old backups whose meta.json predates this field.
         effective_modules = meta.enabled_modules or await _read_modules_from_restored_db()
+        restart_scheduled = False
         if effective_modules:
-            await _activate_modules(effective_modules)
+            restart_scheduled = await _activate_modules(effective_modules)
 
         # Audit pass: surface modules that were enabled on the source but
         # have no on-disk package on the destination. Read-only — the import
@@ -434,7 +495,9 @@ async def run_import(path: Path):
             except Exception as audit_exc:
                 log.warning("Module audit failed (non-fatal): %s", audit_exc)
 
-        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings)
+        _write_restore_notice(meta.company_name, warnings, schema_warning, restart_scheduled)
+        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings,
+                            schema_warning=schema_warning, restart_scheduled=restart_scheduled)
 
     except ValueError as exc:
         log.error("Backup import validation error: %s", exc)

@@ -231,9 +231,9 @@ class TestRunImportMissingModuleWarnings:
                 pass
             monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
 
-            async def fake_alembic():
+            async def fake_reconcile():
                 pass
-            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+            monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
 
             async def fake_extract(path):
                 pass
@@ -275,13 +275,13 @@ class TestRunImportMissingModuleWarnings:
         try:
             async def fake_restore(dump, url): return None
             async def fake_dispose(): pass
-            async def fake_alembic(): pass
+            async def fake_reconcile(): return None
             async def fake_extract(path): pass
             async def fake_activate(m): return None
             async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
             monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
             monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+            monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
             monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
             monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
             monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
@@ -318,13 +318,13 @@ class TestRunImportActivateModules:
             captured["modules"] = list(modules)
         async def fake_restore(dump, url): return None
         async def fake_dispose(): pass
-        async def fake_alembic(): pass
+        async def fake_reconcile(): return None
         async def fake_extract(path): pass
         async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
         monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
         monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
         monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
         monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
 
@@ -347,13 +347,13 @@ class TestRunImportActivateModules:
             activate_called["v"] = True
         async def fake_restore(dump, url): return None
         async def fake_dispose(): pass
-        async def fake_alembic(): pass
+        async def fake_reconcile(): return None
         async def fake_extract(path): pass
         async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
         monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
         monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
-        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
         monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
         monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
 
@@ -386,12 +386,16 @@ class TestAlembicConfigHelperUsed:
             "Use celerp.alembic_config.build_alembic_config() instead."
         )
 
-    def test_backup_import_uses_shared_helper(self):
-        """Positive check: backup_import.py imports and uses build_alembic_config."""
+    def test_backup_import_uses_cli_migration_path(self):
+        """Positive check: backup_import delegates to the CLI migration sequence
+        (stamp-repair walker + grants + reconcile), which itself uses the shared
+        alembic config lookup. Raw `alembic upgrade head` dies on restored dumps
+        whose stamp is behind their actual DDL."""
         from pathlib import Path
         src = (Path(__file__).parent.parent / "celerp" / "services" / "backup_import.py").read_text()
-        assert "build_alembic_config" in src, (
-            "backup_import.py must use celerp.alembic_config.build_alembic_config()."
+        assert "_apply_migrations" in src, (
+            "backup_import.py must reconcile the restored schema via "
+            "celerp.cli._apply_migrations (the stamp-repair walker), not raw alembic."
         )
 
     def test_cli_uses_shared_helper(self):
@@ -483,3 +487,216 @@ class TestActivateModulesRestarts:
 
         assert config_written == [], "Empty list should not write config"
         assert kill_calls == [], "Empty list should not trigger restart"
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_schema - restored dumps must migrate through the stamp-repair
+# walker, and a failure must surface to the user, not just the log
+# ---------------------------------------------------------------------------
+
+class TestReconcileSchema:
+    @pytest.mark.asyncio
+    async def test_runs_cli_migration_sequence(self, monkeypatch):
+        """Restore reconciles via the same walker path as `celerp migrate`:
+        stamp repair + upgrade, grants, then the develop-to-release reconcile."""
+        import celerp.cli as cli
+        from celerp.services import backup_import
+
+        calls: list[str] = []
+        monkeypatch.setattr(cli, "_apply_migrations", lambda url: calls.append("migrate"))
+        monkeypatch.setattr(cli, "_post_migration_grants", lambda url: calls.append("grants"))
+        monkeypatch.setattr(cli, "_reconcile_after_migrate", lambda url: calls.append("reconcile"))
+
+        warning = await backup_import._reconcile_schema()
+        assert warning is None
+        assert calls == ["migrate", "grants", "reconcile"]
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_user_facing_warning(self, monkeypatch):
+        """A failed reconcile leaves the schema stale (every read breaks), so the
+        import result must carry a warning instead of claiming a clean success."""
+        import celerp.cli as cli
+        from celerp.services import backup_import
+
+        def boom(url):
+            raise RuntimeError("DuplicateColumn: column already exists")
+
+        monkeypatch.setattr(cli, "_apply_migrations", boom)
+        warning = await backup_import._reconcile_schema()
+        assert warning is not None
+        assert "schema" in warning.lower()
+        assert "celerp migrate" in warning
+
+    def test_backup_result_carries_schema_warning(self):
+        from celerp.services.backup import BackupResult
+
+        r = BackupResult(ok=True, size_bytes=1)
+        assert r.schema_warning is None
+        r = BackupResult(ok=True, size_bytes=1, schema_warning="stale")
+        assert r.schema_warning == "stale"
+
+
+# ---------------------------------------------------------------------------
+# Restore journey - the outcome must survive the post-restore restart and the
+# user must always have a way to continue (GDR: no dead ends)
+# ---------------------------------------------------------------------------
+
+class TestRestoreNotice:
+    def test_notice_roundtrip_and_one_shot(self, monkeypatch, tmp_path):
+        """The importer persists the outcome; the login page consumes it exactly once,
+        so the banner survives the automatic restart but never becomes permanent."""
+        from celerp.config import settings
+        from celerp.services.backup_import import RESTORE_NOTICE_FILE, _write_restore_notice
+        from ui.routes.auth import _consume_restore_notice
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        _write_restore_notice("Acme", ["celerp-labels"], "schema stale", True)
+        assert (tmp_path / RESTORE_NOTICE_FILE).is_file()
+
+        notice = _consume_restore_notice()
+        assert notice is not None
+        assert notice["company_name"] == "Acme"
+        assert notice["warnings"] == ["celerp-labels"]
+        assert notice["schema_warning"] == "schema stale"
+        assert notice["restart_scheduled"] is True
+        assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # one-shot
+        assert _consume_restore_notice() is None
+
+    def test_notice_message_composes_all_parts(self):
+        from ui.routes.auth import _restore_notice_message
+
+        msg = _restore_notice_message({
+            "company_name": "Acme",
+            "warnings": ["celerp-labels"],
+            "schema_warning": "Database restored, but the schema could not be brought up to date.",
+        })
+        assert "Acme" in msg
+        assert "celerp-labels" in msg
+        assert "schema" in msg.lower()
+
+    def test_no_notice_file_means_no_banner(self, monkeypatch, tmp_path):
+        from celerp.config import settings
+        from ui.routes.auth import _consume_restore_notice
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        assert _consume_restore_notice() is None
+
+
+class TestRestoreFlashContinuation:
+    """A restore flash must always let the user continue: either the restart is
+    already happening (status + auto-reload) or there is a Restart Now button."""
+
+    def _result(self, **kw):
+        from celerp.services.backup import BackupResult
+        defaults = dict(ok=True, size_bytes=1)
+        defaults.update(kw)
+        return BackupResult(**defaults)
+
+    def test_manual_restart_offers_button(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(self._result(), "Restored.").body.decode()
+        assert "/backup/restart-app" in body
+        assert "Restart Now" in body
+
+    def test_scheduled_restart_shows_status_and_reload(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(self._result(restart_scheduled=True), "Restored.").body.decode()
+        assert "/backup/restart-app" not in body     # no button: restart already happening
+        assert "Restarting automatically" in body
+        assert "setInterval" in body                 # page recovers on its own
+
+    def test_warnings_render_as_warning_flash(self):
+        from celerp_backup.routes import _restore_flash
+
+        body = _restore_flash(
+            self._result(warnings=["celerp-labels"], schema_warning="stale"), "Restored."
+        ).body.decode()
+        assert "flash--warning" in body
+        assert "celerp-labels" in body and "stale" in body
+
+
+class TestRunImportPropagation:
+    """run_import must carry the reconcile outcome and restart decision through to the
+    result AND persist the one-shot notice, or the journey guarantees fall apart."""
+
+    @pytest.mark.asyncio
+    async def test_result_and_notice_carry_schema_warning_and_restart(self, monkeypatch, tmp_path):
+        from celerp.config import settings
+        from celerp.services import backup_import
+        from celerp.services.backup import BackupResult
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        monkeypatch.setenv("MODULE_DIR", str(modules_dir))
+
+        archive = _make_archive(
+            company_name="Acme",
+            extra_meta={"enabled_modules": ["celerp-fictional"]},
+        )
+        path = _write_archive_to_tmp(archive)
+        try:
+            async def fake_restore_db(dump_bytes, db_url):
+                return None
+            monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore_db)
+
+            async def fake_dispose():
+                pass
+            monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose)
+
+            async def fake_reconcile():
+                return "Database restored, but the schema could not be brought up to date."
+            monkeypatch.setattr(backup_import, "_reconcile_schema", fake_reconcile)
+
+            async def fake_extract(path):
+                pass
+            monkeypatch.setattr(backup_import, "_extract_files", fake_extract)
+
+            async def fake_activate(modules):
+                return True  # a restart was scheduled
+            monkeypatch.setattr(backup_import, "_activate_modules", fake_activate)
+
+            async def fake_safety(label):
+                return BackupResult(ok=True, size_bytes=0)
+            monkeypatch.setattr(backup_import, "_safety_backup", fake_safety)
+
+            result = await backup_import.run_import(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+        assert result.ok
+        assert result.schema_warning and "schema" in result.schema_warning
+        assert result.restart_scheduled is True
+        assert "celerp-fictional" in result.warnings
+
+        notice = json.loads((tmp_path / backup_import.RESTORE_NOTICE_FILE).read_text())
+        assert notice["company_name"] == "Acme"
+        assert notice["restart_scheduled"] is True
+        assert notice["schema_warning"] == result.schema_warning
+        assert notice["warnings"] == result.warnings
+
+
+class TestActivateModulesRestartDecision:
+    @pytest.mark.asyncio
+    async def test_no_restart_when_module_set_unchanged(self, monkeypatch):
+        import celerp.config as config
+        from celerp.services import backup_import
+
+        monkeypatch.setattr(config, "set_enabled_modules", lambda modules: False)
+        assert await backup_import._activate_modules(["celerp-inventory"]) is False
+        assert await backup_import._activate_modules([]) is False
+
+    @pytest.mark.asyncio
+    async def test_restart_scheduled_when_modules_added(self, monkeypatch, tmp_path):
+        import celerp.config as config
+        import celerp.routers.system as system
+        from celerp.services import backup_import
+
+        monkeypatch.setattr(config, "set_enabled_modules", lambda modules: True)
+        monkeypatch.setattr(system, "_restart_sentinel_path", lambda: tmp_path / ".restart_requested")
+        monkeypatch.setattr(system, "_send_sigterm", lambda: None)  # never SIGTERM the test runner
+
+        assert await backup_import._activate_modules(["celerp-labels"]) is True
+        assert (tmp_path / ".restart_requested").exists()

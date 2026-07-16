@@ -547,3 +547,15 @@ def test_module_entrypoint_dispatches_to_subcommand(tmp_path):
     r = _module_run(["migrate"], tmp_path / "nope.toml")
     assert r.returncode != 0
     assert "Not initialized" in (r.stdout + r.stderr)
+
+
+def test_run_migrations_exits_nonzero_on_failure():
+    """The CLI wrapper preserves exit semantics for the packaged launcher, while
+    _apply_migrations stays importable (the backup restore calls it and needs the
+    exception, not a process exit)."""
+    import celerp.cli as cli
+
+    with patch("celerp.cli._apply_migrations", side_effect=RuntimeError("boom")):
+        with pytest.raises(SystemExit) as exc:
+            cli._run_migrations("postgresql://user:pw@localhost/db")
+    assert exc.value.code == 1
