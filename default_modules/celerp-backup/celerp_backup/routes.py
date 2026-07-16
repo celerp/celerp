@@ -74,10 +74,11 @@ def _restore_flash(result, base_msg: str) -> Response:
     from fasthtml.common import Button, Div, Script, to_xml
     from ui.components.shell import RESTART_POLL_JS
 
+    from celerp.services.backup_import import missing_modules_sentence
+
     msg = base_msg
     if result.warnings:
-        names = ", ".join(result.warnings)
-        msg += f" Note: {len(result.warnings)} module(s) enabled on the source are not installed on this server ({names})."
+        msg += " " + missing_modules_sentence(result.warnings)
     if result.schema_warning:
         msg += f" Warning: {result.schema_warning}"
     kind = "warning" if (result.warnings or result.schema_warning) else "success"

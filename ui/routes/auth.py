@@ -51,17 +51,14 @@ def _consume_restore_notice() -> dict | None:
 
 def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
+    from celerp.services.backup_import import missing_modules_sentence
     company = notice.get("company_name") or "backup"
     parts = [f"Backup from {company} restored. Sign in with the credentials from the backup."]
     if notice.get("schema_warning"):
         parts.append(str(notice["schema_warning"]))
     warnings = list(notice.get("warnings") or [])
     if warnings:
-        names = ", ".join(str(w) for w in warnings)
-        parts.append(
-            f"{len(warnings)} module(s) enabled on the source are not installed here: {names}. "
-            f"Those features stay unavailable until the module packages are installed."
-        )
+        parts.append(missing_modules_sentence(warnings))
     return " ".join(parts)
 
 
@@ -248,7 +245,7 @@ def setup_routes(app):
                 else:
                     detail = r.text[:300] or "Import failed."
                 return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
-            # Success — surface missing-module / schema warnings (if any) on the form
+            # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
             schema_warning: str | None = None
             restart_scheduled = False
@@ -265,13 +262,8 @@ def setup_routes(app):
                 if schema_warning:
                     parts.append(schema_warning)
                 if warnings:
-                    names = ", ".join(warnings)
-                    parts.append(
-                        f"{len(warnings)} module(s) enabled on the "
-                        f"source are not installed on this server: {names}. "
-                        f"Install the missing module packages, or continue to login "
-                        f"(those features will be unavailable until installed)."
-                    )
+                    from celerp.services.backup_import import missing_modules_sentence
+                    parts.append(missing_modules_sentence(warnings))
                 if restart_scheduled:
                     parts.append(
                         "The app is restarting to load the restored modules; if this page "

@@ -391,6 +391,19 @@ async def _activate_modules(modules: list[str]) -> bool:
 RESTORE_NOTICE_FILE = "restore-notice.json"
 
 
+def missing_modules_sentence(warnings: list[str]) -> str:
+    """The one user-facing sentence for modules the source had but this install lacks.
+
+    Every surface that reports a restore (settings flash, bootstrap warning page,
+    post-restart login notice) uses this same wording."""
+    names = ", ".join(str(w) for w in warnings)
+    return (
+        f"{len(warnings)} module(s) enabled on the source are not installed on this "
+        f"server: {names}. Those features stay unavailable until the module packages "
+        f"are installed."
+    )
+
+
 def _write_restore_notice(company_name: str | None, warnings: list[str],
                           schema_warning: str | None, restart_scheduled: bool) -> None:
     """Persist a one-shot restore notice for the login page.

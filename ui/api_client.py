@@ -428,7 +428,7 @@ async def patch_price_lists(token: str, price_lists: list[dict]) -> dict:
 
 
 async def restart_system(token: str) -> dict:
-    """POST /system/restart — graceful server restart (admin)."""
+    """POST /system/restart - graceful server restart (admin)."""
     async with _api_client(token) as c:
         return _raise(await c.post("/system/restart")).json()
 

@@ -396,3 +396,52 @@ class TestProtectedPriceListDeletion:
         assert resp.status_code in (200, 204)
         if resp.status_code == 200:
             assert "flash--error" not in resp.text
+
+
+# ── Restore journey: restart continuation + post-restart notice ───────────────
+
+class TestRestoreJourneyContinuation:
+    @pytest.mark.asyncio
+    async def test_restart_app_route_restarts_and_polls(self, ui_client):
+        """The Restart Now continuation triggers the graceful restart and swaps to a
+        status that reloads the page once the server is back."""
+        with patch("ui.api_client.restart_system", new=AsyncMock(return_value={"ok": True})) as mock_restart:
+            r = await ui_client.post("/backup/restart-app", cookies=_authed())
+        assert r.status_code == 200
+        assert mock_restart.await_count == 1
+        html = r.text
+        assert "Restarting" in html
+        assert "setInterval" in html  # self-recovers; no dead end
+
+    @pytest.mark.asyncio
+    async def test_restart_app_route_surfaces_api_error(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.restart_system", new=AsyncMock(side_effect=APIError(403, "Admin role required"))):
+            r = await ui_client.post("/backup/restart-app", cookies=_authed())
+        assert r.status_code == 200
+        assert "Admin role required" in r.text
+
+    @pytest.mark.asyncio
+    async def test_login_shows_restore_notice_once(self, ui_client, monkeypatch, tmp_path):
+        """The one-shot notice survives the post-restore restart: first login render
+        shows it (unmissable), then it is gone - no permanent banner."""
+        import json as _json
+        from celerp.config import settings
+        from celerp.services.backup_import import RESTORE_NOTICE_FILE
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
+            "company_name": "Acme",
+            "warnings": ["celerp-fictional"],
+            "schema_warning": None,
+            "restart_scheduled": True,
+        }))
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login")
+            assert r.status_code == 200
+            assert "Backup from Acme restored" in r.text
+            assert "celerp-fictional" in r.text
+            assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # consumed
+
+            r2 = await ui_client.get("/login")
+            assert "Backup from Acme restored" not in r2.text  # one-shot, not perpetual
