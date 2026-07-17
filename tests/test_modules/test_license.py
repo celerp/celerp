@@ -94,14 +94,14 @@ def _mock_urlopen(response_data: dict, status: int = 200):
 
 def test_verify_remote_licensed(tmp_path):
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": True, "status": "active"})):
-        licensed, status = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
+        licensed, status, kind, ljwt = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
     assert licensed is True
     assert status == "active"
 
 
 def test_verify_remote_not_licensed(tmp_path):
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": False, "status": "not_licensed"})):
-        licensed, status = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
+        licensed, status, kind, ljwt = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
     assert licensed is False
     assert status == "not_licensed"
 
@@ -167,3 +167,51 @@ def test_check_license_offline_no_cache_denies(tmp_path):
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
         result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
     assert result is False
+
+
+# ── offline lifetime license (ES256) ─────────────────────────────────────────
+
+def _test_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    priv = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = priv.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    pub_pem = priv.public_key().public_bytes(serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    return priv_pem, pub_pem
+
+
+def _sign_lifetime(priv_pem, slug, sub="iid-1"):
+    from jose import jwt
+    return jwt.encode({"iss": "celerp-relay", "sub": sub, "mod": slug, "kind": "lifetime"},
+                      priv_pem, algorithm="ES256")
+
+
+def test_lifetime_jwt_verifies_offline(monkeypatch):
+    import celerp.modules.license as lic
+    priv, pub = _test_keypair()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", pub)
+    tok = _sign_lifetime(priv, "celerp-warehousing")
+    assert lic._verify_lifetime_jwt(tok, "celerp-warehousing") is True
+    # wrong module, tampered, wrong kind, empty -> all False
+    assert lic._verify_lifetime_jwt(tok, "celerp-hr") is False
+    assert lic._verify_lifetime_jwt(tok[:-4] + "AAAA", "celerp-warehousing") is False
+    assert lic._verify_lifetime_jwt("", "celerp-warehousing") is False
+
+
+def test_check_license_lifetime_works_fully_offline(monkeypatch, tmp_path):
+    """A stored lifetime JWT licenses the module with NO network call at all."""
+    import celerp.modules.license as lic
+    priv, pub = _test_keypair()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", pub)
+    # seed the cache with a valid lifetime JWT
+    cache = tmp_path / "license_cache" / "celerp-warehousing.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"licensed": True, "status": "active",
+        "license_kind": "lifetime", "license_jwt": _sign_lifetime(priv, "celerp-warehousing"),
+        "cached_at": 0}))   # cached_at 0 = ancient: proves grace is bypassed for lifetime
+    # any network call would raise - prove it's never made
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not phone home")):
+        assert lic.check_license("celerp-warehousing", "https://relay.example.com",
+                                 "jwt", tmp_path) is True

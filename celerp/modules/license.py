@@ -28,6 +28,31 @@ log = logging.getLogger(__name__)
 
 _OFFLINE_GRACE_SECONDS: int = 7 * 24 * 3600  # 7 days
 
+# ES256 public key for verifying LIFETIME module licenses OFFLINE. The relay
+# holds the matching private key. A lifetime license is an ES256 JWT the relay
+# signs once; the app verifies it here against this embedded key with NO
+# phone-home, so a purchased module keeps working even if the relay is gone
+# (the manifesto clause). Subscription licenses still phone home (an offline
+# exp is defeated by a local clock rollback), so only lifetime verifies offline.
+_LICENSE_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErpSt33cgy+leXLEI0o3MFgCvmlau
+LH1ud9XC8JShPMazsJa9Qj2+YHgTkln/zWnLUi79VYaVMknJ8BA8BUCL8Q==
+-----END PUBLIC KEY-----"""
+
+
+def _verify_lifetime_jwt(token: str, slug: str) -> bool:
+    """True if *token* is a valid lifetime license for *slug*, verified offline
+    against the embedded public key. No network, no expiry (lifetime)."""
+    if not token:
+        return False
+    try:
+        from jose import jwt
+        claims = jwt.decode(token, _LICENSE_PUBLIC_KEY, algorithms=["ES256"],
+                            issuer="celerp-relay")
+    except Exception:
+        return False
+    return claims.get("kind") == "lifetime" and claims.get("mod") == slug
+
 
 def is_premium_path(pkg_path: Path) -> bool:
     """Return True if *pkg_path* lives inside a ``premium_modules/`` directory."""
@@ -60,10 +85,21 @@ def check_license(
     cache_file = Path(cache_dir) / "license_cache" / f"{slug}.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # ── 1. Try live verification ──────────────────────────────────────────────
+    # ── 0. Offline lifetime license: verify the stored JWT against the embedded
+    # public key. If valid, the module is licensed FOREVER with no network and no
+    # grace expiry - a purchased module survives the relay being gone. ──────────
+    stored = _cache_data(cache_file)
+    if stored and _verify_lifetime_jwt(stored.get("license_jwt", ""), slug):
+        return True
+
+    # ── 1. Try live verification (subscriptions, and first lifetime fetch) ──────
     try:
-        licensed, status = _verify_remote(slug, relay_url, instance_jwt)
-        _write_cache(cache_file, licensed=licensed, status=status)
+        licensed, status, kind, ljwt = _verify_remote(slug, relay_url, instance_jwt)
+        _write_cache(cache_file, licensed=licensed, status=status,
+                     license_kind=kind, license_jwt=ljwt)
+        # A freshly fetched lifetime JWT is authoritative and offline-valid.
+        if kind == "lifetime" and _verify_lifetime_jwt(ljwt, slug):
+            return True
         if not licensed:
             log.warning(
                 "Premium module %r: license status=%r — not loading", slug, status
@@ -75,12 +111,13 @@ def check_license(
             slug, exc,
         )
 
-    # ── 2. Offline grace ─────────────────────────────────────────────────────
+    # ── 2. Offline grace (subscriptions only) ────────────────────────────────
     return _read_cache(cache_file, slug)
 
 
-def _verify_remote(slug: str, relay_url: str, jwt: str) -> tuple[bool, str]:
-    """POST to relay and return (licensed, status). Raises on network error."""
+def _verify_remote(slug: str, relay_url: str, jwt: str) -> tuple[bool, str, str, str]:
+    """POST to relay: (licensed, status, license_kind, license_jwt). Raises on
+    network error."""
     url = relay_url.rstrip("/") + "/marketplace/license/verify"
     body = json.dumps({"slug": slug}).encode()
     req = urllib.request.Request(
@@ -100,11 +137,21 @@ def _verify_remote(slug: str, relay_url: str, jwt: str) -> tuple[bool, str]:
             # Invalid JWT — deny immediately, don't fall back to cache
             raise PermissionError(f"Relay rejected JWT for {slug!r}: HTTP {exc.code}") from exc
         raise
-    return bool(data.get("licensed")), str(data.get("status", "unknown"))
+    return (bool(data.get("licensed")), str(data.get("status", "unknown")),
+            str(data.get("license_kind", "")), str(data.get("license_jwt", "")))
 
 
-def _write_cache(path: Path, *, licensed: bool, status: str) -> None:
-    payload = {"licensed": licensed, "status": status, "cached_at": time.time()}
+def _cache_data(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_cache(path: Path, *, licensed: bool, status: str,
+                 license_kind: str = "", license_jwt: str = "") -> None:
+    payload = {"licensed": licensed, "status": status, "cached_at": time.time(),
+               "license_kind": license_kind, "license_jwt": license_jwt}
     try:
         path.write_text(json.dumps(payload))
     except OSError as exc:
