@@ -129,7 +129,25 @@ def _finish(staged: Path, manifest: dict) -> dict:
     _validate_name(name)
     _check_min_version(manifest)
     target = _target_for(name)
-    shutil.move(str(staged), str(target))
+    # Land atomically: copy into a temp dir on the SAME filesystem as the module
+    # dir (staged lives under /tmp, often a different device, where shutil.move
+    # degrades to a non-atomic copy that can orphan a half-written target on
+    # disk-full), then os.replace the finished tree into place. On any failure
+    # the partial temp dir is removed and the error is a clean ModuleImportError,
+    # not a 500.
+    landing = target.parent / f".{name}.incoming-{os.getpid()}"
+    try:
+        shutil.rmtree(landing, ignore_errors=True)
+        shutil.copytree(staged, landing)
+        os.replace(landing, target)
+    except FileExistsError:
+        shutil.rmtree(landing, ignore_errors=True)
+        raise ModuleImportError(
+            f"A module named '{name}' already exists. Remove it first, then import."
+        )
+    except OSError as exc:
+        shutil.rmtree(landing, ignore_errors=True)
+        raise ModuleImportError(f"Could not write the module to disk: {exc}")
     return {
         "name": name,
         "version": str(manifest.get("version", "")),

@@ -64,6 +64,11 @@ class TestParse:
                                "price_monthly": "9; DROP TABLE"}))
         assert "price_monthly" not in mods[0]
 
+    def test_bool_price_rejected(self):
+        # bool is a subclass of int; "price_monthly": true must not become $1/mo.
+        mods = mc._parse(_doc({**GOOD, "tier": "official", "price_monthly": True}))
+        assert "price_monthly" not in mods[0]
+
 
 class TestLocalState:
     @pytest.fixture(autouse=True)

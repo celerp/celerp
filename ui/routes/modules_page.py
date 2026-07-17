@@ -50,10 +50,19 @@ def _modules_dir_display() -> str:
 
 
 def _restart_pending(modules: list[dict]) -> bool:
-    """Derived, not transient: a module is enabled but not running (and not a
-    load failure that a restart cannot fix by itself — those still need a
-    restart after the module is repaired, so they count too)."""
-    return any(m.get("enabled") and not m.get("running") for m in modules)
+    """Derived, not transient: a restart is pending whenever a module's desired
+    state (enabled) differs from its actual state (running). This covers both
+    directions - a newly enabled module not yet running, AND a just-disabled
+    module still loaded until the next restart (the disable case the old
+    enabled-and-not-running check missed).
+
+    Core-folded default modules (ai/backup/connectors) report running=True
+    regardless of the enabled flag, so an admin toggling one would otherwise
+    pin a false banner forever; they are excluded."""
+    return any(
+        not m.get("is_default") and bool(m.get("enabled")) != bool(m.get("running"))
+        for m in modules
+    )
 
 
 # ── tabs chrome ────────────────────────────────────────────────────────────────
@@ -237,7 +246,10 @@ def _local_panel(modules: list[dict], lang: str = "en",
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({path: p}),
-            }).then(function () { window.location = '/modules'; });
+            }).then(function (r) { return r.text(); }).then(function (html) {
+              var panel = document.getElementById('local-modules-panel');
+              if (panel) { panel.outerHTML = html; }  // fragment swap, no reload
+            });
           });
         };
       }
@@ -267,12 +279,21 @@ def _restarting_panel(lang: str) -> FT:
     the same origin and reloads when the UI answers again."""
     return Div(
         P(t("modules.restarting", lang), cls="text-muted"),
+        P(t("modules.restart_timeout", lang), cls="flash flash--warning",
+          id="restart-timeout", style="display:none;"),
         Script("""
-        setTimeout(function poll() {
-          fetch('/', {cache: 'no-store'}).then(function (r) {
-            if (r.ok) { window.location = '/modules'; } else { setTimeout(poll, 1500); }
-          }).catch(function () { setTimeout(poll, 1500); });
-        }, 2500);
+        (function () {
+          var tries = 0, MAX = 40;  // ~60s, then stop and tell the user
+          setTimeout(function poll() {
+            if (tries++ >= MAX) {
+              document.getElementById('restart-timeout').style.display = '';
+              return;
+            }
+            fetch('/', {cache: 'no-store'}).then(function (r) {
+              if (r.ok) { window.location = '/modules'; } else { setTimeout(poll, 1500); }
+            }).catch(function () { setTimeout(poll, 1500); });
+          }, 2500);
+        })();
         """),
         id="local-modules-panel",
         cls="settings-card",
@@ -322,13 +343,16 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
     if m.get("network_calls"):
         body.append(P(Strong(t("marketplace.network_calls", lang)), f"{declared}: ", m["network_calls"], cls="small"))
     body.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="small"))
+    # Catalog URLs are author-controlled (community listings); every external
+    # link opens with rel=noopener noreferrer so the opened tab cannot reach
+    # back through window.opener.
     links = []
     if m.get("repo"):
-        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank"))
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank"))
+        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
-                   target="_blank"))
+                   target="_blank", rel="noopener noreferrer"))
     body.append(Div(*links, cls="marketplace-card__links"))
     # CTA per tier. One-click install of vaulted artifacts is the verified
     # milestone; today official links out and community hands off to Import.
@@ -337,7 +361,7 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
     elif tier == "community":
         body.append(Div(
             A(t("marketplace.get_from_author", lang), href=m.get("repo", "#"),
-              target="_blank", cls="btn btn--sm btn--secondary"),
+              target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
             A(t("btn.import_module", lang), href="/modules?import=1",
               cls="btn btn--sm btn--secondary"),
             style="display:flex;gap:8px;",
@@ -345,7 +369,7 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
     else:
         body.append(A(t("settings.view_install", lang),
                       href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
-                      target="_blank", cls="btn btn--sm btn--primary"))
+                      target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--primary"))
     return Details(
         Summary(
             _trust_icon(tier, lang),
@@ -470,12 +494,18 @@ def setup_routes(app):
             flash_text, flash_error = t("msg.no_file_selected", lang), True
         else:
             import asyncio
-            data = await asyncio.to_thread(file_field.file.read)
-            try:
-                info = await api.import_module_zip(token, file_field.filename or "module.zip", data)
-                flash_text = t("modules.import_success", lang, name=info.get("display_name") or info.get("name", ""))
-            except APIError as e:
-                flash_text, flash_error = e.detail or str(e), True
+            from celerp.modules.importer import MAX_ARCHIVE_BYTES
+            # Cap the read: don't buffer an oversize upload whole before the
+            # backend gets to reject it (the backend caps again independently).
+            data = await asyncio.to_thread(file_field.file.read, MAX_ARCHIVE_BYTES + 1)
+            if len(data) > MAX_ARCHIVE_BYTES:
+                flash_text, flash_error = t("modules.import_too_large", lang), True
+            else:
+                try:
+                    info = await api.import_module_zip(token, file_field.filename or "module.zip", data)
+                    flash_text = t("modules.import_success", lang, name=info.get("display_name") or info.get("name", ""))
+                except APIError as e:
+                    flash_text, flash_error = e.detail or str(e), True
         try:
             modules = await api.get_modules(token)
         except APIError:
@@ -487,12 +517,22 @@ def setup_routes(app):
         token, redirect = await _guard(request)
         if redirect:
             return redirect
+        lang = get_lang(request)
         body = await request.json()
+        flash_text, flash_error = None, False
         try:
             info = await api.import_module_path(token, str(body.get("path", "")))
-            return JSONResponse({"ok": True, **info})
+            flash_text = t("modules.import_success", lang,
+                           name=info.get("display_name") or info.get("name", ""))
         except APIError as e:
-            return JSONResponse({"ok": False, "detail": e.detail or str(e)}, status_code=422)
+            flash_text, flash_error = e.detail or str(e), True
+        try:
+            modules = await api.get_modules(token)
+        except APIError:
+            modules = []
+        # Return the panel fragment (not JSON) so the desktop folder-pick swaps
+        # in place, matching the zip upload path - no full page reload.
+        return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):

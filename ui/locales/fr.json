@@ -1061,7 +1061,6 @@
   "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Connectez-vous au cloud Celerp pour obtenir un URL public stable, des sauvegardes chiffrées, des connecteurs et AI.",
   "settings.connecting": "Connexion...",
   "settings.connection_timed_out_3s": "La connexion a expiré (3 s).",
-  "settings.could_not_reach_the_celerp_marketplace_check_your": "Impossible d'accéder au marché Celerp. Vérifiez votre connexion Internet.",
   "settings.current": "Actuel : ",
   "settings.current_company": "Actuelle",
   "settings.current_password": "Mot de passe actuel",
@@ -1118,7 +1117,6 @@
   "settings.no_imports_yet": "Aucune importation pour l'instant.",
   "settings.no_locations_yet": "Aucun emplacement pour l'instant.",
   "settings.no_modules_available_in_the_marketplace_yet": "Aucun module n'est encore disponible sur le marché.",
-  "settings.no_modules_installed_drop_module_packages_into_the": "Aucun module installé. Déposez les packages de modules dans le répertoire modules pour commencer.",
   "settings.no_previous_database_url_to_restore": "Aucune URL de base de données précédente à restaurer.",
   "settings.no_vertical_specified": "Aucune verticale spécifiée.",
   "settings.not_connected": "Non connecté",
@@ -1162,7 +1160,6 @@
   "settings.tab_connectors": "Connecteurs",
   "settings.tab_import_history": "Historique d'importation",
   "settings.tab_locations": "Emplacements",
-  "settings.tab_modules": "Modules",
   "settings.tab_schema": "Schéma de l'article",
   "settings.tab_taxes": "Impôts",
   "settings.tab_terms": "Conditions de paiement",
@@ -1386,5 +1383,7 @@
   "marketplace.get_from_author": "L'obtenir auprès de l'auteur",
   "marketplace.official_tip": "Officiel - développé par Celerp",
   "marketplace.verified_tip": "Vérifié",
-  "marketplace.unverified_tip": "Non vérifié"
+  "marketplace.unverified_tip": "Non vérifié",
+  "modules.restart_timeout": "Le redémarrage prend plus de temps que prévu. Rechargez la page manuellement une fois Celerp revenu.",
+  "modules.import_too_large": "Cette archive est trop volumineuse (limite 50 Mo)."
 }

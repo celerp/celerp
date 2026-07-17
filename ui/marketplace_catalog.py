@@ -75,7 +75,9 @@ def _clean(entry) -> dict | None:
             out[field] = v
     for field in ("price_monthly", "price_once"):
         v = entry.get(field)
-        if isinstance(v, (int, float)) and v >= 0:
+        # bool is a subclass of int in Python: reject True/False so a stray
+        # "price_monthly": true does not render as "$1/mo".
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
             out[field] = float(v)
     return out
 
@@ -104,11 +106,17 @@ async def fetch_catalog() -> tuple[list[dict], bool]:
         except Exception:
             continue
         try:
-            _cache_path().parent.mkdir(parents=True, exist_ok=True)
-            _cache_path().write_text(
+            # Atomic write: two open Marketplace tabs (or a SIGTERM mid-write)
+            # must never leave torn JSON in the cache. Write a temp file on the
+            # same directory, then os.replace it into place.
+            cache = _cache_path()
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(f".tmp-{os.getpid()}")
+            tmp.write_text(
                 json.dumps({"fetched_at": time.time(), "modules": modules}),
                 encoding="utf-8",
             )
+            os.replace(tmp, cache)
         except OSError:
             pass  # cache is best-effort
         return modules, False

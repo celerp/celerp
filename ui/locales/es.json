@@ -1061,7 +1061,6 @@
   "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Conéctese a Celerp Cloud para obtener un URL público estable, copias de seguridad cifradas, conectores y AI.",
   "settings.connecting": "Conectando...",
   "settings.connection_timed_out_3s": "Se agotó el tiempo de conexión (3 s).",
-  "settings.could_not_reach_the_celerp_marketplace_check_your": "No se pudo acceder al Mercado Celerp. Verifique su conexión a Internet.",
   "settings.current": "Actual:",
   "settings.current_company": "Current",
   "settings.current_password": "Contraseña actual",
@@ -1118,7 +1117,6 @@
   "settings.no_imports_yet": "Aún no hay importaciones.",
   "settings.no_locations_yet": "Aún no hay ubicaciones.",
   "settings.no_modules_available_in_the_marketplace_yet": "Aún no hay módulos disponibles en el mercado.",
-  "settings.no_modules_installed_drop_module_packages_into_the": "No hay módulos instalados. Coloque los paquetes de módulos en el directorio de módulos para comenzar.",
   "settings.no_previous_database_url_to_restore": "No hay una URL de base de datos anterior para restaurar.",
   "settings.no_vertical_specified": "No se especifica ninguna vertical.",
   "settings.not_connected": "No conectado",
@@ -1162,7 +1160,6 @@
   "settings.tab_connectors": "Conectores",
   "settings.tab_import_history": "Historial de importación",
   "settings.tab_locations": "Ubicaciones",
-  "settings.tab_modules": "Módulos",
   "settings.tab_schema": "Esquema del artículo",
   "settings.tab_taxes": "Impuestos",
   "settings.tab_terms": "Condiciones de pago",
@@ -1386,5 +1383,7 @@
   "marketplace.get_from_author": "Obtenerlo del autor",
   "marketplace.official_tip": "Oficial - creado por Celerp",
   "marketplace.verified_tip": "Verificado",
-  "marketplace.unverified_tip": "Sin verificar"
+  "marketplace.unverified_tip": "Sin verificar",
+  "modules.restart_timeout": "El reinicio está tardando más de lo esperado. Recarga la página manualmente cuando Celerp vuelva.",
+  "modules.import_too_large": "Ese archivo es demasiado grande (límite 50 MB)."
 }

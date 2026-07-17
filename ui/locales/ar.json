@@ -1061,7 +1061,6 @@
   "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "اتصل بـ Celerp Cloud للحصول على URL عام مستقر، ونسخ احتياطية مشفرة، وموصلات، وAI.",
   "settings.connecting": "جارٍ الاتصال...",
   "settings.connection_timed_out_3s": "انتهت مهلة الاتصال (3ث).",
-  "settings.could_not_reach_the_celerp_marketplace_check_your": "تعذر الوصول إلى سوق Celerp. تحقق من اتصالك بالإنترنت.",
   "settings.current": "حاضِر:",
   "settings.current_company": "Current",
   "settings.current_password": "كلمة المرور الحالية",
@@ -1118,7 +1117,6 @@
   "settings.no_imports_yet": "لا توجد واردات حتى الآن.",
   "settings.no_locations_yet": "لا توجد مواقع بعد.",
   "settings.no_modules_available_in_the_marketplace_yet": "لا توجد وحدات متاحة في السوق حتى الآن.",
-  "settings.no_modules_installed_drop_module_packages_into_the": "لم يتم تثبيت أي وحدات. قم بإسقاط حزم الوحدات النمطية في دليل الوحدات للبدء.",
   "settings.no_previous_database_url_to_restore": "لا يوجد عنوان URL سابق لقاعدة البيانات لاستعادته.",
   "settings.no_vertical_specified": "لم يتم تحديد العمودي.",
   "settings.not_connected": "غير متصل",
@@ -1162,7 +1160,6 @@
   "settings.tab_connectors": "موصلات",
   "settings.tab_import_history": "تاريخ الاستيراد",
   "settings.tab_locations": "المواقع",
-  "settings.tab_modules": "وحدات",
   "settings.tab_schema": "مخطط العنصر",
   "settings.tab_taxes": "الضرائب",
   "settings.tab_terms": "شروط الدفع",
@@ -1386,5 +1383,7 @@
   "marketplace.get_from_author": "احصل عليه من المؤلف",
   "marketplace.official_tip": "رسمي - من تطوير Celerp",
   "marketplace.verified_tip": "موثّق",
-  "marketplace.unverified_tip": "غير موثّق"
+  "marketplace.unverified_tip": "غير موثّق",
+  "modules.restart_timeout": "تستغرق إعادة التشغيل وقتًا أطول من المتوقع. أعد تحميل الصفحة يدويًا عند عودة Celerp.",
+  "modules.import_too_large": "هذا الملف كبير جدًا (الحد 50 ميجابايت)."
 }

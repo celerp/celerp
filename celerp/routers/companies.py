@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
@@ -1619,7 +1619,7 @@ class _ImportPathBody(BaseModel):
 
 
 @router.post("/me/modules/import", dependencies=[Depends(require_admin)])
-async def import_module_upload(file: UploadFile = File(...)) -> dict:
+async def import_module_upload(request: Request, file: UploadFile = File(...)) -> dict:
     """Install a module package from an uploaded .zip archive. Admin only.
 
     Validation and installation share one code path with every other way a
@@ -1630,7 +1630,12 @@ async def import_module_upload(file: UploadFile = File(...)) -> dict:
     import asyncio
     from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
 
-    data = await file.read()
+    # Reject on the declared length before reading, then read with a hard cap so
+    # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > MAX_ARCHIVE_BYTES:
+        raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
+    data = await file.read(MAX_ARCHIVE_BYTES + 1)
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
     try:

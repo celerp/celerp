@@ -1061,7 +1061,6 @@
   "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Hubungkan ke Celerp Cloud untuk mendapatkan URL publik yang stabil, cadangan terenkripsi, konektor, dan AI.",
   "settings.connecting": "Menghubungkan...",
   "settings.connection_timed_out_3s": "Waktu koneksi habis (3 detik).",
-  "settings.could_not_reach_the_celerp_marketplace_check_your": "Tidak dapat menjangkau Pasar Celerp. Periksa koneksi internet Anda.",
   "settings.current": "Saat ini:",
   "settings.current_company": "Current",
   "settings.current_password": "Kata Sandi Saat Ini",
@@ -1118,7 +1117,6 @@
   "settings.no_imports_yet": "Belum ada impor.",
   "settings.no_locations_yet": "Belum ada lokasi.",
   "settings.no_modules_available_in_the_marketplace_yet": "Belum ada modul yang tersedia di pasar.",
-  "settings.no_modules_installed_drop_module_packages_into_the": "Tidak ada modul yang terpasang. Letakkan paket modul ke direktori modul untuk memulai.",
   "settings.no_previous_database_url_to_restore": "Tidak ada URL basis data sebelumnya untuk dipulihkan.",
   "settings.no_vertical_specified": "Tidak ada vertikal yang ditentukan.",
   "settings.not_connected": "Tidak terhubung",
@@ -1162,7 +1160,6 @@
   "settings.tab_connectors": "Konektor",
   "settings.tab_import_history": "Impor Riwayat",
   "settings.tab_locations": "Lokasi",
-  "settings.tab_modules": "Modul",
   "settings.tab_schema": "Skema Barang",
   "settings.tab_taxes": "Pajak",
   "settings.tab_terms": "Ketentuan Pembayaran",
@@ -1386,5 +1383,7 @@
   "marketplace.get_from_author": "Dapatkan dari pembuatnya",
   "marketplace.official_tip": "Resmi - dibuat oleh Celerp",
   "marketplace.verified_tip": "Terverifikasi",
-  "marketplace.unverified_tip": "Belum terverifikasi"
+  "marketplace.unverified_tip": "Belum terverifikasi",
+  "modules.restart_timeout": "Mulai ulang memakan waktu lebih lama dari perkiraan. Muat ulang halaman secara manual setelah Celerp kembali.",
+  "modules.import_too_large": "Arsip itu terlalu besar (batas 50 MB)."
 }

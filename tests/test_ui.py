@@ -8087,6 +8087,36 @@ class TestModulesUI:
         assert b"/modules/restart" in r.content
 
     @pytest.mark.asyncio
+    async def test_restart_banner_shows_after_disable(self, ui_client):
+        """A just-disabled module still runs until restart (enabled=False,
+        running=True) - the banner must appear for the disable direction too."""
+        pending = [{**_MODULES_LIST[1], "enabled": False, "running": True,
+                    "is_default": False}]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/restart" in r.content
+
+    @pytest.mark.asyncio
+    async def test_no_restart_banner_for_core_folded_disable(self, ui_client):
+        """A core-folded default module reports running=True regardless of the
+        enabled flag; it must NOT pin a false restart banner."""
+        core = [{**_MODULES_LIST[1], "enabled": False, "running": True,
+                 "is_default": True}]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=core)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/restart" not in r.content
+
+    @pytest.mark.asyncio
     async def test_module_enable_htmx_returns_panel(self, ui_client):
         refreshed = [
             {**_MODULES_LIST[0], "enabled": True, "running": False},
