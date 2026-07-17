@@ -1663,6 +1663,58 @@ async def import_module_from_path(body: _ImportPathBody) -> dict:
     return {"ok": True, **info}
 
 
+def _relay_creds() -> tuple[str, str]:
+    """(relay_url, instance_jwt) from the environment, or 503 if not configured."""
+    import os
+    url = os.environ.get("CELERP_RELAY_URL", "").rstrip("/")
+    jwt = os.environ.get("CELERP_INSTANCE_JWT", "")
+    if not url or not jwt:
+        raise HTTPException(status_code=503,
+                            detail="Not signed in to Celerp - connect an account first.")
+    return url, jwt
+
+
+class _BuyBody(BaseModel):
+    slug: str
+    kind: str = "monthly"   # monthly | once
+
+
+@router.post("/me/modules/buy", dependencies=[Depends(require_admin)])
+async def buy_module(body: _BuyBody) -> dict:
+    """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
+    The UI opens it in the browser, then polls the license. Admin only."""
+    import httpx
+    url, jwt = _relay_creds()
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.post(f"{url}/marketplace/checkout",
+                         json={"slug": body.slug, "kind": body.kind},
+                         headers={"Authorization": f"Bearer {jwt}"})
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code,
+                            detail=(r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else "Checkout failed"))
+    return r.json()
+
+
+@router.get("/me/modules/licenses")
+async def module_licenses() -> dict:
+    """Slugs this instance holds an active license for (for buy/install CTAs)."""
+    import httpx
+    try:
+        url, jwt = _relay_creds()
+    except HTTPException:
+        return {"licensed": []}   # not signed in: nothing licensed, no error
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(f"{url}/marketplace/my-licenses",
+                            headers={"Authorization": f"Bearer {jwt}"})
+        items = r.json().get("items", []) if r.status_code == 200 else []
+    except Exception:
+        items = []
+    licensed = [it.get("module_slug") for it in items
+                if it.get("status") == "active" and it.get("module_slug")]
+    return {"licensed": licensed}
+
+
 @router.delete("/me", dependencies=[Depends(require_admin)])
 async def deactivate_company(
     company_id=Depends(get_current_company_id),

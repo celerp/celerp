@@ -8272,6 +8272,38 @@ class TestMarketplaceUI:
                                 cookies=_authed(role="manager"))
         assert b"Budgeting" not in r.content
 
+    @pytest.mark.asyncio
+    async def test_paid_module_shows_buy_when_unlicensed(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"/modules/buy?slug=celerp-budgeting" in r.content
+        assert b"$15/mo" in r.content
+        assert b"does not include Celerp Connect" in r.content   # the no-double-charge note
+
+    @pytest.mark.asyncio
+    async def test_paid_module_shows_owned_when_licensed(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"/modules/buy?slug=celerp-budgeting" not in r.content   # no buy button once owned
+
+    @pytest.mark.asyncio
+    async def test_buy_returns_waiting_panel_with_checkout_url(self, ui_client):
+        with patch("ui.api_client.buy_module",
+                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})):
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"checkout.stripe.com/pay/cs_test_9" in r.content
+        assert b"every 5s" in r.content   # polls until the license lands
+
 
 # ---------------------------------------------------------------------------
 # Module slot injection tests

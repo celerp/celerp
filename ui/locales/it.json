@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "Verificato",
   "marketplace.unverified_tip": "Non verificato",
   "modules.restart_timeout": "Il riavvio sta richiedendo più tempo del previsto. Ricarica la pagina manualmente quando Celerp torna disponibile.",
-  "modules.import_too_large": "Questo archivio è troppo grande (limite 50 MB)."
+  "modules.import_too_large": "Questo archivio è troppo grande (limite 50 MB).",
+  "btn.buy": "Acquista",
+  "marketplace.once": "una tantum",
+  "marketplace.buy_note": "Acquisto del modulo, una tantum o mensile. Non include Celerp Connect.",
+  "marketplace.owned": "Acquistato",
+  "marketplace.waiting_payment": "Completa il pagamento nel browser e torna. Questa pagina si aggiorna da sola.",
+  "marketplace.open_checkout": "Apri il pagamento"
 }

@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "Đã kiểm chứng",
   "marketplace.unverified_tip": "Chưa kiểm chứng",
   "modules.restart_timeout": "Việc khởi động lại mất nhiều thời gian hơn dự kiến. Hãy tải lại trang thủ công khi Celerp hoạt động trở lại.",
-  "modules.import_too_large": "Tệp này quá lớn (giới hạn 50 MB)."
+  "modules.import_too_large": "Tệp này quá lớn (giới hạn 50 MB).",
+  "btn.buy": "Mua",
+  "marketplace.once": "một lần",
+  "marketplace.buy_note": "Mua mô-đun một lần hoặc hàng tháng. Không bao gồm Celerp Connect.",
+  "marketplace.owned": "Đã sở hữu",
+  "marketplace.waiting_payment": "Hoàn tất thanh toán trong trình duyệt rồi quay lại. Trang này tự cập nhật.",
+  "marketplace.open_checkout": "Mở trang thanh toán"
 }

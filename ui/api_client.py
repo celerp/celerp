@@ -2034,6 +2034,20 @@ async def import_module_path(token: str, path: str) -> dict:
         return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
 
 
+async def buy_module(token: str, slug: str, kind: str) -> dict:
+    """POST /companies/me/modules/buy - get a Stripe Checkout URL for a paid module."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/buy",
+                                   json={"slug": slug, "kind": kind})).json()
+
+
+async def module_licenses(token: str) -> list[str]:
+    """GET /companies/me/modules/licenses - slugs with an active license."""
+    async with _api_client(token) as c:
+        r = await c.get("/companies/me/modules/licenses")
+        return (r.json().get("licensed", []) or []) if r.status_code == 200 else []
+
+
 async def restart_system(token: str) -> dict:
     """POST /system/restart — graceful restart; the process manager respawns."""
     async with _api_client(token) as c:

@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "ผ่านการตรวจสอบ",
   "marketplace.unverified_tip": "ยังไม่ผ่านการตรวจสอบ",
   "modules.restart_timeout": "การรีสตาร์ทใช้เวลานานกว่าที่คาดไว้ โปรดโหลดหน้าใหม่เองเมื่อ Celerp กลับมา",
-  "modules.import_too_large": "ไฟล์นี้ใหญ่เกินไป (จำกัด 50 MB)"
+  "modules.import_too_large": "ไฟล์นี้ใหญ่เกินไป (จำกัด 50 MB)",
+  "btn.buy": "ซื้อ",
+  "marketplace.once": "ครั้งเดียว",
+  "marketplace.buy_note": "เป็นการซื้อโมดูลแบบครั้งเดียวหรือรายเดือน ไม่รวม Celerp Connect",
+  "marketplace.owned": "เป็นเจ้าของแล้ว",
+  "marketplace.waiting_payment": "ชำระเงินในเบราว์เซอร์ของคุณ แล้วกลับมา หน้านี้จะอัปเดตอัตโนมัติ",
+  "marketplace.open_checkout": "เปิดหน้าชำระเงิน"
 }

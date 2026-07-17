@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "موثّق",
   "marketplace.unverified_tip": "غير موثّق",
   "modules.restart_timeout": "تستغرق إعادة التشغيل وقتًا أطول من المتوقع. أعد تحميل الصفحة يدويًا عند عودة Celerp.",
-  "modules.import_too_large": "هذا الملف كبير جدًا (الحد 50 ميجابايت)."
+  "modules.import_too_large": "هذا الملف كبير جدًا (الحد 50 ميجابايت).",
+  "btn.buy": "شراء",
+  "marketplace.once": "مرة واحدة",
+  "marketplace.buy_note": "شراء الوحدة لمرة واحدة أو شهريًا. لا يشمل Celerp Connect.",
+  "marketplace.owned": "مملوكة",
+  "marketplace.waiting_payment": "أكمل الدفع في المتصفح ثم عد. تتحدّث هذه الصفحة تلقائيًا.",
+  "marketplace.open_checkout": "فتح صفحة الدفع"
 }

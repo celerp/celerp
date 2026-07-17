@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "検証済み",
   "marketplace.unverified_tip": "未検証",
   "modules.restart_timeout": "再起動に予想より時間がかかっています。Celerp が復帰したら手動でページを再読み込みしてください。",
-  "modules.import_too_large": "このアーカイブは大きすぎます（上限 50 MB）。"
+  "modules.import_too_large": "このアーカイブは大きすぎます（上限 50 MB）。",
+  "btn.buy": "購入",
+  "marketplace.once": "買い切り",
+  "marketplace.buy_note": "モジュールの買い切りまたは月額購入です。Celerp Connect は含まれません。",
+  "marketplace.owned": "購入済み",
+  "marketplace.waiting_payment": "ブラウザで支払いを完了してから戻ってください。このページは自動更新されます。",
+  "marketplace.open_checkout": "支払い画面を開く"
 }

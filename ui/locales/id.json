@@ -1385,5 +1385,11 @@
   "marketplace.verified_tip": "Terverifikasi",
   "marketplace.unverified_tip": "Belum terverifikasi",
   "modules.restart_timeout": "Mulai ulang memakan waktu lebih lama dari perkiraan. Muat ulang halaman secara manual setelah Celerp kembali.",
-  "modules.import_too_large": "Arsip itu terlalu besar (batas 50 MB)."
+  "modules.import_too_large": "Arsip itu terlalu besar (batas 50 MB).",
+  "btn.buy": "Beli",
+  "marketplace.once": "sekali",
+  "marketplace.buy_note": "Pembelian modul, sekali atau bulanan. Tidak termasuk Celerp Connect.",
+  "marketplace.owned": "Dimiliki",
+  "marketplace.waiting_payment": "Selesaikan pembayaran di browser, lalu kembali. Halaman ini diperbarui otomatis.",
+  "marketplace.open_checkout": "Buka pembayaran"
 }

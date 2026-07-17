@@ -330,7 +330,37 @@ def _catalog_price(m: dict, lang: str) -> str:
     return t("marketplace.free", lang)
 
 
-def _catalog_card(m: dict, lang: str, installed: set[str]):
+def _buy_btn(slug: str, kind: str, label: str, lang: str):
+    """A Buy button: POSTs to /modules/buy, which returns the waiting panel that
+    opens Stripe Checkout in the browser and polls for the license."""
+    return Button(t("btn.buy", lang) + " " + label,
+                  hx_post=f"/modules/buy?slug={slug}&kind={kind}",
+                  hx_target="#marketplace-panel", hx_swap="outerHTML",
+                  cls="btn btn--sm btn--primary")
+
+
+def _buy_waiting_panel(url: str, slug: str, lang: str):
+    """Shown after starting checkout: open Stripe Checkout in the browser and
+    poll the catalog (which re-renders with the module owned once the webhook
+    lands the license). Resumable - closing the tab does not lose the purchase."""
+    import json as _json
+    return Div(
+        P(t("marketplace.waiting_payment", lang), cls="text-muted"),
+        A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+          rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+        # desktop: open in the external browser; web: the link above.
+        Script(f"(function(){{var u={_json.dumps(url)};"
+               f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
+               f"else{{window.open(u,'_blank');}}}})();"),
+        # poll the marketplace panel every 5s; once the license lands the card
+        # flips to Owned. hx-trigger keeps it resumable across a page revisit.
+        Div(hx_get="/modules/marketplace-panel", hx_trigger="every 5s",
+            hx_target="#marketplace-panel", hx_swap="outerHTML"),
+        id="marketplace-panel", cls="settings-card",
+    )
+
+
+def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | None = None):
     """One catalog entry: summary row, detail drawer with disclosures first."""
     tier = m["tier"]
     body = []
@@ -354,8 +384,9 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
     body.append(Div(*links, cls="marketplace-card__links"))
-    # CTA per tier. One-click install of vaulted artifacts is the verified
-    # milestone; today official links out and community hands off to Import.
+    # CTA per tier.
+    licensed = licensed or set()
+    is_paid = bool(m.get("price_monthly") or m.get("price_once"))
     if m["id"] in installed:
         body.append(Span(t("settings.installed", lang), cls="badge badge--green"))
     elif tier == "community":
@@ -366,6 +397,20 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
               cls="btn btn--sm btn--secondary"),
             style="display:flex;gap:8px;",
         ))
+    elif is_paid and m["id"] not in licensed:
+        # Official/verified PAID module, not yet owned: Buy button(s). The one-time
+        # purchase copy states plainly it is not a Connect subscription.
+        buys = []
+        if m.get("price_monthly"):
+            buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
+        if m.get("price_once"):
+            buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
+        body.append(Div(*buys, cls="marketplace-card__buys",
+                        style="display:flex;gap:8px;flex-wrap:wrap;"))
+        body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
+    elif is_paid:
+        # Owned (licensed): install lands with the vault download (next stage).
+        body.append(Span(t("marketplace.owned", lang), cls="badge badge--green"))
     else:
         body.append(A(t("settings.view_install", lang),
                       href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
@@ -571,6 +616,11 @@ def setup_routes(app):
             installed = {m["name"] for m in await api.get_modules(token)}
         except APIError:
             pass
+        licensed = set()
+        try:
+            licensed = set(await api.module_licenses(token))
+        except APIError:
+            pass
 
         trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
         community = [m for m in modules_list if m["tier"] == "community"]
@@ -580,10 +630,29 @@ def setup_routes(app):
             children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
         if not modules_list:
             children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
-        children.extend(_catalog_card(m, lang, installed) for m in trusted)
+        children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
         children.append(_community_zone(len(community), lang))
         children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
         return Div(*children, id="marketplace-panel")
+
+    @app.post("/modules/buy")
+    async def modules_buy(request: Request):
+        """Start a module purchase: get the Stripe Checkout URL from the relay and
+        return the waiting panel (opens Checkout in the browser, polls the license)."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
+        kind = request.query_params.get("kind", "monthly")
+        try:
+            res = await api.buy_module(token, slug, kind)
+        except APIError as e:
+            return Div(P(e.detail or str(e), cls="flash flash--error"),
+                       Div(hx_get="/modules/marketplace-panel", hx_trigger="load",
+                           hx_swap="outerHTML"),
+                       id="marketplace-panel", cls="settings-card")
+        return _buy_waiting_panel(res.get("url", ""), slug, lang)
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):
