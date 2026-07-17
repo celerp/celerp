@@ -1,12 +1,15 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Repo-direct marketplace catalog.
+"""Marketplace catalog, relay-steered.
 
 The catalog is public data: index.json in github.com/celerp/community-modules.
-The app fetches it straight from the repo when the user opens the Marketplace
-tab, treats it as untrusted input (size cap, structure validation, plain-text
-rendering only), and caches it locally for offline. The relay is not in the
-read path; browsing needs no account.
+The app fetches it from the relay (which serves a cached copy; the repo stays
+the public source of truth anyone can fork), falling back to the repo directly
+and then to the local cache. Shipped clients are long-lived, so the relay
+endpoint is the ONE url baked into a release; listings, hashes, and future
+download descriptors are all catalog data the server can steer. Fetched only
+when the user opens the Marketplace tab, treated as untrusted input (size cap,
+structure validation, plain-text rendering only). Browsing needs no account.
 """
 from __future__ import annotations
 
@@ -17,8 +20,11 @@ from pathlib import Path
 
 import httpx
 
-CATALOG_URL = (
-    "https://raw.githubusercontent.com/celerp/community-modules/main/index.json"
+from ui.config import RELAY_URL
+
+CATALOG_SOURCES = (
+    f"{RELAY_URL}/marketplace/catalog",
+    "https://raw.githubusercontent.com/celerp/community-modules/main/index.json",
 )
 MAX_CATALOG_BYTES = 512 * 1024
 TIERS = ("official", "verified", "community")
@@ -85,15 +91,18 @@ def _parse(raw: bytes) -> list[dict]:
 
 
 async def fetch_catalog() -> tuple[list[dict], bool]:
-    """Return (modules, from_cache). Live fetch first; cache on failure.
-    Raises if both are unavailable."""
-    try:
-        async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as c:
-            r = await c.get(CATALOG_URL)
-            r.raise_for_status()
-            if len(r.content) > MAX_CATALOG_BYTES:
-                raise ValueError("catalog too large")
-            modules = _parse(r.content)
+    """Return (modules, from_cache). Relay first, repo second, cache last.
+    Raises only when all three are unavailable."""
+    for url in CATALOG_SOURCES:
+        try:
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                if len(r.content) > MAX_CATALOG_BYTES:
+                    raise ValueError("catalog too large")
+                modules = _parse(r.content)
+        except Exception:
+            continue
         try:
             _cache_path().parent.mkdir(parents=True, exist_ok=True)
             _cache_path().write_text(
@@ -103,11 +112,10 @@ async def fetch_catalog() -> tuple[list[dict], bool]:
         except OSError:
             pass  # cache is best-effort
         return modules, False
-    except Exception:
-        cached = read_cached()
-        if cached is None:
-            raise
-        return cached, True
+    cached = read_cached()
+    if cached is None:
+        raise ConnectionError("catalog unavailable from all sources")
+    return cached, True
 
 
 def read_cached() -> list[dict] | None:

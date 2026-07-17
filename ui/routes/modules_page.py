@@ -7,10 +7,11 @@ Two tabs:
   - Local Modules: what is on this machine — enable/disable, Import Module
     (zip upload or desktop folder picker), Open Modules Folder, a working
     Restart button, load-error surfacing, and a build-your-own card.
-  - Marketplace: the catalog, read straight from the community-modules repo
-    (index.json is public data; the relay is not in the read path). Official
-    and verified modules show first; community listings sit behind a one-time
-    trust acknowledgment and always carry the grey unverified icon.
+  - Marketplace: the catalog (community-modules index.json, public data),
+    served via the relay with repo-direct and local-cache fallbacks; see
+    ui.marketplace_catalog for why the relay endpoint is the one baked-in URL.
+    Official and verified modules show first; community listings sit behind a
+    one-time trust acknowledgment and always carry the grey unverified icon.
 
 Restart is ONE endpoint for both modes: POST /system/restart writes the
 sentinel and SIGTERMs. In desktop mode Electron's restart manager respawns
