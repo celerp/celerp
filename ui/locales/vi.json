@@ -1391,5 +1391,8 @@
   "marketplace.buy_note": "Mua mô-đun một lần hoặc hàng tháng. Không bao gồm Celerp Connect.",
   "marketplace.owned": "Đã sở hữu",
   "marketplace.waiting_payment": "Hoàn tất thanh toán trong trình duyệt rồi quay lại. Trang này tự cập nhật.",
-  "marketplace.open_checkout": "Mở trang thanh toán"
+  "marketplace.open_checkout": "Mở trang thanh toán",
+  "btn.install": "Cài đặt",
+  "marketplace.install_success": "{name} đã được cài đặt và kích hoạt.",
+  "marketplace.waiting_timeout": "Đang chờ xác nhận thanh toán. Nếu bạn đã thanh toán, có thể mất vài phút - giao dịch mua của bạn không bị mất. Trang này sẽ cập nhật khi được xác nhận."
 }

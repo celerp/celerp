@@ -215,3 +215,16 @@ def test_check_license_lifetime_works_fully_offline(monkeypatch, tmp_path):
     with patch("urllib.request.urlopen", side_effect=AssertionError("must not phone home")):
         assert lic.check_license("celerp-warehousing", "https://relay.example.com",
                                  "jwt", tmp_path) is True
+
+
+def test_is_premium_path_marker_file(tmp_path):
+    """A module dir carrying the marketplace installer's marker is license-gated
+    even outside a premium_modules/ tree (paid downloads land in MODULE_DIR)."""
+    from celerp.modules.importer import PREMIUM_MARKER
+    from celerp.modules.license import is_premium_path
+
+    mod = tmp_path / "modules" / "celerp-warehousing"
+    mod.mkdir(parents=True)
+    assert not is_premium_path(mod)
+    (mod / PREMIUM_MARKER).write_text("")
+    assert is_premium_path(mod)

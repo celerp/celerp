@@ -1695,7 +1695,7 @@ async def buy_module(body: _BuyBody) -> dict:
     return r.json()
 
 
-@router.get("/me/modules/licenses")
+@router.get("/me/modules/licenses", dependencies=[Depends(require_admin)])
 async def module_licenses() -> dict:
     """Slugs this instance holds an active license for (for buy/install CTAs)."""
     import httpx
@@ -1713,6 +1713,111 @@ async def module_licenses() -> dict:
     licensed = [it.get("module_slug") for it in items
                 if it.get("status") == "active" and it.get("module_slug")]
     return {"licensed": licensed}
+
+
+def _relay_error_detail(resp, fallback: str) -> str:
+    """The relay's own error message when it sent one, else the fallback."""
+    try:
+        d = resp.json().get("detail")
+        return d if isinstance(d, str) and d else fallback
+    except Exception:
+        return fallback
+
+
+class _MarketplaceInstallBody(BaseModel):
+    slug: str
+
+
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_admin)])
+async def marketplace_install(
+    body: _MarketplaceInstallBody,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Download a marketplace module from the relay, install it through the shared
+    importer, and enable it (restart activates it). Admin only.
+
+    The relay enforces the gates at token issuance: a paid module needs an active
+    license, third-party code needs a passed security scan. Never-stuck by design:
+    every attempt requests a FRESH one-time download token, so any failure - relay
+    down, download interrupted, bad archive - is fully recoverable by fixing the
+    cause and clicking Install again; nothing is half-committed.
+    """
+    import asyncio
+    import os
+    import shutil
+    from pathlib import Path
+
+    import httpx
+
+    from celerp.modules.importer import (
+        MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
+    )
+
+    url, jwt = _relay_creds()
+    headers = {"Authorization": f"Bearer {jwt}"}
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as c:
+            # Module metadata drives the trust decision (celerp- prefix required
+            # for official, forbidden for third-party) and the license-gate marker.
+            m = await c.get(f"{url}/marketplace/modules/{body.slug}")
+            if m.status_code != 200:
+                raise HTTPException(
+                    status_code=404 if m.status_code == 404 else 502,
+                    detail=_relay_error_detail(m, "This module is not available."))
+            meta = m.json()
+            is_official = bool(meta.get("is_official"))
+            is_paid = bool(meta.get("price_monthly") or meta.get("price_once"))
+
+            r = await c.post(f"{url}/marketplace/install",
+                             json={"slug": body.slug}, headers=headers)
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=r.status_code,
+                    detail=_relay_error_detail(r, "The relay refused the download."))
+            token = r.json().get("token", "")
+
+            d = await c.get(f"{url}/marketplace/download/{token}")
+            if d.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=_relay_error_detail(d, "The module download failed. Try again."))
+            data = d.content
+    except HTTPException:
+        raise
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the Celerp relay. Check your connection and try again.")
+
+    if len(data) > MAX_ARCHIVE_BYTES:
+        raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
+    try:
+        info = await asyncio.to_thread(
+            install_from_zip, data, official=is_official, premium=is_paid)
+    except ModuleImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if info["name"] != body.slug:
+        # A package whose manifest name differs from the catalog slug must not
+        # stay installed (it would dodge the slug's license/scan identity).
+        module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
+        if module_dir:
+            shutil.rmtree(Path(module_dir) / info["name"], ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail="The downloaded package does not match the requested module.")
+
+    # Enable so the next restart activates it - same path as the enable endpoint.
+    from celerp.modules.registry import enable, get_enabled
+    from celerp.config import set_enabled_modules
+
+    company = await session.get(Company, company_id)
+    if company is not None:
+        company.settings = enable(company.settings or {}, body.slug)
+        await session.commit()
+    set_enabled_modules([body.slug])
+    return {"ok": True, "restart_required": True, **info}
 
 
 @router.delete("/me", dependencies=[Depends(require_admin)])

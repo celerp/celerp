@@ -342,20 +342,63 @@ def _buy_btn(slug: str, kind: str, label: str, lang: str):
 def _buy_waiting_panel(url: str, slug: str, lang: str):
     """Shown after starting checkout: open Stripe Checkout in the browser and
     poll the catalog (which re-renders with the module owned once the webhook
-    lands the license). Resumable - closing the tab does not lose the purchase."""
+    lands the license). Resumable - closing the tab does not lose the purchase.
+    Cancel (button or Esc) returns to the catalog; after 10 minutes the poll
+    stops and a still-waiting message with a manual refresh takes over."""
     import json as _json
     return Div(
         P(t("marketplace.waiting_payment", lang), cls="text-muted"),
-        A(t("marketplace.open_checkout", lang), href=url, target="_blank",
-          rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+        Div(
+            A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+              rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+            Button(t("btn.cancel", lang), id="buy-cancel",
+                   hx_get="/modules/marketplace-panel",
+                   hx_target="#marketplace-panel", hx_swap="outerHTML",
+                   cls="btn btn--sm btn--secondary"),
+            style="display:flex;gap:8px;",
+        ),
+        P(t("marketplace.waiting_timeout", lang), id="buy-timeout",
+          cls="flash flash--warning", style="display:none;"),
         # desktop: open in the external browser; web: the link above.
         Script(f"(function(){{var u={_json.dumps(url)};"
                f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
                f"else{{window.open(u,'_blank');}}}})();"),
         # poll the marketplace panel every 5s; once the license lands the card
         # flips to Owned. hx-trigger keeps it resumable across a page revisit.
-        Div(hx_get="/modules/marketplace-panel", hx_trigger="every 5s",
+        Div(id="buy-poll", hx_get="/modules/marketplace-panel", hx_trigger="every 5s",
             hx_target="#marketplace-panel", hx_swap="outerHTML"),
+        # Esc cancels; after 10 min stop polling and surface the refresh path.
+        Script("""
+        (function () {
+          function esc(e) {
+            if (e.key === 'Escape') {
+              var b = document.getElementById('buy-cancel');
+              if (b) { b.click(); }
+              document.removeEventListener('keydown', esc);
+            }
+          }
+          document.addEventListener('keydown', esc);
+          setTimeout(function () {
+            var p = document.getElementById('buy-poll');
+            if (p) { p.remove(); }
+            var m = document.getElementById('buy-timeout');
+            if (m) { m.style.display = ''; }
+          }, 600000);
+        })();
+        """),
+        id="marketplace-panel", cls="settings-card",
+    )
+
+
+def _marketplace_error_panel(message: str, lang: str):
+    """An action failed: keep the message on screen (no auto-reload wiping it)
+    with an explicit way back to the catalog."""
+    return Div(
+        Div(message, cls="flash flash--error"),
+        Button(t("btn.back", lang),
+               hx_get="/modules/marketplace-panel",
+               hx_target="#marketplace-panel", hx_swap="outerHTML",
+               cls="btn btn--sm btn--secondary"),
         id="marketplace-panel", cls="settings-card",
     )
 
@@ -409,8 +452,18 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
                         style="display:flex;gap:8px;flex-wrap:wrap;"))
         body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
     elif is_paid:
-        # Owned (licensed): install lands with the vault download (next stage).
-        body.append(Span(t("marketplace.owned", lang), cls="badge badge--green"))
+        # Owned (licensed): one-click vault install - download, import, enable;
+        # restart activates. Failures re-render with the error and the button
+        # stays, so a failed download is never a dead end.
+        body.append(Div(
+            Span(t("marketplace.owned", lang), cls="badge badge--green"),
+            Button(t("btn.install", lang),
+                   hx_post=f"/modules/marketplace-install?slug={m['id']}",
+                   hx_target="#marketplace-panel", hx_swap="outerHTML",
+                   hx_disabled_elt="this",
+                   cls="btn btn--sm btn--primary"),
+            style="display:flex;gap:8px;align-items:center;",
+        ))
     else:
         body.append(A(t("settings.view_install", lang),
                       href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
@@ -648,11 +701,43 @@ def setup_routes(app):
         try:
             res = await api.buy_module(token, slug, kind)
         except APIError as e:
-            return Div(P(e.detail or str(e), cls="flash flash--error"),
-                       Div(hx_get="/modules/marketplace-panel", hx_trigger="load",
-                           hx_swap="outerHTML"),
-                       id="marketplace-panel", cls="settings-card")
+            return _marketplace_error_panel(e.detail or str(e), lang)
         return _buy_waiting_panel(res.get("url", ""), slug, lang)
+
+    @app.post("/modules/marketplace-install")
+    async def modules_marketplace_install(request: Request):
+        """One-click install of an owned (or free) marketplace module: the local
+        API downloads from the relay, imports, and enables; restart activates.
+        Errors stay on screen with a way back - the Install button re-renders
+        with the catalog, so retrying is always possible."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
+        try:
+            info = await api.marketplace_install(token, slug)
+        except APIError as e:
+            return _marketplace_error_panel(e.detail or str(e), lang)
+        return Div(
+            Div(t("marketplace.install_success", lang,
+                  name=info.get("display_name") or info.get("name", slug)),
+                cls="flash flash--success"),
+            P(t("settings._a_restart_is_required_for_module_changes_to_take", lang),
+              cls="text-muted small"),
+            Div(
+                Button(t("btn.restart_now", lang),
+                       hx_post="/modules/restart",
+                       hx_target="#marketplace-panel", hx_swap="outerHTML",
+                       cls="btn btn--sm btn--primary"),
+                Button(t("btn.back", lang),
+                       hx_get="/modules/marketplace-panel",
+                       hx_target="#marketplace-panel", hx_swap="outerHTML",
+                       cls="btn btn--sm btn--secondary"),
+                style="display:flex;gap:8px;",
+            ),
+            id="marketplace-panel", cls="settings-card",
+        )
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):
@@ -679,12 +764,24 @@ def setup_routes(app):
                         hx_post="/modules/community-ack",
                         hx_target="#community-zone", hx_swap="outerHTML",
                         cls="btn btn--sm btn--primary"),
-                    Button(t("btn.cancel", lang),
+                    Button(t("btn.cancel", lang), id="community-cancel",
                         hx_get="/modules/community-panel?hide=1",
                         hx_target="#community-zone", hx_swap="outerHTML",
                         cls="btn btn--sm btn--secondary"),
                     style="display:flex;gap:8px;margin-top:8px;",
                 ),
+                Script("""
+                (function () {
+                  function esc(e) {
+                    if (e.key === 'Escape') {
+                      var b = document.getElementById('community-cancel');
+                      if (b) { b.click(); }
+                      document.removeEventListener('keydown', esc);
+                    }
+                  }
+                  document.addEventListener('keydown', esc);
+                })();
+                """),
                 cls="marketplace-community-warning",
                 id="community-zone",
             )

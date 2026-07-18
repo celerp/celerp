@@ -38,17 +38,28 @@ MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 _RESERVED_PREFIX = "celerp-"
 _NAME_MAX = 64
 
+# Marker file the marketplace installer drops inside a PAID module's directory.
+# The license gate (celerp.modules.license.is_premium_path) treats a directory
+# carrying it like premium_modules/, so downloaded paid modules are license-checked
+# at load without needing a second module dir.
+PREMIUM_MARKER = ".celerp-premium"
+
 
 class ModuleImportError(Exception):
     """User-facing import failure. Message is safe to show in the UI."""
 
 
-def _validate_name(name: str) -> None:
+def _validate_name(name: str, *, official: bool = False) -> None:
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError("Module name missing or too long.")
-    if name.startswith(_RESERVED_PREFIX):
+    # The celerp- prefix is the trust boundary: sideloads may never claim it, and
+    # the marketplace-download path (official=True, relay-authenticated) may ONLY
+    # install under it - so neither path can impersonate the other.
+    if official != name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError(
             "The 'celerp-' name prefix is reserved for official modules."
+            if not official else
+            "Official module packages must use the 'celerp-' name prefix."
         )
     ok = all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
     if not ok or not name[0].isalnum():
@@ -124,10 +135,13 @@ def _target_for(name: str) -> Path:
     return target
 
 
-def _finish(staged: Path, manifest: dict) -> dict:
+def _finish(staged: Path, manifest: dict, *, official: bool = False,
+            premium: bool = False) -> dict:
     name = str(manifest.get("name", ""))
-    _validate_name(name)
+    _validate_name(name, official=official)
     _check_min_version(manifest)
+    if premium:
+        (staged / PREMIUM_MARKER).write_text("")
     target = _target_for(name)
     # Land atomically: copy into a temp dir on the SAME filesystem as the module
     # dir (staged lives under /tmp, often a different device, where shutil.move
@@ -180,8 +194,13 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
     )
 
 
-def install_from_zip(data: bytes) -> dict:
-    """Validate and install a module from zip bytes. Returns manifest summary."""
+def install_from_zip(data: bytes, *, official: bool = False,
+                     premium: bool = False) -> dict:
+    """Validate and install a module from zip bytes. Returns manifest summary.
+
+    `official` is set ONLY by the marketplace installer (relay-authenticated
+    download): it flips the celerp- prefix rule from forbidden to required.
+    `premium` drops the license-gate marker for paid modules."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError("Archive is too large (limit 50 MB).")
     tmp_zip = None
@@ -224,7 +243,7 @@ def install_from_zip(data: bytes) -> dict:
                     "No __init__.py at the module root; not a Celerp module package."
                 )
             manifest = _read_manifest(init_py.read_text(encoding="utf-8", errors="replace"))
-            return _finish(out, manifest)
+            return _finish(out, manifest, official=official, premium=premium)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

@@ -173,3 +173,35 @@ def test_no_module_dir_configured(monkeypatch):
     monkeypatch.setenv("MODULE_DIR", "")
     with pytest.raises(ModuleImportError, match="no module directory"):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+
+
+# ── marketplace (official/premium) installs ───────────────────────────────────
+
+OFFICIAL_MANIFEST = MANIFEST.replace("my-module", "celerp-warehousing")
+
+
+def test_official_install_allows_celerp_prefix(module_dir):
+    info = install_from_zip(
+        _zip_bytes({"__init__.py": OFFICIAL_MANIFEST}), official=True)
+    assert info["name"] == "celerp-warehousing"
+    assert (module_dir / "celerp-warehousing" / "__init__.py").exists()
+
+
+def test_official_install_requires_celerp_prefix(module_dir):
+    # The relay says a module is official: a package NOT under celerp- must be
+    # refused, so third-party packages can't ride the official install path.
+    with pytest.raises(ModuleImportError, match="celerp-"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST}), official=True)
+
+
+def test_premium_install_writes_license_marker(module_dir):
+    from celerp.modules.importer import PREMIUM_MARKER
+    install_from_zip(
+        _zip_bytes({"__init__.py": OFFICIAL_MANIFEST}), official=True, premium=True)
+    assert (module_dir / "celerp-warehousing" / PREMIUM_MARKER).exists()
+
+
+def test_free_install_writes_no_marker(module_dir):
+    from celerp.modules.importer import PREMIUM_MARKER
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    assert not (module_dir / "my-module" / PREMIUM_MARKER).exists()

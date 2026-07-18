@@ -1391,5 +1391,8 @@
   "marketplace.buy_note": "モジュールの買い切りまたは月額購入です。Celerp Connect は含まれません。",
   "marketplace.owned": "購入済み",
   "marketplace.waiting_payment": "ブラウザで支払いを完了してから戻ってください。このページは自動更新されます。",
-  "marketplace.open_checkout": "支払い画面を開く"
+  "marketplace.open_checkout": "支払い画面を開く",
+  "btn.install": "インストール",
+  "marketplace.install_success": "{name} はインストールされ、有効になりました。",
+  "marketplace.waiting_timeout": "支払いの確認を待っています。支払いが完了している場合、反映まで数分かかることがあります。購入は失われません。確認され次第、このページは更新されます。"
 }

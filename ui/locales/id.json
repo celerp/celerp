@@ -1391,5 +1391,8 @@
   "marketplace.buy_note": "Pembelian modul, sekali atau bulanan. Tidak termasuk Celerp Connect.",
   "marketplace.owned": "Dimiliki",
   "marketplace.waiting_payment": "Selesaikan pembayaran di browser, lalu kembali. Halaman ini diperbarui otomatis.",
-  "marketplace.open_checkout": "Buka pembayaran"
+  "marketplace.open_checkout": "Buka pembayaran",
+  "btn.install": "Pasang",
+  "marketplace.install_success": "{name} terpasang dan diaktifkan.",
+  "marketplace.waiting_timeout": "Menunggu konfirmasi pembayaran. Jika Anda sudah membayar, mungkin perlu beberapa menit - pembelian Anda tidak hilang. Halaman ini diperbarui setelah dikonfirmasi."
 }

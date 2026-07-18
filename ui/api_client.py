@@ -2048,6 +2048,14 @@ async def module_licenses(token: str) -> list[str]:
         return (r.json().get("licensed", []) or []) if r.status_code == 200 else []
 
 
+async def marketplace_install(token: str, slug: str) -> dict:
+    """POST /companies/me/modules/marketplace-install - download a marketplace
+    module from the relay and install + enable it (the download can take a while)."""
+    async with _api_client(token, timeout=90.0) as c:
+        return _raise(await c.post("/companies/me/modules/marketplace-install",
+                                   json={"slug": slug})).json()
+
+
 async def restart_system(token: str) -> dict:
     """POST /system/restart — graceful restart; the process manager respawns."""
     async with _api_client(token) as c:

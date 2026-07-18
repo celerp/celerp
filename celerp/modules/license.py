@@ -55,8 +55,13 @@ def _verify_lifetime_jwt(token: str, slug: str) -> bool:
 
 
 def is_premium_path(pkg_path: Path) -> bool:
-    """Return True if *pkg_path* lives inside a ``premium_modules/`` directory."""
-    return any(p.name == "premium_modules" for p in pkg_path.parents)
+    """True if *pkg_path* is license-gated: inside a ``premium_modules/`` directory,
+    or carrying the marker the marketplace installer drops for a paid module
+    (which lands in the regular module dir, not a premium tree)."""
+    if any(p.name == "premium_modules" for p in pkg_path.parents):
+        return True
+    from celerp.modules.importer import PREMIUM_MARKER
+    return (pkg_path / PREMIUM_MARKER).exists()
 
 
 def check_license(

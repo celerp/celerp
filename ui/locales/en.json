@@ -1455,5 +1455,8 @@
   "marketplace.buy_note": "A one-time or monthly module purchase. It does not include Celerp Connect.",
   "marketplace.owned": "Owned",
   "marketplace.waiting_payment": "Complete payment in your browser, then come back - this page updates automatically.",
-  "marketplace.open_checkout": "Open checkout"
+  "marketplace.open_checkout": "Open checkout",
+  "btn.install": "Install",
+  "marketplace.install_success": "{name} is installed and enabled.",
+  "marketplace.waiting_timeout": "Still waiting for payment confirmation. If you completed payment, it can take a few minutes to arrive - your purchase is not lost. This page updates once it is confirmed."
 }

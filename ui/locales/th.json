@@ -1391,5 +1391,8 @@
   "marketplace.buy_note": "เป็นการซื้อโมดูลแบบครั้งเดียวหรือรายเดือน ไม่รวม Celerp Connect",
   "marketplace.owned": "เป็นเจ้าของแล้ว",
   "marketplace.waiting_payment": "ชำระเงินในเบราว์เซอร์ของคุณ แล้วกลับมา หน้านี้จะอัปเดตอัตโนมัติ",
-  "marketplace.open_checkout": "เปิดหน้าชำระเงิน"
+  "marketplace.open_checkout": "เปิดหน้าชำระเงิน",
+  "btn.install": "ติดตั้ง",
+  "marketplace.install_success": "{name} ติดตั้งและเปิดใช้งานแล้ว",
+  "marketplace.waiting_timeout": "กำลังรอการยืนยันการชำระเงิน หากคุณชำระเงินแล้ว อาจใช้เวลาสักครู่ - การซื้อของคุณจะไม่สูญหาย หน้านี้จะอัปเดตเมื่อได้รับการยืนยัน"
 }

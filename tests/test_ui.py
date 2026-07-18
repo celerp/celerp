@@ -8303,6 +8303,54 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert b"checkout.stripe.com/pay/cs_test_9" in r.content
         assert b"every 5s" in r.content   # polls until the license lands
+        assert b"buy-cancel" in r.content     # cancel affordance (button + Esc)
+        assert b"buy-timeout" in r.content    # poll stops with a still-waiting message
+
+    @pytest.mark.asyncio
+    async def test_buy_error_stays_on_screen(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.buy_module",
+                   new=AsyncMock(side_effect=APIError(409, "This module's author is not able to accept payments right now."))):
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"not able to accept payments" in r.content
+        # No auto-reload that would wipe the message before the user reads it.
+        assert b'hx-trigger="load"' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_owned_module_shows_install_button(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"/modules/marketplace-install?slug=celerp-budgeting" in r.content
+
+    @pytest.mark.asyncio
+    async def test_marketplace_install_success_offers_restart(self, ui_client):
+        with patch("ui.api_client.marketplace_install",
+                   new=AsyncMock(return_value={"ok": True, "restart_required": True,
+                                               "name": "celerp-budgeting",
+                                               "display_name": "Budgeting"})):
+            r = await ui_client.post("/modules/marketplace-install?slug=celerp-budgeting",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"Budgeting" in r.content
+        assert b"/modules/restart" in r.content
+
+    @pytest.mark.asyncio
+    async def test_marketplace_install_error_stays_with_way_back(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.marketplace_install",
+                   new=AsyncMock(side_effect=APIError(502, "The module download failed. Try again."))):
+            r = await ui_client.post("/modules/marketplace-install?slug=celerp-budgeting",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"download failed" in r.content
+        assert b"/modules/marketplace-panel" in r.content   # explicit way back
+        assert b'hx-trigger="load"' not in r.content        # error is not auto-wiped
 
 
 # ---------------------------------------------------------------------------

@@ -1391,5 +1391,8 @@
   "marketplace.buy_note": "شراء الوحدة لمرة واحدة أو شهريًا. لا يشمل Celerp Connect.",
   "marketplace.owned": "مملوكة",
   "marketplace.waiting_payment": "أكمل الدفع في المتصفح ثم عد. تتحدّث هذه الصفحة تلقائيًا.",
-  "marketplace.open_checkout": "فتح صفحة الدفع"
+  "marketplace.open_checkout": "فتح صفحة الدفع",
+  "btn.install": "تثبيت",
+  "marketplace.install_success": "تم تثبيت {name} وتفعيله.",
+  "marketplace.waiting_timeout": "في انتظار تأكيد الدفع. إذا أتممت الدفع فقد يستغرق الأمر بضع دقائق - لن تُفقد عملية الشراء. سيتم تحديث هذه الصفحة عند التأكيد."
 }
