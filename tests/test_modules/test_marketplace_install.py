@@ -109,6 +109,22 @@ async def test_install_downloads_enables_and_marks_premium(client, relay_env):
 
 
 @pytest.mark.asyncio
+async def test_lifetime_only_module_is_marked_premium(client, relay_env):
+    """A module sold ONLY one-time (price_monthly None, price_once set) is still
+    paid, so it must land with the license-gate marker - regression for the
+    ModuleOut that used to omit price_once."""
+    headers = await _register(client)
+    fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": None,
+                                            "price_once": 79.0}))
+    with patch("httpx.AsyncClient", fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 200, r.text
+    from celerp.modules.importer import PREMIUM_MARKER
+    assert (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
+
+
+@pytest.mark.asyncio
 async def test_relay_refusal_passes_through_and_installs_nothing(client, relay_env):
     headers = await _register(client)
     fake = _fake_relay(install=_FakeResp(402, {"detail": "This module requires purchase."}))
