@@ -340,11 +340,18 @@ def render_label_pdf(
 
                 if ftype == "barcode":
                     try:
-                        # Vector barcode: crisp at any printer DPI. Natural width
-                        # (bar-perfect) preferred; squeeze only when the label is
-                        # too narrow. Same rule as the HTML print sheet.
-                        img_h = max(6, min(8, h_mm / 4)) * mm
-                        bc = createBarcodeDrawing("Code128", value=str(val), barHeight=img_h, humanReadable=False)
+                        # Vector barcode at a wide X-dimension so bars land cleanly on the
+                        # printer's dot grid and the white gaps stay open. Natural width;
+                        # squeeze only when the label is genuinely too narrow (never stretch up).
+                        # Bar height honors the field's barcode_height setting (mm, 1-30), like the designer.
+                        img_h = max(1, min(30, int(field.get("barcode_height") or 8))) * mm
+                        # Snap the X-dimension to whole printer dots for the same reason the
+                        # SVG path does: 0.33mm is 3.90 dots at 300dpi, so an unsnapped module
+                        # rasterizes as a mix of 3- and 4-dot bars.
+                        _bar_w = snap_to_dots(_BC_MODULE_MM, DEFAULT_PRINTER_DPI,
+                                              minimum_dots=_BC_MIN_MODULE_DOTS)
+                        bc = createBarcodeDrawing("Code128", value=str(val), barHeight=img_h,
+                                                  humanReadable=False, barWidth=_bar_w * mm)
                         avail = (w_mm - 2) * mm - x_pt
                         img_w = min(avail, max(20 * mm, bc.width))
                         if img_w != bc.width:

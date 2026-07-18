@@ -122,6 +122,11 @@ _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
 from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
 
+# The human-readable barcode number is a fallback for keying the code by hand, so it
+# defaults small and leaves the label's vertical space for actual content. A size set
+# on the field still wins.
+BARCODE_TEXT_DEFAULT_PT = 6.0
+
 _LABELS_CSS = """
 <style id="labels-css">
 /* -- Settings page: template list (left) + editor (right) -- */
@@ -184,6 +189,9 @@ _LABELS_CSS = """
 }
 .label-field-block--barcode img { display: block; width: 100%; height: auto; }
 .label-field-block--barcode .bc-text { font-size: 60%; color: #333; margin-top: 1px; }
+.fld-bold-wrap { display: inline-flex; align-items: center; gap: 3px; font-size: 12px;
+                 color: var(--c-text2); cursor: pointer; user-select: none; }
+.fld-bold-wrap input { margin: 0; cursor: pointer; }
 /* QR preview image block */
 .label-field-block--qr {
   padding: 1px; overflow: visible;
@@ -414,6 +422,14 @@ def _field_row_compact(
             f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
             f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
             f' oninput="labelEditorUpdatePreview()">'
+            # Bold has always been stored on the field and honoured by the renderers;
+            # there was simply no way to set it. An unchecked box submits nothing,
+            # which is exactly what the parser expects.
+            f'<label class="fld-bold-wrap" title="Bold this field"'
+            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};">'
+            f'<input type="checkbox" name="fields[{idx}][bold]" value="true" class="fld-bold"'
+            f'{" checked" if field.get("bold") else ""}'
+            f' onchange="labelEditorUpdatePreview()"><b>B</b></label>'
         ),
         cls="field-row-compact",
         data_idx=str(idx),
@@ -600,6 +616,8 @@ def _editor_panel(
         if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
         var bhIn = row.querySelector('.fld-bh');
         if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
+        var boldIn = row.querySelector('.fld-bold-wrap');
+        if (boldIn) boldIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';
       }}
       closeDropdown();
       labelEditorUpdatePreview();
@@ -677,7 +695,10 @@ def _editor_panel(
         ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
         '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
-        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
+        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
+        '<label class="fld-bold-wrap" title="Bold this field">' +
+        '<input type="checkbox" name="fields[' + idx + '][bold]" value="true" class="fld-bold"' +
+        ' onchange="labelEditorUpdatePreview()"><b>B</b></label>';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
@@ -818,6 +839,13 @@ def _editor_panel(
         block.className = 'label-field-block';
         // Show "label: value" for text fields so fields are distinguishable
         block.textContent = fieldLabel ? (fieldLabel + ': ' + sample) : sample;
+      }}
+
+      // Bold applies to text and the barcode number, and must show in the preview
+      // so what the designer shows is what the printer produces.
+      var boldEl = row.querySelector('.fld-bold');
+      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {{
+        block.style.fontWeight = boldEl.checked ? '700' : '';
       }}
 
       setupBlockDrag(block, i, dims.scale);
@@ -1060,7 +1088,22 @@ def _printable_label_sheet(
         return f'<div class="label-field label-field--qr" style="{qr_style}">{safe_val}</div>'
 
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
-    _auto_step_mm = {"text": 4.0, "barcode_text": 4.0, "barcode": 8.0, "qr": 11.0}
+    # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
+    # Text steps with its own size instead of a flat 4mm: at 6pt a line is ~2.1mm tall,
+    # so a fixed 4mm was nearly double leading and burned the vertical space a dense
+    # label needs. Barcode/QR keep fixed steps (they are sized in mm, not points).
+    _PT_MM = 25.4 / 72.0            # 1pt in mm
+    _AUTO_LEAD = 1.25               # same leading multiplier the PDF renderer uses
+
+    def _auto_step(ftype: str, fs) -> float:
+        if ftype == "barcode":
+            return 8.0
+        if ftype == "qr":
+            return 11.0
+        pt = float(fs) if fs not in (None, "") else 7.0
+        if ftype == "barcode_text" and fs in (None, ""):
+            pt = BARCODE_TEXT_DEFAULT_PT
+        return max(1.6, pt * _PT_MM * _AUTO_LEAD)
 
     label_rows = []
     for item in items:
@@ -1081,14 +1124,20 @@ def _printable_label_sheet(
                 left_mm, top_mm = float(x), float(y)
             else:
                 left_mm, top_mm = 2.0, auto_y
-                auto_y += _auto_step_mm.get(ftype, 4.0)
+                auto_y += _auto_step(ftype, f.get("fontSize"))
             pos = f"left:{left_mm}mm;top:{top_mm}mm;"
             if ftype == "barcode":
                 bc_height = int(f.get("barcode_height") or 8)
                 field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")
-                span_style = f' style="font-size:{float(fs)}pt;"' if fs not in (None, "") else ""
+                # The human-readable number is a caption, not body copy: it exists so a
+                # human can key the code when a scanner fails. Inheriting the label's
+                # default size made it as large as the data lines and ate the vertical
+                # space the label needs for actual content. Default small; an explicit
+                # per-field size still wins.
+                fs_pt = float(fs) if fs not in (None, "") else BARCODE_TEXT_DEFAULT_PT
+                span_style = f' style="font-size:{fs_pt}pt;"'
                 field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{val}</span></div>')
             elif ftype == "qr":
                 field_lines.append(_qr_tag(val, wrap_style=pos))
