@@ -140,13 +140,23 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
         deps_by_name[p.name] = _read_depends_on(p)
 
     result: list[Path] = []
-    visited: set[str] = set()
+    done: set[str] = set()       # fully resolved and appended to result
+    on_stack: set[str] = set()   # currently being visited (for cycle detection)
     skipped: set[str] = set()
 
     def _visit(name: str) -> None:
-        if name in visited or name in skipped:
+        if name in done or name in skipped:
             return
-        visited.add(name)
+        if name in on_stack:
+            # A back-edge to a module still being visited: a dependency cycle.
+            # Skip it with a clear error rather than accepting an order that
+            # cannot actually satisfy the deps.
+            log.warning("Module %r is part of a dependency cycle — skipping", name)
+            if errors is not None:
+                errors.setdefault(name, "Part of a dependency cycle.")
+            skipped.add(name)
+            return
+        on_stack.add(name)
         for dep in deps_by_name.get(name, []):
             if dep not in enabled:
                 log.warning(
@@ -154,9 +164,9 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
                     name, dep, name,
                 )
                 if errors is not None:
-                    errors[name] = f"Requires {dep!r}, which is not enabled."
+                    errors.setdefault(name, f"Requires {dep!r}, which is not enabled.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
             if dep not in path_by_name:
                 log.warning(
@@ -164,9 +174,9 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
                     name, dep, name,
                 )
                 if errors is not None:
-                    errors[name] = f"Requires {dep!r}, which is not installed."
+                    errors.setdefault(name, f"Requires {dep!r}, which is not installed.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
             _visit(dep)
             if dep in skipped:
@@ -175,10 +185,12 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
                     name, dep, name,
                 )
                 if errors is not None:
-                    errors[name] = f"Requires {dep!r}, which failed to load."
+                    errors.setdefault(name, f"Requires {dep!r}, which failed to load.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
+        on_stack.discard(name)
+        done.add(name)
         result.append(path_by_name[name])
 
     for p in pkg_paths:
@@ -228,8 +240,8 @@ def is_running(pkg_name: str) -> bool:
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
-    "display_name", "label", "version", "description", "author", "depends_on",
-    "license", "min_celerp_version",
+    "name", "display_name", "label", "version", "description", "author",
+    "depends_on", "license", "min_celerp_version",
 })
 
 
@@ -364,13 +376,21 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
         # identity - i.e. it has activated / been given a GATEWAY_TOKEN).
         if is_premium_path(pkg_path):
             relay_url, instance_jwt, data_dir, instance_id = _resolve_premium_creds()
-            if relay_url and instance_jwt:
+            if relay_url:
+                # This instance has a relay identity, so a premium module is
+                # verified. Verify even when the live token exchange failed
+                # (instance_jwt is None): check_license still decides from the
+                # offline lifetime JWT and the grace cache, so a transient
+                # startup failure falls back to cached state rather than skipping
+                # the check. Only a genuinely never-activated install (no
+                # gateway_token -> relay_url == "") skips it.
                 if not check_license(
                     slug=pkg_name,
                     relay_url=relay_url,
-                    instance_jwt=instance_jwt,
+                    instance_jwt=instance_jwt or "",
                     cache_dir=Path(data_dir),
                     instance_id=instance_id,
+                    offline_only=instance_jwt is None,
                 ):
                     log.warning(
                         "Premium module %r skipped: no valid license", pkg_name
@@ -379,8 +399,8 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                     continue
             else:
                 log.debug(
-                    "Premium module %r: no relay identity (not activated, or "
-                    "token exchange failed) — skipping license check (dev mode)",
+                    "Premium module %r: no relay identity (never activated) — "
+                    "skipping license check (dev mode)",
                     pkg_name,
                 )
         try:

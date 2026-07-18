@@ -1663,6 +1663,18 @@ async def import_module_from_path(body: _ImportPathBody) -> dict:
     return {"ok": True, **info}
 
 
+def _json_dict(resp) -> dict:
+    """The relay is a separately-deployed service that can drift in version; a
+    hiccup can return a non-JSON or non-object body. Return its JSON only when it
+    is actually a dict, else {} - so callers can .get() without an AttributeError
+    turning a relay blip into a raw 500."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 async def _relay_creds() -> tuple[str, str]:
     """(relay_url, instance_jwt) for the marketplace's relay calls.
 
@@ -1692,7 +1704,11 @@ async def _relay_creds() -> tuple[str, str]:
     if tok_r.status_code != 200:
         raise HTTPException(status_code=502,
                             detail=f"Could not authenticate with relay ({tok_r.status_code}).")
-    return relay_base, tok_r.json()["access_token"]
+    token = _json_dict(tok_r).get("access_token")
+    if not token:
+        raise HTTPException(status_code=502,
+                            detail="Relay returned an unexpected authentication response.")
+    return relay_base, token
 
 
 class _BuyBody(BaseModel):
@@ -1712,8 +1728,11 @@ async def buy_module(body: _BuyBody) -> dict:
                          headers={"Authorization": f"Bearer {jwt}"})
     if r.status_code != 200:
         raise HTTPException(status_code=r.status_code,
-                            detail=(r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else "Checkout failed"))
-    return r.json()
+                            detail=_json_dict(r).get("detail") or "Checkout failed")
+    body_json = _json_dict(r)
+    if not body_json:
+        raise HTTPException(status_code=502, detail="Relay returned an unexpected checkout response.")
+    return body_json
 
 
 @router.get("/me/modules/licenses", dependencies=[Depends(require_admin)])
@@ -1786,7 +1805,13 @@ async def marketplace_install(
     # remove it first" collision with no recovery path (never-stuck, in fact).
     if module_dir and (Path(module_dir) / body.slug).is_dir():
         existing_meta = read_manifest_metadata(Path(module_dir) / body.slug)
-        if existing_meta.get("name", body.slug) == body.slug:
+        # Require the on-disk manifest to actually parse to THIS slug (no default):
+        # read_manifest_metadata returns {} for a missing/unparseable/half-written
+        # __init__.py, and a bare `.get("name", body.slug)` would then treat any
+        # leftover or foreign directory of the same name as a valid prior install,
+        # silently enabling it. Fall through to the normal download path instead,
+        # where the importer's collision check gives a clear, actionable error.
+        if existing_meta.get("name") == body.slug:
             from celerp.modules.registry import enable
             from celerp.config import set_enabled_modules
             company = await session.get(Company, company_id)
@@ -1809,9 +1834,8 @@ async def marketplace_install(
                 raise HTTPException(
                     status_code=404 if m.status_code == 404 else 502,
                     detail=_relay_error_detail(m, "This module is not available."))
-            try:
-                meta = m.json()
-            except (json.JSONDecodeError, ValueError):
+            meta = _json_dict(m)
+            if not meta:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
             is_official = bool(meta.get("is_official"))
             # Type-safe: only a real, positive number counts as paid. A string or
@@ -1830,9 +1854,8 @@ async def marketplace_install(
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=_relay_error_detail(r, "The relay refused the download."))
-            try:
-                token = str(r.json().get("token") or "")
-            except (json.JSONDecodeError, ValueError):
+            token = str(_json_dict(r).get("token") or "")
+            if not token:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
             d = await c.get(f"{url}/marketplace/download/{token}")

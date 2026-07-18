@@ -256,6 +256,26 @@ def test_concurrent_installs_of_same_slug_use_distinct_landing_dirs(module_dir):
     assert len(results) + len(errors) == 2
 
 
+def test_replace_onto_populated_target_reports_already_exists(module_dir, monkeypatch):
+    """A concurrent install can land the target between _target_for()'s existence
+    check and os.replace(). On Linux that surfaces as OSError(ENOTEMPTY), not
+    FileExistsError - both must map to the same friendly 'already exists'
+    message, never a raw errno string."""
+    import errno as _errno
+    import os as _os
+
+    real_replace = _os.replace
+
+    def _boom(src, dst, *a, **kw):
+        # Simulate the TOCTOU race: the target got populated by another install.
+        real_replace(src, dst, *a, **kw)  # let landing->target proceed once...
+        raise OSError(_errno.ENOTEMPTY, "Directory not empty")
+
+    monkeypatch.setattr(_os, "replace", _boom)
+    with pytest.raises(ModuleImportError, match="already exists"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+
+
 # ── premium marker cannot be smuggled in from package contents ────────────────
 
 def test_zip_with_premium_marker_entry_refused(module_dir):

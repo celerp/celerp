@@ -8091,6 +8091,27 @@ class TestModulesUI:
             assert fake not in r.content, f"{fake!r} is not a real app badge token"
 
     @pytest.mark.asyncio
+    async def test_dependency_tooltip_renders_translated(self, ui_client):
+        """A module required by another shows a disabled toggle whose tooltip is
+        the translated 'Required by: ...' string (exercises the t(..., names=)
+        interpolation path)."""
+        deps = [
+            {"name": "base-mod", "label": "Base", "version": "1.0", "author": "Celerp",
+             "enabled": True, "running": True},
+            {"name": "child-mod", "label": "Child", "version": "1.0", "author": "Celerp",
+             "enabled": True, "running": True, "depends_on": ["base-mod"]},
+        ]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES,
+                 "ui.api_client.get_modules": AsyncMock(return_value=deps)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Required by:" in r.content and b"Child" in r.content  # tooltip rendered
+
+    @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
         """A paid module present but unlicensed on THIS computer (moved from
         another machine) reframes the failure as the Connect upsell - the
@@ -8361,9 +8382,52 @@ class TestMarketplaceUI:
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"checkout.stripe.com/pay/cs_test_9" in r.content
-        assert b"every 5s" in r.content   # polls until the license lands
-        assert b"buy-cancel" in r.content     # cancel affordance (button + Esc)
-        assert b"buy-timeout" in r.content    # poll stops with a still-waiting message
+        assert b"every 5s" in r.content                    # polls until the license lands
+        assert b"buy-cancel" in r.content                  # cancel affordance (button + Esc)
+        # the poll hits the dedicated buy-poll endpoint (not the plain catalog),
+        # so the waiting screen survives past the first 5s
+        assert b"/modules/buy-poll?slug=celerp-budgeting" in r.content
+
+    @pytest.mark.asyncio
+    async def test_buy_poll_keeps_waiting_until_licensed_then_shows_catalog(self, ui_client):
+        """The poll re-emits the waiting panel (poll intact) while unlicensed,
+        and flips to the catalog once the module is owned."""
+        cat = [{"id": "celerp-budgeting", "name": "Budgeting", "description": "d",
+                "tier": "official", "author": "Celerp", "license": "Proprietary",
+                "price_monthly": 15.0}]
+        # not yet licensed -> still waiting, poll continues (n advances)
+        with (
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r1 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=1", cookies=_authed())
+        assert b"buy-cancel" in r1.content
+        # the poll div re-targets buy-poll with the counter advanced (& is
+        # html-escaped in the attribute); anchor on the div id + next n
+        assert b'id="buy-poll"' in r1.content
+        assert b"/modules/buy-poll?slug=celerp-budgeting&amp;n=2" in r1.content
+        # now licensed -> catalog fragment (Owned), no more poll
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r2 = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=2", cookies=_authed())
+        # the request URL echoes in the canonical <link>, so match the poll DIV,
+        # not the bare string
+        assert b'id="buy-poll"' not in r2.content            # poll stopped
+        assert b"Budgeting" in r2.content                    # catalog shown
+
+    @pytest.mark.asyncio
+    async def test_buy_poll_stops_after_timeout(self, ui_client):
+        """Past the counter bound the poll stops and shows the still-waiting note."""
+        with (
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/buy-poll?slug=celerp-budgeting&n=120", cookies=_authed())
+        assert b'id="buy-poll"' not in r.content   # no further polling
+        assert b"buy-cancel" in r.content          # but still a way back
 
     @pytest.mark.asyncio
     async def test_buy_error_stays_on_screen(self, ui_client):

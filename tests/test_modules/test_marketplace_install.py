@@ -195,9 +195,9 @@ async def test_malformed_relay_json_gives_friendly_error(client, relay_env):
 
 
 @pytest.mark.asyncio
-async def test_null_token_does_not_request_download_none(client, relay_env):
-    """{"token": null} must not slip through as the literal string "None" in
-    the download URL - it must be coerced to empty, not str(None)."""
+async def test_null_token_gives_502_and_never_requests_a_download(client, relay_env):
+    """{"token": null} must not slip through: it yields a clean 502, and no
+    download is attempted (in particular never a literal 'None' in the URL)."""
     headers = await _register(client)
     requested_urls = []
 
@@ -225,8 +225,37 @@ async def test_null_token_does_not_request_download_none(client, relay_env):
                               json={"slug": "celerp-budgeting"}, headers=headers)
     assert r.status_code == 502
     assert not (relay_env / "celerp-budgeting").exists()
-    download_url = next(u for u in requested_urls if "/marketplace/download/" in u)
-    assert not download_url.endswith("/None"), f"literal 'None' leaked into the URL: {download_url}"
+    # A null token is caught before any download is fired - no pointless GET,
+    # and certainly no "/None" in a URL.
+    assert not any("/marketplace/download/" in u for u in requested_urls)
+
+
+@pytest.mark.asyncio
+async def test_non_dict_relay_body_gives_502_not_500(client, relay_env):
+    """The relay is a separate service that can drift; a JSON array/string body
+    (valid JSON, wrong shape) must not AttributeError into a raw 500."""
+    headers = await _register(client)
+    token_resp = _FakeResp(200, {"access_token": "relay-jwt-1"})
+    # module metadata comes back as a JSON list, not an object
+    meta_resp = _FakeResp(200, ["unexpected", "shape"])
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, **kw):
+            return meta_resp
+        async def post(self, url, **kw):
+            return token_resp
+
+    with patch("httpx.AsyncClient", _Fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 502
+    assert not (relay_env / "celerp-budgeting").exists()
 
 
 @pytest.mark.asyncio
@@ -280,6 +309,20 @@ async def test_relay_token_exchange_failure_gives_clear_502(client, relay_env):
 
 
 @pytest.mark.asyncio
+async def test_token_exchange_200_without_access_token_gives_clear_502(client, relay_env):
+    """The exchange returns 200 but the body carries no access_token (unexpected
+    shape). It must map to a clean 502, never a KeyError/500 from indexing a
+    missing key."""
+    headers = await _register(client)
+    fake = _fake_relay(token=_FakeResp(200, {"unexpected": "shape"}))
+    with patch("httpx.AsyncClient", fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 502
+    assert "unexpected" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_retry_after_partial_failure_skips_redownload_and_enables(client, relay_env):
     """Simulates a prior attempt that landed the module on disk but never
     enabled it (e.g. a transient DB error right after install). The endpoint
@@ -310,3 +353,44 @@ async def test_retry_after_partial_failure_skips_redownload_and_enables(client, 
                                json={"slug": "celerp-budgeting"}, headers=headers)
     assert r2.status_code == 200, r2.text
     assert r2.json()["restart_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_foreign_dir_of_same_name_is_not_trusted_as_installed(client, relay_env):
+    """A directory that merely shares the slug's NAME but has no valid manifest
+    (a crash leftover, or an unrelated folder) must NOT be treated as an existing
+    install: the endpoint must fall through to a real download, not silently
+    enable whatever is on disk."""
+    headers = await _register(client)
+    # A same-named dir whose __init__.py has no parseable PLUGIN_MANIFEST.
+    broken = relay_env / "celerp-budgeting"
+    broken.mkdir(parents=True)
+    (broken / "__init__.py").write_text("x = 1  # no PLUGIN_MANIFEST here\n")
+
+    downloaded = {"hit": False}
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, **kw):
+            downloaded["hit"] = True
+            if "/marketplace/modules/" in url:
+                return _FakeResp(200, {"is_official": True, "price_monthly": None, "price_once": None})
+            return _FakeResp(200, content=_zip_bytes())
+        async def post(self, url, **kw):
+            if url.endswith("/auth/token"):
+                return _FakeResp(200, {"access_token": "relay-jwt-1"})
+            return _FakeResp(200, {"token": "dl-token"})
+
+    with patch("httpx.AsyncClient", _Fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    # It went to the real download path (didn't trust the broken dir)...
+    assert downloaded["hit"] is True
+    # ...where the importer's collision guard gives a clear, actionable error
+    # rather than silently enabling the foreign directory.
+    assert r.status_code in (409, 422, 502)

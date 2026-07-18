@@ -301,10 +301,14 @@ def _local_panel(modules: list[dict], lang: str = "en",
     )
 
 
-def _restarting_panel(lang: str) -> FT:
+def _restarting_panel(lang: str, panel_id: str = "local-modules-panel") -> FT:
     """Shown right after POST /system/restart. Desktop: Electron reloads the
     window itself once the servers are back. Server mode: this script polls
-    the same origin and reloads when the UI answers again."""
+    the same origin and reloads when the UI answers again.
+
+    *panel_id* is the id of the panel the restart was triggered from, so the
+    outerHTML swap keeps that element's identity (the marketplace flow and the
+    local-modules flow each target their own panel)."""
     return Div(
         P(t("modules.restarting", lang), cls="text-muted"),
         P(t("modules.restart_timeout", lang), cls="flash flash--warning",
@@ -323,7 +327,7 @@ def _restarting_panel(lang: str) -> FT:
           }, 2500);
         })();
         """),
-        id="local-modules-panel",
+        id=panel_id,
         cls="settings-card",
     )
 
@@ -368,55 +372,96 @@ def _buy_btn(slug: str, kind: str, label: str, lang: str):
                   cls="btn btn--sm btn--primary")
 
 
-def _buy_waiting_panel(url: str, slug: str, lang: str):
+def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
     """Shown after starting checkout: open Stripe Checkout in the browser and
     poll the catalog (which re-renders with the module owned once the webhook
     lands the license). Resumable - closing the tab does not lose the purchase.
     Cancel (button or Esc) returns to the catalog; after 10 minutes the poll
-    stops and a still-waiting message with a manual refresh takes over."""
+    stops and a still-waiting message with a manual refresh takes over.
+
+    *n* is the server-side poll counter (0 on the first render from /modules/buy,
+    then incremented by /modules/buy-poll on each re-fetch)."""
     import json as _json
-    return Div(
+    POLL_MAX = 120   # 120 x 5s ≈ 10 minutes, then stop polling
+    actions = [
+        Button(t("btn.cancel", lang), id="buy-cancel",
+               hx_get="/modules/marketplace-panel",
+               hx_target="#marketplace-panel", hx_swap="outerHTML",
+               cls="btn btn--sm btn--secondary"),
+    ]
+    # The Stripe URL is only known on the FIRST render (from /modules/buy). On a
+    # re-poll (url is None) we keep waiting without a stale reopen link.
+    if url:
+        actions.insert(0, A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+                            rel="noopener noreferrer", cls="btn btn--sm btn--secondary"))
+
+    parts = [
         P(t("marketplace.waiting_payment", lang), cls="text-muted"),
-        Div(
-            A(t("marketplace.open_checkout", lang), href=url, target="_blank",
-              rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
-            Button(t("btn.cancel", lang), id="buy-cancel",
-                   hx_get="/modules/marketplace-panel",
-                   hx_target="#marketplace-panel", hx_swap="outerHTML",
-                   cls="btn btn--sm btn--secondary"),
-            style="display:flex;gap:8px;",
-        ),
-        P(t("marketplace.waiting_timeout", lang), id="buy-timeout",
-          cls="flash flash--warning", style="display:none;"),
-        # desktop: open in the external browser; web: the link above.
-        Script(f"(function(){{var u={_json.dumps(url)};"
-               f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
-               f"else{{window.open(u,'_blank');}}}})();"),
-        # poll the marketplace panel every 5s; once the license lands the card
-        # flips to Owned. hx-trigger keeps it resumable across a page revisit.
-        Div(id="buy-poll", hx_get="/modules/marketplace-panel", hx_trigger="every 5s",
-            hx_target="#marketplace-panel", hx_swap="outerHTML"),
-        # Esc cancels; after 10 min stop polling and surface the refresh path.
-        Script("""
+        Div(*actions, style="display:flex;gap:8px;"),
+    ]
+    if n < POLL_MAX:
+        # Keep the poll element in a SIBLING wrapper that carries no swap target of
+        # its own; it re-fetches buy-poll, which re-emits this whole panel (poll
+        # intact) until the module is owned, then swaps in the catalog. The counter
+        # bounds the wait server-side, so it survives every panel swap.
+        parts.append(Div(id="buy-poll",
+                         hx_get=f"/modules/buy-poll?slug={slug}&n={n + 1}",
+                         hx_trigger="every 5s",
+                         hx_target="#marketplace-panel", hx_swap="outerHTML"))
+    else:
+        parts.append(P(t("marketplace.waiting_timeout", lang),
+                       cls="flash flash--warning"))
+    if url:
+        # First render only: open Checkout in the external browser, and wire Esc to
+        # cancel. Attached to document once so it isn't re-added on every re-poll.
+        parts.append(Script(
+            f"(function(){{var u={_json.dumps(url)};"
+            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
+            f"else{{window.open(u,'_blank');}}}})();"))
+        parts.append(Script("""
         (function () {
-          function esc(e) {
+          if (window.__celerpBuyEsc) return;
+          window.__celerpBuyEsc = function (e) {
             if (e.key === 'Escape') {
               var b = document.getElementById('buy-cancel');
               if (b) { b.click(); }
-              document.removeEventListener('keydown', esc);
             }
-          }
-          document.addEventListener('keydown', esc);
-          setTimeout(function () {
-            var p = document.getElementById('buy-poll');
-            if (p) { p.remove(); }
-            var m = document.getElementById('buy-timeout');
-            if (m) { m.style.display = ''; }
-          }, 600000);
+          };
+          document.addEventListener('keydown', window.__celerpBuyEsc);
         })();
-        """),
-        id="marketplace-panel", cls="settings-card",
-    )
+        """))
+    return Div(*parts, id="marketplace-panel", cls="settings-card")
+
+
+async def _build_marketplace_panel(token: str, lang: str) -> FT:
+    """The marketplace catalog fragment (id=marketplace-panel). Shared by the
+    tab load, the poll-until-owned target, and every 'back to catalog' path."""
+    try:
+        modules_list, from_cache = await catalog.fetch_catalog()
+    except Exception:
+        return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"),
+                   id="marketplace-panel")
+    installed = set()
+    try:
+        installed = {m["name"] for m in await api.get_modules(token)}
+    except APIError:
+        pass
+    licensed = set()
+    try:
+        licensed = set(await api.module_licenses(token))
+    except APIError:
+        pass
+    trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
+    community = [m for m in modules_list if m["tier"] == "community"]
+    children = []
+    if from_cache:
+        children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
+    if not modules_list:
+        children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
+    children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
+    children.append(_community_zone(len(community), lang))
+    children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
+    return Div(*children, id="marketplace-panel")
 
 
 def _marketplace_error_panel(message: str, lang: str):
@@ -673,16 +718,22 @@ def setup_routes(app):
         if redirect:
             return redirect
         lang = get_lang(request)
+        # The restart button lives in two panels (local-modules and marketplace);
+        # each targets its own id, so echo it back to keep the swap in place.
+        panel = request.query_params.get("panel", "local-modules-panel")
+        marketplace = panel == "marketplace-panel"
         try:
             await api.restart_system(token)
         except APIError as e:
+            if marketplace:
+                return _marketplace_error_panel(e.detail or str(e), lang)
             modules = []
             try:
                 modules = await api.get_modules(token)
             except APIError:
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
-        return _restarting_panel(lang)
+        return _restarting_panel(lang, panel_id=panel)
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):
@@ -690,38 +741,36 @@ def setup_routes(app):
         token = _token(request)
         if not token or not _is_admin(request):
             return Div(id="marketplace-panel")
-        lang = get_lang(request)
-        try:
-            modules_list, from_cache = await catalog.fetch_catalog()
-        except Exception:
-            return Div(
-                P(t("marketplace.could_not_load", lang), cls="text-muted"),
-                id="marketplace-panel",
-            )
+        return await _build_marketplace_panel(token, get_lang(request))
 
-        installed = set()
+    @app.get("/modules/buy-poll")
+    async def buy_poll(request: Request):
+        """Poll target while a purchase is pending: re-emit the waiting panel
+        (keeping the poll alive) until the module is licensed/installed here, then
+        flip to the catalog. A server-side counter bounds the wait so the poll
+        stops after ~10 minutes even across panel swaps."""
+        token = _token(request)
+        if not token or not _is_admin(request):
+            return Div(id="marketplace-panel")
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
         try:
-            installed = {m["name"] for m in await api.get_modules(token)}
-        except APIError:
-            pass
-        licensed = set()
+            n = int(request.query_params.get("n", "0"))
+        except ValueError:
+            n = 0
+        licensed = installed = set()
         try:
             licensed = set(await api.module_licenses(token))
         except APIError:
             pass
-
-        trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
-        community = [m for m in modules_list if m["tier"] == "community"]
-
-        children = []
-        if from_cache:
-            children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
-        if not modules_list:
-            children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
-        children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
-        children.append(_community_zone(len(community), lang))
-        children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
-        return Div(*children, id="marketplace-panel")
+        try:
+            installed = {m["name"] for m in await api.get_modules(token)}
+        except APIError:
+            pass
+        if slug in licensed or slug in installed:
+            # The purchase landed - show the catalog (module now Owned/installed).
+            return await _build_marketplace_panel(token, lang)
+        return _buy_waiting_panel(None, slug, lang, n=n)
 
     @app.post("/modules/buy")
     async def modules_buy(request: Request):
@@ -762,7 +811,7 @@ def setup_routes(app):
               cls="text-muted small"),
             Div(
                 Button(t("btn.restart_now", lang),
-                       hx_post="/modules/restart",
+                       hx_post="/modules/restart?panel=marketplace-panel",
                        hx_target="#marketplace-panel", hx_swap="outerHTML",
                        cls="btn btn--sm btn--primary"),
                 Button(t("btn.back", lang),

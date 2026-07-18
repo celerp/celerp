@@ -759,6 +759,30 @@ function setLoadingStatus(msg) {
   }
 }
 
+// Restart the way the in-app "Restart" button does: drop the sentinel and let
+// the API process exit so watchForRestart respawns API + UI, leaving the embedded
+// Postgres running. A full app.relaunch()/quit() instead tears down the whole
+// process - before-quit's async pgInstance.stop() isn't awaited by Electron, so
+// the relaunched instance can race the still-shutting-down Postgres for the
+// shared data-dir lock and fail to boot. Falls back to a full relaunch only if
+// the sentinel can't be written or no API process is running.
+function requestServerRestart() {
+  try {
+    const sentinel = path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested");
+    fs.writeFileSync(sentinel, "");
+    if (apiProcess) {
+      apiProcess.kill();   // its exit handler sees the sentinel and respawns servers
+      return;
+    }
+    // No live API process to recycle - fall through to a full relaunch.
+    try { fs.unlinkSync(sentinel); } catch { /* ignore */ }
+  } catch (e) {
+    console.error("[restart] sentinel write failed; falling back to full relaunch:", e);
+  }
+  app.relaunch();
+  app.quit();
+}
+
 function setupAppMenu() {
   // Cross-platform menu. The File menu carries the module workflow (import,
   // open folder, restart) so desktop users find it where they look first;
@@ -780,7 +804,7 @@ function setupAppMenu() {
       { type: "separator" },
       {
         label: "Restart Celerp",
-        click: () => { app.relaunch(); app.quit(); },
+        click: () => { requestServerRestart(); },
       },
       { type: "separator" },
       { role: "quit" },

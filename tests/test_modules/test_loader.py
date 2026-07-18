@@ -217,16 +217,44 @@ class TestPremiumLicenseGate:
         assert result == []
         assert "no valid license" in _loader.load_errors()["paid-mod"]
 
-    def test_token_exchange_failure_falls_back_to_dev_mode(self, tmp_path, monkeypatch):
-        """gateway_token is set but the relay rejects the exchange (e.g. the
-        key was rotated) - must not crash startup; falls back to skipping
-        the check, same as no token at all."""
+    def test_token_exchange_failure_still_verifies_offline(self, tmp_path, monkeypatch):
+        """gateway_token is set but the live token exchange fails (rotated key, or
+        a transient startup failure). The check is not skipped: the license is
+        still verified offline (offline_only=True), so with no offline lifetime
+        JWT and no grace cache the module is not loaded."""
+        from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
+        seen = {}
+        monkeypatch.setattr(_s, "gateway_token", "stale-key")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: None)
+
+        def _spy(**kw):
+            seen.update(kw)
+            return False   # no offline lifetime JWT, no grace cache -> deny
+
+        monkeypatch.setattr("celerp.modules.loader.check_license", _spy)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert result == []                       # not loaded without a valid license
+        assert seen.get("offline_only") is True   # decided offline, relay not called live
+        assert seen.get("instance_jwt") == ""     # no live token was available
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
+
+    def test_token_exchange_failure_still_honors_offline_license(self, tmp_path, monkeypatch):
+        """The flip side: when the exchange fails but the offline path (lifetime
+        JWT or grace cache) grants, the module still loads - the relay being
+        briefly unreachable never strands a genuinely licensed module."""
         from celerp.config import settings as _s
         monkeypatch.setattr(_s, "gateway_token", "stale-key")
         monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
         monkeypatch.setattr(
             "celerp.modules.loader.exchange_api_key_for_jwt",
             lambda relay_url, api_key: None)
+        monkeypatch.setattr("celerp.modules.loader.check_license",
+                            lambda **kw: True)   # offline path grants
         self._make_premium_module(tmp_path)
         result = load_all(tmp_path, {"paid-mod"})
         assert len(result) == 1
@@ -470,20 +498,40 @@ class TestDependencySystem:
 
     # ── Circular deps ──────────────────────────────────────────────────────────
 
-    def test_circular_dep_does_not_crash(self, tmp_path):
-        """Circular A→B→A must not cause RecursionError."""
+    def test_circular_dep_detected_and_both_skipped(self, tmp_path):
+        """Circular A→B→A must not crash, and the cycle must be detected: both
+        modules are skipped with a recorded error, not loaded in a bogus order."""
+        from celerp.modules.loader import load_errors
         self._make(tmp_path, "circ-a", depends_on=["circ-b"])
         self._make(tmp_path, "circ-b", depends_on=["circ-a"])
-        # Should not raise; both may be skipped
         result = load_all(tmp_path, {"circ-a", "circ-b"})
-        # We don't assert on result content — just no exception
-        assert isinstance(result, list)
+        names = [m["name"] for m in result]
+        assert "circ-a" not in names
+        assert "circ-b" not in names
+        errors = load_errors()
+        # at least one member of the cycle is flagged as such (the other is
+        # reported as depending on a skipped module)
+        assert "cycle" in errors.get("circ-a", "").lower() or \
+               "cycle" in errors.get("circ-b", "").lower()
 
-    def test_self_dep_does_not_crash(self, tmp_path):
-        """Module that depends on itself must not cause RecursionError."""
+    def test_self_dep_detected_and_skipped(self, tmp_path):
+        """A module depending on itself is a trivial cycle: skipped, not loaded."""
+        from celerp.modules.loader import load_errors
         self._make(tmp_path, "self-dep", depends_on=["self-dep"])
         result = load_all(tmp_path, {"self-dep"})
-        assert isinstance(result, list)
+        assert not any(m["name"] == "self-dep" for m in result)
+        assert "cycle" in load_errors().get("self-dep", "").lower()
+
+    def test_cycle_does_not_poison_unrelated_module(self, tmp_path):
+        """A dependency cycle among some modules must not prevent an unrelated,
+        healthy module from loading."""
+        self._make(tmp_path, "circ-a", depends_on=["circ-b"])
+        self._make(tmp_path, "circ-b", depends_on=["circ-a"])
+        self._make(tmp_path, "healthy")
+        result = load_all(tmp_path, {"circ-a", "circ-b", "healthy"})
+        names = [m["name"] for m in result]
+        assert "healthy" in names
+        assert "circ-a" not in names and "circ-b" not in names
 
     # ── resolve_install_order (config.py) ──────────────────────────────────────
 
@@ -516,6 +564,23 @@ class TestDependencySystem:
         result = resolve_install_order(["ghost-xyz"], tmp_path)
         # Returns with ghost-xyz (no crash, no auto-skip — install may fail later)
         assert "ghost-xyz" in result
+
+    def test_resolve_install_order_finds_deps_in_module_dir(self, tmp_path, monkeypatch):
+        """A marketplace/sideloaded module lives in MODULE_DIR, not the bundled
+        trees. Its depends_on must still be discovered and pre-enabled, or the
+        loader skips it at next boot as 'requires X, which is not enabled'."""
+        from celerp.config import resolve_install_order
+        bundled = tmp_path / "default_modules"
+        bundled.mkdir()
+        market = tmp_path / "market"
+        market.mkdir()
+        # third-party module and its dependency both land in MODULE_DIR
+        self._make(market, "third-party", depends_on=["tp-dep"])
+        self._make(market, "tp-dep")
+        monkeypatch.setenv("MODULE_DIR", str(market))
+        result = resolve_install_order(["third-party"], bundled)
+        assert "tp-dep" in result
+        assert result.index("tp-dep") < result.index("third-party")
 
     # ── Real module manifest validation ────────────────────────────────────────
 

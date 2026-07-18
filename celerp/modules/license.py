@@ -77,6 +77,8 @@ def check_license(
     instance_jwt: str,
     cache_dir: Path,
     instance_id: str,
+    *,
+    offline_only: bool = False,
 ) -> bool:
     """Verify that *slug* is licensed for this Celerp instance.
 
@@ -94,6 +96,11 @@ def check_license(
         instance_id:  This instance's canonical id; a lifetime license only
                       counts when its ``sub`` claim matches it (see
                       ``_verify_lifetime_jwt``).
+        offline_only: When True, skip the live call entirely and decide from the
+                      offline lifetime JWT and the grace cache alone. Used when a
+                      live token could not be obtained (e.g. a transient failure
+                      at startup) so the decision still uses cached state rather
+                      than being skipped.
 
     Returns:
         True if licensed and active; False otherwise.
@@ -108,6 +115,12 @@ def check_license(
     if stored and _verify_lifetime_jwt(stored.get("license_jwt", ""), slug, instance_id):
         return True
 
+    # No live token available: decide from the grace cache alone, without a live
+    # call (there is nothing to authenticate the request with, and a transient
+    # outage should fall back to cached state, not be treated as a fresh answer).
+    if offline_only:
+        return _read_cache(cache_file, slug)
+
     # ── 1. Try live verification (subscriptions, and first lifetime fetch) ──────
     try:
         licensed, status, kind, ljwt = _verify_remote(slug, relay_url, instance_jwt)
@@ -121,6 +134,13 @@ def check_license(
                 "Premium module %r: license status=%r — not loading", slug, status
             )
         return licensed
+    except PermissionError:
+        # The relay explicitly rejected the request (401/403). This is a definite
+        # answer, not a transient outage - do NOT fall back to the offline grace
+        # cache. Record the denial and deny.
+        _write_cache(cache_file, licensed=False, status="denied")
+        log.warning("Premium module %r: relay denied the license — not loading", slug)
+        return False
     except Exception as exc:
         log.info(
             "Premium module %r: relay unreachable (%s) — falling back to cache",

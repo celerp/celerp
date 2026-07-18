@@ -24,6 +24,7 @@ are separate, deliberate steps (see the modules UI).
 from __future__ import annotations
 
 import ast
+import errno
 import os
 import shutil
 import stat
@@ -169,13 +170,16 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         shutil.rmtree(landing, ignore_errors=True)
         shutil.copytree(staged, landing)
         os.replace(landing, target)
-    except FileExistsError:
-        shutil.rmtree(landing, ignore_errors=True)
-        raise ModuleImportError(
-            f"A module named '{name}' already exists. Remove it first, then import."
-        )
     except OSError as exc:
         shutil.rmtree(landing, ignore_errors=True)
+        # A concurrent install of the same slug can land the target between
+        # _target_for()'s check and this replace. os.replace onto a populated
+        # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
+        # both mean "already there", so surface the same friendly message.
+        if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
+            raise ModuleImportError(
+                f"A module named '{name}' already exists. Remove it first, then import."
+            )
         raise ModuleImportError(f"Could not write the module to disk: {exc}")
     return {
         "name": name,

@@ -172,6 +172,24 @@ def test_check_license_live_success(tmp_path):
     assert cached["licensed"] is True
 
 
+def test_relay_denial_does_not_fall_back_to_stale_cache(tmp_path):
+    """A relay 401/403 (e.g. the license was revoked) is a definite denial and
+    must NOT be overridden by a recently-cached 'licensed: true' - otherwise a
+    cancelled subscription would keep working off the offline grace for days."""
+    import urllib.error
+    # seed a fresh 'licensed' cache
+    cache = tmp_path / "license_cache" / "celerp-test.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"licensed": True, "status": "active",
+                                 "license_kind": "subscription", "cached_at": time.time()}))
+    http_err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)  # type: ignore[arg-type]
+    with patch("urllib.request.urlopen", side_effect=http_err):
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
+    assert result is False
+    # the denial is recorded, not left as the stale 'active'
+    assert json.loads(cache.read_text())["licensed"] is False
+
+
 def test_check_license_live_not_licensed(tmp_path):
     """Live verification returns False and writes cache."""
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": False, "status": "not_licensed"})):
@@ -206,6 +224,28 @@ def test_check_license_offline_no_cache_denies(tmp_path):
     """When relay unreachable and no cache, denies."""
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
         result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
+    assert result is False
+
+
+def test_offline_only_never_calls_relay_and_grants_from_grace_cache(tmp_path):
+    """offline_only: when no live token could be obtained, decide from the grace
+    cache WITHOUT any network call (a transient outage should fall back to cached
+    state, not be treated as a fresh answer)."""
+    cache_file = tmp_path / "license_cache" / "celerp-test.json"
+    cache_file.parent.mkdir(parents=True)
+    _write_cache(cache_file, licensed=True, status="active")
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not call relay")):
+        result = check_license("celerp-test", "https://relay.example.com", "",
+                               tmp_path, "iid-1", offline_only=True)
+    assert result is True
+
+
+def test_offline_only_denies_when_no_cache(tmp_path):
+    """offline_only with no lifetime JWT and no grace cache returns False - a
+    startup token-exchange failure falls back to cached state, and there is none."""
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not call relay")):
+        result = check_license("celerp-test", "https://relay.example.com", "",
+                               tmp_path, "iid-1", offline_only=True)
     assert result is False
 
 
