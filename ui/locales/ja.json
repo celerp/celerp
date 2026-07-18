@@ -1397,5 +1397,7 @@
   "marketplace.waiting_timeout": "支払いの確認を待っています。支払いが完了している場合、反映まで数分かかることがあります。購入は失われません。確認され次第、このページは更新されます。",
   "modules.license_move_title": "このコンピューターでこのモジュールを使う",
   "modules.license_move_body": "このモジュールは購入したコンピューターで動作します。Celerp Connect を追加すると、サインインしたどのコンピューターでも、買い直すことなく使えます。",
-  "btn.get_connect": "Celerp Connect を入手"
+  "btn.get_connect": "Celerp Connect を入手",
+  "marketplace.sold_by": "販売者: {author}。",
+  "marketplace.third_party_data_note": "販売者がお支払いを処理し、ご注文情報を受け取ります。"
 }

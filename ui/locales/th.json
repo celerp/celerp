@@ -1397,5 +1397,7 @@
   "marketplace.waiting_timeout": "กำลังรอการยืนยันการชำระเงิน หากคุณชำระเงินแล้ว อาจใช้เวลาสักครู่ - การซื้อของคุณจะไม่สูญหาย หน้านี้จะอัปเดตเมื่อได้รับการยืนยัน",
   "modules.license_move_title": "ใช้โมดูลนี้บนคอมพิวเตอร์เครื่องนี้",
   "modules.license_move_body": "โมดูลนี้ทำงานบนคอมพิวเตอร์ที่คุณซื้อ เพิ่ม Celerp Connect เพื่อใช้บนคอมพิวเตอร์เครื่องใดก็ได้ที่คุณลงชื่อเข้าใช้ โดยไม่ต้องซื้อซ้ำ",
-  "btn.get_connect": "รับ Celerp Connect"
+  "btn.get_connect": "รับ Celerp Connect",
+  "marketplace.sold_by": "จำหน่ายโดย {author}",
+  "marketplace.third_party_data_note": "ผู้ขายเป็นผู้ดำเนินการชำระเงินและได้รับรายละเอียดคำสั่งซื้อของคุณ"
 }

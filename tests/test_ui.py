@@ -8303,6 +8303,28 @@ class TestMarketplaceUI:
         assert b"/modules/buy?slug=celerp-budgeting" in r.content
         assert b"$15/mo" in r.content
         assert b"doesn't include Celerp Connect" in r.content   # the no-double-charge note
+        # An OFFICIAL (first-party) module is sold by us - no third-party
+        # "Sold by" data-sharing disclosure.
+        assert b"Sold by" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_third_party_paid_module_discloses_seller_and_data_sharing(self, ui_client):
+        """A third-party (verified/community) paid module is sold by its author,
+        so the buyer's details go to the seller. Disclose that before purchase
+        (GDPR transparency)."""
+        third_party = [{
+            "id": "acme-crm", "name": "Acme CRM", "description": "CRM by Acme.",
+            "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
+            "price_monthly": 9.0}]
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(third_party, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"/modules/buy?slug=acme-crm" in r.content
+        assert b"Sold by" in r.content and b"Acme Ltd" in r.content
+        assert b"receives your order details" in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_owned_when_licensed(self, ui_client):

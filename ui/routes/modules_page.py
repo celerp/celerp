@@ -472,6 +472,12 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
             buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
         body.append(Div(*buys, cls="marketplace-card__buys",
                         style="display:flex;gap:8px;flex-wrap:wrap;"))
+        # Third-party (non-official) paid module: the sale is made by the author,
+        # who processes the payment and receives the buyer's order details.
+        # Disclose that before purchase.
+        if tier != "official":
+            body.append(P(Strong(t("marketplace.sold_by", lang, author=m["author"])), " ",
+                          t("marketplace.third_party_data_note", lang), cls="text-muted small"))
         body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
     elif is_paid:
         # Owned (licensed): one-click vault install - download, import, enable;

@@ -1397,5 +1397,7 @@
   "marketplace.waiting_timeout": "Menunggu konfirmasi pembayaran. Jika Anda sudah membayar, mungkin perlu beberapa menit - pembelian Anda tidak hilang. Halaman ini diperbarui setelah dikonfirmasi.",
   "modules.license_move_title": "Gunakan modul ini di komputer ini",
   "modules.license_move_body": "Modul ini berjalan di komputer tempat Anda membelinya. Tambahkan Celerp Connect untuk memakainya di komputer mana pun tempat Anda masuk, tanpa membeli lagi.",
-  "btn.get_connect": "Dapatkan Celerp Connect"
+  "btn.get_connect": "Dapatkan Celerp Connect",
+  "marketplace.sold_by": "Dijual oleh {author}.",
+  "marketplace.third_party_data_note": "Penjual memproses pembayaran Anda dan menerima detail pesanan Anda."
 }

@@ -1397,5 +1397,7 @@
   "marketplace.waiting_timeout": "Đang chờ xác nhận thanh toán. Nếu bạn đã thanh toán, có thể mất vài phút - giao dịch mua của bạn không bị mất. Trang này sẽ cập nhật khi được xác nhận.",
   "modules.license_move_title": "Dùng mô-đun này trên máy tính này",
   "modules.license_move_body": "Mô-đun này chạy trên máy tính bạn đã mua. Thêm Celerp Connect để dùng trên bất kỳ máy tính nào bạn đăng nhập, mà không phải mua lại.",
-  "btn.get_connect": "Nhận Celerp Connect"
+  "btn.get_connect": "Nhận Celerp Connect",
+  "marketplace.sold_by": "Được bán bởi {author}.",
+  "marketplace.third_party_data_note": "Người bán xử lý khoản thanh toán và nhận thông tin đơn hàng của bạn."
 }
