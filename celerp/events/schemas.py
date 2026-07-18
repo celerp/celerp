@@ -750,9 +750,23 @@ class MpOrderCancelled(BaseModel):
 # -----------------
 
 
+class JELine(BaseModel):
+    # account defaults empty rather than required: batch import is shape-permissive,
+    # and every reader (reports, reducers) already skips lines with no account code.
+    account: str = ""
+    debit: float = 0
+    credit: float = 0
+
+
 class AccJournalEntryCreated(BaseModel):
+    """Shape of a journal entry creation. Validates structure only; accounting
+    policy (balanced totals, real accounts) is enforced where entries are authored."""
+
     memo: str | None = None
-    lines: list[dict[str, Any]] = Field(default_factory=list)
+    ts: str | None = None
+    status: str | None = None
+    je_type: str | None = None
+    entries: list[JELine] = Field(default_factory=list)
 
 
 class AccJournalEntryPosted(BaseModel):

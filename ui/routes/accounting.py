@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+import json as _json
+import uuid
 import asyncio
 from datetime import date as _date
 
@@ -15,9 +18,12 @@ from starlette.responses import RedirectResponse, StreamingResponse, PlainTextRe
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
+from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
-from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates
+from ui.routes.documents import _action_error
+from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset
+from celerp.services.money import round_money, to_decimal
 
 # SVG icons (matching documents.py style)
 _ICON_CSV_EXPORT = (
@@ -58,6 +64,73 @@ def _action_bar(tab: str, params: dict) -> FT:
         ),
         cls="page-actions flex-row gap-sm ml-auto",
     )
+
+
+def _csv_safe(cell):
+    """Neutralize spreadsheet formula injection: user-authored strings (memos, account and
+    contact names) must never execute when the export is opened in a spreadsheet, so string
+    cells starting with a formula trigger character get a leading single quote."""
+    if isinstance(cell, str) and cell and cell[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + cell
+    return cell
+
+
+def _csv_row(writer, cells: list) -> None:
+    writer.writerow([_csv_safe(c) for c in cells])
+
+
+def _plain_error_response(e: APIError):
+    """Error mapping for print/export routes (non-shell responses)."""
+    if e.status == 401:
+        return RedirectResponse("/login", status_code=302)
+    if e.status == 403:
+        return PlainTextResponse(t("acct.not_authorized"), status_code=403)
+    return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+
+
+def _period_subtitle(d_from: str, d_to: str) -> str:
+    parts = []
+    if d_from:
+        parts.append(f"From: {d_from}")
+    if d_to:
+        parts.append(f"To: {d_to}")
+    return "  |  ".join(parts) if parts else "All periods"
+
+
+# Tabs a ledger drilldown can arrive from (via the "from" query param) -> tab label key.
+_LEDGER_BACK_TABS = {
+    "pnl": "acct.tab_pnl",
+    "balance-sheet": "acct.tab_balance_sheet",
+    "trial-balance": "acct.tab_trial_balance",
+    "general-ledger": "acct.tab_general_ledger",
+}
+
+
+def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
+    """Resolve (origin_tab, date_from, date_to, preset) for the ledger drilldown.
+
+    Drilldown links from the report tabs name their originating tab in "from" (a tab
+    slug, never a date) and carry their dates as date_from/date_to, so they cannot
+    collide with the date bar's own from/to date fields. The date bar on the drilldown
+    page itself navigates with preset/from/to like every report page.
+    """
+    qp = request.query_params
+    origin = qp.get("from", "")
+    if origin in _LEDGER_BACK_TABS:
+        preset = qp.get("preset", "")
+        if preset and preset != "custom":
+            d_from, d_to = _resolve_preset(preset, fy)
+            return origin, d_from, d_to, preset
+        d_from, d_to = qp.get("date_from", ""), qp.get("date_to", "")
+        if d_from or d_to:
+            if d_from and d_to and d_from > d_to:
+                d_from, d_to = d_to, d_from
+            return origin, d_from, d_to, "custom"
+        # Drilldown links always encode their view's dates; none means the
+        # originating view was unfiltered, so match it with the full history.
+        return origin, "", "", "all"
+    d_from, d_to, preset = _parse_dates(request, fy)
+    return "trial-balance", d_from, d_to, preset
 
 
 def _report_header(company: dict, title: str, subtitle: str = "") -> FT:
@@ -213,18 +286,91 @@ def setup_routes(app):
                         _date_filter_bar("/accounting", d_from, d_to, preset,
                                          settings_link="/settings/general?tab=company",
                                          extra_params="&tab=trial-balance"),
-                        _action_bar("trial-balance", {}),
+                        _action_bar("trial-balance", {"date_from": d_from or "", "date_to": d_to or ""}),
                         cls="flex-row flex-between",
                     ),
                     _trial_balance_summary(trial_balance, currency),
                     _trial_balance_table(trial_balance, currency, date_from=d_from or "", date_to=d_to or ""),
+                )
+            elif tab == "journal":
+                fy = await _get_fiscal(token)
+                d_from, d_to, preset = _parse_dates(request, fy)
+                params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+                data = await api.get_journal(token, params)
+                content = Div(
+                    Div(
+                        _date_filter_bar("/accounting", d_from, d_to, preset,
+                                         settings_link="/settings/general?tab=company",
+                                         extra_params="&tab=journal"),
+                        Div(
+                            A(t("btn.new_entry"), href="/accounting/journal/new", cls="btn btn--primary"),
+                            _action_bar("journal", {"date_from": d_from or "", "date_to": d_to or ""}),
+                            cls="flex-row gap-sm ml-auto",
+                        ),
+                        cls="flex-row flex-between",
+                    ),
+                    _journal_totals(data, currency),
+                    _journal_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                )
+            elif tab == "general-ledger":
+                fy = await _get_fiscal(token)
+                d_from, d_to, preset = _parse_dates(request, fy)
+                params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+                data = await api.get_general_ledger(token, params)
+                content = Div(
+                    Div(
+                        _date_filter_bar("/accounting", d_from, d_to, preset,
+                                         settings_link="/settings/general?tab=company",
+                                         extra_params="&tab=general-ledger"),
+                        _action_bar("general-ledger", {"date_from": d_from or "", "date_to": d_to or ""}),
+                        cls="flex-row flex-between",
+                    ),
+                    _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                )
+            elif tab == "soa":
+                fy = await _get_fiscal(token)
+                d_from, d_to, preset = _parse_dates(request, fy)
+                contact_id = request.query_params.get("contact_id", "")
+                contacts = (await api.list_contacts(token, {"limit": 1000})).get("items", [])
+                data = None
+                if contact_id:
+                    data = await api.get_soa(
+                        token, contact_id,
+                        {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v},
+                    )
+                    winner = data.get("merged_into") or (data.get("contact") or {}).get("id") or contact_id
+                    if winner != contact_id:
+                        # Merged contact: keep the URL on the merge winner so the
+                        # bookmarkable state matches what is shown.
+                        qs = f"?tab=soa&contact_id={winner}"
+                        if d_from:
+                            qs += f"&from={d_from}"
+                        if d_to:
+                            qs += f"&to={d_to}"
+                        return RedirectResponse(f"/accounting{qs}", status_code=302)
+                extra = f"&tab=soa&contact_id={contact_id}" if contact_id else "&tab=soa"
+                content = Div(
+                    Div(
+                        _date_filter_bar("/accounting", d_from, d_to, preset,
+                                         settings_link="/settings/general?tab=company",
+                                         extra_params=extra),
+                        _action_bar("soa", {"contact_id": contact_id,
+                                            "date_from": d_from or "",
+                                            "date_to": d_to or ""}) if contact_id else None,
+                        cls="flex-row flex-between",
+                    ),
+                    _soa_view(data, contacts, contact_id, currency,
+                              date_from=d_from or "", date_to=d_to or ""),
                 )
             else:
                 return RedirectResponse("/accounting", status_code=302)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            content = Div(f"Error loading data: {e.detail}", cls="error-banner")
+            if e.status == 403:
+                content = Div(t("acct.not_authorized"), cls="error-banner")
+            else:
+                content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
 
         return base_shell(
             page_header(t("page.accounting", get_lang(request))),
@@ -248,6 +394,112 @@ def setup_routes(app):
     async def balance_sheet_page(request: Request):
         return RedirectResponse("/accounting?tab=balance-sheet", status_code=302)
 
+    # ── Manual journal entries ─────────────────────────────────────────────
+
+    async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
+                                   lines: list[dict], idem_token: str, error: str | None):
+        try:
+            accounts = (await api.get_chart(token)).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            accounts = []
+            if error is None:
+                error = (t("acct.not_authorized") if e.status == 403
+                         else f"{t('acct.error_loading_data')}: {e.detail}")
+        return base_shell(
+            page_header(t("acct.new_journal_entry", get_lang(request))),
+            _accounting_tabs("journal"),
+            _journal_entry_form(accounts, ts, memo, lines, idem_token, error),
+            title="Accounting - Celerp",
+            nav_active="accounting",
+            request=request,
+        )
+
+    @app.get("/accounting/journal/new")
+    async def journal_new_form(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return await _render_journal_form(
+            request, token,
+            ts=_date.today().isoformat(), memo="", lines=[],
+            idem_token=str(uuid.uuid4()), error=None,
+        )
+
+    @app.post("/accounting/journal/new")
+    async def journal_new_submit(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        ts = str(form.get("ts", "")).strip()
+        memo = str(form.get("memo", "")).strip()
+        idem_token = str(form.get("idempotency_token", "")).strip() or str(uuid.uuid4())
+
+        # Collect the line grid: inputs are named account_N / debit_N / credit_N per row.
+        idxs = sorted(
+            int(k[len("account_"):]) for k in form.keys()
+            if k.startswith("account_") and k[len("account_"):].isdigit()
+        )
+        lines: list[dict] = []
+        for i in idxs:
+            account = str(form.get(f"account_{i}") or "").strip()
+            debit = str(form.get(f"debit_{i}") or "").strip()
+            credit = str(form.get(f"credit_{i}") or "").strip()
+            if not (account or debit or credit):
+                continue  # an untouched blank row carries no intent
+            lines.append({"account": account, "debit": debit, "credit": credit})
+
+        error: str | None = None
+        entries: list[dict] = []
+        try:
+            entries = [
+                {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0)}
+                for l in lines
+            ]
+        except ValueError:
+            error = t("acct.err_amounts_numeric")
+
+        if error is None:
+            try:
+                await api.create_journal_entry(token, {
+                    "ts": ts,
+                    "memo": memo,
+                    "entries": entries,
+                    "idempotency_token": idem_token,
+                })
+                return RedirectResponse("/accounting?tab=journal", status_code=303)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                error = t("acct.not_authorized") if e.status == 403 else str(e.detail)
+
+        # Validation failed: re-render the form with the message and the values intact.
+        return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
+                                          idem_token=idem_token, error=error)
+
+    @app.post("/accounting/journal/{je_id}/void")
+    async def journal_void(request: Request, je_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            await api.void_journal_entry(token, je_id, reason)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
+        qs = "?tab=journal"
+        if form.get("date_from"):
+            qs += f"&from={form['date_from']}"
+        if form.get("date_to"):
+            qs += f"&to={form['date_to']}"
+        return _R("", status_code=204, headers={"HX-Redirect": f"/accounting{qs}"})
+
     # ── Print (PDF) routes ─────────────────────────────────────────────────
 
     @app.get("/accounting/print/pnl")
@@ -263,19 +515,10 @@ def setup_routes(app):
             params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
             data = await api.get_pnl(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
-
-        subtitle_parts = []
-        if d_from:
-            subtitle_parts.append(f"From: {d_from}")
-        if d_to:
-            subtitle_parts.append(f"To: {d_to}")
-        subtitle = "  |  ".join(subtitle_parts) if subtitle_parts else "All periods"
+            return _plain_error_response(e)
 
         body = _pnl_view(data, currency, date_from=d_from, date_to=d_to)
-        return _print_shell(company, "Profit & Loss Statement", subtitle, body)
+        return _print_shell(company, "Profit & Loss Statement", _period_subtitle(d_from, d_to), body)
 
     @app.get("/accounting/print/balance-sheet")
     async def balance_sheet_print(request: Request):
@@ -289,9 +532,7 @@ def setup_routes(app):
             params = {"as_of": as_of}
             data = await api.get_balance_sheet(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+            return _plain_error_response(e)
 
         body = _balance_sheet_view(data, currency, as_of=as_of)
         return _print_shell(company, "Balance Sheet", f"As of: {as_of}", body)
@@ -304,17 +545,93 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
             currency = company.get("currency")
-            data = await api.get_trial_balance(token)
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_trial_balance(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+            return _plain_error_response(e)
 
         body = Div(
             _trial_balance_summary(data, currency),
-            _trial_balance_table(data, currency),
+            _trial_balance_table(data, currency, date_from=d_from, date_to=d_to),
         )
-        return _print_shell(company, "Trial Balance", f"As of: {_date.today().isoformat()}", body)
+        return _print_shell(company, "Trial Balance", _period_subtitle(d_from, d_to), body)
+
+    @app.get("/accounting/print/journal")
+    async def journal_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_journal(token, params)
+        except APIError as e:
+            return _plain_error_response(e)
+
+        body = Div(
+            _journal_totals(data, currency),
+            _journal_view(data, currency, date_from=d_from, date_to=d_to, show_actions=False),
+        )
+        return _print_shell(company, t("acct.tab_journal"), _period_subtitle(d_from, d_to), body)
+
+    @app.get("/accounting/print/general-ledger")
+    async def general_ledger_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_general_ledger(token, params)
+        except APIError as e:
+            return _plain_error_response(e)
+
+        body = _general_ledger_view(data, currency, date_from=d_from, date_to=d_to)
+        return _print_shell(company, t("acct.tab_general_ledger"), _period_subtitle(d_from, d_to), body)
+
+    @app.get("/accounting/print/soa")
+    async def soa_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        contact_id = request.query_params.get("contact_id", "")
+        if not contact_id:
+            return RedirectResponse("/accounting?tab=soa", status_code=302)
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_soa(token, contact_id, params)
+        except APIError as e:
+            return _plain_error_response(e)
+        if data.get("merged_into"):
+            qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={data['merged_into']}")
+            return RedirectResponse(f"/accounting/print/soa?{qs}", status_code=302)
+
+        contact = data.get("contact") or {}
+        # An outward document: company block (report header), contact block, period, closing.
+        body = Div(
+            Div(
+                H3(t("label.contact"), cls="report-section-title"),
+                P(contact.get("name", "")),
+                P(contact.get("type", ""), cls="report-company-address") if contact.get("type") else None,
+                cls="report-section",
+            ),
+            _soa_table(data, currency, date_from=d_from, date_to=d_to),
+            P(Strong(f"{t('acct.closing_balance')}: {fmt_money(data.get('closing_balance', 0), currency)}"),
+              cls="report-total"),
+        )
+        return _print_shell(company, t("acct.soa_title"), _period_subtitle(d_from, d_to), body)
 
     # ── CSV export routes ──────────────────────────────────────────────────
 
@@ -329,9 +646,7 @@ def setup_routes(app):
             params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
             data = await api.get_pnl(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+            return _plain_error_response(e)
 
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -349,7 +664,7 @@ def setup_routes(app):
             section = data.get(section_key, {})
             for line in section.get("lines", []):
                 amt = float(line.get("amount", 0) or 0)
-                w.writerow([section_label, line.get("code", ""), line.get("name", ""), amt, _pct(amt)])
+                _csv_row(w, [section_label, line.get("code", ""), line.get("name", ""), amt, _pct(amt)])
             w.writerow([f"TOTAL {section_label}", "", "", section.get("total", 0), ""])
 
         w.writerow([])
@@ -373,9 +688,7 @@ def setup_routes(app):
             as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
             data = await api.get_balance_sheet(token, {"as_of": as_of})
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+            return _plain_error_response(e)
 
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -383,7 +696,7 @@ def setup_routes(app):
         for section_key, section_label in [("assets", "Assets"), ("liabilities", "Liabilities"), ("equity", "Equity")]:
             section = data.get(section_key, {})
             for line in section.get("lines", []):
-                w.writerow([section_label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
+                _csv_row(w, [section_label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
             w.writerow([f"TOTAL {section_label}", "", "", section.get("total", 0)])
             w.writerow([])
 
@@ -401,22 +714,167 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            data = await api.get_trial_balance(token)
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_trial_balance(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+            return _plain_error_response(e)
 
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["Code", "Account", "Debit", "Credit"])
         for line in data.get("lines", []):
-            w.writerow([line.get("code", ""), line.get("name", ""), line.get("total_debit", 0), line.get("total_credit", 0)])
+            _csv_row(w, [line.get("code", ""), line.get("name", ""), line.get("total_debit", 0), line.get("total_credit", 0)])
         w.writerow([])
         w.writerow(["TOTAL", "", data.get("total_debit", 0), data.get("total_credit", 0)])
 
         buf.seek(0)
-        fname = f"trial_balance_{_date.today().isoformat()}.csv"
+        fname = f"trial_balance_{d_from or 'all'}_{d_to or 'all'}.csv"
+        return StreamingResponse(
+            iter([buf.read()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/accounting/export/journal/csv")
+    async def journal_export_csv(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            company, data = await asyncio.gather(api.get_company(token), api.get_journal(token, params))
+        except APIError as e:
+            return _plain_error_response(e)
+
+        base_currency = company.get("currency") or ""
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["date", "entry_id", "source_ref", "memo", "account_code", "account_name",
+                    "debit", "credit", "currency", "fx_currency", "fx_debit", "fx_credit",
+                    "exchange_rate", "status"])
+        # Rows stay ascending by date (the order the API returns): auditors and pivot
+        # tables read a journal chronologically, unlike the on-screen newest-first view.
+        for entry in data.get("entries", []):
+            source = entry.get("source_doc") or {}
+            source_ref = source.get("doc_ref") or source.get("doc_id") or _je_source_label(entry, csv_export=True)
+            fx = entry.get("fx") or {}
+            fx_currency = fx.get("currency") or ""
+            rate = fx.get("rate") or 0
+            for line in entry.get("lines", []):
+                debit = float(line.get("debit") or 0)
+                credit = float(line.get("credit") or 0)
+                fx_debit = fx_credit = ""
+                if rate:
+                    # Foreign amounts derive from the stored rate; when no rate was
+                    # recorded the FX columns stay blank rather than guessing.
+                    if debit:
+                        fx_debit = float(round_money(to_decimal(debit) / to_decimal(rate), fx_currency))
+                    if credit:
+                        fx_credit = float(round_money(to_decimal(credit) / to_decimal(rate), fx_currency))
+                _csv_row(w, [
+                    str(entry.get("ts") or "")[:10],
+                    entry.get("je_id", ""),
+                    source_ref,
+                    entry.get("memo", ""),
+                    line.get("account", ""),
+                    line.get("name", ""),
+                    debit,
+                    credit,
+                    base_currency,
+                    fx_currency,
+                    fx_debit,
+                    fx_credit,
+                    rate or "",
+                    entry.get("status", ""),
+                ])
+
+        buf.seek(0)
+        fname = f"journal_{d_from or 'all'}_{d_to or 'all'}.csv"
+        return StreamingResponse(
+            iter([buf.read()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/accounting/export/general-ledger/csv")
+    async def general_ledger_export_csv(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_general_ledger(token, params)
+
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["account_code", "account_name", "date", "source_ref", "memo", "debit", "credit", "balance"])
+            for row in data.get("rows", []):
+                code = row.get("code", "")
+                name = row.get("name", "")
+                debit_normal = row.get("account_type") in ("asset", "expense", "cogs")
+                opening = row.get("opening", 0)
+                _csv_row(w, [code, name, "", "", "Opening balance", "", "", opening])
+                running = to_decimal(opening)
+                ledger = await api.get_ledger(token, code, params)
+                for line in ledger.get("lines", []):
+                    debit = to_decimal(line.get("debit") or 0)
+                    credit = to_decimal(line.get("credit") or 0)
+                    running += (debit - credit) if debit_normal else (credit - debit)
+                    _csv_row(w, [code, name, line.get("date", ""),
+                                 line.get("doc_ref") or line.get("doc_id") or "",
+                                 line.get("memo", ""),
+                                 float(debit), float(credit), float(running)])
+                _csv_row(w, [code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
+        except APIError as e:
+            return _plain_error_response(e)
+
+        buf.seek(0)
+        fname = f"general_ledger_{d_from or 'all'}_{d_to or 'all'}.csv"
+        return StreamingResponse(
+            iter([buf.read()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/accounting/export/soa/csv")
+    async def soa_export_csv(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        contact_id = request.query_params.get("contact_id", "")
+        if not contact_id:
+            return RedirectResponse("/accounting?tab=soa", status_code=302)
+        try:
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            data = await api.get_soa(token, contact_id, params)
+        except APIError as e:
+            return _plain_error_response(e)
+        if data.get("merged_into"):
+            qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={data['merged_into']}")
+            return RedirectResponse(f"/accounting/export/soa/csv?{qs}", status_code=302)
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["date", "ref", "kind", "debit", "credit", "balance"])
+        _csv_row(w, [d_from, "", "Opening balance", "", "", data.get("opening_balance", 0)])
+        for row in data.get("rows", []):
+            _csv_row(w, [row.get("date", ""), row.get("doc_ref") or row.get("doc_id") or "",
+                         row.get("kind", ""), row.get("debit", 0), row.get("credit", 0),
+                         row.get("balance", 0)])
+        _csv_row(w, [d_to, "", "Closing balance", "", "", data.get("closing_balance", 0)])
+
+        buf.seek(0)
+        contact_name = (data.get("contact") or {}).get("name") or contact_id
+        contact_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contact_name).strip("_") or "contact"
+        fname = f"soa_{contact_slug}_{d_from or 'all'}_{d_to or 'all'}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -432,7 +890,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         try:
             fy = await _get_fiscal(token)
-            d_from, d_to, preset = _parse_dates(request, fy)
+            origin, d_from, d_to, preset = _ledger_context(request, fy)
             params = {}
             if d_from:
                 params["date_from"] = d_from
@@ -444,22 +902,30 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            content = Div(f"Error loading ledger: {e.detail}", cls="error-banner")
+            if e.status == 403:
+                content = Div(t("acct.not_authorized"), cls="error-banner")
+            else:
+                content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
             return base_shell(content, title="Ledger - Celerp", nav_active="accounting", request=request)
 
-        tb_back_qs = "?tab=trial-balance"
-        if d_from:
-            tb_back_qs += f"&date_from={d_from}"
-        if d_to:
-            tb_back_qs += f"&date_to={d_to}"
+        # Back link follows the tab the user drilled down from.
+        if origin == "balance-sheet":
+            back_qs = f"?tab={origin}" + (f"&as_of={d_to}" if d_to else "")
+        else:
+            back_qs = f"?tab={origin}"
+            if d_from:
+                back_qs += f"&from={d_from}"
+            if d_to:
+                back_qs += f"&to={d_to}"
 
         content = Div(
             Div(
                 _date_filter_bar(
                     f"/accounting/ledger/{account_code}", d_from, d_to, preset,
                     settings_link="/settings/general?tab=company",
+                    extra_params=f"&from={origin}",
                 ),
-                A("← Trial Balance", href=f"/accounting{tb_back_qs}", cls="btn btn--ghost btn--sm"),
+                A(f"← {t(_LEDGER_BACK_TABS[origin])}", href=f"/accounting{back_qs}", cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
             _ledger_view(data, currency),
@@ -477,9 +943,12 @@ def setup_routes(app):
 
 def _accounting_tabs(active: str) -> FT:
     tabs = [
-        ("pnl", "P&L"),
-        ("balance-sheet", "Balance Sheet"),
-        ("trial-balance", "Trial Balance"),
+        ("pnl", t("acct.tab_pnl")),
+        ("balance-sheet", t("acct.tab_balance_sheet")),
+        ("trial-balance", t("acct.tab_trial_balance")),
+        ("journal", t("acct.tab_journal")),
+        ("general-ledger", t("acct.tab_general_ledger")),
+        ("soa", t("acct.tab_soa")),
     ]
     return Div(
         *[
@@ -491,18 +960,22 @@ def _accounting_tabs(active: str) -> FT:
     )
 
 
+def _drill_ledger_href(code: str, origin: str, date_from: str = "", date_to: str = "") -> str:
+    """Link to the per-account ledger, carrying the date range and the originating tab."""
+    parts = [f"date_from={date_from}"] if date_from else []
+    if date_to:
+        parts.append(f"date_to={date_to}")
+    parts.append(f"from={origin}")
+    return f"/accounting/ledger/{code}?" + "&".join(parts)
+
+
 def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
-    from ui.components.table import fmt_money
     lines = tb.get("lines", [])
     if not lines:
         return P(t("acct.no_trial_balance_entries"), cls="empty-state")
 
     def _ledger_href(code: str) -> str:
-        parts = [f"date_from={date_from}"] if date_from else []
-        if date_to:
-            parts.append(f"date_to={date_to}")
-        qs = ("?" + "&".join(parts)) if parts else ""
-        return f"/accounting/ledger/{code}{qs}"
+        return _drill_ledger_href(code, "trial-balance", date_from, date_to)
 
     rows = [
         Tr(
@@ -520,23 +993,25 @@ def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str =
     )
 
 
-def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
-    from ui.components.table import fmt_money
-    balanced = tb.get("balanced", True)
+def _totals_chips(total_debit, total_credit, balanced: bool, currency: str | None) -> FT:
     return Div(
-        Span(f"Total Debit: {fmt_money(tb.get('total_debit', 0), currency)}", cls="val-chip"),
-        Span(f"Total Credit: {fmt_money(tb.get('total_credit', 0), currency)}", cls="val-chip"),
-        Span("Balanced ✓" if balanced else "⚠ Out of balance",
+        Span(f"{t('acct.total_debit')}: {fmt_money(total_debit, currency)}", cls="val-chip"),
+        Span(f"{t('acct.total_credit')}: {fmt_money(total_credit, currency)}", cls="val-chip"),
+        Span(t("acct.balanced") if balanced else t("acct.out_of_balance"),
              cls="val-chip" if balanced else "val-chip val-chip--alert"),
         cls="valuation-bar",
     )
 
 
+def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
+    return _totals_chips(tb.get("total_debit", 0), tb.get("total_credit", 0),
+                         tb.get("balanced", True), currency)
+
+
 def _ledger_view(data: dict, currency: str | None = None) -> FT:
-    from ui.components.table import fmt_money
     lines = data.get("lines", [])
     if not lines:
-        return P("No entries found for this account in the selected period.", cls="empty-state")
+        return P(t("acct.no_entries_for_account"), cls="empty-state")
 
     def _fmt_nonzero(val: float) -> str:
         return fmt_money(val, currency) if val else ""
@@ -562,12 +1037,12 @@ def _ledger_view(data: dict, currency: str | None = None) -> FT:
     ]
     return Table(
         Thead(Tr(
-            Th("Date"),
-            Th("Source Doc"),
-            Th("Description"),
-            Th("Debit", cls="cell--number"),
-            Th("Credit", cls="cell--number"),
-            Th("Balance", cls="cell--number"),
+            Th(t("th.date")),
+            Th(t("th.source")),
+            Th(t("th.description")),
+            Th(t("th.debit"), cls="cell--number"),
+            Th(t("th.credit"), cls="cell--number"),
+            Th(t("th.balance"), cls="cell--number"),
         )),
         Tbody(*rows),
         cls="data-table",
@@ -575,8 +1050,6 @@ def _ledger_view(data: dict, currency: str | None = None) -> FT:
 
 
 def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
-    from ui.components.table import fmt_money
-
     rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
 
     # Build date query string for drilldown links
@@ -586,11 +1059,7 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
     _dqs = ("?" + "&".join(_qs_parts)) if _qs_parts else ""
 
     def _ledger_href(code: str) -> str:
-        parts = [f"date_from={date_from}"] if date_from else []
-        if date_to:
-            parts.append(f"date_to={date_to}")
-        qs = ("?" + "&".join(parts)) if parts else ""
-        return f"/accounting/ledger/{code}{qs}"
+        return _drill_ledger_href(code, "pnl", date_from, date_to)
 
     def _pct_of_rev(amount: float) -> str:
         if not rev_total:
@@ -648,11 +1117,9 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
 
 
 def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = "") -> FT:
-    from ui.components.table import fmt_money
-
     def _ledger_href(code: str) -> str:
         # Ledger up to as_of date for balance sheet context
-        return f"/accounting/ledger/{code}?date_to={as_of}" if as_of else f"/accounting/ledger/{code}"
+        return _drill_ledger_href(code, "balance-sheet", "", as_of)
 
     def _pnl_href() -> str:
         return f"/accounting?tab=pnl&date_to={as_of}" if as_of else "/accounting?tab=pnl"
@@ -722,3 +1189,362 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         ),
         cls="report-view",
     )
+
+
+# ── Journal ─────────────────────────────────────────────────────────────────
+
+def _je_source_label(entry: dict, csv_export: bool = False) -> str:
+    """Source label for a journal entry without a source document, keyed off je_type.
+
+    CSV exports always use the English label so the exported data is locale-stable.
+    """
+    je_type = str(entry.get("je_type") or "")
+    if je_type == "manual":
+        key = "acct.source_manual"
+    elif je_type == "transfer":
+        key = "acct.source_transfer"
+    elif je_type.startswith("recon"):
+        key = "acct.source_reconciliation"
+    else:
+        key = "acct.source_system"
+    return t(key, "en") if csv_export else t(key)
+
+
+def _journal_totals(data: dict, currency: str | None = None) -> FT:
+    total_debit = float(data.get("total_debit", 0) or 0)
+    total_credit = float(data.get("total_credit", 0) or 0)
+    return _totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01, currency)
+
+
+def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
+                  date_to: str = "", show_actions: bool = True) -> FT:
+    entries = list(data.get("entries", []))
+    if not entries:
+        return P(t("acct.no_journal_entries"), cls="empty-state")
+    entries.reverse()  # the API returns ascending; the screen shows newest first
+
+    def _fmt_nonzero(val: float) -> str:
+        return fmt_money(val, currency) if val else ""
+
+    def _void_action(entry: dict) -> FT:
+        if not (entry.get("je_type") == "manual" and entry.get("status") == "posted"):
+            return Td("")
+        return Td(Details(
+            Summary(t("btn.void"), cls="btn btn--danger btn--sm"),
+            Form(
+                Input(type="text", name="reason", placeholder=t("acct.void_reason_optional"),
+                      cls="form-input form-input--sm",
+                      onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                Input(type="hidden", name="date_from", value=date_from),
+                Input(type="hidden", name="date_to", value=date_to),
+                Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--sm",
+                       style="margin-top:0.5rem;"),
+                hx_post=f"/accounting/journal/{entry.get('je_id', '')}/void",
+                hx_swap="none", cls="inline-form",
+            ),
+            cls="void-section",
+        ))
+
+    rows = []
+    for entry in entries:
+        voided = entry.get("status") == "void"
+        row_cls = "payment-voided" if voided else ""
+        source = entry.get("source_doc") or {}
+        if source.get("doc_id"):
+            source_cell = A(source.get("doc_ref") or source["doc_id"],
+                            href=f"/docs/{source['doc_id']}", cls="drilldown-link")
+        else:
+            source_cell = _je_source_label(entry)
+        memo_bits: list = [Span(entry.get("memo", ""))] if entry.get("memo") else []
+        if voided:
+            reason = str(entry.get("void_reason") or entry.get("reason") or "").strip()
+            memo_bits.append(Span(f"{t('doc.voided')}: {reason}" if reason else t("doc.voided"),
+                                  cls="badge badge--void"))
+        cells = [
+            Td(str(entry.get("ts") or "")[:10], cls="cell--mono"),
+            Td(source_cell),
+            Td(*memo_bits, cls="cell--muted"),
+            Td("", cls="cell--number"),
+            Td("", cls="cell--number"),
+        ]
+        if show_actions:
+            cells.append(_void_action(entry))
+        rows.append(Tr(*cells, cls=row_cls) if row_cls else Tr(*cells))
+        for line in entry.get("lines", []):
+            line_cells = [
+                Td(""),
+                Td(""),
+                Td(f"{line.get('account', '')} {line.get('name', '')}".strip(),
+                   style="padding-left:2rem"),
+                Td(_fmt_nonzero(float(line.get("debit") or 0)), cls="cell--number"),
+                Td(_fmt_nonzero(float(line.get("credit") or 0)), cls="cell--number"),
+            ]
+            if show_actions:
+                line_cells.append(Td(""))
+            rows.append(Tr(*line_cells, cls=row_cls) if row_cls else Tr(*line_cells))
+
+    headers = [
+        Th(t("th.date")),
+        Th(t("th.source")),
+        Th(t("th.description")),
+        Th(t("th.debit"), cls="cell--number"),
+        Th(t("th.credit"), cls="cell--number"),
+    ]
+    if show_actions:
+        headers.append(Th(""))
+    return Table(Thead(Tr(*headers)), Tbody(*rows), cls="data-table")
+
+
+# ── Manual journal entry form ───────────────────────────────────────────────
+
+def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
+    return Tr(
+        Td(searchable_select(f"account_{idx}", acct_opts, value=line.get("account", ""),
+                             placeholder=t("th.account"), cls_extra="cell-input")),
+        Td(Input(type="number", name=f"debit_{idx}", value=line.get("debit", ""), step="any",
+                 min="0", cls="cell-input", oninput="celerpJeTotals()"), cls="cell--number"),
+        Td(Input(type="number", name=f"credit_{idx}", value=line.get("credit", ""), step="any",
+                 min="0", cls="cell-input", oninput="celerpJeTotals()"), cls="cell--number"),
+        Td(Button("✕", type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
+                  onclick="celerpJeRemoveLine(this)")),
+    )
+
+
+def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
+                        idem_token: str, error: str | None = None) -> FT:
+    acct_opts = [
+        (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
+        for a in accounts
+        if a.get("code") and a.get("is_active", True)
+    ]
+    if not lines:
+        lines = [{}, {}]  # double-entry needs two sides, so start with two rows
+    rows = [_je_line_row(str(i), line, acct_opts) for i, line in enumerate(lines)]
+
+    js = f"""
+var celerpJeIdx = {len(lines)};
+function celerpJeAddLine() {{
+    var tpl = document.getElementById('je-line-tpl').content.cloneNode(true);
+    tpl.querySelectorAll('[name]').forEach(function(el) {{
+        el.name = el.name.replace('__IDX__', celerpJeIdx);
+        if (el.dataset && el.dataset.name) el.dataset.name = el.name;
+    }});
+    celerpJeIdx++;
+    var tbody = document.getElementById('je-lines');
+    tbody.appendChild(tpl);
+    // cloneNode fires neither DOMContentLoaded nor htmx:afterSettle, so the new
+    // row's combobox must be initialised here.
+    tbody.lastElementChild.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+    celerpJeTotals();
+}}
+function celerpJeRemoveLine(btn) {{
+    btn.closest('tr').remove();
+    celerpJeTotals();
+}}
+function celerpJeTotals() {{
+    var d = 0, c = 0;
+    document.querySelectorAll('#je-lines [name^="debit_"]').forEach(function(el) {{ d += Math.round((parseFloat(el.value) || 0) * 100); }});
+    document.querySelectorAll('#je-lines [name^="credit_"]').forEach(function(el) {{ c += Math.round((parseFloat(el.value) || 0) * 100); }});
+    document.getElementById('je-total-debit').textContent = {_json.dumps(t("acct.total_debit"))} + ': ' + (d / 100).toFixed(2);
+    document.getElementById('je-total-credit').textContent = {_json.dumps(t("acct.total_credit"))} + ': ' + (c / 100).toFixed(2);
+    var chip = document.getElementById('je-balance-chip');
+    var balanced = d === c && d > 0;
+    chip.textContent = balanced ? {_json.dumps(t("acct.balanced"))} : {_json.dumps(t("acct.out_of_balance"))};
+    chip.className = balanced ? 'val-chip' : 'val-chip val-chip--alert';
+}}
+if (document.readyState === 'loading') {{ document.addEventListener('DOMContentLoaded', celerpJeTotals); }} else {{ celerpJeTotals(); }}
+"""
+
+    return Div(
+        Div(error, cls="error-banner") if error else None,
+        Form(
+            Div(
+                Div(
+                    Label(t("th.date"), cls="form-label"),
+                    Input(type="date", name="ts", value=ts, cls="date-input", required=True),
+                ),
+                Div(
+                    Label(t("th.memo"), cls="form-label"),
+                    Input(type="text", name="memo", value=memo, cls="form-input",
+                          placeholder=t("acct.memo_hint")),
+                ),
+                cls="flex-row gap-sm",
+            ),
+            Template(_je_line_row("__IDX__", {}, acct_opts), id="je-line-tpl"),
+            Table(
+                Thead(Tr(
+                    Th(t("th.account")),
+                    Th(t("th.debit"), cls="cell--number"),
+                    Th(t("th.credit"), cls="cell--number"),
+                    Th(""),
+                )),
+                Tbody(*rows, id="je-lines"),
+                cls="data-table",
+            ),
+            Div(
+                Button(t("btn.add_line"), type="button", cls="btn btn--secondary btn--sm",
+                       onclick="celerpJeAddLine()"),
+                Div(
+                    Span("", id="je-total-debit", cls="val-chip"),
+                    Span("", id="je-total-credit", cls="val-chip"),
+                    Span("", id="je-balance-chip", cls="val-chip"),
+                    cls="valuation-bar",
+                ),
+                cls="flex-row flex-between",
+            ),
+            Input(type="hidden", name="idempotency_token", value=idem_token),
+            Div(
+                Button(t("btn.post"), type="submit", cls="btn btn--primary"),
+                A(t("btn.cancel"), href="/accounting?tab=journal", cls="btn btn--secondary"),
+                cls="flex-row gap-sm",
+            ),
+            method="post", action="/accounting/journal/new",
+        ),
+        Script(js),
+    )
+
+
+# ── General ledger ──────────────────────────────────────────────────────────
+
+def _general_ledger_view(data: dict, currency: str | None = None,
+                         date_from: str = "", date_to: str = "") -> FT:
+    rows = data.get("rows", [])
+    if not rows:
+        return P(t("acct.no_entries"), cls="empty-state")
+
+    def _num_cell(val, strong: bool = False) -> FT:
+        v = float(val or 0)
+        cls = "cell--number cell--negative" if v < 0 else "cell--number"
+        formatted = fmt_money(v, currency)
+        return Td(Strong(formatted) if strong else formatted, cls=cls)
+
+    body = [
+        Tr(
+            Td(r.get("code", ""), cls="cell--mono"),
+            Td(A(r.get("name", ""),
+                 href=_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to),
+                 cls="drilldown-link")),
+            _num_cell(r.get("opening", 0)),
+            _num_cell(r.get("debit", 0)),
+            _num_cell(r.get("credit", 0)),
+            _num_cell(r.get("closing", 0)),
+        )
+        for r in rows
+    ]
+    totals = data.get("totals") or {}
+    body.append(Tr(
+        Td(""),
+        Td(Strong(t("th.total"))),
+        _num_cell(totals.get("opening", 0), strong=True),
+        _num_cell(totals.get("debit", 0), strong=True),
+        _num_cell(totals.get("credit", 0), strong=True),
+        _num_cell(totals.get("closing", 0), strong=True),
+    ))
+    balanced = data.get("balanced", True)
+    return Div(
+        Table(
+            Thead(Tr(
+                Th(t("th.code")),
+                Th(t("th.account")),
+                Th(t("th.opening"), cls="cell--number"),
+                Th(t("th.debit"), cls="cell--number"),
+                Th(t("th.credit"), cls="cell--number"),
+                Th(t("th.closing"), cls="cell--number"),
+            )),
+            Tbody(*body),
+            cls="data-table",
+        ),
+        Div(
+            Span(t("acct.balanced") if balanced else t("acct.out_of_balance"),
+                 cls="val-chip" if balanced else "val-chip val-chip--alert"),
+            cls="valuation-bar",
+        ),
+    )
+
+
+# ── Statement of account ────────────────────────────────────────────────────
+
+_SOA_KIND_KEYS = {
+    "invoice": "label.invoice",
+    "credit_note": "doc.credit_note",
+    "payment": "acct.soa_kind_payment",
+}
+
+
+def _soa_kind_label(kind: str) -> str:
+    key = _SOA_KIND_KEYS.get(kind)
+    return t(key) if key else kind
+
+
+def _soa_table(data: dict, currency: str | None = None,
+               date_from: str = "", date_to: str = "") -> FT:
+    def _fmt_nonzero(val: float) -> str:
+        return fmt_money(val, currency) if val else ""
+
+    def _bal_cell(val, strong: bool = False) -> FT:
+        v = float(val or 0)
+        cls = "cell--number cell--negative" if v < 0 else "cell--number"
+        formatted = fmt_money(v, currency)
+        return Td(Strong(formatted) if strong else formatted, cls=cls)
+
+    rows = [Tr(
+        Td(date_from, cls="cell--mono"),
+        Td(""),
+        Td(t("acct.opening_balance"), cls="cell--muted"),
+        Td("", cls="cell--number"),
+        Td("", cls="cell--number"),
+        _bal_cell(data.get("opening_balance", 0)),
+    )]
+    for row in data.get("rows", []):
+        ref = row.get("doc_ref") or row.get("doc_id") or ""
+        ref_cell = (A(ref, href=f"/docs/{row['doc_id']}", cls="drilldown-link")
+                    if row.get("doc_id") else ref)
+        rows.append(Tr(
+            Td(row.get("date", ""), cls="cell--mono"),
+            Td(ref_cell),
+            Td(_soa_kind_label(str(row.get("kind") or ""))),
+            Td(_fmt_nonzero(float(row.get("debit") or 0)), cls="cell--number"),
+            Td(_fmt_nonzero(float(row.get("credit") or 0)), cls="cell--number"),
+            _bal_cell(row.get("balance", 0)),
+        ))
+    rows.append(Tr(
+        Td(date_to, cls="cell--mono"),
+        Td(""),
+        Td(Strong(t("acct.closing_balance"))),
+        Td("", cls="cell--number"),
+        Td("", cls="cell--number"),
+        _bal_cell(data.get("closing_balance", 0), strong=True),
+    ))
+    return Table(
+        Thead(Tr(
+            Th(t("th.date")),
+            Th(t("th.ref")),
+            Th(t("th.type")),
+            Th(t("th.debit"), cls="cell--number"),
+            Th(t("th.credit"), cls="cell--number"),
+            Th(t("th.balance"), cls="cell--number"),
+        )),
+        Tbody(*rows),
+        cls="data-table",
+    )
+
+
+def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
+              currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
+    opts = [
+        (c.get("id", ""), f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
+        for c in contacts if c.get("id")
+    ]
+    selector = Form(
+        Label(t("label.contact"), cls="form-label"),
+        searchable_select("contact_id", opts, value=contact_id,
+                          placeholder=t("label.contact"), onchange="this.form.submit()"),
+        Input(type="hidden", name="tab", value="soa"),
+        Input(type="hidden", name="from", value=date_from),
+        Input(type="hidden", name="to", value=date_to),
+        method="get", action="/accounting",
+        cls="flex-row gap-sm",
+    )
+    if not contact_id or data is None:
+        return Div(selector, empty_state_cta(t("acct.soa_pick_contact")))
+    return Div(selector, _soa_table(data, currency, date_from, date_to))

@@ -285,7 +285,19 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
+    # Carry the non-date params (tab, group_by, contact_id, ...) through the custom-range
+    # submit as hidden fields; otherwise the GET form drops them and the page falls back to
+    # its default view. The form's own field names (from/to/preset) cannot be duplicated.
+    hidden_params = []
+    for pair in extra_params.lstrip("&").split("&"):
+        if "=" not in pair:
+            continue
+        k, v = pair.split("=", 1)
+        if k and k not in ("from", "to", "preset"):
+            hidden_params.append(Input(type="hidden", name=k, value=v))
+
     custom_form = Form(
+        *hidden_params,
         Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input", id="dfb-from"),
         Span("--", cls="date-sep"),
         Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input", id="dfb-to"),

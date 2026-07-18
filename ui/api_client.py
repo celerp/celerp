@@ -863,6 +863,31 @@ async def get_balance_sheet(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/balance-sheet", params=params or {})).json()
 
 
+async def get_journal(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/journal", params=params or {})).json()
+
+
+async def get_general_ledger(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()
+
+
+async def get_soa(token: str, contact_id: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/soa/{contact_id}", params=params or {})).json()
+
+
+async def create_journal_entry(token: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/journal-entries", json=data)).json()
+
+
+async def void_journal_entry(token: str, entity_id: str, reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal-entries/{entity_id}/void", json={"reason": reason})).json()
+
+
 async def get_bank_accounts(token: str, include_inactive: bool = False) -> dict:
     async with _api_client(token) as c:
         params = {"include_inactive": "true"} if include_inactive else {}
