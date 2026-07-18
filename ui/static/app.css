@@ -1754,6 +1754,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table th.cell--number { text-align: right !important; }
 /* col-total header alignment: right-aligned (consolidated in doc-lines block above) */
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
+/* Editable line identifier: the SKU input row, with the barcode stacked BELOW it on
+   its own full-width line — the same shape the finalized view uses. Keeping the
+   barcode out of the flex row is what stops it being squeezed to 1-2 digits (#234). */
+.li-ident-edit { display: block; min-width: 0; }
+.li-ident-edit .li-ident-2nd { display: block; width: 100%; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
 .item-link--active:hover { opacity: 0.7; }

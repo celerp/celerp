@@ -5933,22 +5933,32 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # The visible line under the SKU input exists only when barcodes are shown.
             barcode_display = (
                 Div(barcode, cls="li-ident-2nd", data_name="barcode_display",
+                    title=barcode,
                     style="" if barcode else "display:none")
                 if line_identifier_mode != "sku" else None
             )
+            # The barcode sits BELOW the input row, never inside it. As a flex item
+            # of .catalog-ac-wrap it had to share a 70px column with the eye and the
+            # SKU box, which squeezed it to 1-2 digits + an ellipsis (#234). The
+            # finalized view already stacks it as a block on its own full-width line;
+            # the editable view now matches, so the "barcode is never truncated"
+            # invariant (line_measures.line_identifier) holds in every renderer.
             return Div(
-                eye,
-                Input(type="text", value=val, data_name="sku", placeholder="SKU...",
-                      cls="cell-input cell-input--sm catalog-ac-input",
-                      autocomplete="off",
-                      title="Type to search catalog or enter custom description",
-                      oninput="celerpAcSearch(this,'sku')",
-                      onblur="celerpAcBlur(this)",
-                      onkeydown="celerpAcKey(event,this)"),
-                Div(cls="catalog-ac-list", style="display:none"),
-                Input(type="hidden", value=barcode, data_name="barcode"),
+                Div(
+                    eye,
+                    Input(type="text", value=val, data_name="sku", placeholder="SKU...",
+                          cls="cell-input cell-input--sm catalog-ac-input",
+                          autocomplete="off",
+                          title="Type to search catalog or enter custom description",
+                          oninput="celerpAcSearch(this,'sku')",
+                          onblur="celerpAcBlur(this)",
+                          onkeydown="celerpAcKey(event,this)"),
+                    Div(cls="catalog-ac-list", style="display:none"),
+                    Input(type="hidden", value=barcode, data_name="barcode"),
+                    cls="catalog-ac-wrap",
+                ),
                 barcode_display,
-                cls="catalog-ac-wrap",
+                cls="li-ident-edit",
             )
 
         def _desc_input(val: str = "") -> FT:
