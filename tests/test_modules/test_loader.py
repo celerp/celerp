@@ -533,6 +533,16 @@ class TestDependencySystem:
         assert "healthy" in names
         assert "circ-a" not in names and "circ-b" not in names
 
+    def test_three_node_cycle_detected_and_all_skipped(self, tmp_path):
+        """A multi-hop cycle A->B->C->A exercises the back-edge through more than
+        one on_stack frame; all three must be skipped, none loaded."""
+        self._make(tmp_path, "n-a", depends_on=["n-b"])
+        self._make(tmp_path, "n-b", depends_on=["n-c"])
+        self._make(tmp_path, "n-c", depends_on=["n-a"])
+        result = load_all(tmp_path, {"n-a", "n-b", "n-c"})
+        names = [m["name"] for m in result]
+        assert "n-a" not in names and "n-b" not in names and "n-c" not in names
+
     # ── resolve_install_order (config.py) ──────────────────────────────────────
 
     def test_resolve_install_order_includes_transitive_deps(self, tmp_path):
@@ -564,6 +574,16 @@ class TestDependencySystem:
         result = resolve_install_order(["ghost-xyz"], tmp_path)
         # Returns with ghost-xyz (no crash, no auto-skip — install may fail later)
         assert "ghost-xyz" in result
+
+    def test_resolve_install_order_survives_a_cycle(self, tmp_path):
+        """resolve_install_order must terminate (no RecursionError) on a cyclic
+        depends_on graph; the loader's own _topo_sort is the enforcement point, so
+        here we only pin that this helper returns rather than blowing the stack."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "cyc-a", depends_on=["cyc-b"])
+        self._make(tmp_path, "cyc-b", depends_on=["cyc-a"])
+        result = resolve_install_order(["cyc-a"], tmp_path)
+        assert "cyc-a" in result and "cyc-b" in result
 
     def test_resolve_install_order_finds_deps_in_module_dir(self, tmp_path, monkeypatch):
         """A marketplace/sideloaded module lives in MODULE_DIR, not the bundled
