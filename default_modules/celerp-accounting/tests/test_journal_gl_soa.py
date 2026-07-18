@@ -482,11 +482,11 @@ async def test_soa_opening_collapse_and_exclusions(client):
     assert r.status_code == 200
     before = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
     assert abs(before["closing_balance"] - 100.0) < 0.01
-    r = await client.post(f"/docs/{late}/refund", headers=_h(tok), json={
-        "payment_index": 0, "refund_date": "2026-02-21"})
-    if r.status_code == 200:
-        after = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
-        assert abs(after["closing_balance"] - 130.0) < 0.01
+    r = await client.post(f"/docs/{late}/void-payment", headers=_h(tok), json={
+        "payment_index": 0, "void_reason": "test"})
+    assert r.status_code == 200, r.text
+    after = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
+    assert abs(after["closing_balance"] - 130.0) < 0.01
 
 
 @pytest.mark.asyncio
@@ -530,6 +530,100 @@ async def test_soa_agrees_with_ar_aging(client):
     assert mine, f"contact missing from aging: {aging}"
     aging_total = mine[0]["total"]
     assert abs(soa["closing_balance"] - aging_total) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_soa_dual_role_contact_nets(client):
+    """A contact that is both customer and supplier: their bill offsets the
+    invoice in the running balance instead of stacking in one direction."""
+    tok = await _reg(client)
+    contact = await _contact(client, tok, name="Both Ways", ctype="both")
+
+    inv = await _invoice(client, tok, total=100.0, contact_id=contact, issue_date="2026-01-05")
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "bill", "contact_id": contact, "issue_date": "2026-01-10",
+        "line_items": [{"name": "Supplies", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}],
+        "subtotal": 40.0, "tax": 0.0, "total": 40.0,
+    })
+    assert r.status_code == 200, r.text
+    bill = r.json()["id"]
+    assert (await client.post(f"/docs/{bill}/finalize", headers=_h(tok))).status_code == 200
+
+    soa = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
+    assert abs(soa["closing_balance"] - 60.0) < 0.01
+    kinds = {row["kind"]: row for row in soa["rows"]}
+    assert kinds["invoice"]["debit"] > 0 and kinds["invoice"]["credit"] == 0
+    assert kinds["bill"]["credit"] > 0 and kinds["bill"]["debit"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_je_rejects_non_finite_amounts(client):
+    tok = await _reg(client)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": "nan", "credit": 0},
+        {"account": "4100", "debit": 0, "credit": "nan"},
+    ])
+    assert r.status_code == 422
+    assert "finite" in r.json()["detail"].lower() or "number" in r.json()["detail"].lower()
+    assert (await _journal(client, tok))["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_journal_fx_survives_payment_deletion(client):
+    """Deleting a payment reindexes the doc's payments list; a surviving
+    payment JE must not display another payment's exchange rate."""
+    tok = await _reg(client)
+    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    for date_amt_rate in (("2026-02-05", 30.0, 34.0), ("2026-02-10", 40.0, 36.5)):
+        d, amt, rate = date_amt_rate
+        r = await client.post(f"/docs/{inv}/payment", headers=_h(tok), json={
+            "payment_date": d, "amount": amt, "method": "transfer",
+            "bank_account": "1111", "currency": "USD", "conversion_rate": rate})
+        assert r.status_code == 200, r.text
+
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(tok))
+    if r.status_code != 200:
+        pytest.skip(f"payment deletion endpoint unavailable: {r.status_code}")
+
+    data = await _journal(client, tok)
+    surviving = [e for e in data["entries"]
+                 if e.get("source_doc") and e["source_doc"]["doc_id"] == inv
+                 and e["ts"] == "2026-02-10" and e["status"] == "posted"]
+    assert surviving
+    # The surviving JE's stored index (1) is now out of range against the
+    # compacted one-payment list, so the guard falls back to the doc-level
+    # rate. It must never show the deleted payment's 34.0.
+    fx = surviving[0].get("fx") or {}
+    assert fx.get("rate") == 35.0
+
+
+@pytest.mark.asyncio
+async def test_journal_fx_keeps_own_rate_when_earlier_payment_survives(client):
+    """Deleting the LAST payment leaves earlier indices intact: the surviving
+    payment JE still resolves its own payment-specific rate."""
+    tok = await _reg(client)
+    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    for d, amt, rate in (("2026-02-05", 30.0, 34.0), ("2026-02-10", 40.0, 36.5)):
+        r = await client.post(f"/docs/{inv}/payment", headers=_h(tok), json={
+            "payment_date": d, "amount": amt, "method": "transfer",
+            "bank_account": "1111", "currency": "USD", "conversion_rate": rate})
+        assert r.status_code == 200, r.text
+
+    r = await client.delete(f"/docs/{inv}/payments/1", headers=_h(tok))
+    if r.status_code != 200:
+        pytest.skip(f"payment deletion endpoint unavailable: {r.status_code}")
+
+    data = await _journal(client, tok)
+    surviving = [e for e in data["entries"]
+                 if e.get("source_doc") and e["source_doc"]["doc_id"] == inv
+                 and e["ts"] == "2026-02-05" and e["status"] == "posted"]
+    assert surviving
+    assert (surviving[0].get("fx") or {}).get("rate") == 34.0
 
 
 # ---------------------------------------------------------------------------

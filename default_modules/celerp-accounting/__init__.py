@@ -8,7 +8,7 @@ PLUGIN_MANIFEST = {
     "description": "Chart of accounts, journal entries, and financial reporting.",
     "license": "MIT",
     "author": "Celerp",
-    "depends_on": ["celerp-docs"],
+    "depends_on": ["celerp-docs", "celerp-contacts"],
     "api_routes": "celerp_accounting.api_setup",
     "ui_routes": "celerp_accounting.ui_routes",
     "slots": {

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -463,10 +464,12 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         )
     ).scalars().all()
     je_meta: dict[str, dict] = {}
+    je_ts: dict[str, str] = {}
     for ev in ledger_events:
         meta = ev.metadata_ or {}
         if meta.get("doc_id"):
             je_meta[ev.entity_id] = meta
+            je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
     doc_ids = {m["doc_id"] for m in je_meta.values()}
     doc_states: dict[str, dict] = {}
@@ -492,8 +495,17 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided"):
             payments = state.get("payments", [])
             if 0 <= payment_index < len(payments):
-                currency = payments[payment_index].get("currency") or currency
-                rate = payments[payment_index].get("conversion_rate") or rate
+                payment = payments[payment_index]
+                # Deleting a payment compacts and reindexes the doc's payments
+                # list, so an older JE's stored index can point at a different
+                # payment. The JE's date is the payment date it was posted for;
+                # on mismatch fall back to the doc-level rate rather than show
+                # another payment's.
+                ev_ts = je_ts.get(je_id, "")
+                p_date = str(payment.get("payment_date") or "")[:10]
+                if not ev_ts or not p_date or ev_ts == p_date:
+                    currency = payment.get("currency") or currency
+                    rate = payment.get("conversion_rate") or rate
         fx = None
         if currency and currency != base and rate:
             fx = {"currency": currency, "rate": float(rate)}
@@ -668,6 +680,8 @@ async def create_manual_journal_entry(
                 status_code=422,
                 detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
             )
+        if not (math.isfinite(line.debit) and math.isfinite(line.credit)):
+            raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
         d = round_money(line.debit, base)
@@ -1170,7 +1184,9 @@ async def balance_sheet(
 # Doc types that appear on a statement of account (the same financial docs the
 # AR/AP aging counts, plus credit notes which reduce what the contact owes).
 _SOA_DOC_TYPES = frozenset({"invoice", "credit_note", "purchase_order", "bill"})
-# Legacy doc_type spellings normalised to their canonical names.
+# Legacy doc_type spellings normalised to their canonical names. The AR/AP aging
+# accepts these same spellings (and the "type" state fallback), and a statement
+# must count exactly the doc set aging counts, so the tolerance matches.
 _SOA_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
 
 
@@ -1241,8 +1257,13 @@ async def statement_of_account(
         doc_rate = to_decimal(state.get("conversion_rate") or 1)
         doc_date = str(state.get("issue_date") or state.get("date") or "")[:10]
         total = round_money(to_decimal(state.get("total") or 0) * doc_rate, base)
-        is_credit_doc = doc_type == "credit_note"
-        if is_credit_doc:
+        # Statement sign convention: positive balance = the contact owes us.
+        # Receivable-side docs (invoices) charge as debits; payable-side docs
+        # (bills, purchase orders) and credit notes reduce the net as credits,
+        # so a dual-role contact's receivables and payables net correctly
+        # instead of stacking in one direction. Payments mirror their doc side.
+        reduces_balance = doc_type in ("credit_note", "purchase_order", "bill")
+        if reduces_balance:
             events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, Decimal(0), total))
         else:
             events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, total, Decimal(0)))
@@ -1252,7 +1273,7 @@ async def statement_of_account(
             p_rate = to_decimal(p.get("conversion_rate") or state.get("conversion_rate") or 1)
             amount = round_money(to_decimal(p.get("amount") or 0) * p_rate, base)
             p_date = str(p.get("payment_date") or doc_date or "")[:10]
-            if is_credit_doc:
+            if reduces_balance:
                 events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", amount, Decimal(0)))
             else:
                 events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", Decimal(0), amount))

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math as _math
 import re
 import json as _json
 import uuid
@@ -19,7 +20,8 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
-from ui.config import get_token as _token
+from ui.config import get_token as _token, get_role as _get_role
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset
@@ -88,6 +90,22 @@ def _plain_error_response(e: APIError):
     return PlainTextResponse(f"Error: {e.detail}", status_code=500)
 
 
+def _date_params(d_from: str, d_to: str) -> dict:
+    return {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+
+
+def _href(path: str, params: dict) -> str:
+    """path?k=v joining only non-empty params; bare path when none."""
+    qs = "&".join(f"{k}={v}" for k, v in params.items() if v)
+    return f"{path}?{qs}" if qs else path
+
+
+def _soa_merge_redirect(request: Request, contact_id: str, winner: str, base_path: str):
+    """Re-point a print/export URL at the merge winner's statement."""
+    qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={winner}")
+    return RedirectResponse(f"{base_path}?{qs}", status_code=302)
+
+
 def _period_subtitle(d_from: str, d_to: str) -> str:
     parts = []
     if d_from:
@@ -97,7 +115,7 @@ def _period_subtitle(d_from: str, d_to: str) -> str:
     return "  |  ".join(parts) if parts else "All periods"
 
 
-# Tabs a ledger drilldown can arrive from (via the "from" query param) -> tab label key.
+# Tabs a ledger drilldown can arrive from (via the "src" query param) -> tab label key.
 _LEDGER_BACK_TABS = {
     "pnl": "acct.tab_pnl",
     "balance-sheet": "acct.tab_balance_sheet",
@@ -109,13 +127,13 @@ _LEDGER_BACK_TABS = {
 def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
     """Resolve (origin_tab, date_from, date_to, preset) for the ledger drilldown.
 
-    Drilldown links from the report tabs name their originating tab in "from" (a tab
-    slug, never a date) and carry their dates as date_from/date_to, so they cannot
-    collide with the date bar's own from/to date fields. The date bar on the drilldown
-    page itself navigates with preset/from/to like every report page.
+    Drilldown links from the report tabs name their originating tab in "src" and
+    carry their dates as date_from/date_to. "src" stays outside the date bar's
+    reserved from/to/preset fields, so the custom-range form's hidden-param
+    carry-through preserves the origin across date changes on the drilldown page.
     """
     qp = request.query_params
-    origin = qp.get("from", "")
+    origin = qp.get("src", "")
     if origin in _LEDGER_BACK_TABS:
         preset = qp.get("preset", "")
         if preset and preset != "custom":
@@ -295,7 +313,7 @@ def setup_routes(app):
             elif tab == "journal":
                 fy = await _get_fiscal(token)
                 d_from, d_to, preset = _parse_dates(request, fy)
-                params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+                params = _date_params(d_from, d_to)
                 data = await api.get_journal(token, params)
                 content = Div(
                     Div(
@@ -303,7 +321,10 @@ def setup_routes(app):
                                          settings_link="/settings/general?tab=company",
                                          extra_params="&tab=journal"),
                         Div(
-                            A(t("btn.new_entry"), href="/accounting/journal/new", cls="btn btn--primary"),
+                            A(t("btn.new_entry"),
+                              href=_href("/accounting/journal/new",
+                                         _date_params(d_from or "", d_to or "")),
+                              cls="btn btn--primary"),
                             _action_bar("journal", {"date_from": d_from or "", "date_to": d_to or ""}),
                             cls="flex-row gap-sm ml-auto",
                         ),
@@ -315,7 +336,7 @@ def setup_routes(app):
             elif tab == "general-ledger":
                 fy = await _get_fiscal(token)
                 d_from, d_to, preset = _parse_dates(request, fy)
-                params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+                params = _date_params(d_from, d_to)
                 data = await api.get_general_ledger(token, params)
                 content = Div(
                     Div(
@@ -397,7 +418,17 @@ def setup_routes(app):
     # ── Manual journal entries ─────────────────────────────────────────────
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
-                                   lines: list[dict], idem_token: str, error: str | None):
+                                   lines: list[dict], idem_token: str, error: str | None,
+                                   date_from: str = "", date_to: str = ""):
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return base_shell(
+                page_header(t("acct.new_journal_entry", get_lang(request))),
+                _accounting_tabs("journal"),
+                Div(t("acct.not_authorized"), cls="error-banner"),
+                title="Accounting - Celerp",
+                nav_active="accounting",
+                request=request,
+            )
         try:
             accounts = (await api.get_chart(token)).get("items", [])
         except APIError as e:
@@ -410,7 +441,8 @@ def setup_routes(app):
         return base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _accounting_tabs("journal"),
-            _journal_entry_form(accounts, ts, memo, lines, idem_token, error),
+            _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
+                                date_from=date_from, date_to=date_to),
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
@@ -425,6 +457,8 @@ def setup_routes(app):
             request, token,
             ts=_date.today().isoformat(), memo="", lines=[],
             idem_token=str(uuid.uuid4()), error=None,
+            date_from=request.query_params.get("date_from", ""),
+            date_to=request.query_params.get("date_to", ""),
         )
 
     @app.post("/accounting/journal/new")
@@ -436,6 +470,8 @@ def setup_routes(app):
         ts = str(form.get("ts", "")).strip()
         memo = str(form.get("memo", "")).strip()
         idem_token = str(form.get("idempotency_token", "")).strip() or str(uuid.uuid4())
+        d_from = str(form.get("date_from", "")).strip()
+        d_to = str(form.get("date_to", "")).strip()
 
         # Collect the line grid: inputs are named account_N / debit_N / credit_N per row.
         idxs = sorted(
@@ -458,6 +494,8 @@ def setup_routes(app):
                 {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0)}
                 for l in lines
             ]
+            if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):
+                error = t("acct.err_amounts_numeric")
         except ValueError:
             error = t("acct.err_amounts_numeric")
 
@@ -469,7 +507,16 @@ def setup_routes(app):
                     "entries": entries,
                     "idempotency_token": idem_token,
                 })
-                return RedirectResponse("/accounting?tab=journal", status_code=303)
+                # Land on the journal with the entry guaranteed visible: keep the
+                # filter the user came from, widened to include the posted date.
+                if ts:
+                    if d_from and ts < d_from:
+                        d_from = ts
+                    if d_to and ts > d_to:
+                        d_to = ts
+                return RedirectResponse(
+                    _href("/accounting", {"tab": "journal", "from": d_from, "to": d_to}),
+                    status_code=303)
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
@@ -477,7 +524,8 @@ def setup_routes(app):
 
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
-                                          idem_token=idem_token, error=error)
+                                          idem_token=idem_token, error=error,
+                                          date_from=d_from, date_to=d_to)
 
     @app.post("/accounting/journal/{je_id}/void")
     async def journal_void(request: Request, je_id: str):
@@ -493,12 +541,9 @@ def setup_routes(app):
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
-        qs = "?tab=journal"
-        if form.get("date_from"):
-            qs += f"&from={form['date_from']}"
-        if form.get("date_to"):
-            qs += f"&to={form['date_to']}"
-        return _R("", status_code=204, headers={"HX-Redirect": f"/accounting{qs}"})
+        target = _href("/accounting", {"tab": "journal", "from": str(form.get("date_from") or ""),
+                                       "to": str(form.get("date_to") or "")})
+        return _R("", status_code=204, headers={"HX-Redirect": target})
 
     # ── Print (PDF) routes ─────────────────────────────────────────────────
 
@@ -512,7 +557,7 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_pnl(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -547,7 +592,7 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_trial_balance(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -568,7 +613,7 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_journal(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -589,7 +634,7 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_general_ledger(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -610,13 +655,12 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_soa(token, contact_id, params)
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={data['merged_into']}")
-            return RedirectResponse(f"/accounting/print/soa?{qs}", status_code=302)
+            return _soa_merge_redirect(request, contact_id, data["merged_into"], "/accounting/print/soa")
 
         contact = data.get("contact") or {}
         # An outward document: company block (report header), contact block, period, closing.
@@ -643,7 +687,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_pnl(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -716,7 +760,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_trial_balance(token, params)
         except APIError as e:
             return _plain_error_response(e)
@@ -745,7 +789,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             company, data = await asyncio.gather(api.get_company(token), api.get_journal(token, params))
         except APIError as e:
             return _plain_error_response(e)
@@ -808,7 +852,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_general_ledger(token, params)
 
             buf = io.StringIO()
@@ -853,13 +897,12 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+            params = _date_params(d_from, d_to)
             data = await api.get_soa(token, contact_id, params)
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={data['merged_into']}")
-            return RedirectResponse(f"/accounting/export/soa/csv?{qs}", status_code=302)
+            return _soa_merge_redirect(request, contact_id, data["merged_into"], "/accounting/export/soa/csv")
 
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -923,7 +966,7 @@ def setup_routes(app):
                 _date_filter_bar(
                     f"/accounting/ledger/{account_code}", d_from, d_to, preset,
                     settings_link="/settings/general?tab=company",
-                    extra_params=f"&from={origin}",
+                    extra_params=f"&src={origin}",
                 ),
                 A(f"← {t(_LEDGER_BACK_TABS[origin])}", href=f"/accounting{back_qs}", cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
@@ -965,7 +1008,7 @@ def _drill_ledger_href(code: str, origin: str, date_from: str = "", date_to: str
     parts = [f"date_from={date_from}"] if date_from else []
     if date_to:
         parts.append(f"date_to={date_to}")
-    parts.append(f"from={origin}")
+    parts.append(f"src={origin}")
     return f"/accounting/ledger/{code}?" + "&".join(parts)
 
 
@@ -1311,7 +1354,8 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
 
 
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
-                        idem_token: str, error: str | None = None) -> FT:
+                        idem_token: str, error: str | None = None,
+                        date_from: str = "", date_to: str = "") -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -1393,9 +1437,13 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 cls="flex-row flex-between",
             ),
             Input(type="hidden", name="idempotency_token", value=idem_token),
+            Input(type="hidden", name="date_from", value=date_from),
+            Input(type="hidden", name="date_to", value=date_to),
             Div(
                 Button(t("btn.post"), type="submit", cls="btn btn--primary"),
-                A(t("btn.cancel"), href="/accounting?tab=journal", cls="btn btn--secondary"),
+                A(t("btn.cancel"),
+                  href=_href("/accounting", {"tab": "journal", "from": date_from, "to": date_to}),
+                  cls="btn btn--secondary"),
                 cls="flex-row gap-sm",
             ),
             method="post", action="/accounting/journal/new",
@@ -1440,8 +1488,10 @@ def _general_ledger_view(data: dict, currency: str | None = None,
         _num_cell(totals.get("credit", 0), strong=True),
         _num_cell(totals.get("closing", 0), strong=True),
     ))
-    balanced = data.get("balanced", True)
+    # Summary chips above the table, in the same position as the other tabs.
     return Div(
+        _totals_chips(float(totals.get("debit", 0) or 0), float(totals.get("credit", 0) or 0),
+                      bool(data.get("balanced", True)), currency),
         Table(
             Thead(Tr(
                 Th(t("th.code")),
@@ -1453,11 +1503,6 @@ def _general_ledger_view(data: dict, currency: str | None = None,
             )),
             Tbody(*body),
             cls="data-table",
-        ),
-        Div(
-            Span(t("acct.balanced") if balanced else t("acct.out_of_balance"),
-                 cls="val-chip" if balanced else "val-chip val-chip--alert"),
-            cls="valuation-bar",
         ),
     )
 

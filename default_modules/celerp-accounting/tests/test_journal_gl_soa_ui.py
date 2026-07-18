@@ -156,7 +156,7 @@ async def test_general_ledger_tab_renders(ui_client):
     assert r.status_code == 200
     assert "1111" in r.text and "4100" in r.text
     # Drilldown carries origin tab
-    assert "from=general-ledger" in r.text
+    assert "src=general-ledger" in r.text
 
 
 @pytest.mark.asyncio
@@ -193,11 +193,28 @@ async def test_je_form_renders(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_je_form_not_authorized_below_manager(ui_client):
+    """A viewer typing the form URL gets the not-authorized banner, not a
+    usable entry form."""
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        r = await ui_client.get("/accounting/journal/new", cookies=_cookies(role="viewer"))
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert "You need a manager role" in r.text
+    assert "idempotency_token" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_ledger_back_link_follows_origin(ui_client):
-    r = await _get(ui_client, "/accounting/ledger/1111?from=general-ledger")
+    r = await _get(ui_client, "/accounting/ledger/1111?src=general-ledger")
     assert r.status_code == 200
     assert "tab=general-ledger" in r.text
-    r = await _get(ui_client, "/accounting/ledger/1111?from=pnl")
+    r = await _get(ui_client, "/accounting/ledger/1111?src=pnl")
     assert "tab=pnl" in r.text
     r = await _get(ui_client, "/accounting/ledger/1111")
     assert "tab=trial-balance" in r.text
@@ -228,13 +245,13 @@ async def test_journal_csv_flat_ascending_with_fx(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_journal_csv_neutralizes_formula_memo(ui_client):
+@pytest.mark.parametrize("lead", ["=", "+", "-", "@", "\t", "\r"])
+async def test_journal_csv_neutralizes_formula_memo(ui_client, lead):
     poisoned = json.loads(json.dumps(_JOURNAL))
-    poisoned["entries"][0]["memo"] = "=SUM(A1:A2)"
+    poisoned["entries"][0]["memo"] = f"{lead}SUM(A1:A2)"
     r = await _get(ui_client, "/accounting/export/journal/csv", get_journal=poisoned)
     assert r.status_code == 200
-    assert "'=SUM(A1:A2)" in r.text
-    assert ",=SUM" not in r.text.replace("'=SUM", "")
+    assert f"'{lead}SUM(A1:A2)" in r.text
 
 
 @pytest.mark.asyncio
@@ -306,7 +323,8 @@ async def test_forbidden_renders_clean(ui_client):
     finally:
         for p in ps:
             p.stop()
-    assert page.status_code == 200  # page shell renders with a clean banner
+    assert page.status_code == 200
+    assert "You need a manager role" in page.text  # the clean banner, not a raw error
     assert export.status_code == 403
     assert export.status_code != 500
 
@@ -322,7 +340,9 @@ _NEW_KEYS = [
     "acct.source_manual", "acct.source_transfer", "acct.source_reconciliation",
     "acct.source_system", "acct.no_journal_entries", "acct.new_journal_entry",
     "acct.not_authorized", "acct.soa_pick_contact", "acct.soa_title",
-    "acct.closing_balance",
+    "acct.closing_balance", "acct.err_amounts_numeric", "acct.memo_hint",
+    "acct.void_reason_optional", "acct.soa_kind_payment",
+    "acct.no_entries_for_account",
 ]
 
 
