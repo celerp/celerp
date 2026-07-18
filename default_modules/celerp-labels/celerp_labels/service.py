@@ -73,6 +73,21 @@ _SIZES: dict[str, tuple[float, float]] = {
 }
 
 
+def display_label(label: str) -> str:
+    """The printed form of a field label: the leaf of a "Category > Field" path.
+
+    The field picker lists category attributes as "Stones › Origin" so they can be
+    told apart while choosing, and that whole path was then saved as the printed
+    label. On a 25mm sticker the repeated category prefix costs roughly a third of
+    the line and tells the reader nothing - they are holding the stone. Print the
+    leaf; the picker keeps the full path. Applied at render time so labels saved
+    before this still shorten, without anyone re-picking their fields.
+    """
+    if not label:
+        return ""
+    return str(label).split("›")[-1].strip()
+
+
 def _parse_size(fmt: str) -> tuple[float, float]:
     """Return (width_mm, height_mm) for a format string. Public alias kept for compatibility."""
     if fmt in _SIZES:
@@ -378,7 +393,7 @@ def render_label_pdf(
                 else:
                     bold = field.get("bold", False)
                     c.setFont("Helvetica-Bold" if bold else "Helvetica", font_size)
-                    field_label = str(field.get("label", "") or "").strip()
+                    field_label = display_label(field.get("label", ""))
                     display_text = f"{field_label}: {val}" if field_label else val
                     c.drawString(x_pt, y_pt + line_h * 0.2, display_text[:50])
 

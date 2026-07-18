@@ -120,6 +120,7 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
+from .service import display_label as _svc_display_label
 from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
@@ -374,7 +375,8 @@ def _field_row_compact(
     Div, Button, NotStr = ft["Div"], ft["Button"], ft["NotStr"]
 
     key = field.get("key", "")
-    label_val = str(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
+    # Show the leaf of a "Category > Field" path so the editor matches what prints.
+    label_val = _svc_display_label(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
     ftype = field.get("type", "text")
     x_val = field.get("x", "")
     y_val = field.get("y", "")
@@ -611,7 +613,8 @@ def _editor_panel(
         var ft = fieldType(k);
         if (typeIn) typeIn.value = ft;
         var labelIn = row.querySelector('.fld-label');
-        if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
+        // Default to the leaf of a 'Category \u203a Field' option, not the whole path.
+        if (labelIn && !labelIn._userEdited) labelIn.value = String(v || k).split('\u203a').pop().trim();
         var fsIn = row.querySelector('.fld-fs');
         if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
         var bhIn = row.querySelector('.fld-bh');
@@ -1060,7 +1063,8 @@ def _printable_label_sheet(
         )
 
     from starlette.responses import HTMLResponse
-    from celerp_labels.service import QR_SIZE_MM, _make_barcode_svg, _make_qr_svg, resolve_field_value
+    from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
+                                       display_label, resolve_field_value)
 
     def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float) -> str:
         res = _make_barcode_svg(val, module_height=module_height, stretch=True)
@@ -1112,7 +1116,9 @@ def _printable_label_sheet(
         for f in fields:
             key = f.get("key", "")
             ftype = f.get("type", "text")
-            field_label = str(f.get("label", "") or key).strip()
+            # Print the leaf of a "Category > Field" picker path (see display_label):
+            # the repeated category prefix costs about a third of the line on a sticker.
+            field_label = display_label(f.get("label", "") or key)
             val = resolve_field_value(item, key, unit_map)
             if not val:
                 continue

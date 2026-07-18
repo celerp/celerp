@@ -1029,3 +1029,17 @@ def test_pdf_leading_is_in_points_not_millimetres():
     assert 1.0 < svc._LINE_SPACING < 2.0, "leading multiplier should be ~1.25"
     # A 6pt font must occupy roughly 7-8pt of line, not ~24pt.
     assert 6 * svc._LINE_SPACING < 10
+
+
+def test_printed_label_drops_the_category_picker_prefix():
+    """The picker lists category attributes as "Stones › Origin" so they can be told
+    apart while choosing; printing that whole path wastes about a third of the line
+    on a sticker. Applied at render time so labels saved earlier shorten too."""
+    from celerp_labels.service import display_label
+
+    assert display_label("Stones › Origin") == "Origin"
+    assert display_label("Stones › Treatment") == "Treatment"
+    assert display_label("A › B › C") == "C"
+    # plain labels and empties are untouched
+    assert display_label("SKU") == "SKU"
+    assert display_label("") == ""
