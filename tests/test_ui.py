@@ -8071,7 +8071,24 @@ class TestModulesUI:
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
         assert b"boom" in r.content
-        assert b"badge--red" in r.content
+        assert b"badge--danger" in r.content
+
+    @pytest.mark.asyncio
+    async def test_status_badges_use_real_css_tokens(self, ui_client):
+        """Status pills must use the app's real badge tokens (which carry color),
+        not made-up classes that render as unstyled text."""
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES,
+                 "ui.api_client.get_modules": AsyncMock(return_value=_MODULES_LIST)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"badge--active" in r.content      # the running module
+        assert b"badge--inactive" in r.content    # the disabled module
+        for fake in (b"badge--green", b"badge--yellow", b"badge--red", b"badge--grey"):
+            assert fake not in r.content, f"{fake!r} is not a real app badge token"
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
@@ -8090,7 +8107,7 @@ class TestModulesUI:
         assert b"module-license-upsell" in r.content        # the upsell block
         assert b"Get Celerp Connect" in r.content           # the CTA
         assert b"/subscribe" in r.content                   # links to the Connect flow
-        assert b"badge--red" not in r.content               # not framed as a hard failure
+        assert b"badge--danger" not in r.content            # not framed as a hard failure
         assert b"no valid license" not in r.content         # raw error text is replaced
 
     @pytest.mark.asyncio

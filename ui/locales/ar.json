@@ -1399,5 +1399,8 @@
   "modules.license_move_body": "تعمل هذه الوحدة على الكمبيوتر الذي اشتريتها عليه. أضِف Celerp Connect لاستخدامها على أي كمبيوتر تسجّل الدخول منه، دون شرائها مرة أخرى.",
   "btn.get_connect": "احصل على Celerp Connect",
   "marketplace.sold_by": "يُباع بواسطة {author}.",
-  "marketplace.third_party_data_note": "يعالج البائع دفعتك ويتلقى تفاصيل طلبك."
+  "marketplace.third_party_data_note": "يعالج البائع دفعتك ويتلقى تفاصيل طلبك.",
+  "modules.badge_running": "قيد التشغيل",
+  "modules.badge_disabled": "معطّل",
+  "modules.required_by": "مطلوب لـ: {names}"
 }

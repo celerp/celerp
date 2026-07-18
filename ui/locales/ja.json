@@ -1399,5 +1399,8 @@
   "modules.license_move_body": "このモジュールは購入したコンピューターで動作します。Celerp Connect を追加すると、サインインしたどのコンピューターでも、買い直すことなく使えます。",
   "btn.get_connect": "Celerp Connect を入手",
   "marketplace.sold_by": "販売者: {author}。",
-  "marketplace.third_party_data_note": "販売者がお支払いを処理し、ご注文情報を受け取ります。"
+  "marketplace.third_party_data_note": "販売者がお支払いを処理し、ご注文情報を受け取ります。",
+  "modules.badge_running": "実行中",
+  "modules.badge_disabled": "無効",
+  "modules.required_by": "必要とするモジュール: {names}"
 }

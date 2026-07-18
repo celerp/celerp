@@ -1399,5 +1399,8 @@
   "modules.license_move_body": "Questo modulo funziona sul computer su cui l'hai acquistato. Aggiungi Celerp Connect per usarlo su qualsiasi computer da cui accedi, senza ricomprarlo.",
   "btn.get_connect": "Ottieni Celerp Connect",
   "marketplace.sold_by": "Venduto da {author}.",
-  "marketplace.third_party_data_note": "Il venditore elabora il pagamento e riceve i dettagli del tuo ordine."
+  "marketplace.third_party_data_note": "Il venditore elabora il pagamento e riceve i dettagli del tuo ordine.",
+  "modules.badge_running": "in esecuzione",
+  "modules.badge_disabled": "disattivato",
+  "modules.required_by": "Richiesto da: {names}"
 }

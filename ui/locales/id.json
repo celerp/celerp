@@ -1399,5 +1399,8 @@
   "modules.license_move_body": "Modul ini berjalan di komputer tempat Anda membelinya. Tambahkan Celerp Connect untuk memakainya di komputer mana pun tempat Anda masuk, tanpa membeli lagi.",
   "btn.get_connect": "Dapatkan Celerp Connect",
   "marketplace.sold_by": "Dijual oleh {author}.",
-  "marketplace.third_party_data_note": "Penjual memproses pembayaran Anda dan menerima detail pesanan Anda."
+  "marketplace.third_party_data_note": "Penjual memproses pembayaran Anda dan menerima detail pesanan Anda.",
+  "modules.badge_running": "berjalan",
+  "modules.badge_disabled": "nonaktif",
+  "modules.required_by": "Dibutuhkan oleh: {names}"
 }

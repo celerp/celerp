@@ -122,27 +122,27 @@ def _local_panel(modules: list[dict], lang: str = "en",
 
         status_parts = []
         if running:
-            status_parts.append(Span("running", cls="badge badge--green"))
+            status_parts.append(Span(t("modules.badge_running", lang), cls="badge badge--active"))
         elif enabled and load_error and "license" in load_error.lower():
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
-            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--yellow"))
+            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
             # A broken module fails loudly, not silently.
-            status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--red"))
+            status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--danger"))
             status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
         elif enabled:
-            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--yellow"))
+            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
         else:
-            status_parts.append(Span("disabled", cls="badge badge--grey"))
+            status_parts.append(Span(t("modules.badge_disabled", lang), cls="badge badge--inactive"))
 
         dependents = required_by.get(name, [])
         if effectively_enabled:
             if dependents:
                 toggle_btn = Button(t("btn.disable", lang),
-                    title=f"Required by: {', '.join(dependents)}",
+                    title=t("modules.required_by", lang, names=", ".join(dependents)),
                     disabled=True,
                     cls="btn btn--sm btn--danger btn--disabled",
                 )
@@ -151,6 +151,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
                     hx_post=f"/modules/{name}/disable",
                     hx_target="#local-modules-panel",
                     hx_swap="outerHTML",
+                    hx_disabled_elt="this",
                     cls="btn btn--sm btn--danger",
                 )
         else:
@@ -158,6 +159,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 hx_post=f"/modules/{name}/enable",
                 hx_target="#local-modules-panel",
                 hx_swap="outerHTML",
+                hx_disabled_elt="this",
                 cls="btn btn--sm btn--primary",
             )
 
@@ -176,6 +178,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             hx_post="/modules/restart",
             hx_target="#local-modules-panel",
             hx_swap="outerHTML",
+            hx_disabled_elt="this",
             cls="btn btn--sm btn--primary",
             style="margin-left:12px;",
         ),
@@ -196,7 +199,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             P(t("modules.import_warning", lang), cls="text-muted small"),
             Form(
                 Input(type="file", name="file", accept=".zip", required=True),
-                Button(t("btn.import_module", lang), type="submit", cls="btn btn--sm btn--primary"),
+                Button(t("btn.import_module", lang), type="submit", hx_disabled_elt="this", cls="btn btn--sm btn--primary"),
                 hx_post="/modules/import",
                 hx_encoding="multipart/form-data",
                 hx_target="#local-modules-panel",
@@ -233,18 +236,21 @@ def _local_panel(modules: list[dict], lang: str = "en",
             cls="modules-empty",
         )
     else:
-        content = Table(
-            Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.status", lang)), Th(""))),
-            Tbody(*rows),
-            cls="data-table",
+        content = Div(
+            Table(
+                Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.status", lang)), Th(""))),
+                Tbody(*rows),
+                cls="data-table",
+            ),
+            cls="table-scroll-wrap",
         )
 
     build_card = Div(
         H3(t("modules.build_title", lang), cls="section-title mt-lg"),
         P(t("modules.build_body", lang), cls="text-muted mb-sm"),
         Div(
-            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
-            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
+            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
             cls="mf-btns",
         ),
         cls="module-build-card",
@@ -358,6 +364,7 @@ def _buy_btn(slug: str, kind: str, label: str, lang: str):
     return Button(t("btn.buy", lang) + " " + label,
                   hx_post=f"/modules/buy?slug={slug}&kind={kind}",
                   hx_target="#marketplace-panel", hx_swap="outerHTML",
+                  hx_disabled_elt="this",
                   cls="btn btn--sm btn--primary")
 
 
@@ -453,7 +460,7 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
     licensed = licensed or set()
     is_paid = bool(m.get("price_monthly") or m.get("price_once"))
     if m["id"] in installed:
-        body.append(Span(t("settings.installed", lang), cls="badge badge--green"))
+        body.append(Span(t("settings.installed", lang), cls="badge badge--active"))
     elif tier == "community":
         body.append(Div(
             A(t("marketplace.get_from_author", lang), href=m.get("repo", "#"),
@@ -484,7 +491,7 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
         # restart activates. Failures re-render with the error and the button
         # stays, so a failed download is never a dead end.
         body.append(Div(
-            Span(t("marketplace.owned", lang), cls="badge badge--green"),
+            Span(t("marketplace.owned", lang), cls="badge badge--active"),
             Button(t("btn.install", lang),
                    hx_post=f"/modules/marketplace-install?slug={m['id']}",
                    hx_target="#marketplace-panel", hx_swap="outerHTML",
@@ -791,6 +798,7 @@ def setup_routes(app):
                     Button(t("btn.continue", lang), id="community-continue", disabled=True,
                         hx_post="/modules/community-ack",
                         hx_target="#community-zone", hx_swap="outerHTML",
+                        hx_disabled_elt="this",
                         cls="btn btn--sm btn--primary"),
                     Button(t("btn.cancel", lang), id="community-cancel",
                         hx_get="/modules/community-panel?hide=1",

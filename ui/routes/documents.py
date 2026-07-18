@@ -353,7 +353,7 @@ def _render_fulfillment_badge(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
-        return Span(t("doc.fulfilled"), cls="badge badge--green")
+        return Span(t("doc.fulfilled"), cls="badge badge--active")
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
@@ -466,7 +466,7 @@ def _render_receive_return_section(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
-        return Span(t("doc.fulfilled"), cls="badge badge--green")
+        return Span(t("doc.fulfilled"), cls="badge badge--active")
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
@@ -3217,7 +3217,7 @@ celerpUpdateBulkAlloc();
                 Td(fmt_money(p["amount"], p.get("currency")), cls="cell--number"),
                 Td(
                     Span(t("doc.voided"), cls="badge badge--void") if voided
-                    else Span(t("th.active"), cls="badge badge--green"),
+                    else Span(t("th.active"), cls="badge badge--active"),
                 ),
                 cls=row_cls,
             )

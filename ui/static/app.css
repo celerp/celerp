@@ -2978,3 +2978,5 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .marketplace-card__body { padding: 0 14px 12px; border-top: 1px solid var(--c-border); }
 .marketplace-card__links { display: flex; gap: 14px; margin: 8px 0; font-size: 12px; }
 .marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }
+.module-license-upsell { margin-top: 6px; padding: 10px 12px; max-width: 360px; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
+.module-load-error { margin-top: 4px; }
