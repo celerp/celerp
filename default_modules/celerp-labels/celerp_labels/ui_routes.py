@@ -176,9 +176,13 @@ _LABELS_CSS = """
   min-height: 80px;
 }
 .label-field-block {
-  position: absolute; font-size: 9px; line-height: 1.2;
+  /* A field block must occupy exactly the text it prints. A border and vertical
+     padding make the block taller than its own line, so fields get dragged apart
+     to stop them looking overlapped - and those inflated positions are what gets
+     saved and printed. outline draws the dashed guide without taking up space. */
+  position: absolute; font-size: 9px; line-height: 1;
   white-space: nowrap; overflow: hidden; color: #111;
-  border: 1px dashed rgba(0,0,0,0.25); padding: 1px 3px;
+  outline: 1px dashed rgba(0,0,0,0.25); padding: 0 1px;
   background: rgba(255,255,255,0.9); cursor: move;
   user-select: none; box-sizing: border-box;
 }
@@ -186,7 +190,7 @@ _LABELS_CSS = """
 /* Barcode preview image block */
 .label-field-block--barcode {
   display: flex; flex-direction: column; align-items: flex-start;
-  white-space: normal; padding: 1px 2px;
+  white-space: normal; padding: 0;
 }
 .label-field-block--barcode img { display: block; width: 100%; height: auto; }
 .label-field-block--barcode .bc-text { font-size: 60%; color: #333; margin-top: 1px; }
@@ -195,7 +199,7 @@ _LABELS_CSS = """
 .fld-bold-wrap input { margin: 0; cursor: pointer; }
 /* QR preview image block */
 .label-field-block--qr {
-  padding: 1px; overflow: visible;
+  padding: 0; overflow: visible;
 }
 .label-field-block--qr img { display: block; width: 100%; height: 100%; }
 

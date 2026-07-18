@@ -169,7 +169,17 @@ def render_label_text(
     return "\n".join(lines)
 
 
-_BC_MODULE_MM = 0.2  # Code128 X-dimension (width of one bar module)
+# Code128 X-dimension (width of one bar module). Widened from 0.2mm: a narrow
+# module is both harder to scan once thermal ink spreads and rounds badly on the
+# dot grid - 0.2mm is 2.36 dots at 300dpi, so snapping it lands on 2 dots
+# (0.169mm), thinner than intended and below a comfortable scan width. 0.33mm
+# snaps to a clean 4 dots at 300dpi and 3 dots at 203dpi, both well above the
+# minimum, so the same value is correct on either printer.
+_BC_MODULE_MM = 0.33
+# Bar-width reduction: shave the black bar so the adjacent white gaps stay open
+# against thermal ink bleed. Quantised to whole dots at render time (a dot printer
+# cannot place a fraction of a dot), so this is a nominal figure.
+_BC_BAR_SHRINK_MM = 0.05
 _BC_QUIET_MM = 1.0   # quiet zone on either side of the bars
 
 # Thermal label printers are dot-addressed: 300dpi = 0.0847mm per dot, 203dpi =
