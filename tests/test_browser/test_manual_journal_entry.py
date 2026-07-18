@@ -29,21 +29,25 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart):
     page.fill('input[name="ts"]', "2026-06-15")
     page.fill('input[name="memo"]', "Browser test adjustment")
 
-    # Two rows render by default; fill account + amount on each.
+    # Two rows render by default; fill account + amount on each. Options are
+    # targeted by data-value: clicking .first races the filter re-render.
     inputs = page.locator("#je-lines .combobox-input")
-    inputs.nth(0).click()
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
-    inputs.nth(0).fill("1111")
-    page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first.click()
+
+    def _pick_account(idx: int, code: str) -> None:
+        inputs.nth(idx).click()
+        page.wait_for_selector(".combobox-list.open", timeout=3000)
+        inputs.nth(idx).fill(code)
+        opt = page.locator(f'.combobox-list.open .combobox-option[data-value="{code}"]').first
+        opt.wait_for(state="visible", timeout=3000)
+        opt.click()
+
+    _pick_account(0, "1111")
     page.fill('#je-lines [name="debit_0"]', "42.50")
 
     chip = page.locator("#je-balance-chip")
     assert "val-chip--alert" in (chip.get_attribute("class") or "")
 
-    inputs.nth(1).click()
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
-    inputs.nth(1).fill("4100")
-    page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first.click()
+    _pick_account(1, "4100")
     page.fill('#je-lines [name="credit_1"]', "42.50")
     page.wait_for_function(
         "document.getElementById('je-balance-chip').className === 'val-chip'", timeout=3000)

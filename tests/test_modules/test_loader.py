@@ -450,6 +450,12 @@ class TestDependencySystem:
         _loader._loaded.clear()
         _slots.clear()
         import sys as _sys
+        # Snapshot the conftest-imported module objects: the loader re-imports
+        # these packages under fresh module objects, and later tests patch by
+        # module path, so the originals (whose functions the app's mounted
+        # routes reference) must be back in sys.modules afterwards.
+        _saved = {k: v for k, v in _sys.modules.items()
+                  if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k}
         try:
             result = _loader.load_all(
                 real_dir,
@@ -467,6 +473,7 @@ class TestDependencySystem:
             for k in list(_sys.modules.keys()):
                 if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k:
                     _sys.modules.pop(k, None)
+            _sys.modules.update(_saved)
 
     def test_celerp_docs_skipped_when_contacts_not_enabled(self, tmp_path):
         """With real modules: docs is skipped when contacts not in enabled set.
@@ -481,6 +488,10 @@ class TestDependencySystem:
         _loader._loaded.clear()
         _slots.clear()
         import sys as _sys
+        # Same snapshot/restore as above: conftest-imported module objects must
+        # survive this test for later module-path patches to hit the mounted code.
+        _saved = {k: v for k, v in _sys.modules.items()
+                  if "celerp_docs" in k or "celerp_inventory" in k}
         try:
             result = _loader.load_all(
                 real_dir,
@@ -496,6 +507,7 @@ class TestDependencySystem:
             for k in list(_sys.modules.keys()):
                 if "celerp_docs" in k or "celerp_inventory" in k:
                     _sys.modules.pop(k, None)
+            _sys.modules.update(_saved)
 
 
 # ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
