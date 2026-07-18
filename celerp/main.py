@@ -135,12 +135,17 @@ async def _try_auto_activate() -> None:
             )
         except Exception:
             pass
-        # Start gateway WS client
-        from celerp.gateway import client as _gw
-        if _gw.get_client() is None:
-            gw = _gw.GatewayClient(gateway_token=token, instance_id=iid, gateway_url=_s.gateway_url)
-            _gw.set_client(gw)
-            asyncio.create_task(gw.run())
+        # Start gateway WS client - only when a tunnel actually exists. A
+        # free-tier account now gets a gateway_token too (it authenticates
+        # marketplace purchases without Connect), but /auth/activate withholds
+        # public_url for it by design (no cloud access), so there is nothing
+        # for a persistent gateway connection to serve.
+        if public_url:
+            from celerp.gateway import client as _gw
+            if _gw.get_client() is None:
+                gw = _gw.GatewayClient(gateway_token=token, instance_id=iid, gateway_url=_s.gateway_url)
+                _gw.set_client(gw)
+                asyncio.create_task(gw.run())
         _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
         # Start backup scheduler
         if _s.backup_enabled and _s.backup_encryption_key:

@@ -1663,15 +1663,36 @@ async def import_module_from_path(body: _ImportPathBody) -> dict:
     return {"ok": True, **info}
 
 
-def _relay_creds() -> tuple[str, str]:
-    """(relay_url, instance_jwt) from the environment, or 503 if not configured."""
-    import os
-    url = os.environ.get("CELERP_RELAY_URL", "").rstrip("/")
-    jwt = os.environ.get("CELERP_INSTANCE_JWT", "")
-    if not url or not jwt:
+async def _relay_creds() -> tuple[str, str]:
+    """(relay_url, instance_jwt) for the marketplace's relay calls.
+
+    Exchanges gateway_token (the API key set by /auth/activate on desktop, or
+    GATEWAY_TOKEN in the env on a hosted deploy) for a short-lived JWT via
+    /auth/token, exactly like the established pattern in celerp.routers.health
+    (connectors_catalog_api, connector_authorize_url). A prior version read
+    CELERP_INSTANCE_JWT, which is set in no environment (and an instance JWT
+    expires hourly, so it could never be a static env var), so these (new,
+    not-yet-shipped) marketplace endpoints would 503 everywhere until wired to
+    the real gateway_token credential.
+    """
+    import httpx
+    from celerp.config import settings as _s
+    from celerp.gateway.state import relay_http_url
+
+    api_key = _s.gateway_token
+    if not api_key:
         raise HTTPException(status_code=503,
                             detail="Not signed in to Celerp - connect an account first.")
-    return url, jwt
+    relay_base = relay_http_url()
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach the Celerp relay.")
+    if tok_r.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"Could not authenticate with relay ({tok_r.status_code}).")
+    return relay_base, tok_r.json()["access_token"]
 
 
 class _BuyBody(BaseModel):
@@ -1684,7 +1705,7 @@ async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
     The UI opens it in the browser, then polls the license. Admin only."""
     import httpx
-    url, jwt = _relay_creds()
+    url, jwt = await _relay_creds()
     async with httpx.AsyncClient(timeout=10.0) as c:
         r = await c.post(f"{url}/marketplace/checkout",
                          json={"slug": body.slug, "kind": body.kind},
@@ -1700,7 +1721,7 @@ async def module_licenses() -> dict:
     """Slugs this instance holds an active license for (for buy/install CTAs)."""
     import httpx
     try:
-        url, jwt = _relay_creds()
+        url, jwt = await _relay_creds()
     except HTTPException:
         return {"licensed": []}   # not signed in: nothing licensed, no error
     try:
@@ -1744,6 +1765,7 @@ async def marketplace_install(
     cause and clicking Install again; nothing is half-committed.
     """
     import asyncio
+    import json
     import os
     import shutil
     from pathlib import Path
@@ -1753,8 +1775,30 @@ async def marketplace_install(
     from celerp.modules.importer import (
         MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
     )
+    from celerp.modules.loader import read_manifest_metadata
 
-    url, jwt = _relay_creds()
+    module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
+
+    # Idempotent retry: if a PRIOR attempt already landed this exact module on
+    # disk (e.g. install succeeded but the enable step below failed), don't
+    # re-download - just make sure it's enabled. Without this, retrying after
+    # that specific partial failure hits the importer's "already exists,
+    # remove it first" collision with no recovery path (never-stuck, in fact).
+    if module_dir and (Path(module_dir) / body.slug).is_dir():
+        existing_meta = read_manifest_metadata(Path(module_dir) / body.slug)
+        if existing_meta.get("name", body.slug) == body.slug:
+            from celerp.modules.registry import enable
+            from celerp.config import set_enabled_modules
+            company = await session.get(Company, company_id)
+            if company is None:
+                raise HTTPException(status_code=404, detail="Company not found")
+            company.settings = enable(company.settings or {}, body.slug)
+            await session.commit()
+            set_enabled_modules([body.slug])
+            return {"ok": True, "restart_required": True, "name": body.slug,
+                   "display_name": existing_meta.get("display_name", body.slug)}
+
+    url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
@@ -1765,9 +1809,20 @@ async def marketplace_install(
                 raise HTTPException(
                     status_code=404 if m.status_code == 404 else 502,
                     detail=_relay_error_detail(m, "This module is not available."))
-            meta = m.json()
+            try:
+                meta = m.json()
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
             is_official = bool(meta.get("is_official"))
-            is_paid = bool(meta.get("price_monthly") or meta.get("price_once"))
+            # Type-safe: only a real, positive number counts as paid. A string or
+            # other truthy-but-wrong type must not misclassify a free module as
+            # paid (which would wrongly gate it behind a license check forever).
+            price_monthly = meta.get("price_monthly")
+            price_once = meta.get("price_once")
+            is_paid = any(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                for v in (price_monthly, price_once)
+            )
 
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
@@ -1775,7 +1830,10 @@ async def marketplace_install(
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=_relay_error_detail(r, "The relay refused the download."))
-            token = r.json().get("token", "")
+            try:
+                token = str(r.json().get("token") or "")
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
             d = await c.get(f"{url}/marketplace/download/{token}")
             if d.status_code != 200:
@@ -1801,7 +1859,6 @@ async def marketplace_install(
     if info["name"] != body.slug:
         # A package whose manifest name differs from the catalog slug must not
         # stay installed (it would dodge the slug's license/scan identity).
-        module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
         if module_dir:
             shutil.rmtree(Path(module_dir) / info["name"], ignore_errors=True)
         raise HTTPException(
@@ -1809,13 +1866,18 @@ async def marketplace_install(
             detail="The downloaded package does not match the requested module.")
 
     # Enable so the next restart activates it - same path as the enable endpoint.
-    from celerp.modules.registry import enable, get_enabled
+    from celerp.modules.registry import enable
     from celerp.config import set_enabled_modules
 
     company = await session.get(Company, company_id)
-    if company is not None:
-        company.settings = enable(company.settings or {}, body.slug)
-        await session.commit()
+    if company is None:
+        # The module IS on disk at this point (install_from_zip already landed
+        # it). Report the real failure rather than a false "ok": a silent skip
+        # here would claim success while leaving the module un-enabled with no
+        # company row to retry against.
+        raise HTTPException(status_code=404, detail="Company not found")
+    company.settings = enable(company.settings or {}, body.slug)
+    await session.commit()
     set_enabled_modules([body.slug])
     return {"ok": True, "restart_required": True, **info}
 

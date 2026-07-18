@@ -1388,11 +1388,14 @@
   "modules.import_too_large": "このアーカイブは大きすぎます（上限 50 MB）。",
   "btn.buy": "購入",
   "marketplace.once": "買い切り",
-  "marketplace.buy_note": "モジュールの買い切りまたは月額購入です。Celerp Connect は含まれません。",
+  "marketplace.buy_note": "このコンピューター用の一度きりまたは月額の購入です。Celerp Connect は含まれません。",
   "marketplace.owned": "購入済み",
   "marketplace.waiting_payment": "ブラウザで支払いを完了してから戻ってください。このページは自動更新されます。",
   "marketplace.open_checkout": "支払い画面を開く",
   "btn.install": "インストール",
   "marketplace.install_success": "{name} はインストールされ、有効になりました。",
-  "marketplace.waiting_timeout": "支払いの確認を待っています。支払いが完了している場合、反映まで数分かかることがあります。購入は失われません。確認され次第、このページは更新されます。"
+  "marketplace.waiting_timeout": "支払いの確認を待っています。支払いが完了している場合、反映まで数分かかることがあります。購入は失われません。確認され次第、このページは更新されます。",
+  "modules.license_move_title": "このコンピューターでこのモジュールを使う",
+  "modules.license_move_body": "このモジュールは購入したコンピューターで動作します。Celerp Connect を追加すると、サインインしたどのコンピューターでも、買い直すことなく使えます。",
+  "btn.get_connect": "Celerp Connect を入手"
 }

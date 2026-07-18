@@ -126,6 +126,112 @@ class TestLoadAll:
         assert result == []
 
 
+# ── Premium license gate ──────────────────────────────────────────────────────
+# is_premium_path() (celerp.modules.license) treats a directory carrying the
+# marketplace installer's PREMIUM_MARKER as license-gated. load_all resolves a
+# relay JWT from settings.gateway_token (the real GATEWAY_TOKEN credential),
+# exchanged via exchange_api_key_for_jwt. A prior version read CELERP_RELAY_URL
+# / CELERP_INSTANCE_JWT, which are set in no environment, so as written the gate
+# could not have verified a license once premium modules shipped (no premium
+# modules exist yet, so nothing was actually ungated in production).
+
+class TestPremiumLicenseGate:
+    def _make_premium_module(self, tmp_path, name="paid-mod") -> Path:
+        from celerp.modules.importer import PREMIUM_MARKER
+        pkg = _make_module(tmp_path, name, f'{{"name": "{name}", "version": "1.0"}}')
+        (pkg / PREMIUM_MARKER).write_text("")
+        return pkg
+
+    def test_no_gateway_token_skips_check_dev_mode(self, tmp_path, monkeypatch):
+        """Never-activated instance (no gateway_token at all): the check is
+        skipped gracefully, not treated as a license failure."""
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "")
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
+
+    def test_no_premium_module_makes_zero_token_exchanges(self, tmp_path, monkeypatch):
+        """No premium module present -> the relay token exchange (a blocking
+        network call at startup) must never happen. Guards the lazy-resolve:
+        every ordinary user with only free/bundled modules pays no network cost
+        at load time."""
+        from celerp.config import settings as _s
+        calls = []
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: calls.append(1) or "relay-jwt-1")
+        _make_module(tmp_path, "free-a", '{"name": "free-a", "version": "1.0"}')
+        _make_module(tmp_path, "free-b", '{"name": "free-b", "version": "1.0"}')
+        result = load_all(tmp_path, {"free-a", "free-b"})
+        assert len(result) == 2
+        assert calls == [], "no premium module: must not exchange a token"
+
+    def test_multiple_premium_modules_exchange_token_once(self, tmp_path, monkeypatch):
+        """The JWT is the same for every module, so N premium modules must
+        trigger exactly ONE token exchange, not N."""
+        from celerp.config import settings as _s
+        calls = []
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: calls.append(1) or "relay-jwt-1")
+        monkeypatch.setattr("celerp.modules.loader.check_license", lambda **kw: True)
+        self._make_premium_module(tmp_path, name="paid-a")
+        self._make_premium_module(tmp_path, name="paid-b")
+        self._make_premium_module(tmp_path, name="paid-c")
+        result = load_all(tmp_path, {"paid-a", "paid-b", "paid-c"})
+        assert len(result) == 3
+        assert len(calls) == 1, f"expected exactly one token exchange, got {len(calls)}"
+
+    def test_valid_license_loads_module(self, tmp_path, monkeypatch):
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: "relay-jwt-1")
+        monkeypatch.setattr(
+            "celerp.modules.loader.check_license",
+            lambda **kw: True)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
+
+    def test_no_license_skips_module_with_load_error(self, tmp_path, monkeypatch):
+        from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: "relay-jwt-1")
+        monkeypatch.setattr(
+            "celerp.modules.loader.check_license",
+            lambda **kw: False)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert result == []
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
+
+    def test_token_exchange_failure_falls_back_to_dev_mode(self, tmp_path, monkeypatch):
+        """gateway_token is set but the relay rejects the exchange (e.g. the
+        key was rotated) - must not crash startup; falls back to skipping
+        the check, same as no token at all."""
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "stale-key")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: None)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
+
+
 # ── BSL protection ────────────────────────────────────────────────────────────
 
 class TestBSLProtection:
@@ -735,6 +841,74 @@ class TestElectronTrustedModuleDirs:
         assert "celerp.gateway" in violations, (
             "AST scan must catch lazy imports inside function bodies"
         )
+
+    def test_ast_scan_follows_indirection_into_sibling_file(self, tmp_path):
+        """The scan follows local imports transitively: a protected import in a
+        helper file the entry module pulls in is still detected."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "indir-test"
+        inner = pkg / "indir_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("from .impl import setup_api_routes\n")
+        (inner / "impl.py").write_text(
+            "import celerp.session_gate\n"
+            "def setup_api_routes(app):\n    pass\n"
+        )
+        violations = _ast_scan_module_file(pkg, "indir_test.routes")
+        assert "celerp.session_gate" in violations
+
+    def test_ast_scan_follows_absolute_intra_package_indirection(self, tmp_path):
+        """Same, via an absolute intra-package import (from pkg.impl import ...)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "abs-test"
+        inner = pkg / "abs_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("from abs_test import helper\n")
+        (inner / "helper.py").write_text("from celerp.ai.quota import check\n")
+        violations = _ast_scan_module_file(pkg, "abs_test.routes")
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_dynamic_importlib(self, tmp_path):
+        """A dynamic importlib.import_module(...) with a string-literal target is
+        flagged (a plain Import/ImportFrom walk would not see a Call)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "dyn-test"
+        inner = pkg / "dyn_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "import importlib\n"
+            "def go():\n"
+            "    m = importlib.import_module('celerp.ai.quota')\n"
+            "    return m\n"
+        )
+        violations = _ast_scan_module_file(pkg, "dyn_test.routes")
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_dunder_import(self, tmp_path):
+        """__import__('celerp.session_gate') is likewise flagged."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "dunder-test"
+        inner = pkg / "dunder_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("x = __import__('celerp.session_gate')\n")
+        violations = _ast_scan_module_file(pkg, "dunder_test.routes")
+        assert "celerp.session_gate" in violations
+
+    def test_ast_scan_clean_transitive_no_false_positive(self, tmp_path):
+        """A clean module that imports local + stdlib helpers must NOT be flagged
+        (guards against the transitive walk over-reporting)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "clean-test"
+        inner = pkg / "clean_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "import os\n"
+            "from .helper import util\n"
+            "from celerp.modules.api import public_api\n"   # PUBLIC api is allowed
+        )
+        (inner / "helper.py").write_text("import json\ndef util():\n    return json.dumps({})\n")
+        violations = _ast_scan_module_file(pkg, "clean_test.routes")
+        assert violations == set()
 
     def test_bundled_first_party_modules_load_with_bsl_imports(self):
         """A first-party module that imports BSL internals must load from the real default_modules

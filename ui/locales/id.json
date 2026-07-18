@@ -1388,11 +1388,14 @@
   "modules.import_too_large": "Arsip itu terlalu besar (batas 50 MB).",
   "btn.buy": "Beli",
   "marketplace.once": "sekali",
-  "marketplace.buy_note": "Pembelian modul, sekali atau bulanan. Tidak termasuk Celerp Connect.",
+  "marketplace.buy_note": "Pembelian satu kali atau bulanan, dilisensikan untuk komputer ini. Tidak termasuk Celerp Connect.",
   "marketplace.owned": "Dimiliki",
   "marketplace.waiting_payment": "Selesaikan pembayaran di browser, lalu kembali. Halaman ini diperbarui otomatis.",
   "marketplace.open_checkout": "Buka pembayaran",
   "btn.install": "Pasang",
   "marketplace.install_success": "{name} terpasang dan diaktifkan.",
-  "marketplace.waiting_timeout": "Menunggu konfirmasi pembayaran. Jika Anda sudah membayar, mungkin perlu beberapa menit - pembelian Anda tidak hilang. Halaman ini diperbarui setelah dikonfirmasi."
+  "marketplace.waiting_timeout": "Menunggu konfirmasi pembayaran. Jika Anda sudah membayar, mungkin perlu beberapa menit - pembelian Anda tidak hilang. Halaman ini diperbarui setelah dikonfirmasi.",
+  "modules.license_move_title": "Gunakan modul ini di komputer ini",
+  "modules.license_move_body": "Modul ini berjalan di komputer tempat Anda membelinya. Tambahkan Celerp Connect untuk memakainya di komputer mana pun tempat Anda masuk, tanpa membeli lagi.",
+  "btn.get_connect": "Dapatkan Celerp Connect"
 }

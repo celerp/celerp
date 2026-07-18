@@ -37,13 +37,13 @@ import os
 import sys
 from pathlib import Path
 
-from celerp.modules.license import check_license, is_premium_path
+from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.slots import register as register_slot
 
 log = logging.getLogger(__name__)
 
-# BSL internals that modules are NOT allowed to import.
-# Importing these bypasses revenue gates (session token, AI quota).
+# First-party BSL internals that third-party modules are not allowed to import
+# (licensing boundary). Module authors use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
     "celerp.ai.service",
@@ -324,23 +324,53 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
     ordered = _topo_sort(candidate_paths, enabled, errors=_load_errors)
 
     trusted_names = _trusted_default_names()
+
+    # Relay credentials for the premium-license gate, resolved lazily and ONCE
+    # per load pass: the JWT is the same for every module, and there must be no
+    # network call at all when no premium module is present. gateway_token is
+    # the real, documented credential (GATEWAY_TOKEN / GATEWAY_URL in
+    # .env.production.example on a hosted deploy; set by /auth/activate on
+    # desktop), exchanged for a short-lived JWT via /auth/token - the same
+    # pattern celerp.routers.health uses. A prior version read
+    # CELERP_RELAY_URL / CELERP_INSTANCE_JWT, which are set in no environment
+    # (and an instance JWT expires hourly, so it could never be a static env
+    # var), so as written this gate could not verify a license once premium
+    # modules shipped.
+    _premium_creds: dict = {}
+
+    def _resolve_premium_creds() -> tuple[str, str | None, str, str]:
+        if not _premium_creds:
+            from celerp.config import ensure_instance_id, settings as _settings
+            from celerp.gateway.state import relay_http_url
+            api_key = _settings.gateway_token
+            relay_url = relay_http_url() if api_key else ""
+            _premium_creds["relay_url"] = relay_url
+            _premium_creds["jwt"] = (
+                exchange_api_key_for_jwt(relay_url, api_key) if api_key else None)
+            _premium_creds["data_dir"] = os.environ.get("DATA_DIR", "/tmp/celerp-data")
+            # The instance's own canonical id (offline-available): a lifetime
+            # license is validated against this via its `sub` claim.
+            _premium_creds["instance_id"] = ensure_instance_id()
+        return (_premium_creds["relay_url"], _premium_creds["jwt"],
+                _premium_creds["data_dir"], _premium_creds["instance_id"])
+
     for pkg_path in ordered:
         pkg_name = pkg_path.name
         trusted = (
             pkg_path.parent.resolve() in resolved_bundled
             or pkg_name in trusted_names
         )
-        # License gate for premium modules (only when relay credentials configured)
+        # License gate for premium modules (only when this instance has a relay
+        # identity - i.e. it has activated / been given a GATEWAY_TOKEN).
         if is_premium_path(pkg_path):
-            relay_url = os.environ.get("CELERP_RELAY_URL", "")
-            instance_jwt = os.environ.get("CELERP_INSTANCE_JWT", "")
-            data_dir = os.environ.get("DATA_DIR", "/tmp/celerp-data")
+            relay_url, instance_jwt, data_dir, instance_id = _resolve_premium_creds()
             if relay_url and instance_jwt:
                 if not check_license(
                     slug=pkg_name,
                     relay_url=relay_url,
                     instance_jwt=instance_jwt,
                     cache_dir=Path(data_dir),
+                    instance_id=instance_id,
                 ):
                     log.warning(
                         "Premium module %r skipped: no valid license", pkg_name
@@ -349,8 +379,9 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                     continue
             else:
                 log.debug(
-                    "Premium module %r: CELERP_RELAY_URL/CELERP_INSTANCE_JWT not set"
-                    " — skipping license check (dev mode)", pkg_name,
+                    "Premium module %r: no relay identity (not activated, or "
+                    "token exchange failed) — skipping license check (dev mode)",
+                    pkg_name,
                 )
         try:
             manifest = _load_one(pkg_path, pkg_name, trusted=trusted)
@@ -531,42 +562,111 @@ def register_ui_routes(app, loaded: list[dict]) -> None:
             log.error("Module %r ui_routes failed (%s: %s)", manifest["name"], type(exc).__name__, exc)
 
 
-def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
-    """Return set of protected BSL internal imports found anywhere in the given module file.
+def _protected_hit(name: str) -> str | None:
+    """The protected internal `name` names/imports from, or None."""
+    for protected in _PROTECTED_BSL_INTERNALS:
+        if name == protected or name.startswith(protected + "."):
+            return protected
+    return None
 
-    Resolves dotted_module_path (e.g. 'celerp_foo.routes') to a .py file relative
-    to pkg_path, then walks all AST Import/ImportFrom nodes at any depth.
-    Returns empty set if the file cannot be found or parsed.
-    """
-    # Resolve dotted path to a file path relative to pkg_path's parent (module_dir)
-    parts = dotted_module_path.split(".")
-    # The first part is the package name (same as pkg_path.name)
-    if parts[0] == pkg_path.name:
-        rel_parts = parts[1:]
+
+def _flag_dynamic_import(node: ast.Call, violations: set[str]) -> None:
+    """Flag importlib.import_module("celerp.ai.quota") / __import__("...") /
+    importlib.__import__("...") whose first arg is a string literal naming a
+    protected internal - a static Import/ImportFrom walk cannot see these."""
+    fn = node.func
+    if isinstance(fn, ast.Name):
+        fname = fn.id            # __import__(...)
+    elif isinstance(fn, ast.Attribute):
+        fname = fn.attr          # importlib.import_module(...) / importlib.__import__(...)
     else:
-        rel_parts = parts
+        return
+    if fname not in ("import_module", "__import__") or not node.args:
+        return
+    arg = node.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        hit = _protected_hit(arg.value)
+        if hit:
+            violations.add(hit)
 
-    candidate = pkg_path.joinpath(*rel_parts).with_suffix(".py")
-    if not candidate.exists():
-        candidate = pkg_path.joinpath(*rel_parts, "__init__.py")
-    if not candidate.exists():
-        return set()
 
-    try:
-        tree = ast.parse(candidate.read_text())
-    except Exception:
+def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
+    """Protected-BSL-internal imports reachable from the given entry module.
+
+    Follows local (in-package) imports transitively and flags dynamic
+    importlib.import_module / __import__ calls whose literal argument names a
+    protected internal. Static analysis is best-effort; the authoritative
+    enforcement of paid capabilities is server-side. Returns empty set if the
+    entry file cannot be found or parsed.
+    """
+    parts = dotted_module_path.split(".")
+    top_pkg = parts[0]
+    # Directory of the importable top-level package. Flat layout: pkg_path IS
+    # that package (its folder name == the package). Nested (GitHub-style)
+    # layout: the package lives one level in, at pkg_path/<top_pkg>.
+    pkg_dir = pkg_path if pkg_path.name == top_pkg else pkg_path / top_pkg
+
+    def _resolve_local(module: str | None, level: int) -> Path | None:
+        """The .py file inside the package that this import refers to, or None
+        if it is not in-package (stdlib / third-party / escapes the package)."""
+        if level > 1:
+            return None  # from ..x import y - escapes the package
+        if level == 1:
+            rel = (module or "").split(".") if module else []
+        else:
+            p = (module or "").split(".")
+            if not p or p[0] != top_pkg:
+                return None  # absolute import of something outside the package
+            rel = p[1:]
+        base = pkg_dir.joinpath(*rel) if rel else pkg_dir
+        for cand in (base.with_suffix(".py"), base / "__init__.py"):
+            if cand.exists():
+                return cand
+        return None
+
+    entry = pkg_dir.joinpath(*parts[1:]).with_suffix(".py")
+    if not entry.exists():
+        entry = pkg_dir.joinpath(*parts[1:], "__init__.py")
+    if not entry.exists():
         return set()
 
     violations: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for protected in _PROTECTED_BSL_INTERNALS:
-                    if alias.name == protected or alias.name.startswith(protected + "."):
-                        violations.add(protected)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            for protected in _PROTECTED_BSL_INTERNALS:
-                if module == protected or module.startswith(protected + "."):
-                    violations.add(protected)
+    seen: set[Path] = set()
+    queue: list[Path] = [entry]
+    while queue:
+        f = queue.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            tree = ast.parse(f.read_text())
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    hit = _protected_hit(alias.name)
+                    if hit:
+                        violations.add(hit)
+                    local = _resolve_local(alias.name, 0)
+                    if local:
+                        queue.append(local)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                hit = _protected_hit(module)
+                if hit:
+                    violations.add(hit)
+                local = _resolve_local(node.module, node.level)
+                if local:
+                    queue.append(local)
+                # `from . import impl` / `from pkg import impl`: each name may be
+                # a local submodule to follow.
+                if node.level or (module.split(".")[:1] == [top_pkg]):
+                    for alias in node.names:
+                        target = (module + "." + alias.name) if module else alias.name
+                        sub = _resolve_local(target, node.level)
+                        if sub:
+                            queue.append(sub)
+            elif isinstance(node, ast.Call):
+                _flag_dynamic_import(node, violations)
     return violations

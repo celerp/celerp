@@ -32,18 +32,23 @@ _OFFLINE_GRACE_SECONDS: int = 7 * 24 * 3600  # 7 days
 # holds the matching private key. A lifetime license is an ES256 JWT the relay
 # signs once; the app verifies it here against this embedded key with NO
 # phone-home, so a purchased module keeps working even if the relay is gone
-# (the manifesto clause). Subscription licenses still phone home (an offline
-# exp is defeated by a local clock rollback), so only lifetime verifies offline.
+# (the manifesto clause). Subscription licenses re-check online; only lifetime
+# licenses verify offline.
 _LICENSE_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErpSt33cgy+leXLEI0o3MFgCvmlau
 LH1ud9XC8JShPMazsJa9Qj2+YHgTkln/zWnLUi79VYaVMknJ8BA8BUCL8Q==
 -----END PUBLIC KEY-----"""
 
 
-def _verify_lifetime_jwt(token: str, slug: str) -> bool:
-    """True if *token* is a valid lifetime license for *slug*, verified offline
-    against the embedded public key. No network, no expiry (lifetime)."""
-    if not token:
+def _verify_lifetime_jwt(token: str, slug: str, instance_id: str) -> bool:
+    """True if *token* is a valid lifetime license for *slug* issued to THIS
+    instance, verified offline against the embedded public key. No network, no
+    expiry (lifetime).
+
+    A license carries the instance it was issued to in its `sub` claim, so it is
+    only accepted on that instance (`sub == instance_id`). The legitimate owner
+    still verifies fully offline."""
+    if not token or not instance_id:
         return False
     try:
         from jose import jwt
@@ -51,7 +56,9 @@ def _verify_lifetime_jwt(token: str, slug: str) -> bool:
                             issuer="celerp-relay")
     except Exception:
         return False
-    return claims.get("kind") == "lifetime" and claims.get("mod") == slug
+    return (claims.get("kind") == "lifetime"
+            and claims.get("mod") == slug
+            and claims.get("sub") == instance_id)
 
 
 def is_premium_path(pkg_path: Path) -> bool:
@@ -69,6 +76,7 @@ def check_license(
     relay_url: str,
     instance_jwt: str,
     cache_dir: Path,
+    instance_id: str,
 ) -> bool:
     """Verify that *slug* is licensed for this Celerp instance.
 
@@ -83,6 +91,9 @@ def check_license(
         instance_jwt: Bearer JWT obtained from relay ``/auth/token``.
         cache_dir:    DATA_DIR for this Celerp instance — cache is stored in a
                       ``license_cache/`` subdirectory.
+        instance_id:  This instance's canonical id; a lifetime license only
+                      counts when its ``sub`` claim matches it (see
+                      ``_verify_lifetime_jwt``).
 
     Returns:
         True if licensed and active; False otherwise.
@@ -94,7 +105,7 @@ def check_license(
     # public key. If valid, the module is licensed FOREVER with no network and no
     # grace expiry - a purchased module survives the relay being gone. ──────────
     stored = _cache_data(cache_file)
-    if stored and _verify_lifetime_jwt(stored.get("license_jwt", ""), slug):
+    if stored and _verify_lifetime_jwt(stored.get("license_jwt", ""), slug, instance_id):
         return True
 
     # ── 1. Try live verification (subscriptions, and first lifetime fetch) ──────
@@ -103,7 +114,7 @@ def check_license(
         _write_cache(cache_file, licensed=licensed, status=status,
                      license_kind=kind, license_jwt=ljwt)
         # A freshly fetched lifetime JWT is authoritative and offline-valid.
-        if kind == "lifetime" and _verify_lifetime_jwt(ljwt, slug):
+        if kind == "lifetime" and _verify_lifetime_jwt(ljwt, slug, instance_id):
             return True
         if not licensed:
             log.warning(
@@ -118,6 +129,28 @@ def check_license(
 
     # ── 2. Offline grace (subscriptions only) ────────────────────────────────
     return _read_cache(cache_file, slug)
+
+
+def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
+    """Exchange the permanent gateway api_key for a short-lived instance JWT via
+    POST /auth/token - same pattern as celerp.routers.health's async relay
+    calls, but synchronous since the module loader runs at process startup
+    before the event loop is serving requests. Returns None on any failure
+    (network error, invalid key, malformed response) so the caller can fall
+    back to skipping the license check rather than crashing startup."""
+    if not relay_url or not api_key:
+        return None
+    url = relay_url.rstrip("/") + "/auth/token"
+    body = json.dumps({"api_key": api_key}).encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        token = data.get("access_token")
+        return str(token) if token else None
+    except Exception:
+        return None
 
 
 def _verify_remote(slug: str, relay_url: str, jwt: str) -> tuple[bool, str, str, str]:

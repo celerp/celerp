@@ -1388,11 +1388,14 @@
   "modules.import_too_large": "Cette archive est trop volumineuse (limite 50 Mo).",
   "btn.buy": "Acheter",
   "marketplace.once": "unique",
-  "marketplace.buy_note": "Achat du module, unique ou mensuel. N'inclut pas Celerp Connect.",
+  "marketplace.buy_note": "Un achat unique ou mensuel, sous licence pour cet ordinateur. Celerp Connect n'est pas inclus.",
   "marketplace.owned": "Acquis",
   "marketplace.waiting_payment": "Terminez le paiement dans votre navigateur, puis revenez. Cette page se met a jour automatiquement.",
   "marketplace.open_checkout": "Ouvrir le paiement",
   "btn.install": "Installer",
   "marketplace.install_success": "{name} est installé et activé.",
-  "marketplace.waiting_timeout": "En attente de la confirmation du paiement. Si vous avez payé, cela peut prendre quelques minutes - votre achat n'est pas perdu. Cette page se mettra à jour une fois le paiement confirmé."
+  "marketplace.waiting_timeout": "En attente de la confirmation du paiement. Si vous avez payé, cela peut prendre quelques minutes - votre achat n'est pas perdu. Cette page se mettra à jour une fois le paiement confirmé.",
+  "modules.license_move_title": "Utiliser ce module sur cet ordinateur",
+  "modules.license_move_body": "Ce module fonctionne sur l'ordinateur où vous l'avez acheté. Ajoutez Celerp Connect pour l'utiliser sur tout ordinateur où vous vous connectez, sans le racheter.",
+  "btn.get_connect": "Obtenir Celerp Connect"
 }

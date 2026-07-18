@@ -205,3 +205,87 @@ def test_free_install_writes_no_marker(module_dir):
     from celerp.modules.importer import PREMIUM_MARKER
     install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
     assert not (module_dir / "my-module" / PREMIUM_MARKER).exists()
+
+
+# ── concurrency: landing dir must not collide across simultaneous installs ────
+
+def test_concurrent_installs_of_same_slug_use_distinct_landing_dirs(module_dir):
+    """os.getpid() is identical across threads in the same process, so two
+    installs of the SAME slug racing through asyncio.to_thread used to share
+    one landing dir - one call's cleanup/replace could clobber the other's
+    in-flight copy. Capture the landing (copytree destination) each of two
+    overlapping install_from_zip calls actually uses and assert they differ."""
+    import shutil as _shutil
+    import threading
+
+    real_copytree = _shutil.copytree
+    landings: list[Path] = []
+    lock = threading.Lock()
+    both_entered = threading.Barrier(2, timeout=5)
+
+    def _capturing_copytree(src, dst, *a, **kw):
+        with lock:
+            landings.append(Path(dst))
+        both_entered.wait()  # force real overlap between the two threads
+        return real_copytree(src, dst, *a, **kw)
+
+    manifest_a = MANIFEST.replace("my-module", "same-slug")
+    manifest_b = manifest_a  # identical name -> identical target, same collision class
+
+    results = {}
+    errors = {}
+
+    def _install(key, manifest):
+        try:
+            results[key] = install_from_zip(_zip_bytes({"__init__.py": manifest}))
+        except Exception as exc:  # noqa: BLE001 - capture for assertion below
+            errors[key] = exc
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_shutil, "copytree", _capturing_copytree)
+        t1 = threading.Thread(target=_install, args=("a", manifest_a))
+        t2 = threading.Thread(target=_install, args=("b", manifest_b))
+        t1.start(); t2.start()
+        t1.join(timeout=10); t2.join(timeout=10)
+
+    assert len(landings) == 2
+    assert landings[0] != landings[1], "concurrent installs used the SAME landing dir"
+    # Exactly one wins (the second hits the importer's own name collision,
+    # which is correct/expected for two installs of the true same slug) - the
+    # point under test is that neither corrupts the other's temp copy.
+    assert len(results) + len(errors) == 2
+
+
+# ── premium marker cannot be smuggled in from package contents ────────────────
+
+def test_zip_with_premium_marker_entry_refused(module_dir):
+    from celerp.modules.importer import PREMIUM_MARKER
+    data = _zip_bytes({"__init__.py": MANIFEST, PREMIUM_MARKER: ""})
+    with pytest.raises(ModuleImportError, match="reserved"):
+        install_from_zip(data)
+    assert not (module_dir / "my-module").exists()
+
+
+def test_folder_with_premium_marker_file_refused(module_dir, tmp_path):
+    from celerp.modules.importer import PREMIUM_MARKER
+    src = tmp_path / "src-module"
+    src.mkdir()
+    (src / "__init__.py").write_text(MANIFEST)
+    (src / PREMIUM_MARKER).write_text("")
+    with pytest.raises(ModuleImportError, match="reserved"):
+        install_from_folder(src)
+    assert not (module_dir / "my-module").exists()
+
+
+def test_premium_false_removes_any_marker_belt_and_suspenders(module_dir, tmp_path, monkeypatch):
+    """Direct unit test of the _finish reconciliation, independent of the
+    entrypoint-level refusals above: if a marker somehow reaches _finish with
+    premium=False, it must not survive into the installed module."""
+    from celerp.modules.importer import PREMIUM_MARKER, _finish
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / PREMIUM_MARKER).write_text("")
+    manifest = {"name": "reconciled-mod", "version": "1.0.0"}
+    _finish(staged, manifest, official=False, premium=False)
+    assert not (module_dir / "reconciled-mod" / PREMIUM_MARKER).exists()

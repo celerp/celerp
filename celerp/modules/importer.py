@@ -28,6 +28,7 @@ import os
 import shutil
 import stat
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -140,8 +141,16 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
+    # Reconcile the marker in BOTH directions - belt and suspenders alongside
+    # the explicit reserved-name refusals above: this is the one place every
+    # entrypoint (zip, folder) funnels through, so it is the actual source of
+    # truth for whether an installed module is license-gated, regardless of
+    # what either entrypoint's package contents happened to carry.
+    marker = staged / PREMIUM_MARKER
     if premium:
-        (staged / PREMIUM_MARKER).write_text("")
+        marker.write_text("")
+    else:
+        marker.unlink(missing_ok=True)
     target = _target_for(name)
     # Land atomically: copy into a temp dir on the SAME filesystem as the module
     # dir (staged lives under /tmp, often a different device, where shutil.move
@@ -149,7 +158,13 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     # disk-full), then os.replace the finished tree into place. On any failure
     # the partial temp dir is removed and the error is a clean ModuleImportError,
     # not a 500.
-    landing = target.parent / f".{name}.incoming-{os.getpid()}"
+    # os.getpid() is identical across concurrent requests in the same process
+    # (installs run via asyncio.to_thread, i.e. real OS threads sharing one
+    # PID) - two simultaneous installs of the same slug would then race on
+    # this exact path, corrupting each other's copytree/replace. A per-call
+    # random suffix makes every attempt's landing dir unique regardless of
+    # concurrency.
+    landing = target.parent / f".{name}.incoming-{uuid.uuid4().hex}"
     try:
         shutil.rmtree(landing, ignore_errors=True)
         shutil.copytree(staged, landing)
@@ -231,6 +246,13 @@ def install_from_zip(data: bytes, *, official: bool = False,
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if stat.S_ISLNK(mode):
                     raise ModuleImportError("Archive contains symlinks; refused.")
+                if rel == PREMIUM_MARKER:
+                    # Only the installer itself may write this file (it's how
+                    # the license gate decides a module is paid) - a package
+                    # that ships it would either fake premium status on a free
+                    # module or collide with a genuinely paid install's marker.
+                    raise ModuleImportError(
+                        "Archive contains a reserved file name; refused.")
                 unpacked += info.file_size
                 if unpacked > MAX_UNPACKED_BYTES:
                     raise ModuleImportError("Archive expands too large; refused.")
@@ -260,6 +282,10 @@ def install_from_folder(source: str | Path) -> dict:
         raise ModuleImportError(
             "No __init__.py at the folder root; not a Celerp module package."
         )
+    if (src / PREMIUM_MARKER).exists():
+        # Same reserved-name refusal as the zip path - only the installer
+        # itself may write this file.
+        raise ModuleImportError("Folder contains a reserved file name; refused.")
     total = 0
     for p in src.rglob("*"):
         if p.is_symlink():

@@ -8074,6 +8074,26 @@ class TestModulesUI:
         assert b"badge--red" in r.content
 
     @pytest.mark.asyncio
+    async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
+        """A paid module present but unlicensed on THIS computer (moved from
+        another machine) reframes the failure as the Connect upsell - the
+        moment-of-need conversion point - not a dead red error."""
+        moved = [{**_MODULES_LIST[1], "enabled": True, "running": False,
+                  "load_error": "Premium module: no valid license."}]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=moved)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"module-license-upsell" in r.content        # the upsell block
+        assert b"Get Celerp Connect" in r.content           # the CTA
+        assert b"/subscribe" in r.content                   # links to the Connect flow
+        assert b"badge--red" not in r.content               # not framed as a hard failure
+        assert b"no valid license" not in r.content         # raw error text is replaced
+
+    @pytest.mark.asyncio
     async def test_restart_banner_has_button_when_pending(self, ui_client):
         """enabled != running derives the banner, and it carries a restart button."""
         pending = [{**_MODULES_LIST[1], "enabled": True, "running": False}]
@@ -8282,7 +8302,7 @@ class TestMarketplaceUI:
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
         assert b"/modules/buy?slug=celerp-budgeting" in r.content
         assert b"$15/mo" in r.content
-        assert b"does not include Celerp Connect" in r.content   # the no-double-charge note
+        assert b"doesn't include Celerp Connect" in r.content   # the no-double-charge note
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_owned_when_licensed(self, ui_client):

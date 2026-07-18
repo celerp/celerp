@@ -6,14 +6,18 @@ The relay is faked at the httpx boundary; the importer, the premium marker, the
 enable step, and every error path run for real. The never-stuck property under
 test: each failure returns a clear message and leaves NOTHING half-installed,
 so clicking Install again always works.
+
+Credentials: _relay_creds() exchanges settings.gateway_token (the permanent
+API key set by a successful /auth/activate) for a short-lived JWT via
+POST /auth/token - the SAME pattern celerp.routers.health already uses for
+connectors. The fake relay below serves that exchange too.
 """
 from __future__ import annotations
 
 import io
-import os
+import json
 import uuid
 import zipfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -37,19 +41,24 @@ def _zip_bytes(manifest: str = _MANIFEST) -> bytes:
 
 
 class _FakeResp:
-    def __init__(self, status_code=200, json_data=None, content=b""):
+    def __init__(self, status_code=200, json_data=None, content=b"", bad_json=False):
         self.status_code = status_code
         self._json = json_data
         self.content = content
+        self._bad_json = bad_json
 
     def json(self):
+        if self._bad_json:
+            raise json.JSONDecodeError("bad", "doc", 0)
         if self._json is None:
             raise ValueError("no json body")
         return self._json
 
 
-def _fake_relay(*, meta=None, install=None, download=None):
-    """An httpx.AsyncClient stand-in serving the three relay calls."""
+def _fake_relay(*, meta=None, install=None, download=None, token=None):
+    """An httpx.AsyncClient stand-in serving /auth/token + the three
+    marketplace calls (metadata, install, download)."""
+    token = token or _FakeResp(200, {"access_token": "relay-jwt-1"})
     meta = meta or _FakeResp(200, {"is_official": True, "price_monthly": 15.0,
                                    "price_once": None})
     install = install or _FakeResp(200, {"token": "tok-1", "slug": "celerp-budgeting"})
@@ -69,6 +78,8 @@ def _fake_relay(*, meta=None, install=None, download=None):
             return meta if "/marketplace/modules/" in url else download
 
         async def post(self, url, **kw):
+            if url.endswith("/auth/token"):
+                return token
             return install
 
     return _Fake
@@ -88,8 +99,9 @@ def relay_env(tmp_path, monkeypatch):
     d = tmp_path / "modules"
     d.mkdir()
     monkeypatch.setenv("MODULE_DIR", str(d))
-    monkeypatch.setenv("CELERP_RELAY_URL", "https://relay.test")
-    monkeypatch.setenv("CELERP_INSTANCE_JWT", "jwt-1")
+    from celerp.config import settings as _s
+    monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+    monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
     return d
 
 
@@ -125,6 +137,22 @@ async def test_lifetime_only_module_is_marked_premium(client, relay_env):
 
 
 @pytest.mark.asyncio
+async def test_string_price_does_not_misclassify_free_module_as_paid(client, relay_env):
+    """A relay response with price fields as strings (or any non-numeric truthy
+    value) must NOT be treated as paid - bare Python truthiness would make
+    bool("0") == True and wrongly license-gate a free module forever."""
+    headers = await _register(client)
+    fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": "0",
+                                            "price_once": None}))
+    with patch("httpx.AsyncClient", fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 200, r.text
+    from celerp.modules.importer import PREMIUM_MARKER
+    assert not (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
+
+
+@pytest.mark.asyncio
 async def test_relay_refusal_passes_through_and_installs_nothing(client, relay_env):
     headers = await _register(client)
     fake = _fake_relay(install=_FakeResp(402, {"detail": "This module requires purchase."}))
@@ -150,6 +178,55 @@ async def test_download_failure_is_recoverable(client, relay_env):
         r = await client.post("/companies/me/modules/marketplace-install",
                               json={"slug": "celerp-budgeting"}, headers=headers)
     assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_malformed_relay_json_gives_friendly_error(client, relay_env):
+    """A 200 with a non-JSON body must not surface as a raw 500 - the endpoint
+    should recognize it can't trust the response and say so plainly."""
+    headers = await _register(client)
+    fake = _fake_relay(meta=_FakeResp(200, bad_json=True))
+    with patch("httpx.AsyncClient", fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 502
+    assert "invalid response" in r.json()["detail"].lower()
+    assert not (relay_env / "celerp-budgeting").exists()
+
+
+@pytest.mark.asyncio
+async def test_null_token_does_not_request_download_none(client, relay_env):
+    """{"token": null} must not slip through as the literal string "None" in
+    the download URL - it must be coerced to empty, not str(None)."""
+    headers = await _register(client)
+    requested_urls = []
+
+    token_resp = _FakeResp(200, {"access_token": "relay-jwt-1"})
+    meta_resp = _FakeResp(200, {"is_official": True, "price_monthly": 15.0, "price_once": None})
+    install_resp = _FakeResp(200, {"token": None})
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, **kw):
+            requested_urls.append(url)
+            if "/marketplace/modules/" in url:
+                return meta_resp
+            return _FakeResp(404, {"detail": "Token not found or already used"})
+        async def post(self, url, **kw):
+            return token_resp if url.endswith("/auth/token") else install_resp
+
+    with patch("httpx.AsyncClient", _Fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 502
+    assert not (relay_env / "celerp-budgeting").exists()
+    download_url = next(u for u in requested_urls if "/marketplace/download/" in u)
+    assert not download_url.endswith("/None"), f"literal 'None' leaked into the URL: {download_url}"
 
 
 @pytest.mark.asyncio
@@ -182,8 +259,54 @@ async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env
 @pytest.mark.asyncio
 async def test_not_signed_in_gives_clear_503(client, relay_env, monkeypatch):
     headers = await _register(client)
-    monkeypatch.delenv("CELERP_INSTANCE_JWT")
+    from celerp.config import settings as _s
+    monkeypatch.setattr(_s, "gateway_token", "")
     r = await client.post("/companies/me/modules/marketplace-install",
                           json={"slug": "celerp-budgeting"}, headers=headers)
     assert r.status_code == 503
     assert "connect an account" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_relay_token_exchange_failure_gives_clear_502(client, relay_env):
+    """gateway_token is set but the relay rejects the exchange (e.g. it was
+    rotated) - a clear message, not a raw 500."""
+    headers = await _register(client)
+    fake = _fake_relay(token=_FakeResp(401, {"detail": "Invalid API key"}))
+    with patch("httpx.AsyncClient", fake):
+        r = await client.post("/companies/me/modules/marketplace-install",
+                              json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_retry_after_partial_failure_skips_redownload_and_enables(client, relay_env):
+    """Simulates a prior attempt that landed the module on disk but never
+    enabled it (e.g. a transient DB error right after install). The endpoint
+    must recognize the already-installed package and enable it directly,
+    rather than hitting the importer's collision guard with no way out."""
+    headers = await _register(client)
+    with patch("httpx.AsyncClient", _fake_relay()):
+        r1 = await client.post("/companies/me/modules/marketplace-install",
+                               json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r1.status_code == 200
+
+    # Retry with a completely broken relay (would 502 on a fresh install) -
+    # must still succeed because the module is already on disk correctly.
+    class _BrokenFake:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **kw):
+            raise AssertionError("must not re-download an already-installed module")
+        async def post(self, *a, **kw):
+            raise AssertionError("must not re-download an already-installed module")
+
+    with patch("httpx.AsyncClient", _BrokenFake):
+        r2 = await client.post("/companies/me/modules/marketplace-install",
+                               json={"slug": "celerp-budgeting"}, headers=headers)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["restart_required"] is True

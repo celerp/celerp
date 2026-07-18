@@ -49,6 +49,22 @@ def _modules_dir_display() -> str:
     return raw.split(",")[0].strip()
 
 
+def _license_upsell(lang: str) -> FT:
+    """Moment-of-need Connect upsell shown when a paid module is licensed to
+    another computer. Frames it additively (your module still works there;
+    Connect brings it here + across devices/team), not as a punitive error."""
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import build_subscribe_url
+    url = build_subscribe_url(ensure_instance_id(), "cloud")
+    return Div(
+        Strong(t("modules.license_move_title", lang), cls="small"),
+        P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),
+        A(t("btn.get_connect", lang), href=url, target="_blank", rel="noopener noreferrer",
+          cls="btn btn--sm btn--primary"),
+        cls="module-license-upsell",
+    )
+
+
 def _restart_pending(modules: list[dict]) -> bool:
     """Derived, not transient: a restart is pending whenever a module's desired
     state (enabled) differs from its actual state (running). This covers both
@@ -107,6 +123,12 @@ def _local_panel(modules: list[dict], lang: str = "en",
         status_parts = []
         if running:
             status_parts.append(Span("running", cls="badge badge--green"))
+        elif enabled and load_error and "license" in load_error.lower():
+            # A paid module present but not licensed on THIS computer (e.g. moved
+            # from another machine): reframe the failure as the Connect upsell
+            # rather than a dead red error - the moment-of-need conversion point.
+            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--yellow"))
+            status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
             # A broken module fails loudly, not silently.
             status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--red"))

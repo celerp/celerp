@@ -1388,11 +1388,14 @@
   "modules.import_too_large": "Tệp này quá lớn (giới hạn 50 MB).",
   "btn.buy": "Mua",
   "marketplace.once": "một lần",
-  "marketplace.buy_note": "Mua mô-đun một lần hoặc hàng tháng. Không bao gồm Celerp Connect.",
+  "marketplace.buy_note": "Một lần mua hoặc hằng tháng, được cấp phép cho máy tính này. Không bao gồm Celerp Connect.",
   "marketplace.owned": "Đã sở hữu",
   "marketplace.waiting_payment": "Hoàn tất thanh toán trong trình duyệt rồi quay lại. Trang này tự cập nhật.",
   "marketplace.open_checkout": "Mở trang thanh toán",
   "btn.install": "Cài đặt",
   "marketplace.install_success": "{name} đã được cài đặt và kích hoạt.",
-  "marketplace.waiting_timeout": "Đang chờ xác nhận thanh toán. Nếu bạn đã thanh toán, có thể mất vài phút - giao dịch mua của bạn không bị mất. Trang này sẽ cập nhật khi được xác nhận."
+  "marketplace.waiting_timeout": "Đang chờ xác nhận thanh toán. Nếu bạn đã thanh toán, có thể mất vài phút - giao dịch mua của bạn không bị mất. Trang này sẽ cập nhật khi được xác nhận.",
+  "modules.license_move_title": "Dùng mô-đun này trên máy tính này",
+  "modules.license_move_body": "Mô-đun này chạy trên máy tính bạn đã mua. Thêm Celerp Connect để dùng trên bất kỳ máy tính nào bạn đăng nhập, mà không phải mua lại.",
+  "btn.get_connect": "Nhận Celerp Connect"
 }
