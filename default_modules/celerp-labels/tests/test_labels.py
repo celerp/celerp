@@ -985,3 +985,47 @@ async def test_print_pdf_contains_derived_weight_for_carat_item(client: AsyncCli
     assert b"38.60 carat" in decoded, (
         "derived weight (quantity + sell unit) must appear on the printed label"
     )
+
+
+# ── printer dot-grid alignment + leading ─────────────────────────────────────
+
+def test_barcode_geometry_lands_on_the_printer_dot_grid():
+    """Thermal printers are dot-addressed: an edge between dots gets rounded, so a
+    nominally uniform X-dimension prints as a mix of 3- and 4-dot bars. Every bar
+    edge must sit on a whole dot at the target DPI (203 and 300 both matter)."""
+    import re
+    from celerp_labels import service as svc
+
+    for dpi in (203, 300):
+        out = svc._make_barcode_svg("356884", module_height=10, dpi=dpi)
+        if out is None:
+            return  # barcode lib absent in this environment
+        svg, _w, _h = out
+        dot = svc.dot_mm(dpi)
+        pairs = re.findall(r'<rect x="([\d.]+)" y="0" width="([\d.]+)"', svg)
+        assert pairs, "no bars rendered"
+        edges = [float(x) for x, _ in pairs] + [float(x) + float(w) for x, w in pairs]
+        # tolerance 0.02 dots: catches the half-dot (0.5) error a symmetric shave
+        # would reintroduce, while ignoring 4-decimal string rounding (~0.0008).
+        off = [e for e in edges if abs(e / dot - round(e / dot)) > 0.02]
+        assert not off, f"{dpi}dpi: {len(off)} bar edges off the dot grid: {off[:4]}"
+
+
+def test_x_dimension_snaps_to_whole_dots():
+    from celerp_labels import service as svc
+
+    for dpi in (203, 300):
+        dot = svc.dot_mm(dpi)
+        mod = svc.snap_to_dots(svc._BC_MODULE_MM, dpi, minimum_dots=svc._BC_MIN_MODULE_DOTS)
+        assert abs(mod / dot - round(mod / dot)) < 1e-9
+        assert mod / dot >= svc._BC_MIN_MODULE_DOTS
+
+
+def test_pdf_leading_is_in_points_not_millimetres():
+    """Leading is a multiple of the point-sized font; multiplying by `mm` as well
+    inflated every line by 2.83x and pushed fields down the label."""
+    from celerp_labels import service as svc
+
+    assert 1.0 < svc._LINE_SPACING < 2.0, "leading multiplier should be ~1.25"
+    # A 6pt font must occupy roughly 7-8pt of line, not ~24pt.
+    assert 6 * svc._LINE_SPACING < 10

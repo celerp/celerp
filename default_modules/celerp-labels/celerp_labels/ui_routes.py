@@ -1097,8 +1097,13 @@ def _printable_label_sheet(
                 # label-item default applies, so existing labels look exactly as before.
                 fs = f.get("fontSize")
                 fs_style = f"font-size:{float(fs)}pt;" if fs not in (None, "") else ""
+                # The field model and the PDF renderer have always honoured `bold`;
+                # the printed sheet dropped it, so a field marked bold in the designer
+                # still printed regular. Emit it here too.
+                bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(f'<div class="label-field" style="{pos}{fs_style}">{display}</div>')
+                field_lines.append(
+                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{display}</div>')
         label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
 
     html = f"""<!DOCTYPE html>
