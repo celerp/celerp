@@ -567,6 +567,15 @@ async def connectors_catalog_api() -> dict:
 
     if r.status_code == 200:
         return {"connectors": r.json().get("connectors", [])}
+    if r.status_code == 402:
+        # Free accounts reach this page but connectors need a paid plan - show
+        # the relay's plain upgrade message, not a bare status code.
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = ""
+        return {"error": detail or "Connectors need an active Celerp Connect plan.",
+                "connectors": []}
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 
