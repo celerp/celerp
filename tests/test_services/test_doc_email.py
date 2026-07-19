@@ -20,11 +20,11 @@ def test_body_carries_message_amount_and_button():
     html, text = compose_doc_email(
         doc_type_label="Invoice", doc_number="58/2890", sender_name="ACME",
         contact_name="Nikolai", total=486.0, currency="USD",
-        message="Please find attached Invoice #58/2890.",
+        message="Here is Invoice #58/2890.",
         view_url="https://x.celerp.com/accept?token=abc",
     )
     # Everything the recipient sees, in order: message, amount, view button.
-    assert "Please find attached Invoice #58/2890." in html
+    assert "Here is Invoice #58/2890." in html
     assert "Amount: <strong>USD 486.00</strong>" in html
     assert 'href="https://x.celerp.com/accept?token=abc"' in html
     assert ">View Invoice<" in html
@@ -43,7 +43,7 @@ def test_no_view_button_when_link_absent():
     assert "View Invoice" not in html
     assert "accept?token" not in html
     # A blank message falls back to a sensible default.
-    assert "Please find attached Invoice #1." in html
+    assert "Here is Invoice #1." in html
 
 
 def test_message_is_escaped():

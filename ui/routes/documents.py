@@ -5688,7 +5688,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             company_name = doc.get("company_name") or "Your Company"
             _type_label_send = doc_type.replace("_", " ").title()
             default_subject = f"{_type_label_send} #{doc_number} from {company_name}" if doc_number else ""
-            default_body = f"Please find attached {_type_label_send} #{doc_number}." if doc_number else ""
+            default_body = f"Here is {_type_label_send} #{doc_number}." if doc_number else ""
             modal_id = f"send-modal-{entity_id.replace(':', '-')}"
             action_btns_left.append(
                 Button(t("btn.send"), type="button",
