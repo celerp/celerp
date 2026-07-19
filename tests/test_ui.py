@@ -14995,3 +14995,162 @@ async def test_split_inline_omits_child_sku(ui_client):
     children = captured["payload"]["children"]
     assert len(children) == 2
     assert all("sku" not in c for c in children)   # no SKU sent -> backend keeps the parent's
+
+
+class TestCelerpAccountSurface:
+    """The one account surface (ui/routes/account.py): email-first signup,
+    Google only when the relay reports it, claim-led variant for the Settings
+    Connect page, bounded poll with cancel + timeout, and outcome panels."""
+
+    @pytest.mark.asyncio
+    async def test_signup_panel_email_first_google_hidden_when_off(self, ui_client):
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get("/account/panel", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Continue with email" in r.content
+        assert b"Continue with Google" not in r.content     # no dead button
+        assert b"Already subscribed?" in r.content          # claim entry present
+
+    @pytest.mark.asyncio
+    async def test_signup_panel_shows_google_when_on(self, ui_client):
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": True})):
+            r = await ui_client.get("/account/panel", cookies=_authed())
+        content = r.content
+        assert b"Continue with email" in content
+        assert b"Continue with Google" in content
+        # email first: its form appears before the Google button
+        assert content.index(b"Continue with email") < content.index(b"Continue with Google")
+
+    @pytest.mark.asyncio
+    async def test_claim_intent_leads_with_link_flow(self, ui_client):
+        r = await ui_client.get("/account/panel?intent=claim&panel=cloud-relay-tab",
+                                cookies=_authed())
+        content = r.content
+        assert b'id="cloud-relay-tab"' in content            # host page keeps its target
+        assert b"/settings/cloud-send-otp" in content        # shipped claim flow intact
+        assert b"cloud-activate" in content                  # auto-connect intact
+        assert b"Create a free account" in content           # signup demoted, reachable
+
+    @pytest.mark.asyncio
+    async def test_email_submit_shows_bounded_waiting_panel(self, ui_client):
+        with patch("ui.api_client.account_signup",
+                   new=AsyncMock(return_value={"sent": True})):
+            r = await ui_client.post("/account/email", data={"email": "o@shop.com"},
+                                     cookies=_authed())
+        content = r.content
+        assert b"Check your inbox" in content
+        assert b"/account/poll" in content                   # poll wired
+        assert b"btn" in content and b"Cancel" in content    # cancel affordance
+
+    @pytest.mark.asyncio
+    async def test_email_send_failure_returns_panel_with_error(self, ui_client):
+        with (
+            patch("ui.api_client.account_signup",
+                  new=AsyncMock(return_value={"error": "We couldn't send the confirmation email. Please try again."})),
+            patch("ui.api_client.account_methods",
+                  new=AsyncMock(return_value={"google": False})),
+        ):
+            r = await ui_client.post("/account/email", data={"email": "o@shop.com"},
+                                     cookies=_authed())
+        assert b"confirmation email" in r.content
+        assert b"Continue with email" in r.content           # back on the form, can retry
+
+    @pytest.mark.asyncio
+    async def test_poll_keeps_waiting_then_stops_at_timeout(self, ui_client):
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})):
+            r1 = await ui_client.get("/account/poll?n=1&mode=email", cookies=_authed())
+            r2 = await ui_client.get("/account/poll?n=100&mode=email", cookies=_authed())
+        assert b"/account/poll" in r1.content                # still polling
+        assert b'id="account-poll"' not in r2.content        # bounded: poll stopped
+        assert b"Still waiting" in r2.content                # timeout message
+
+    @pytest.mark.asyncio
+    async def test_poll_verified_chains_activation_and_shows_signed_in(self, ui_client):
+        activate = AsyncMock(return_value={"relay_status": "active"})
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                                              "tier": "cloud", "pending_selection": False,
+                                              "linked_elsewhere": False})),
+            patch("ui.api_client.activate_relay", new=activate),
+        ):
+            r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
+        assert b"Signed in as" in r.content and b"o@shop.com" in r.content
+        assert activate.await_count == 1                     # chained into activation
+
+    @pytest.mark.asyncio
+    async def test_poll_pending_selection_offers_claim(self, ui_client):
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                                              "tier": "free", "pending_selection": True,
+                                              "linked_elsewhere": False})),
+            patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/account/poll?n=3&mode=email", cookies=_authed())
+        assert b"more than one subscription" in r.content
+        assert b"intent=claim" in r.content                  # claim entry offered
+
+    @pytest.mark.asyncio
+    async def test_poll_linked_elsewhere_offers_claim(self, ui_client):
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                                              "tier": "free", "pending_selection": False,
+                                              "linked_elsewhere": True})),
+            patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/account/poll?n=3&mode=email", cookies=_authed())
+        assert b"another computer" in r.content
+        assert b"intent=claim" in r.content
+
+    @pytest.mark.asyncio
+    async def test_google_button_opens_browser_and_waits(self, ui_client):
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={
+                       "google": True,
+                       "google_start_url": "https://relay.celerp.com/auth/google/start?instance_id=i-1"})):
+            r = await ui_client.get("/account/google", cookies=_authed())
+        content = r.content
+        assert b"auth/google/start" in content               # opens the relay URL
+        assert b"/account/poll" in content                   # then waits, bounded
+        assert b"mode=google" in content
+
+    @pytest.mark.asyncio
+    async def test_google_unavailable_falls_back_with_message(self, ui_client):
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get("/account/google", cookies=_authed())
+        assert b"Use email instead" in r.content
+        assert b"Continue with email" in r.content
+
+    @pytest.mark.asyncio
+    async def test_settings_cloud_page_uses_the_one_surface(self, ui_client):
+        """The Settings Connect page's 'Already subscribed?' block IS the shared
+        component (claim-led) - one surface app-wide, same swap target."""
+        from ui.routes.settings_cloud import _connect_section
+        from fasthtml.common import to_xml
+        html = to_xml(_connect_section("iid-1", lang="en"))
+        assert 'id="cloud-relay-tab"' in html
+        assert "/settings/cloud-send-otp" in html
+        assert "Create a free account" in html
+
+    @pytest.mark.asyncio
+    async def test_poll_waits_while_claim_offer_open_in_browser(self, ui_client):
+        """A pending one-click link confirmation in the browser keeps the panel
+        waiting - it must land on the final (linked) state, not an early free."""
+        activate = AsyncMock(return_value={})
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                                              "tier": "free", "pending_selection": False,
+                                              "linked_elsewhere": False, "claim_offer": True})),
+            patch("ui.api_client.activate_relay", new=activate),
+        ):
+            r = await ui_client.get("/account/poll?n=2&mode=email", cookies=_authed())
+        assert b"/account/poll" in r.content     # still waiting
+        assert b"Signed in as" not in r.content
+        assert activate.await_count == 0         # no premature activation

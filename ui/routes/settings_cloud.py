@@ -175,63 +175,12 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
 
 
 def _connect_section(iid: str, lang: str = "en") -> FT:
-    """'Already subscribed?' block with both auto-connect button and email claim form.
-
-    The outer div carries id="cloud-relay-tab" so HTMX responses from
-    cloud-activate and cloud-claim can replace the entire block on success.
-    """
-    return Div(
-        H4(t("page.already_subscribed", lang), style="margin:0 0 4px;"),
-        P(t("settings.if_you_already_subscribed_on_the_website_we_can_li", lang),
-            cls="settings-hint",
-            style="margin-bottom:12px;",
-        ),
-        # Auto-connect button (tries to match by instance_id)
-        Div(
-            Button(t("btn.connect_automatically", lang),
-                cls="btn btn--primary",
-                hx_post="/settings/cloud-activate",
-                hx_target="#cloud-relay-tab",
-                hx_swap="outerHTML",
-                hx_indicator="#cloud-connecting",
-                id="cloud-connect-btn",
-            ),
-            Span(t("settings.connecting", lang), id="cloud-connecting",
-                 cls="settings-hint htmx-indicator", style="margin-left:12px;display:none;"),
-            style="margin-bottom:16px;",
-        ),
-        # Auto-trigger on first page load
-        Script("""
-(function(){
-  if (sessionStorage.getItem('cloud_activate_tried')) return;
-  sessionStorage.setItem('cloud_activate_tried', '1');
-  var btn = document.getElementById('cloud-connect-btn');
-  if (btn) htmx.trigger(btn, 'click');
-})();
-"""),
-        # Email claim form (always visible)
-        P(t("settings.or_enter_the_email_address_you_used_at_checkout", lang),
-            cls="settings-hint",
-        ),
-        Form(
-            Input(
-                type="email",
-                name="claim_email",
-                placeholder="Email used at checkout",
-                required=True,
-                cls="input input--sm",
-                style="width:260px;",
-            ),
-            Button(t("btn.link_subscription", lang), type="submit",
-                   cls="btn btn--sm btn--outline", style="margin-left:8px;"),
-            hx_post="/settings/cloud-send-otp",
-            hx_target="#cloud-relay-tab",
-            hx_swap="outerHTML",
-            style="display:flex;align-items:center;margin-top:8px;",
-        ),
-        id="cloud-relay-tab",
-        cls="cloud-connect-section",
-    )
+    """The Celerp-account surface in its claim-led variant (this page's context
+    is an existing/prospective subscriber). ONE component app-wide - see
+    ui/routes/account.py. Keeps id="cloud-relay-tab" so the shipped
+    cloud-activate/cloud-claim responses replace the same element."""
+    from ui.routes.account import account_panel
+    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab")
 
 
 def _parse_db_url(url: str) -> dict:
