@@ -61,6 +61,11 @@ def _signup_body(lang: str, panel_id: str, google: bool) -> list:
         ),
         P(t("account.email_hint", lang), cls="settings-hint",
           style="margin:6px 0 12px;"),
+        # The privacy/marketing notice beside the account-creation action
+        # (counsel review 2026-07-19, D.6.3): states the service use, the
+        # intended future updates, and the free opt-out channel.
+        P(t("account.signup_notice", lang), cls="settings-hint",
+          style="margin:0 0 12px;font-size:12px;"),
     ]
     if google:
         parts.append(Div(

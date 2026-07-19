@@ -8362,7 +8362,8 @@ class TestMarketplaceUI:
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
         assert b"/modules/buy?slug=acme-crm" in r.content
         assert b"Sold by" in r.content and b"Acme Ltd" in r.content
-        assert b"receives your order details" in r.content
+        # Counsel-approved wording: names the seller as independent controller.
+        assert b"controls that data independently" in r.content
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_owned_when_licensed(self, ui_client):
@@ -15190,3 +15191,29 @@ class TestCelerpAccountSurface:
             body = r.content.strip()
             assert (body == b"" or b"<div></div>" in body.lower()
                     or body == b"<div></div>"), (route, body[:120])
+
+    @pytest.mark.asyncio
+    async def test_signup_panel_carries_privacy_notice(self, ui_client):
+        """The account-creation action carries the notice with the opt-out
+        channel (stated at first contact)."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get("/account/panel", cookies=_authed())
+        assert b"unsubscribe@celerp.com" in r.content
+        assert b"you indicate that you do not object" in r.content
+
+    @pytest.mark.asyncio
+    async def test_third_party_disclosure_names_seller_in_data_note(self, ui_client):
+        """The checkout data-sharing note names the seller as the independent
+        controller (counsel D.6.4 wording)."""
+        cat = [{"id": "acme-crm", "name": "Acme CRM", "description": "d",
+                "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
+                "price_monthly": 9.0}]
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"share your email address and purchase record with Acme Ltd" in r.content
+        assert b"controls that data independently" in r.content

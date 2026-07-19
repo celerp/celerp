@@ -529,7 +529,8 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
         # Disclose that before purchase.
         if tier != "official":
             body.append(P(Strong(t("marketplace.sold_by", lang, author=m["author"])), " ",
-                          t("marketplace.third_party_data_note", lang), cls="text-muted small"))
+                          t("marketplace.third_party_data_note", lang, author=m["author"]),
+                          cls="text-muted small"))
         body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
     elif is_paid:
         # Owned (licensed): one-click vault install - download, import, enable;
