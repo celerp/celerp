@@ -15154,3 +15154,27 @@ class TestCelerpAccountSurface:
         assert b"/account/poll" in r.content     # still waiting
         assert b"Signed in as" not in r.content
         assert activate.await_count == 0         # no premature activation
+
+    @pytest.mark.asyncio
+    async def test_account_surface_refused_below_admin(self, ui_client):
+        """Binding the relay account is a billing-identity action: managers,
+        operators and viewers get an empty fragment from every account route
+        and from the claim fragments - not the surface."""
+        for role in ("manager", "operator", "viewer"):
+            r = await ui_client.get("/account/panel", cookies=_authed(role=role))
+            assert b"Continue with email" not in r.content, role
+            r = await ui_client.post("/account/email", data={"email": "x@y.z"},
+                                     cookies=_authed(role=role))
+            assert b"Check your inbox" not in r.content, role
+            r = await ui_client.post("/settings/cloud-send-otp",
+                                     data={"claim_email": "x@y.z"},
+                                     cookies=_authed(role=role))
+            assert b"code" not in r.content.lower(), role
+
+    @pytest.mark.asyncio
+    async def test_account_surface_available_to_admin_and_owner(self, ui_client):
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            for role in ("admin", "owner"):
+                r = await ui_client.get("/account/panel", cookies=_authed(role=role))
+                assert b"Continue with email" in r.content, role

@@ -26,10 +26,19 @@ from starlette.requests import Request
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
 from ui.routes.settings import _token
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
+
+
+def _account_allowed(request: Request) -> bool:
+    """Binding the relay account email is a billing-identity action (it decides
+    who owns purchases and where subscription control lives) - admin and owner
+    only, same gate as the Settings Connect page and the marketplace."""
+    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["admin"]
 
 
 def _panel_target(panel_id: str) -> dict:
@@ -197,7 +206,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token:
+        if not token or not _account_allowed(request):
             return Div(id=panel_id)
         intent = request.query_params.get("intent", "signup")
         google = False
@@ -213,7 +222,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token:
+        if not token or not _account_allowed(request):
             return Div(id=panel_id)
         form = await request.form()
         email = str(form.get("email", "")).strip()
@@ -236,7 +245,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token:
+        if not token or not _account_allowed(request):
             return Div(id=panel_id)
         try:
             methods = await api.account_methods(token)
@@ -261,7 +270,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token:
+        if not token or not _account_allowed(request):
             return Div(id=panel_id)
         mode = request.query_params.get("mode", "email")
         try:
