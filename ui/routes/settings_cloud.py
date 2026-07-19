@@ -494,6 +494,10 @@ def setup_routes(app):
     async def cloud_test_db(request: Request):
         """HTMX: test database connectivity with provided credentials."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if _check_role(request, "admin"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -524,6 +528,10 @@ def setup_routes(app):
     async def cloud_test_storage(request: Request):
         """HTMX: test S3-compatible storage connectivity."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if _check_role(request, "admin"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -556,6 +564,10 @@ def setup_routes(app):
     async def cloud_save_infra(request: Request):
         """Save infrastructure config (DB + storage) to config.toml."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if _check_role(request, "admin"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -615,6 +627,10 @@ def setup_routes(app):
     async def cloud_restore_db(request: Request):
         """Restore the previous database URL (GDR undo support)."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if _check_role(request, "admin"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 

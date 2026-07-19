@@ -15178,3 +15178,15 @@ class TestCelerpAccountSurface:
             for role in ("admin", "owner"):
                 r = await ui_client.get("/account/panel", cookies=_authed(role=role))
                 assert b"Continue with email" in r.content, role
+
+    @pytest.mark.asyncio
+    async def test_infra_fragments_refused_below_admin(self, ui_client):
+        """The Team-infrastructure fragments change the database/storage config -
+        the page is admin-gated, so the fragments must refuse sub-admin roles
+        too (save-infra could otherwise repoint the company database)."""
+        for route in ("/settings/cloud/test-db", "/settings/cloud/test-storage",
+                      "/settings/cloud/save-infra", "/settings/cloud/restore-db"):
+            r = await ui_client.post(route, data={}, cookies=_authed(role="operator"))
+            body = r.content.strip()
+            assert (body == b"" or b"<div></div>" in body.lower()
+                    or body == b"<div></div>"), (route, body[:120])
