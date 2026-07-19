@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from contextlib import contextmanager
+
 from celerp.modules import slots
 from celerp.modules.loader import (
     ModuleLoadError,
@@ -52,6 +54,23 @@ def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> 
         """).strip()
     )
     return pkg
+
+
+@contextmanager
+def _preserved_sys_modules(prefixes: list[str]):
+    """Save already-imported sys.modules entries matching any prefix; afterwards
+    remove whatever the test imported and restore the originals. Evicting
+    without restoring breaks later tests: mock.patch by import path would
+    re-import a FRESH module object while the app under test still calls
+    functions from the original namespace, so the patch lands on a dead copy."""
+    saved = {k: v for k, v in sys.modules.items() if any(p in k for p in prefixes)}
+    try:
+        yield
+    finally:
+        for k in list(sys.modules.keys()):
+            if any(p in k for p in prefixes):
+                sys.modules.pop(k, None)
+        sys.modules.update(saved)
 
 
 # ── Happy path ────────────────────────────────────────────────────────────────
@@ -640,24 +659,21 @@ class TestDependencySystem:
         from celerp.modules import loader as _loader, slots as _slots
         _loader._loaded.clear()
         _slots.clear()
-        import sys as _sys
-        try:
-            result = _loader.load_all(
-                real_dir,
-                {"celerp-inventory", "celerp-contacts", "celerp-docs"},
-            )
-            names = [m["name"] for m in result]
-            assert "celerp-contacts" in names
-            assert "celerp-docs" in names
-            assert names.index("celerp-contacts") < names.index("celerp-docs"), (
-                "celerp-contacts must load before celerp-docs (it's a declared dep)"
-            )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            for k in list(_sys.modules.keys()):
-                if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k:
-                    _sys.modules.pop(k, None)
+        with _preserved_sys_modules(["celerp_docs", "celerp_contacts", "celerp_inventory"]):
+            try:
+                result = _loader.load_all(
+                    real_dir,
+                    {"celerp-inventory", "celerp-contacts", "celerp-docs"},
+                )
+                names = [m["name"] for m in result]
+                assert "celerp-contacts" in names
+                assert "celerp-docs" in names
+                assert names.index("celerp-contacts") < names.index("celerp-docs"), (
+                    "celerp-contacts must load before celerp-docs (it's a declared dep)"
+                )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()
 
     def test_celerp_docs_skipped_when_contacts_not_enabled(self, tmp_path):
         """With real modules: docs is skipped when contacts not in enabled set.
@@ -671,22 +687,19 @@ class TestDependencySystem:
         from celerp.modules import loader as _loader, slots as _slots
         _loader._loaded.clear()
         _slots.clear()
-        import sys as _sys
-        try:
-            result = _loader.load_all(
-                real_dir,
-                {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
-            )
-            names = [m["name"] for m in result]
-            assert "celerp-docs" not in names, (
-                "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
-            )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            for k in list(_sys.modules.keys()):
-                if "celerp_docs" in k or "celerp_inventory" in k:
-                    _sys.modules.pop(k, None)
+        with _preserved_sys_modules(["celerp_docs", "celerp_inventory"]):
+            try:
+                result = _loader.load_all(
+                    real_dir,
+                    {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
+                )
+                names = [m["name"] for m in result]
+                assert "celerp-docs" not in names, (
+                    "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
+                )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()
 
 
 # ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
@@ -1011,47 +1024,34 @@ class TestElectronTrustedModuleDirs:
             import pytest as _pytest
             _pytest.skip("default_modules not available")
         from celerp.modules import loader as _loader, slots as _slots
-        import sys as _sys
         _loader._loaded.clear()
         _slots.clear()
-        # Save any already-imported module entries so we can restore them after
-        # the test (instead of evicting them, which breaks tests that run after
-        # this one and hold references to the original module objects).
-        _evict_prefixes = [
+        with _preserved_sys_modules([
             "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
             "celerp_inventory", "celerp_contacts", "celerp_docs",
-        ]
-        _saved_modules = {
-            k: v for k, v in _sys.modules.items()
-            if any(x in k for x in _evict_prefixes)
-        }
-        try:
-            # celerp-connectors depends on celerp-inventory + celerp-docs; include both
-            result = _loader.load_all(
-                real_dir,
-                {
-                    "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
-                    "celerp-inventory", "celerp-contacts", "celerp-docs",
-                },
-            )
-            loaded_names = {m["name"] for m in result}
-            # celerp-admin imports kernel/BSL internals yet must be trusted when bundled (the trust bug).
-            assert "celerp-admin" in loaded_names, (
-                "celerp-admin failed to load from default_modules — "
-                "it imports BSL internals and is being wrongly treated as untrusted. "
-                "This is the Electron trust bug."
-            )
-            # The proprietary cloud components are folded into core and must NOT load as pluggable
-            # modules (the loader skips them; they are direct-wired in celerp/main.py and ui/app.py).
-            for folded in ("celerp-ai", "celerp-backup", "celerp-connectors"):
-                assert folded not in loaded_names, (
-                    f"{folded} is core-folded and must not be loaded by the module loader"
+        ]):
+            try:
+                # celerp-connectors depends on celerp-inventory + celerp-docs; include both
+                result = _loader.load_all(
+                    real_dir,
+                    {
+                        "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
+                        "celerp-inventory", "celerp-contacts", "celerp-docs",
+                    },
                 )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            # Remove modules added during this test, then restore originals.
-            for k in list(_sys.modules.keys()):
-                if any(x in k for x in _evict_prefixes):
-                    _sys.modules.pop(k, None)
-            _sys.modules.update(_saved_modules)
+                loaded_names = {m["name"] for m in result}
+                # celerp-admin imports kernel/BSL internals yet must be trusted when bundled (the trust bug).
+                assert "celerp-admin" in loaded_names, (
+                    "celerp-admin failed to load from default_modules - "
+                    "it imports BSL internals and is being wrongly treated as untrusted. "
+                    "This is the Electron trust bug."
+                )
+                # The proprietary cloud components are folded into core and must NOT load as pluggable
+                # modules (the loader skips them; they are direct-wired in celerp/main.py and ui/app.py).
+                for folded in ("celerp-ai", "celerp-backup", "celerp-connectors"):
+                    assert folded not in loaded_names, (
+                        f"{folded} is core-folded and must not be loaded by the module loader"
+                    )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()

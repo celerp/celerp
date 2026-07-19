@@ -2275,12 +2275,13 @@ async def cloud_claim(token: str, payload: dict) -> dict:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 
-async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
+async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:
     """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
-    Returns (connectors, error_detail). error_detail is "" on success."""
+    Returns (connectors, error_detail, needs_plan). error_detail is "" on success;
+    needs_plan is True when the relay refused with 402 (no entitled plan)."""
     async with _api_client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
-    return data.get("connectors", []), data.get("error", "")
+    return data.get("connectors", []), data.get("error", ""), bool(data.get("needs_plan"))
 
 
 async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:

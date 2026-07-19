@@ -575,7 +575,7 @@ async def connectors_catalog_api() -> dict:
         except Exception:
             detail = ""
         return {"error": detail or "Connectors need an active Celerp Connect plan.",
-                "connectors": []}
+                "needs_plan": True, "connectors": []}
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 
