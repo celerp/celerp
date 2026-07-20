@@ -98,15 +98,46 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            # Check payment JE (payment keys are payment-index scoped)
-            amount_paid = float(state.get("amount_paid", 0) or 0)
-            if amount_paid > 0:
-                pay_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
-                if pay_key not in existing_keys:
-                    missing.append({"doc_id": entity_id, "trigger": "payment", "amount": amount_paid})
+            # Check payment JEs: one per recorded ACTIVE bank payment, keyed by
+            # that payment's own index (the key auto_je actually mints).
+            # Credit-note settlements are excluded: their entries are keyed
+            # cn.applied and never touch a bank account.
+            _bank_pays = [p for p in (state.get("payments") or [])
+                          if p.get("status") == "active"
+                          and p.get("method") not in ("credit_note", "applied")]
+            # Docs compacted by pre-tombstone deletions renumbered their index
+            # fields while minted keys kept the originals. When at least as
+            # many pay keys exist as active bank payments, every payment is
+            # covered under some historical index - repairing by today's
+            # fields would double-post, so the doc is treated as healthy.
+            _pay_key_prefix = f"je:{entity_id}:invoice.paid:"
+            _minted = sum(1 for k in existing_keys
+                          if k.startswith(_pay_key_prefix) and k.endswith(":c"))
+            if _minted < len(_bank_pays):
+                for pay in _bank_pays:
+                    _idx = pay.get("index", 0)
+                    pay_key = je_idempotency_key(entity_id, f"invoice.paid:{_idx}", "c")
+                    if pay_key not in existing_keys:
+                        missing.append({"doc_id": entity_id, "trigger": "payment",
+                                        "amount": pay.get("amount"), "payment_index": _idx})
+                        if fix:
+                            await _emit_payment_je(session, company_id, user_id, entity_id,
+                                                   float(pay.get("amount") or 0), state,
+                                                   payment_index=_idx, payment=pay)
+                            existing_keys.add(pay_key)
+                            fixed += 1
+            elif not _bank_pays and not (state.get("payments") or []):
+                # Imported paid docs carry amount_paid with no payments rows;
+                # the cash leg is repaired as a single aggregate entry.
+                amount_paid = float(state.get("amount_paid", 0) or 0)
+                agg_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
+                if amount_paid > 0 and agg_key not in existing_keys:
+                    missing.append({"doc_id": entity_id, "trigger": "payment",
+                                    "amount": amount_paid, "payment_index": 0})
                     if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, payment_index=len(state.get("payments", [])) - 1 if state.get("payments") else 0)
-                        existing_keys.add(pay_key)
+                        await _emit_payment_je(session, company_id, user_id, entity_id,
+                                               amount_paid, state, payment_index=0)
+                        existing_keys.add(agg_key)
                         fixed += 1
 
         elif doc_type == "purchase_order" and status not in ("draft",):
@@ -385,8 +416,10 @@ async def _emit_payment_je(
     state: dict,
     *,
     payment_index: int = 0,
+    payment: dict | None = None,
 ) -> None:
-    ts = state.get("issue_date") or state.get("created_at")
+    payment = payment or {}
+    ts = payment.get("payment_date") or state.get("issue_date") or state.get("created_at")
     paid_key = str(payment_index)
     je_id = f"je:auto:{doc_id}:pay:{paid_key}"
 
@@ -399,7 +432,7 @@ async def _emit_payment_je(
         data={
             "memo": f"Auto JE for {doc_id} payment",
             "entries": [
-                {"account": "1110", "debit": amount, "credit": 0.0},
+                {"account": payment.get("bank_account") or "1111", "debit": amount, "credit": 0.0},
                 {"account": "1120", "debit": 0.0, "credit": amount},
             ],
             "ts": ts,

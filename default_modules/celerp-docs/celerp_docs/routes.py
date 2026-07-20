@@ -1388,6 +1388,30 @@ def _payment_lock(entity_id: str) -> asyncio.Lock:
     return lock
 
 
+async def _alloc_payment_index(session, company_id, payments: list,
+                               key_doc_id: str | None = None,
+                               key_type: str | None = None) -> int:
+    """Next payment index: past the list, past any index field already in use,
+    and past any index a journal entry was ever minted with under key_type.
+
+    A payment's index field is its identity (journal-entry ids and idempotency
+    keys embed it). Deletions used to compact the list, so on docs compacted
+    before tombstoning, len() alone can land on an index whose JE key already
+    exists - the new payment's JE would silently dedupe and post nothing.
+    """
+    idx = max(len(payments),
+              1 + max((int(p.get("index") or 0) for p in payments), default=-1))
+    if key_doc_id and key_type:
+        from celerp.models.ledger import LedgerEntry as _LE
+        from celerp.services.je_keys import je_idempotency_key as _je_k
+        while (await session.execute(select(_LE.id).where(
+                _LE.company_id == company_id,
+                _LE.idempotency_key == _je_k(key_doc_id, f"{key_type}:{idx}", "c"),
+        ).limit(1))).first() is not None:
+            idx += 1
+    return idx
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict, body: dict,
                             *, source: str, actor_id, idempotency_key: str):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
@@ -1435,20 +1459,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
             raise HTTPException(status_code=422, detail="bank_account is required")
         body.setdefault("currency", doc_state.get("currency", "USD"))
         body["remaining_balance"] = max(0.0, outstanding - amount)
-        # Next index: past the list, and past any index a journal entry was
-        # ever minted with. Deletions used to compact the list, so on docs
-        # compacted before tombstoning, len() alone can land on an index whose
-        # JE idempotency key already exists - the new payment's JE would
-        # silently dedupe into the deleted one's and post nothing.
-        payment_index = len(doc_state.get("payments", []))
-        from celerp.models.ledger import LedgerEntry as _LE
-        from celerp.services.je_keys import je_idempotency_key as _je_k
-        from sqlalchemy import select as _sel
-        while (await session.execute(_sel(_LE.id).where(
-                _LE.company_id == company_id,
-                _LE.idempotency_key == _je_k(entity_id, f"invoice.paid:{payment_index}", "c"),
-        ).limit(1))).first() is not None:
-            payment_index += 1
+        payment_index = await _alloc_payment_index(
+            session, company_id, doc_state.get("payments", []),
+            key_doc_id=entity_id, key_type="invoice.paid")
         body["index"] = payment_index
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
@@ -1537,20 +1550,40 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Reverse the payment JE - use stored bank_account; fall back to "1111" (default account that always exists)
-    # for historical payments recorded before bank_account was required.
     doc_type = row.state.get("doc_type", "invoice")
-    bank_code = payment.get("bank_account") or "1111"
-    _void_company = await session.get(Company, company_id)
-    _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
-    await auto_je.void_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        payment_index=payload.payment_index, amount=payment["amount"],
-        bank_account_code=bank_code, doc_type=doc_type,
-        refund_date=payload.refund_date,
-        base_currency=_void_base_currency,
-        conversion_rate=float(row.state.get("conversion_rate") or 1),
-    )
+    if payment.get("method") in ("credit_note", "applied"):
+        # A credit-note settlement never touched a bank: its entry is the
+        # AR-to-AR transfer keyed on the invoice. Void that entry instead of
+        # posting a bank reversal that would fabricate a cash movement.
+        _cn_id = payment.get("source_doc_id") if payment.get("method") == "credit_note" else entity_id
+        _inv_id = entity_id if payment.get("method") == "credit_note" else payment.get("target_doc_id")
+        _cnapply_id = f"je:auto:{_inv_id}:cnapply:{_cn_id}"
+        _cnapply_row = await session.get(Projection, {"company_id": company_id, "entity_id": _cnapply_id})
+        if _cnapply_row is not None and _cnapply_row.state.get("status") == "posted":
+            from celerp.services.je_keys import je_void_data as _je_void  # noqa: PLC0415
+            await emit_event(
+                session, company_id=company_id, entity_id=_cnapply_id, entity_type="journal_entry",
+                event_type="acc.journal_entry.voided",
+                data=_je_void(f"Credit note application voided on {_inv_id}", _cnapply_row.state),
+                actor_id=user.id, location_id=None, source="auto_je",
+                idempotency_key=f"{_cnapply_id}:void:{payload.payment_index}",
+                metadata_={"trigger": "cn.application.voided", "doc_id": _inv_id, "cn_id": _cn_id},
+            )
+    else:
+        # Reverse the payment JE - use stored bank_account; fall back to "1111"
+        # (default account that always exists) for historical payments recorded
+        # before bank_account was required.
+        bank_code = payment.get("bank_account") or "1111"
+        _void_company = await session.get(Company, company_id)
+        _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
+        await auto_je.void_for_doc_payment(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+            payment_index=payload.payment_index, amount=payment["amount"],
+            bank_account_code=bank_code, doc_type=doc_type,
+            refund_date=payload.refund_date,
+            base_currency=_void_base_currency,
+            conversion_rate=float(row.state.get("conversion_rate") or 1),
+        )
 
     # If this was a credit_note application (paired payment), void the other side too
     source_doc_id = payment.get("source_doc_id")
@@ -1562,7 +1595,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         )
         if paired_row and paired_row.entity_type == "doc":
             paired_payments = paired_row.state.get("payments", [])
-            # Find the matching payment on the other doc
+            # Find the matching payment on the other doc; its index FIELD is
+            # its identity (list position can differ on skip-allocated docs).
             for pi, pp in enumerate(paired_payments):
                 if pp.get("status") == "active" and (
                     (pp.get("source_doc_id") == entity_id) or (pp.get("target_doc_id") == entity_id)
@@ -1570,7 +1604,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                     await emit_event(
                         session, company_id=company_id, entity_id=paired_doc_id, entity_type="doc",
                         event_type="doc.payment.voided",
-                        data={"payment_index": pi, "void_reason": payload.void_reason or "Paired void",
+                        data={"payment_index": pp.get("index", pi), "void_reason": payload.void_reason or "Paired void",
                               "amount": pp.get("amount"), "method": pp.get("method")},
                         actor_id=user.id, location_id=None, source="api",
                         idempotency_key=str(uuid.uuid4()), metadata_={},
@@ -1621,24 +1655,37 @@ async def delete_payment(
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
 
     # Determine the JE for this payment. The exact-index id covers every
-    # payment recorded since indices became stable; on docs compacted by
-    # pre-tombstone deletions the stored index was rewritten, so fall back to
-    # the posted pay-JE whose date matches the payment.
+    # payment recorded since indices became stable, but on docs compacted by
+    # pre-tombstone deletions the stored index was rewritten, so the resolved
+    # entry must also LOOK like this payment (same date, an entry line of the
+    # same magnitude); otherwise the void could hit a different payment's
+    # entry. If no unambiguous owner is found, nothing is voided - leaving a
+    # posted entry beats voiding the wrong one.
+    _p_date = str(payment.get("payment_date") or "")[:10]
+    _p_rate = float(payment.get("conversion_rate") or 1)
+    _p_base = round(float(payment.get("amount") or 0) * _p_rate, 2)
+
+    def _owns(state: dict) -> bool:
+        if state.get("status") != "posted":
+            return False
+        if _p_date and str(state.get("ts") or "")[:10] != _p_date:
+            return False
+        magnitudes = [round(float(e.get("debit") or 0), 2) for e in state.get("entries", [])] \
+            + [round(float(e.get("credit") or 0), 2) for e in state.get("entries", [])]
+        return any(abs(m - _p_base) < 0.02 for m in magnitudes)
+
     je_id = f"je:auto:{entity_id}:pay:{payment_index}"
-    _je_probe = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if _je_probe is None or _je_probe.state.get("status") != "posted":
+    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if je_row is None or not _owns(je_row.state):
         _pay_rows = (await session.execute(
             _sa.select(Projection).where(
                 Projection.company_id == company_id,
                 Projection.entity_id.like(f"je:auto:{entity_id}:pay:%"),
             )
         )).scalars().all()
-        _p_date = str(payment.get("payment_date") or "")[:10]
-        for _cand in _pay_rows:
-            if (_cand.state.get("status") == "posted"
-                    and str(_cand.state.get("ts") or "")[:10] == _p_date):
-                je_id = _cand.entity_id
-                break
+        _owners = [c for c in _pay_rows if _owns(c.state)]
+        je_row = _owners[0] if len(_owners) == 1 else None
+        je_id = je_row.entity_id if je_row is not None else je_id
 
     # Check reconciliation status - query all sessions that include this JE
     recon_result = await session.execute(
@@ -1672,16 +1719,18 @@ async def delete_payment(
     # Void the original payment JE first so it disappears from the bank ledger
     # and reports. The void carries the entry's own date, so a payment inside a
     # locked period is rejected here before anything mutates.
-    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if je_row is not None and je_row.state.get("status") == "posted":
-        from celerp.services.je_keys import je_idempotency_key as _je_key, je_void_data as _je_void  # noqa: PLC0415
+        from celerp.services.je_keys import je_void_data as _je_void  # noqa: PLC0415
         await emit_event(
             session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
             data=_je_void(f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip(),
                           je_row.state),
             actor_id=user.id, location_id=None, source="auto_je",
-            idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
+            # Keyed on the resolved JE id: the old doc-scoped positional shape
+            # could collide with a compaction-era deletion's key and silently
+            # swallow this void.
+            idempotency_key=f"{je_id}:void:del:{payment_index}",
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
 
@@ -1746,41 +1795,55 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
 
     payment_date = payload.date or datetime.now(UTC).date().isoformat()
 
-    # Emit paired events: payment on invoice (credit_note method), payment on CN (applied method)
-    await emit_event(
-        session, company_id=company_id, entity_id=payload.target_doc_id, entity_type="doc",
-        event_type="doc.payment.received",
-        data={
-            "amount": payload.amount, "method": "credit_note",
-            "source_doc_id": entity_id, "payment_date": payment_date,
-            "currency": cn.get("currency", "USD"),
-        },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-        event_type="doc.payment.received",
-        data={
-            "amount": payload.amount, "method": "applied",
-            "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
-            "currency": cn.get("currency", "USD"),
-        },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
-    # JE: AR-to-AR transfer. Index by current payment count to get a unique key per application.
-    payment_idx = len(cn_row.state.get("payments", []))
-    _cn_company = await session.get(Company, company_id)
-    _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
-    await auto_je.create_for_cn_application(
-        session, company_id=company_id, user_id=user.id,
-        doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
-        payment_index=payment_idx,
-        base_currency=_cn_base_currency,
-        conversion_rate=float(cn_row.state.get("conversion_rate") or 1),
-    )
-    await session.commit()
+    # Both docs are locked (sorted order, so two concurrent applications can
+    # never deadlock) while indices are allocated and the events land: a
+    # concurrent recorder on either doc must not mint the same index.
+    from contextlib import AsyncExitStack as _AES
+    async with _AES() as _locks:
+        for _lid in sorted({entity_id, payload.target_doc_id}):
+            await _locks.enter_async_context(_payment_lock(_lid))
+        # Both sides get allocated indices so their identity fields never
+        # collide with skip-allocated payments on either doc.
+        inv_pay_index = await _alloc_payment_index(session, company_id, inv.get("payments", []))
+        payment_idx = await _alloc_payment_index(
+            session, company_id, cn_row.state.get("payments", []),
+            key_doc_id=payload.target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
+
+        # Emit paired events: payment on invoice (credit_note method), payment on CN (applied method)
+        await emit_event(
+            session, company_id=company_id, entity_id=payload.target_doc_id, entity_type="doc",
+            event_type="doc.payment.received",
+            data={
+                "amount": payload.amount, "method": "credit_note",
+                "source_doc_id": entity_id, "payment_date": payment_date,
+                "currency": cn.get("currency", "USD"),
+                "index": inv_pay_index,
+            },
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        entry = await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+            event_type="doc.payment.received",
+            data={
+                "amount": payload.amount, "method": "applied",
+                "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
+                "currency": cn.get("currency", "USD"),
+                "index": payment_idx,
+            },
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        )
+        _cn_company = await session.get(Company, company_id)
+        _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
+        await auto_je.create_for_cn_application(
+            session, company_id=company_id, user_id=user.id,
+            doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
+            payment_index=payment_idx, payment_date=payment_date,
+            base_currency=_cn_base_currency,
+            conversion_rate=float(cn_row.state.get("conversion_rate") or 1),
+        )
+        await session.commit()
     return {"event_id": entry.id}
 
 
@@ -1815,30 +1878,35 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
 
-    entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
-        event_type="doc.payment.received",
-        data={
-            "amount": payload.amount, "method": "refund",
-            "bank_account": bank_code, "reference": payload.reference,
-            "payment_date": payment_date, "currency": cn.get("currency", "USD"),
-        },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
-    )
-    # JE: debit AR, credit bank
-    payment_index = len(cn.get("payments", []))
-    _refund_company = await session.get(Company, company_id)
-    _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
-    await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        amount=payload.amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type="invoice",
-        payment_date=payment_date,
-        base_currency=_refund_base_currency,
-        conversion_rate=float(cn.get("conversion_rate") or 1),
-    )
-    await session.commit()
+    # Same per-doc lock apply_doc_payment holds: a concurrent recorder on this
+    # credit note must not mint the same index (its JE would dedupe away).
+    async with _payment_lock(entity_id):
+        payment_index = await _alloc_payment_index(session, company_id, cn.get("payments", []),
+                                                   key_doc_id=entity_id, key_type="invoice.paid")
+        entry = await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+            event_type="doc.payment.received",
+            data={
+                "amount": payload.amount, "method": "refund",
+                "bank_account": bank_code, "reference": payload.reference,
+                "payment_date": payment_date, "currency": cn.get("currency", "USD"),
+                "index": payment_index,
+            },
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        )
+        # JE: debit AR, credit bank
+        _refund_company = await session.get(Company, company_id)
+        _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
+        await auto_je.create_for_doc_payment(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+            amount=payload.amount, payment_index=payment_index,
+            bank_account_code=bank_code, doc_type="invoice",
+            payment_date=payment_date,
+            base_currency=_refund_base_currency,
+            conversion_rate=float(cn.get("conversion_rate") or 1),
+        )
+        await session.commit()
     return {"event_id": entry.id}
 
 
@@ -1912,23 +1980,28 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             "bank_account": bank_code,
             "currency": state.get("currency", "USD"),
         }
-        await emit_event(
-            session, company_id=company_id, entity_id=doc_id, entity_type="doc",
-            event_type="doc.payment.received",
-            data={k: v for k, v in body.items() if v is not None},
-            actor_id=user.id, location_id=None, source="api",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        payment_index = len(state.get("payments", []))
-        doc_type = state.get("doc_type", "invoice")
-        await auto_je.create_for_doc_payment(
-            session, company_id=company_id, user_id=user.id, doc_id=doc_id,
-            amount=alloc, payment_index=payment_index,
-            bank_account_code=bank_code, doc_type=doc_type,
-            payment_date=payment_date,
-            base_currency=_bulk_base_currency,
-            conversion_rate=float(state.get("conversion_rate") or 1),
-        )
+        # Same per-doc lock apply_doc_payment holds: a concurrent recorder on
+        # this doc must not mint the same index (its JE would dedupe away).
+        async with _payment_lock(doc_id):
+            payment_index = await _alloc_payment_index(session, company_id, state.get("payments", []),
+                                                       key_doc_id=doc_id, key_type="invoice.paid")
+            body["index"] = payment_index
+            await emit_event(
+                session, company_id=company_id, entity_id=doc_id, entity_type="doc",
+                event_type="doc.payment.received",
+                data={k: v for k, v in body.items() if v is not None},
+                actor_id=user.id, location_id=None, source="api",
+                idempotency_key=str(uuid.uuid4()), metadata_={},
+            )
+            doc_type = state.get("doc_type", "invoice")
+            await auto_je.create_for_doc_payment(
+                session, company_id=company_id, user_id=user.id, doc_id=doc_id,
+                amount=alloc, payment_index=payment_index,
+                bank_account_code=bank_code, doc_type=doc_type,
+                payment_date=payment_date,
+                base_currency=_bulk_base_currency,
+                conversion_rate=float(state.get("conversion_rate") or 1),
+            )
         allocations.append({"doc_id": doc_id, "amount": alloc})
         remaining -= alloc
 
@@ -3763,9 +3836,11 @@ async def fulfill_lines(
     # Create COGS JE only for invoices that reach fully-fulfilled status.
     # Memos don't get a COGS JE here; that happens when the invoice is finalized.
     if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
+        from datetime import date as _fdate
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
             cycle=state.get("fulfill_cycle", 0),
+            ts=_fdate.today().isoformat(),
         )
 
     await session.commit()

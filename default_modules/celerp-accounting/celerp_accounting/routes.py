@@ -868,8 +868,10 @@ async def account_ledger(
     # Filter to lines that touch this account, apply date filter
     lines = []
     for je_id, state, ts in posted:
-        # Dateless JEs (ts="") are always included - hiding them would be worse than showing them.
-        if ts and date_from and ts < date_from:
+        # Dateless JEs (ts="") count as pre-period, exactly as the trial
+        # balance, journal, and general ledger treat them: excluded once a
+        # start date is set, included otherwise.
+        if date_from and (not ts or ts < date_from):
             continue
         if ts and date_to and ts > date_to:
             continue
@@ -1197,13 +1199,12 @@ async def balance_sheet(
             code = leaf["code"]
             children = [l for l in leaf_lines if l.get("parent_code") == code]
             if children:
-                # Roll parent's own JE balance (from pre-sub-account JEs) into the first
-                # "purchased" child (1130-P), then display parent as sum of children.
-                parent_own = leaf["amount"]
-                if parent_own != 0.0:
-                    purchased = next((c for c in children if c["code"].endswith("-P")), children[0])
-                    purchased["amount"] += parent_own
-                parent_total = sum(c["amount"] for c in children)
+                # Parent total = its own directly-posted balance (legacy
+                # pre-sub-account entries) plus its children. The parent's own
+                # amount stays attributed to the parent, matching how the
+                # trial balance, general ledger, and ledger drilldown bucket
+                # by literal account code.
+                parent_total = leaf["amount"] + sum(c["amount"] for c in children)
                 lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
                 for child in children:
                     lines.append({**child, "is_child": True})

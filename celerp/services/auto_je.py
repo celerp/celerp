@@ -186,7 +186,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
@@ -204,6 +204,7 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
         idem_create=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "p"),
         memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
+        ts=payment_date,
         entries=[
             {"account": "1120", "debit": 0.0, "credit": base_amount},
             {"account": "1120", "debit": base_amount, "credit": 0.0},
@@ -471,6 +472,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             idem_create=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "c"),
             idem_posted=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "p"),
             memo=f"Auto JE for {doc_id} unvoided (restore finalize)",
+            ts=doc.get("finalized_at") or doc.get("issue_date"),
             entries=[
                 {"account": "1120", "debit": base_total, "credit": 0.0},
                 {"account": "4100", "debit": 0.0, "credit": base_revenue},
@@ -525,7 +527,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         )
 
 
-async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0) -> None:
+async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0, ts: str | None = None) -> None:
     """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1130-P).
 
     cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
@@ -545,6 +547,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
+        ts=ts,
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},

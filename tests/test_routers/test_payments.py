@@ -739,6 +739,60 @@ async def test_void_recompute_keeps_refunds(client):
 
 
 @pytest.mark.asyncio
+async def test_void_cn_application_posts_no_bank_movement(client):
+    """Voiding a credit-note application voids the AR transfer entry; it must
+    never post a bank reversal for cash that never moved."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}],
+        "subtotal": 40.0, "tax": 0.0, "total": 40.0,
+    })
+    assert r.status_code == 200
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                          json={"target_doc_id": inv, "amount": 40.0})
+    assert r.status_code == 200, r.text
+
+    bank_before = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()["lines"]
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    cn_pay = next(p for p in doc["payments"] if p.get("method") == "credit_note")
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": cn_pay["index"]})
+    assert r.status_code == 200, r.text
+
+    bank_after = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()["lines"]
+    assert len(bank_after) == len(bank_before)  # no phantom cash reversal
+    # The AR transfer entry itself is voided
+    journal = (await client.get("/accounting/journal", headers=_h(token))).json()
+    cnapply = [e for e in journal["entries"] if e["je_id"].startswith(f"je:auto:{inv}:cnapply:")]
+    assert cnapply and cnapply[0]["status"] == "void"
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_unvoid_blocked_in_locked_period(client):
+    """Unvoiding an invoice restores its finalize entry on the invoice's own
+    date, so a lock over that period must block the unvoid."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "test"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/accounting/period-lock", headers=_h(token),
+                          json={"lock_date": "2099-12-31"})
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/unvoid", headers=_h(token), json={})
+    assert r.status_code == 422, r.text
+    assert "locked" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_delete_payment_invalid_index(client):
     """DELETE with an out-of-range index returns 422."""
     token = await _register(client)
