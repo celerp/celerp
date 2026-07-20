@@ -56,12 +56,16 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart):
     page.wait_for_url("**/accounting?tab=journal*", timeout=10000)
     page.wait_for_selector("text=Browser test adjustment", timeout=10000)
 
-    # Void: open the inline reason form and confirm.
-    page.locator("details summary", has_text="Void").first.click()
-    reason = page.locator('details[open] input[name="reason"]').first
+    # Void: act on this entry's own row. The journal is newest-first and shared
+    # with every other entry the suite has posted, and the void control is shown
+    # on document-generated rows too so the server can explain the refusal, so
+    # "the first Void on the page" is not necessarily this entry's.
+    row = page.locator("tr", has_text="Browser test adjustment").first
+    row.locator("details summary", has_text="Void").first.click()
+    reason = row.locator('details[open] input[name="reason"]').first
     reason.fill("browser test cleanup")
-    page.locator("details[open] button", has_text="Confirm").first.click()
-    page.wait_for_selector(".badge--void, .payment-voided", timeout=10000)
+    row.locator("details[open] button", has_text="Confirm").first.click()
+    page.wait_for_selector("tr.payment-voided .badge--void", timeout=10000)
 
 
 def test_manual_je_fx_journey_posts_converts_and_shows_rounding_line(
