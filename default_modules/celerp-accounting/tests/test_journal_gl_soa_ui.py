@@ -545,3 +545,19 @@ async def test_je_form_every_text_field_exits_on_escape(ui_client):
         m = _re.search(rf'<input[^>]*name="{name}"[^>]*>', html)
         assert m, f"no input named {name} in the entry form"
         assert "Escape" in m.group(0), f'input {name} has no Escape handler: {m.group(0)}'
+
+
+@pytest.mark.asyncio
+async def test_print_views_center_column_headers(ui_client):
+    """Printed tables follow the same header rule as the screen.
+
+    The print stylesheet left-aligned every header while the on-screen tables
+    centered them, so the same report read differently on paper than it did in
+    the browser. Money headers stay right-aligned over their figures in both.
+    """
+    for url in ("/accounting/print/journal", "/accounting/print/general-ledger",
+                "/accounting/print/trial-balance"):
+        r = await _get(ui_client, url)
+        assert r.status_code == 200, url
+        assert "thead th { background: #f5f5f5; font-weight: 700; text-align: center;" in r.text, url
+        assert "thead th.cell--number { text-align: right; }" in r.text, url

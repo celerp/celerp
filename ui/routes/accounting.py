@@ -229,7 +229,7 @@ body { font-family: 'Arial', sans-serif; font-size: 10pt; color: #111; backgroun
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; font-size: 9pt; }
-thead th { background: #f5f5f5; font-weight: 700; text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid #ccc; }
+thead th { background: #f5f5f5; font-weight: 700; text-align: center; padding: 1.5mm 2mm; border-bottom: 1px solid #ccc; }
 thead th.cell--number { text-align: right; }
 tbody td { padding: 1.2mm 2mm; border-bottom: 1px solid #eee; }
 td.cell--number, td.cell--right { text-align: right; }
