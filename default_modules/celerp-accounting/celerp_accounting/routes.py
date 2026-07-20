@@ -849,10 +849,14 @@ async def create_manual_journal_entry(
         half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
         half_base = Decimal(10) ** -currency_dp(base) / 2
         ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
-        assert abs(residual) <= ceiling, (
-            f"exchange rounding residual {residual} exceeds the bound {ceiling} "
-            f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
-        )
+        if abs(residual) > ceiling:
+            # Raised rather than asserted: `python -O` strips assert statements,
+            # and a guard on a posted money figure must not depend on how the
+            # interpreter was launched.
+            raise RuntimeError(
+                f"exchange rounding residual {residual} exceeds the bound {ceiling} "
+                f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
+            )
         if residual != 0:
             rounding = account_map.get(FX_ROUNDING_ACCOUNT)
             if not rounding or not rounding.is_active:
