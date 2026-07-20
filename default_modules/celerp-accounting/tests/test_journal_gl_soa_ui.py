@@ -132,6 +132,17 @@ async def _get(ui_client, url, **overrides):
             p.stop()
 
 
+async def _post(ui_client, url, data, **overrides):
+    ps = _patches(**overrides)
+    for p in ps:
+        p.start()
+    try:
+        return await ui_client.post(url, cookies=_cookies(), data=data)
+    finally:
+        for p in ps:
+            p.stop()
+
+
 # ---------------------------------------------------------------------------
 # Tab pages
 # ---------------------------------------------------------------------------
@@ -514,6 +525,8 @@ _NEW_KEYS = [
     "acct.closing_balance", "acct.err_amounts_numeric", "acct.memo_hint",
     "acct.void_reason_optional", "acct.soa_kind_payment",
     "acct.no_entries_for_account",
+    "acct.record_foreign_currency", "acct.currency_base_hint", "acct.local_amount",
+    "acct.rounding_line_preview", "acct.err_currency_unknown", "acct.err_rate_positive",
 ]
 
 
@@ -561,3 +574,78 @@ async def test_print_views_center_column_headers(ui_client):
         assert r.status_code == 200, url
         assert "thead th { background: #f5f5f5; font-weight: 700; text-align: center;" in r.text, url
         assert "thead th.cell--number { text-align: right; }" in r.text, url
+
+
+@pytest.mark.asyncio
+async def test_je_form_shows_foreign_currency_control(ui_client):
+    """The control exists but stays collapsed, so an accountant who never posts
+    in a foreign currency sees the form they saw before."""
+    r = await _get(ui_client, "/accounting/journal/new")
+    assert r.status_code == 200
+    html = r.text
+    assert "Record in a foreign currency" in html
+    assert 'name="currency"' in html and 'name="rate"' in html
+    assert 'value="1.0000"' in html
+    # Collapsed: a <details> with no open attribute on the reveal itself.
+    assert "je-fx-reveal" in html
+    assert "<details open" not in html.replace("<details  open", "<details open")
+
+
+@pytest.mark.asyncio
+async def test_je_form_rate_input_exits_on_escape(ui_client):
+    """GDR 2j: Escape closes the whole disclosure, matching the void control."""
+    r = await _get(ui_client, "/accounting/journal/new")
+    import re as _re
+    m = _re.search(r'<input[^>]*name="rate"[^>]*>', r.text)
+    assert m and "Escape" in m.group(0), m.group(0) if m else "no rate input"
+
+
+@pytest.mark.asyncio
+async def test_je_form_submit_sends_fx_only_when_currency_chosen(ui_client):
+    """An untouched reveal posts an ordinary entry with no fx key at all."""
+    from unittest.mock import AsyncMock, patch
+
+    base = {
+        "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-1",
+        "account_0": "1111", "debit_0": "10", "credit_0": "",
+        "account_1": "4100", "debit_1": "", "credit_1": "10",
+    }
+    with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
+        await _post(ui_client, "/accounting/journal/new", {**base, "currency": "USD", "rate": "35"})
+        payload = m.call_args[0][1]
+        assert payload["fx"] == {"currency": "USD", "rate": 35.0}
+
+    with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
+        await _post(ui_client, "/accounting/journal/new", {**base, "idempotency_token": "tok-fx-2"})
+        assert "fx" not in m.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_je_form_rejects_unknown_currency_without_calling_the_api(ui_client):
+    from unittest.mock import AsyncMock, patch
+
+    with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
+        r = await _post(ui_client, "/accounting/journal/new", {
+            "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-3",
+            "account_0": "1111", "debit_0": "10", "credit_0": "",
+            "account_1": "4100", "debit_1": "", "credit_1": "10",
+            "currency": "QQQ", "rate": "35",
+        })
+        assert r.status_code == 200
+        assert m.await_count == 0
+
+
+def test_fx_line_amounts_prefers_stored_over_derived():
+    """A typed foreign figure is what the document says; division can miss it."""
+    from ui.routes.accounting import _fx_line_amounts
+
+    stored = _fx_line_amounts(300.25, 0, {"currency": "USD", "rate": 3.0025},
+                              100.0, None)
+    assert stored == (100.0, None)
+
+
+def test_fx_line_amounts_blank_when_rate_absent():
+    """No rate means no figure, not a guessed one."""
+    from ui.routes.accounting import _fx_line_amounts
+
+    assert _fx_line_amounts(100.0, 0, {"currency": "USD", "rate": 0}) == (None, None)
