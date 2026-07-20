@@ -1117,3 +1117,85 @@ async def test_manual_je_fx_residual_can_land_on_the_credit_side(client):
     plug = next(l for l in j["entries"][0]["lines"] if l["account"] == "6960")
     assert plug["credit"] == 0.01 and plug["debit"] == 0.0
     assert j["total_debit"] == j["total_credit"] == 300.51
+
+
+async def test_manual_je_fx_missing_rate_rejected(client):
+    """A currency with no rate is incomplete, not a default of 1.0."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
+        "ts": "2026-01-15", "memo": "m", "entries": _bal(10.0),
+        "idempotency_token": uuid.uuid4().hex,
+        "fx": {"currency": "USD"},
+    })
+    assert r.status_code == 422
+
+
+async def test_seed_chart_endpoint_backfills_fx_rounding_account(client):
+    """Re-seeding an existing chart adds 6960 without disturbing the rest."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/chart/seed", headers=_h(tok))
+    assert r.status_code in (200, 409), r.text
+
+    chart = (await client.get("/accounting/chart", headers=_h(tok))).json()
+    items = chart["items"] if isinstance(chart, dict) else chart
+    row = next(a for a in items if a["code"] == "6960")
+    assert row["account_type"] == "expense" and row["parent_code"] == "6000"
+
+
+async def test_void_manual_je_fx_preserves_stored_foreign_amounts(client):
+    """Voiding removes the entry from the books but not from the record: the
+    foreign amounts and rate stay for the audit trail."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    posted = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 10.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+    je_id = posted.json()["je_id"]
+
+    v = await client.post(f"/accounting/journal-entries/{je_id}/void", headers=_h(tok),
+                          json={"reason": "keyed twice"})
+    assert v.status_code == 200, v.text
+
+    entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)
+    assert entry["status"] == "void"
+    assert entry["fx"] == {"currency": "USD", "rate": 35.0}
+    assert next(l for l in entry["lines"] if l["fx_debit"])["fx_debit"] == 10.0
+    # Out of the books: a voided entry contributes nothing to the totals.
+    assert (await _journal(client, tok))["total_debit"] == 0.0
+
+
+async def test_cross_report_consistency_with_fx_and_rounding(client):
+    """The journal, trial balance, and general ledger agree once a foreign
+    entry and its rounding line are in the period."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10")
+    await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], ts="2026-01-11", fx={"currency": "USD", "rate": 3.0025})
+
+    journal = await _journal(client, tok, date_from="2026-01-01", date_to="2026-12-31")
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
+                           params={"date_to": "2026-12-31"})).json()
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok),
+                           params={"date_to": "2026-12-31"})).json()
+
+    assert abs(journal["total_debit"] - tb["total_debit"]) < 0.01
+    assert abs(journal["total_credit"] - tb["total_credit"]) < 0.01
+    assert gl["balanced"] is True
+
+    tb_net = {l["code"]: l["net"] for l in tb["lines"]}
+    assert abs(tb_net["6960"] - 0.01) < 0.001, "the rounding plug must reach the trial balance"
+    for row in gl["rows"]:
+        signed = row["closing"]
+        if row["account_type"] not in ("asset", "expense", "cogs"):
+            signed = -signed
+        assert abs(signed - tb_net.get(row["code"], 0.0)) < 0.01, row["code"]
+
+    fx_entry = next(e for e in journal["entries"] if e["ts"] == "2026-01-11")
+    assert next(l for l in fx_entry["lines"] if l["account"] == "6100")["fx_debit"] == 33.33
