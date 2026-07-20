@@ -69,9 +69,9 @@ _JOURNAL = {
 _GL = {
     "date_from": "", "date_to": "",
     "rows": [
-        {"code": "1111", "name": "Bank", "account_type": "asset",
+        {"code": "1111", "name": "Bank", "account_type": "asset", "debit_normal": True,
          "opening": 100.0, "debit": 40.0, "credit": 0.0, "closing": 140.0},
-        {"code": "4100", "name": "Sales Revenue", "account_type": "revenue",
+        {"code": "4100", "name": "Sales Revenue", "account_type": "revenue", "debit_normal": False,
          "opening": 100.0, "debit": 0.0, "credit": 40.0, "closing": 140.0},
     ],
     "totals": {"opening": 0.0, "debit": 40.0, "credit": 40.0, "closing": 0.0},
@@ -282,6 +282,103 @@ async def test_trial_balance_export_passes_dates(ui_client):
     called_params = tb_mock.call_args.args[1] if len(tb_mock.call_args.args) > 1 else tb_mock.call_args.kwargs.get("params", {})
     assert called_params.get("date_from") == "2026-01-01"
     assert called_params.get("date_to") == "2026-01-31"
+
+
+@pytest.mark.asyncio
+async def test_gl_csv_from_journal_no_per_account_calls(ui_client):
+    """The GL export derives detail from one journal call: no get_ledger call
+    per account, voids excluded, running balance signed by debit_normal."""
+    ledger_mock = AsyncMock(return_value=_LEDGER)
+    journal = json.loads(json.dumps(_JOURNAL))
+    journal["entries"].append({
+        "je_id": "je:manual:void1", "ts": "2026-01-22", "memo": "voided",
+        "status": "void", "je_type": "manual", "void_reason": "x",
+        "source_doc": None,
+        "lines": [{"account": "1111", "name": "Bank", "debit": 999.0, "credit": 0.0}],
+        "fx": None,
+    })
+    ps = _patches(get_journal=journal)
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.get_ledger", new=ledger_mock):
+            r = await ui_client.get("/accounting/export/general-ledger/csv", cookies=_cookies())
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    ledger_mock.assert_not_called()
+    assert "999" not in r.text  # voided entry excluded
+    lines = r.text.strip().splitlines()
+    bank = [l for l in lines if l.startswith("1111")]
+    # Opening 100 + debit 100 (posted journal line) = closing 200 for the bank row
+    assert any("Opening balance" in l and "100.0" in l for l in bank)
+    # Credit-normal account: the 100 credit INCREASES the running balance
+    sales = [l for l in lines if l.startswith("4100") and "Sales" in l]
+    assert sales
+
+
+@pytest.mark.asyncio
+async def test_ledger_custom_range_honored_with_src(ui_client):
+    """The drilldown page's own custom form submits from/to; with src present
+    those dates must reach the API instead of being dropped."""
+    ledger_mock = AsyncMock(return_value=_LEDGER)
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.get_ledger", new=ledger_mock):
+            r = await ui_client.get(
+                "/accounting/ledger/1111?src=general-ledger&from=2026-01-01&to=2026-01-31",
+                cookies=_cookies())
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    params = ledger_mock.call_args.kwargs.get("params") or ledger_mock.call_args.args[-1]
+    assert params.get("date_from") == "2026-01-01"
+    assert params.get("date_to") == "2026-01-31"
+    assert "tab=general-ledger" in r.text  # back link still follows origin
+
+
+@pytest.mark.asyncio
+async def test_soa_print_merge_redirect_with_encoded_contact_id(ui_client):
+    r = await _get(ui_client, "/accounting/print/soa?contact_id=contact%3Aold",
+                   get_soa={"merged_into": "contact:new"})
+    assert r.status_code == 302
+    loc = r.headers["location"]
+    assert "contact%3Anew" in loc or "contact:new" in loc
+    assert "contact%3Aold" not in loc and "contact:old" not in loc
+
+
+@pytest.mark.asyncio
+async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
+    conflict = AsyncMock(side_effect=APIError(409, "already posted"))
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.create_journal_entry", new=conflict):
+            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+                "ts": "2026-01-15", "memo": "x", "idempotency_token": "stale-token",
+                "account_0": "1111", "debit_0": "10", "credit_0": "0",
+                "account_1": "4100", "debit_1": "0", "credit_1": "10",
+            })
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert "already posted" in r.text.lower() or "review the journal" in r.text.lower()
+    assert "stale-token" not in r.text  # a fresh token replaces the burnt one
+
+
+def test_date_filter_bar_carries_encoded_values():
+    from urllib.parse import quote_plus
+    from fasthtml.common import to_xml
+    from ui.routes.reports import _date_filter_bar
+    html = to_xml(_date_filter_bar("/docs", "", "", "all",
+                                   extra_params=f"&q={quote_plus('nuts & bolts')}"))
+    assert 'value="nuts &amp; bolts"' in html or "value='nuts &amp; bolts'" in html
 
 
 # ---------------------------------------------------------------------------

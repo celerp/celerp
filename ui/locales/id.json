@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "Nama bank dan nomor rekening diperlukan.",
   "acct.closing_balance": "Saldo akhir",
   "acct.create": "Membuat",
+  "acct.err_already_posted": "Entri ini sudah diposting dengan jumlah yang berbeda. Periksa jurnal, lalu posting lagi jika memang diperlukan entri baru.",
   "acct.err_amounts_numeric": "Jumlah debit dan kredit harus berupa angka.",
   "acct.error_loading_data": "Terjadi kesalahan saat memuat data",
   "acct.error_loading_entries": "Terjadi kesalahan saat memuat entri",

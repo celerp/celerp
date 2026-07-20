@@ -454,15 +454,20 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
 
     if not je_ids:
         return {}
-    ledger_events = (
-        await session.execute(
-            select(LedgerEntry).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.event_type == "acc.journal_entry.created",
-                LedgerEntry.entity_id.in_(je_ids),
+    # Chunked IN: asyncpg caps a statement at 32767 bind arguments, and a
+    # mature company's posted-JE list can exceed that.
+    _CHUNK = 10_000
+    ledger_events = []
+    for i in range(0, len(je_ids), _CHUNK):
+        ledger_events.extend((
+            await session.execute(
+                select(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.event_type == "acc.journal_entry.created",
+                    LedgerEntry.entity_id.in_(je_ids[i:i + _CHUNK]),
+                )
             )
-        )
-    ).scalars().all()
+        ).scalars().all())
     je_meta: dict[str, dict] = {}
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
@@ -471,18 +476,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             je_meta[ev.entity_id] = meta
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
-    doc_ids = {m["doc_id"] for m in je_meta.values()}
+    doc_ids = sorted({m["doc_id"] for m in je_meta.values()})
     doc_states: dict[str, dict] = {}
-    if doc_ids:
+    for i in range(0, len(doc_ids), _CHUNK):
         doc_rows = (
             await session.execute(
                 select(Projection).where(
                     Projection.company_id == company_id,
-                    Projection.entity_id.in_(doc_ids),
+                    Projection.entity_id.in_(doc_ids[i:i + _CHUNK]),
                 )
             )
         ).scalars().all()
-        doc_states = {dr.entity_id: dr.state for dr in doc_rows}
+        doc_states.update({dr.entity_id: dr.state for dr in doc_rows})
 
     base = await _base_currency(session, company_id)
     refs: dict[str, dict] = {}
@@ -496,11 +501,12 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             payments = state.get("payments", [])
             if 0 <= payment_index < len(payments):
                 payment = payments[payment_index]
-                # Deleting a payment compacts and reindexes the doc's payments
-                # list, so an older JE's stored index can point at a different
-                # payment. The JE's date is the payment date it was posted for;
-                # on mismatch fall back to the doc-level rate rather than show
-                # another payment's.
+                # Deleted payments tombstone in place, so indices stay stable
+                # going forward; projections built before that change may hold
+                # compacted lists where an older JE's stored index points at a
+                # different payment. The JE's date is the payment date it was
+                # posted for; on mismatch fall back to the doc-level rate
+                # rather than show another payment's.
                 ev_ts = je_ts.get(je_id, "")
                 p_date = str(payment.get("payment_date") or "")[:10]
                 if not ev_ts or not p_date or ev_ts == p_date:
@@ -515,6 +521,19 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "fx": fx,
         }
     return refs
+
+
+def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
+    """(debit, credit) of a JE line as Decimals, or None for a malformed line.
+
+    One rule for every report: a line whose amounts cannot be parsed is skipped
+    the same way everywhere, so the trial balance, journal, ledger, and general
+    ledger always agree on which lines count.
+    """
+    try:
+        return (Decimal(str(entry.get("debit") or 0)), Decimal(str(entry.get("credit") or 0)))
+    except Exception:
+        return None
 
 
 def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
@@ -533,14 +552,10 @@ def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, 
             continue
         for entry in state.get("entries", []):
             code = entry.get("account")
-            if not code:
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
                 continue
-            try:
-                debit = Decimal(str(entry.get("debit") or 0))
-                credit = Decimal(str(entry.get("credit") or 0))
-            except Exception:
-                continue
-            balances[code] = balances.get(code, Decimal(0)) + debit - credit
+            balances[code] = balances.get(code, Decimal(0)) + amounts[0] - amounts[1]
     return balances
 
 
@@ -584,14 +599,17 @@ async def journal(
         lines = []
         for entry in state.get("entries", []):
             code = entry.get("account")
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
             if posted:
-                total_debit += Decimal(str(entry.get("debit") or 0))
-                total_credit += Decimal(str(entry.get("credit") or 0))
+                total_debit += amounts[0]
+                total_credit += amounts[1]
             lines.append({
                 "account": code,
                 "name": account_names.get(code, code),
-                "debit": float(entry.get("debit") or 0),
-                "credit": float(entry.get("credit") or 0),
+                "debit": float(amounts[0]),
+                "credit": float(amounts[1]),
             })
         ref = refs.get(je_id)
         entries_out.append({
@@ -716,8 +734,21 @@ async def create_manual_journal_entry(
         idempotency_key=f"je:manual:{payload.idempotency_token}:c",
         metadata_={},
     )
-    # A retried token dedupes to the original event; answer with that entry's id.
-    je_id = created.entity_id
+    if created.entity_id != je_id:
+        # The token was already used: emit_event returned the original event
+        # instead of inserting. A byte-identical retry (double click, network
+        # replay) answers with the original entry; a DIFFERENT payload on the
+        # same token means the user edited and resubmitted a stale form, and a
+        # success response would describe amounts that were never posted.
+        orig = created.data or {}
+        if (orig.get("ts") != payload.ts
+                or (orig.get("memo") or "") != (payload.memo or "")
+                or orig.get("entries") != entries):
+            raise HTTPException(
+                status_code=409,
+                detail="This entry was already posted with different values. Review the journal before posting again.",
+            )
+        je_id = created.entity_id
     await emit_event(
         session,
         company_id=company_id,
@@ -878,6 +909,7 @@ async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Trial balance: one row per account with debit/credit totals.
@@ -902,10 +934,11 @@ async def trial_balance(
             continue
         for entry in state.get("entries", []):
             code = entry.get("account")
-            if not code:
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
                 continue
             d, c = raw.get(code, (Decimal(0), Decimal(0)))
-            raw[code] = (d + Decimal(str(entry.get("debit") or 0)), c + Decimal(str(entry.get("credit") or 0)))
+            raw[code] = (d + amounts[0], c + amounts[1])
 
     lines = []
     total_debit = Decimal(0)
@@ -961,13 +994,10 @@ async def general_ledger(
     for _, state, ts in posted:
         for entry in state.get("entries", []):
             code = entry.get("account")
-            if not code:
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
                 continue
-            try:
-                d = Decimal(str(entry.get("debit") or 0))
-                c = Decimal(str(entry.get("credit") or 0))
-            except Exception:
-                continue
+            d, c = amounts
             if date_from and ts < date_from:
                 opening_raw[code] = opening_raw.get(code, Decimal(0)) + d - c
                 continue
@@ -1002,6 +1032,9 @@ async def general_ledger(
             "code": code,
             "name": acc.name if acc else code,
             "account_type": account_type,
+            # The sign convention is decided here, once; consumers (UI, CSV)
+            # must use this flag rather than re-deriving it from account_type.
+            "debit_normal": debit_normal,
             "opening": to_stored_float(round_money(signed_opening, base)),
             "debit": to_stored_float(round_money(d, base)),
             "credit": to_stored_float(round_money(c, base)),

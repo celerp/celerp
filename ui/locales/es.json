@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "Se requieren el nombre del banco y el número de cuenta.",
   "acct.closing_balance": "Saldo final",
   "acct.create": "Crear",
+  "acct.err_already_posted": "Este asiento ya se registró con importes distintos. Revise el diario y vuelva a registrar si desea crear un asiento nuevo.",
   "acct.err_amounts_numeric": "Los importes de débito y crédito deben ser números.",
   "acct.error_loading_data": "Error al cargar datos",
   "acct.error_loading_entries": "Error al cargar entradas",

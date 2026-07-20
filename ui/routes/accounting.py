@@ -11,6 +11,7 @@ import json as _json
 import uuid
 import asyncio
 from datetime import date as _date
+from urllib.parse import quote_plus, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -100,10 +101,11 @@ def _href(path: str, params: dict) -> str:
     return f"{path}?{qs}" if qs else path
 
 
-def _soa_merge_redirect(request: Request, contact_id: str, winner: str, base_path: str):
+def _soa_merge_redirect(request: Request, winner: str, base_path: str):
     """Re-point a print/export URL at the merge winner's statement."""
-    qs = request.url.query.replace(f"contact_id={contact_id}", f"contact_id={winner}")
-    return RedirectResponse(f"{base_path}?{qs}", status_code=302)
+    params = dict(request.query_params)
+    params["contact_id"] = winner
+    return RedirectResponse(f"{base_path}?{urlencode(params)}", status_code=302)
 
 
 def _period_subtitle(d_from: str, d_to: str) -> str:
@@ -139,7 +141,10 @@ def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
         if preset and preset != "custom":
             d_from, d_to = _resolve_preset(preset, fy)
             return origin, d_from, d_to, preset
-        d_from, d_to = qp.get("date_from", ""), qp.get("date_to", "")
+        # Drilldown links carry date_from/date_to; the page's own custom-range
+        # form submits from/to.
+        d_from = qp.get("date_from", "") or qp.get("from", "")
+        d_to = qp.get("date_to", "") or qp.get("to", "")
         if d_from or d_to:
             if d_from and d_to and d_from > d_to:
                 d_from, d_to = d_to, d_from
@@ -369,7 +374,7 @@ def setup_routes(app):
                         if d_to:
                             qs += f"&to={d_to}"
                         return RedirectResponse(f"/accounting{qs}", status_code=302)
-                extra = f"&tab=soa&contact_id={contact_id}" if contact_id else "&tab=soa"
+                extra = f"&tab=soa&contact_id={quote_plus(contact_id)}" if contact_id else "&tab=soa"
                 content = Div(
                     Div(
                         _date_filter_bar("/accounting", d_from, d_to, preset,
@@ -520,7 +525,13 @@ def setup_routes(app):
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                error = t("acct.not_authorized") if e.status == 403 else str(e.detail)
+                if e.status == 409:
+                    # Same token, different payload: the original already posted.
+                    # A fresh token lets a deliberately corrected resubmit succeed.
+                    idem_token = str(uuid.uuid4())
+                    error = t("acct.err_already_posted")
+                else:
+                    error = t("acct.not_authorized") if e.status == 403 else str(e.detail)
 
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
@@ -660,7 +671,7 @@ def setup_routes(app):
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            return _soa_merge_redirect(request, contact_id, data["merged_into"], "/accounting/print/soa")
+            return _soa_merge_redirect(request, data["merged_into"], "/accounting/print/soa")
 
         contact = data.get("contact") or {}
         # An outward document: company block (report header), contact block, period, closing.
@@ -853,7 +864,34 @@ def setup_routes(app):
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
             params = _date_params(d_from, d_to)
-            data = await api.get_general_ledger(token, params)
+            # The journal is fetched without date filters: lines dated before the
+            # range are folded into each GL row's opening balance, so the cut
+            # below must mirror the backend's bucketing exactly.
+            data, journal = await asyncio.gather(
+                api.get_general_ledger(token, params),
+                api.get_journal(token, {}),
+            )
+
+            # Per-account detail from posted journal lines, keyed by the line's
+            # literal account code (parent accounts only show their own lines).
+            detail: dict[str, list] = {}
+            for entry in journal.get("entries", []):
+                if entry.get("status") != "posted":
+                    continue
+                ts = str(entry.get("ts") or "")[:10]
+                if d_from and (not ts or ts < d_from):
+                    continue  # inside the GL row's opening balance
+                if d_to and ts > d_to:
+                    continue
+                source = entry.get("source_doc") or {}
+                source_ref = source.get("doc_ref") or source.get("doc_id") or _je_source_label(entry, csv_export=True)
+                memo = entry.get("memo", "")
+                for line in entry.get("lines", []):
+                    detail.setdefault(line.get("account", ""), []).append((
+                        ts, source_ref, memo,
+                        to_decimal(line.get("debit") or 0),
+                        to_decimal(line.get("credit") or 0),
+                    ))
 
             buf = io.StringIO()
             w = csv.writer(buf)
@@ -861,18 +899,13 @@ def setup_routes(app):
             for row in data.get("rows", []):
                 code = row.get("code", "")
                 name = row.get("name", "")
-                debit_normal = row.get("account_type") in ("asset", "expense", "cogs")
+                debit_normal = row.get("debit_normal")
                 opening = row.get("opening", 0)
                 _csv_row(w, [code, name, "", "", "Opening balance", "", "", opening])
                 running = to_decimal(opening)
-                ledger = await api.get_ledger(token, code, params)
-                for line in ledger.get("lines", []):
-                    debit = to_decimal(line.get("debit") or 0)
-                    credit = to_decimal(line.get("credit") or 0)
+                for ts, source_ref, memo, debit, credit in detail.get(code, []):
                     running += (debit - credit) if debit_normal else (credit - debit)
-                    _csv_row(w, [code, name, line.get("date", ""),
-                                 line.get("doc_ref") or line.get("doc_id") or "",
-                                 line.get("memo", ""),
+                    _csv_row(w, [code, name, ts, source_ref, memo,
                                  float(debit), float(credit), float(running)])
                 _csv_row(w, [code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
         except APIError as e:
@@ -902,7 +935,7 @@ def setup_routes(app):
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            return _soa_merge_redirect(request, contact_id, data["merged_into"], "/accounting/export/soa/csv")
+            return _soa_merge_redirect(request, data["merged_into"], "/accounting/export/soa/csv")
 
         buf = io.StringIO()
         w = csv.writer(buf)

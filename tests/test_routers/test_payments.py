@@ -589,8 +589,8 @@ async def test_void_payment_without_refund_date_works(client):
 
 
 @pytest.mark.asyncio
-async def test_delete_payment_removes_row_and_voids_je(client):
-    """DELETE /docs/{id}/payments/{index} removes the payment row entirely
+async def test_delete_payment_tombstones_row_and_voids_je(client):
+    """DELETE /docs/{id}/payments/{index} tombstones the payment in place
     and restores amount_outstanding to its pre-payment value."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
@@ -608,15 +608,17 @@ async def test_delete_payment_removes_row_and_voids_je(client):
     assert r.status_code == 200, r.text
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
-    assert len(doc["payments"]) == 0
+    assert len(doc["payments"]) == 1
+    assert doc["payments"][0]["status"] == "deleted"
     assert doc["amount_paid"] == 0.0
     assert doc["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
     assert doc["status"] == "final"
 
 
 @pytest.mark.asyncio
-async def test_delete_payment_reindexes_remaining(client):
-    """After deleting payment[0] from a two-payment doc, payment[1] becomes index=0."""
+async def test_delete_payment_keeps_indices_stable(client):
+    """Payment indices are identity (journal-entry ids and idempotency keys
+    embed them), so deleting payment[0] must not shift payment[1]."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 200.0)
 
@@ -632,10 +634,41 @@ async def test_delete_payment_reindexes_remaining(client):
     assert r.status_code == 200
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
-    assert len(doc["payments"]) == 1
-    assert doc["payments"][0]["index"] == 0
-    assert doc["payments"][0]["amount"] == pytest.approx(60.0, abs=0.01)
+    assert len(doc["payments"]) == 2
+    assert doc["payments"][0]["status"] == "deleted"
+    assert doc["payments"][1]["status"] == "active"
+    assert doc["payments"][1]["index"] == 1
+    assert doc["payments"][1]["amount"] == pytest.approx(60.0, abs=0.01)
     assert doc["amount_paid"] == pytest.approx(60.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_payment_after_deletion_gets_its_own_journal_entry(client):
+    """A payment recorded after a deletion must post its own journal entry:
+    the freed slot stays occupied, so the new payment's index (and therefore
+    its journal-entry idempotency key) never collides with the deleted one."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-25", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][1]["index"] == 1
+    assert doc["status"] == "paid"
+
+    # The new payment's JE exists and is posted: the bank ledger shows the
+    # 2026-01-25 receipt, so cash is not understated.
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    new_lines = [l for l in ledger["lines"] if l["date"] == "2026-01-25"]
+    assert new_lines and new_lines[0]["debit"] == pytest.approx(100.0, abs=0.01)
 
 
 @pytest.mark.asyncio

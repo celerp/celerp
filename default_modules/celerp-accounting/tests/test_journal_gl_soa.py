@@ -571,8 +571,8 @@ async def test_manual_je_rejects_non_finite_amounts(client):
 
 @pytest.mark.asyncio
 async def test_journal_fx_survives_payment_deletion(client):
-    """Deleting a payment reindexes the doc's payments list; a surviving
-    payment JE must not display another payment's exchange rate."""
+    """Deleting a payment tombstones it in place; a surviving payment JE
+    keeps resolving its own exchange rate, never another payment's."""
     tok = await _reg(client)
     await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
     inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
@@ -593,11 +593,11 @@ async def test_journal_fx_survives_payment_deletion(client):
                  if e.get("source_doc") and e["source_doc"]["doc_id"] == inv
                  and e["ts"] == "2026-02-10" and e["status"] == "posted"]
     assert surviving
-    # The surviving JE's stored index (1) is now out of range against the
-    # compacted one-payment list, so the guard falls back to the doc-level
-    # rate. It must never show the deleted payment's 34.0.
+    # Deletion tombstones in place, so the surviving JE's stored index still
+    # points at its own payment and resolves its own rate. It must never show
+    # the deleted payment's 34.0.
     fx = surviving[0].get("fx") or {}
-    assert fx.get("rate") == 35.0
+    assert fx.get("rate") == 36.5
 
 
 @pytest.mark.asyncio
@@ -624,6 +624,103 @@ async def test_journal_fx_keeps_own_rate_when_earlier_payment_survives(client):
                  and e["ts"] == "2026-02-05" and e["status"] == "posted"]
     assert surviving
     assert (surviving[0].get("fx") or {}).get("rate") == 34.0
+
+
+@pytest.mark.asyncio
+async def test_trial_balance_requires_manager(client, session):
+    admin = await _reg(client)
+    operator = await _user_with_role(client, session, admin, "operator")
+    assert (await client.get("/accounting/trial-balance", headers=_h(operator))).status_code == 403
+    assert (await client.get("/accounting/trial-balance", headers=_h(admin))).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
+    tok = await _reg(client)
+    shared = uuid.uuid4().hex
+    r1 = await _post_manual_je(client, tok, _bal(25.0), token=shared)
+    assert r1.status_code == 200
+    r2 = await _post_manual_je(client, tok, _bal(99.0), token=shared)
+    assert r2.status_code == 409
+    assert "already posted" in r2.json()["detail"].lower()
+    # The books still hold only the original entry
+    entries = (await _journal(client, tok))["entries"]
+    assert len(entries) == 1
+    assert abs(entries[0]["lines"][0]["debit"] - 25.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_revert_to_draft_blocked_in_locked_period(client):
+    """Reverting an invoice voids its finalize entry, so a lock on that
+    period must block the revert instead of letting the books change."""
+    tok = await _reg(client)
+    inv = await _invoice(client, tok, total=100.0, issue_date="2026-01-10")
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    await client.post("/accounting/period-lock", headers=_h(tok),
+                      json={"lock_date": "2026-01-31"})
+
+    r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(tok), json={})
+    assert r.status_code == 422, r.text
+    assert "locked" in r.json()["detail"].lower()
+    # The finalize entry still stands
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
+                           params={"date_to": "2026-01-31"})).json()
+    ar = [l for l in tb["lines"] if l["code"] == "1120"]
+    assert ar and abs(ar[0]["total_debit"] - 100.0) < 0.01
+
+    # Unlock and the revert goes through
+    await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": None})
+    r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(tok), json={})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_blocked_in_locked_period(client):
+    tok = await _reg(client)
+    inv = await _invoice(client, tok, total=100.0, issue_date="2026-01-10")
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(tok), json={
+        "payment_date": "2026-01-15", "amount": 100.0, "method": "transfer", "bank_account": "1111"})
+    assert r.status_code == 200
+    await client.post("/accounting/period-lock", headers=_h(tok),
+                      json={"lock_date": "2026-01-31"})
+
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(tok))
+    assert r.status_code == 422, r.text
+    assert "locked" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_batch_import_tolerates_null_amounts(client):
+    """External serializers emit explicit nulls for optional numerics; the
+    shape-permissive import contract must keep accepting them."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}",
+        "event_type": "acc.journal_entry.created",
+        "data": {"status": "posted", "ts": "2026-01-15", "entries": [
+            {"account": "1111", "debit": 10.0, "credit": None},
+            {"account": None, "debit": None, "credit": None},
+            {"account": "4100", "debit": None, "credit": 10.0},
+        ]},
+        "source": "test",
+        "idempotency_key": str(uuid.uuid4()),
+    }]})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
+    bank = [l for l in tb["lines"] if l["code"] == "1111"]
+    assert bank and abs(bank[0]["total_debit"] - 10.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_general_ledger_rows_carry_debit_normal(client):
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(50.0), ts="2026-01-10")
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    rows = {r["code"]: r for r in gl["rows"]}
+    assert rows["1111"]["debit_normal"] is True
+    assert rows["4100"]["debit_normal"] is False
 
 
 # ---------------------------------------------------------------------------

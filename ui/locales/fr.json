@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "Le nom de la banque et le numéro de compte sont requis.",
   "acct.closing_balance": "Solde de clôture",
   "acct.create": "Créer",
+  "acct.err_already_posted": "Cette écriture a déjà été enregistrée avec des montants différents. Vérifiez le journal, puis enregistrez à nouveau si une nouvelle écriture est voulue.",
   "acct.err_amounts_numeric": "Les montants débit et crédit doivent être des nombres.",
   "acct.error_loading_data": "Erreur de chargement des données",
   "acct.error_loading_entries": "Erreur lors du chargement des entrées",

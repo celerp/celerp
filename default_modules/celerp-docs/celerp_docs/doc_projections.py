@@ -189,9 +189,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         idx = data["payment_index"]
         payments = current.get("payments", [])
         if 0 <= idx < len(payments):
-            del payments[idx]
-            for i, p in enumerate(payments):
-                p["index"] = i
+            # Tombstone in place, never compact: payment indices are identity.
+            # Journal-entry ids and idempotency keys embed the index, so a
+            # removed slot must stay occupied or a later payment would reuse
+            # the index and its journal entry would dedupe into the old one,
+            # silently posting nothing.
+            payments[idx]["status"] = "deleted"
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
             total = to_decimal(current.get("total", 0))
             outstanding = max(Decimal(0), total - active_total)

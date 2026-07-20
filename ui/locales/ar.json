@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "مطلوب اسم البنك ورقم الحساب.",
   "acct.closing_balance": "الرصيد الختامي",
   "acct.create": "يخلق",
+  "acct.err_already_posted": "تم ترحيل هذا القيد مسبقاً بمبالغ مختلفة. راجع دفتر اليومية، ثم رحّل مرة أخرى إذا كان المقصود قيداً جديداً.",
   "acct.err_amounts_numeric": "يجب أن تكون مبالغ المدين والدائن أرقاماً.",
   "acct.error_loading_data": "حدث خطأ أثناء تحميل البيانات",
   "acct.error_loading_entries": "حدث خطأ أثناء تحميل الإدخالات",

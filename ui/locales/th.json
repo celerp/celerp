@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "ต้องระบุชื่อธนาคารและหมายเลขบัญชี",
   "acct.closing_balance": "ยอดคงเหลือปลายงวด",
   "acct.create": "สร้าง",
+  "acct.err_already_posted": "รายการนี้ถูกบันทึกไปแล้วด้วยจำนวนเงินที่ต่างกัน ตรวจสอบสมุดรายวัน แล้วบันทึกอีกครั้งหากต้องการรายการใหม่",
   "acct.err_amounts_numeric": "จำนวนเดบิตและเครดิตต้องเป็นตัวเลข",
   "acct.error_loading_data": "เกิดข้อผิดพลาดในการโหลดข้อมูล",
   "acct.error_loading_entries": "เกิดข้อผิดพลาดในการโหลดรายการ",

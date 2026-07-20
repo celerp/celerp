@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "Nome banca e numero di conto sono obbligatori.",
   "acct.closing_balance": "Saldo di chiusura",
   "acct.create": "Crea",
+  "acct.err_already_posted": "Questa registrazione è già stata effettuata con importi diversi. Controlla il libro giornale, poi registra di nuovo se serve una nuova registrazione.",
   "acct.err_amounts_numeric": "Gli importi dare e avere devono essere numeri.",
   "acct.error_loading_data": "Errore nel caricamento dei dati",
   "acct.error_loading_entries": "Errore nel caricamento delle voci",

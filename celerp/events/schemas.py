@@ -751,11 +751,13 @@ class MpOrderCancelled(BaseModel):
 
 
 class JELine(BaseModel):
-    # account defaults empty rather than required: batch import is shape-permissive,
-    # and every reader (reports, reducers) already skips lines with no account code.
-    account: str = ""
-    debit: float = 0
-    credit: float = 0
+    # Every field tolerates absence AND explicit null: batch import is
+    # shape-permissive (external serializers commonly emit null for optional
+    # numerics), and every reader already skips empty accounts and coerces
+    # null amounts with `or 0`.
+    account: str | None = ""
+    debit: float | None = 0
+    credit: float | None = 0
 
 
 class AccJournalEntryCreated(BaseModel):
@@ -775,6 +777,10 @@ class AccJournalEntryPosted(BaseModel):
 
 class AccJournalEntryVoided(BaseModel):
     reason: str | None = None
+    # The voided entry's effective date. Emitters set it so the period-lock
+    # check evaluates the entry's own date; a void without it is checked
+    # against today and could mutate a locked period.
+    ts: str | None = None
 
 
 class AccPeriodClosed(BaseModel):

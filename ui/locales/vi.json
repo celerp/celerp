@@ -14,6 +14,7 @@
   "acct.bank_name_and_account_number_are_required": "Tên ngân hàng và số tài khoản là bắt buộc.",
   "acct.closing_balance": "Số dư cuối kỳ",
   "acct.create": "Tạo nên",
+  "acct.err_already_posted": "Bút toán này đã được ghi với số tiền khác. Kiểm tra sổ nhật ký, sau đó ghi lại nếu cần bút toán mới.",
   "acct.err_amounts_numeric": "Số tiền nợ và có phải là số.",
   "acct.error_loading_data": "Lỗi tải dữ liệu",
   "acct.error_loading_entries": "Lỗi tải mục",

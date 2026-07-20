@@ -1210,6 +1210,11 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         extra_data["doc_type"] = "purchase_order"
         extra_data["ref_id"] = state["source_po_ref"]
 
+    # Void the finalize JE first: it raises when the entry's date sits in a
+    # locked period, and nothing may mutate before that check passes.
+    # Pass current revert_count (before this revert increments it).
+    current_revert_count = int(state.get("revert_count", 0))
+    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.reverted_to_draft",
@@ -1217,9 +1222,6 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Void the finalize JE - pass current revert_count (before this revert increments it)
-    current_revert_count = int(state.get("revert_count", 0))
-    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -1578,7 +1580,7 @@ async def delete_payment(
     """Delete a payment entirely (data-entry error correction).
 
     Unlike void-payment (which creates a reversal JE visible in the bank ledger as a
-    refund), delete removes the payment from the doc projection and voids the original
+    refund), delete tombstones the payment on the doc projection and voids the original
     JE so it disappears from all reports. Use only for payments that were never real.
 
     Blocked if the payment JE has been reconciled in a closed reconciliation session.
@@ -1626,7 +1628,23 @@ async def delete_payment(
                 sl.matched_je_id = None
                 sl.status = "unmatched"
 
-    # Emit doc.payment.deleted - projection removes the row and re-indexes
+    # Void the original payment JE first so it disappears from the bank ledger
+    # and reports. The void carries the entry's own date, so a payment inside a
+    # locked period is rejected here before anything mutates.
+    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if je_row is not None and je_row.state.get("status") == "posted":
+        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa: PLC0415
+        await emit_event(
+            session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data={"reason": f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip(),
+                  "ts": je_row.state.get("ts")},
+            actor_id=user.id, location_id=None, source="auto_je",
+            idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
+            metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
+        )
+
+    # Emit doc.payment.deleted - projection tombstones the row in place
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.deleted",
@@ -1635,19 +1653,6 @@ async def delete_payment(
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-
-    # Void the original payment JE so it disappears from bank ledger + reports
-    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if je_row is not None and je_row.state.get("status") == "posted":
-        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa: PLC0415
-        await emit_event(
-            session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-            event_type="acc.journal_entry.voided",
-            data={"reason": f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip()},
-            actor_id=user.id, location_id=None, source="auto_je",
-            idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
-            metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
-        )
 
     await session.commit()
     return {"event_id": entry.id}
