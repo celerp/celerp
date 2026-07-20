@@ -1343,9 +1343,11 @@ def _fx_line_amounts(debit: float, credit: float, fx: dict | None,
     if fx_debit is not None or fx_credit is not None:
         return (fx_debit, fx_credit)
     rate = (fx or {}).get("rate") or 0
-    if not rate:
+    fx_currency = (fx or {}).get("currency")
+    # A rate with no currency cannot be formatted: the amount would be rounded
+    # at a defaulted precision and shown under a currency nobody recorded.
+    if not rate or not fx_currency:
         return (None, None)
-    fx_currency = fx.get("currency")
     rate_d = to_decimal(rate)
     fx_debit = float(round_money(to_decimal(debit) / rate_d, fx_currency)) if debit else None
     fx_credit = float(round_money(to_decimal(credit) / rate_d, fx_currency)) if credit else None

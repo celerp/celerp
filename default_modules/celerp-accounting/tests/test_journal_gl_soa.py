@@ -1236,3 +1236,17 @@ async def test_manual_je_fx_rounding_line_claims_no_foreign_amount(client):
     plug = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
                 if l["account"] == "6960")
     assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
+
+
+async def test_manual_je_fx_residual_stays_within_its_bound(client):
+    """A large rate scales the bound with it, so an honest conversion never
+    trips the sanity check that guards the plug."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 300.25})
+    assert r.status_code == 200, r.text

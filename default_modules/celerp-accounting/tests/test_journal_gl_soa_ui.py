@@ -666,3 +666,12 @@ async def test_je_form_keeps_currency_and_rate_after_a_failed_submit(ui_client):
     # The reveal is reopened so the user can see what was refused.
     assert '<details open class="je-fx-reveal"' in html
     assert 'value="35.5"' in html
+
+
+def test_fx_line_amounts_blank_when_currency_missing():
+    """A rate with no currency cannot be formatted: rounding it at a defaulted
+    precision and showing it under an unknown currency is a fabricated figure."""
+    from ui.routes.accounting import _fx_line_amounts
+
+    assert _fx_line_amounts(100.0, 0, {"currency": None, "rate": 35.0}) == (None, None)
+    assert _fx_line_amounts(100.0, 0, {"rate": 35.0}) == (None, None)

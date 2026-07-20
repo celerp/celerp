@@ -22,7 +22,7 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
 from celerp.services.je_keys import je_void_data
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
 
 router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
@@ -840,6 +840,19 @@ async def create_manual_journal_entry(
         # The difference is posted as its own visible line rather than folded
         # into a real account, where it would silently misstate that account.
         residual = local_credit - local_debit
+        # Provably bounded: each line rounds by at most half a smallest unit of
+        # the foreign currency before conversion, and by at most half a smallest
+        # unit of the base currency after it. Breaching this would mean the
+        # conversion arithmetic is wrong, not that the user typed something odd,
+        # so it fails as a server error rather than posting a number that failed
+        # its own sanity check.
+        half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
+        half_base = Decimal(10) ** -currency_dp(base) / 2
+        ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
+        assert abs(residual) <= ceiling, (
+            f"exchange rounding residual {residual} exceeds the bound {ceiling} "
+            f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
+        )
         if residual != 0:
             rounding = account_map.get(FX_ROUNDING_ACCOUNT)
             if not rounding or not rounding.is_active:
