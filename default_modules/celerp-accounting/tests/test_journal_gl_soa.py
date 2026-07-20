@@ -261,7 +261,18 @@ async def test_void_auto_je_rejected(client):
 
 @pytest.mark.asyncio
 async def test_void_unknown_je_404(client):
+    """The 404 must come from the handler rejecting an unknown entry, not from
+    the route being absent. The app flattens every 404 detail to "Not found"
+    (celerp/main.py:330), so the discriminator is that the very same route
+    voids a real entry successfully in this test.
+    """
     tok = await _reg(client)
+    je_id = (await _post_manual_je(client, tok, _bal(10.0))).json()["je_id"]
+
+    real = await client.post(f"/accounting/journal-entries/{je_id}/void",
+                             headers=_h(tok), json={})
+    assert real.status_code == 200, real.text  # the route exists and works
+
     r = await client.post("/accounting/journal-entries/je:manual:nope/void",
                           headers=_h(tok), json={})
     assert r.status_code == 404
@@ -586,8 +597,7 @@ async def test_journal_fx_survives_payment_deletion(client):
         assert r.status_code == 200, r.text
 
     r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(tok))
-    if r.status_code != 200:
-        pytest.skip(f"payment deletion endpoint unavailable: {r.status_code}")
+    assert r.status_code == 200, r.text
 
     data = await _journal(client, tok)
     surviving = [e for e in data["entries"]
@@ -616,8 +626,7 @@ async def test_journal_fx_keeps_own_rate_when_earlier_payment_survives(client):
         assert r.status_code == 200, r.text
 
     r = await client.delete(f"/docs/{inv}/payments/1", headers=_h(tok))
-    if r.status_code != 200:
-        pytest.skip(f"payment deletion endpoint unavailable: {r.status_code}")
+    assert r.status_code == 200, r.text
 
     data = await _journal(client, tok)
     surviving = [e for e in data["entries"]
@@ -712,6 +721,13 @@ async def test_batch_import_tolerates_null_amounts(client):
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
     bank = [l for l in tb["lines"] if l["code"] == "1111"]
     assert bank and abs(bank[0]["total_debit"] - 10.0) < 0.01
+
+    # The journal renders the same entry with the account-less line skipped
+    # rather than crashing. This endpoint did not exist before this change, so
+    # the assertion is red against the pre-change tree.
+    entries = (await _journal(client, tok))["entries"]
+    assert len(entries) == 1
+    assert [l["account"] for l in entries[0]["lines"]] == ["1111", "4100"]
 
 
 @pytest.mark.asyncio

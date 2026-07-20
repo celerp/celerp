@@ -55,6 +55,7 @@
   "acct.section_other": "Autres",
   "acct.section_revenue": "Revenus",
   "acct.soa_kind_payment": "Paiement",
+  "acct.soa_merged_notice": "Ce releve concerne le contact dans lequel celui-ci a ete fusionne.",
   "acct.soa_pick_contact": "Sélectionnez un client ou un fournisseur pour afficher son relevé.",
   "acct.soa_title": "Relevé de compte",
   "acct.source_manual": "Manuel",

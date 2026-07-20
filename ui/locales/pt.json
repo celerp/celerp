@@ -55,6 +55,7 @@
   "acct.section_other": "Outros",
   "acct.section_revenue": "Receita",
   "acct.soa_kind_payment": "Pagamento",
+  "acct.soa_merged_notice": "Este extrato refere-se ao contato no qual este foi mesclado.",
   "acct.soa_pick_contact": "Selecione um cliente ou fornecedor para ver o extrato.",
   "acct.soa_title": "Extrato de conta",
   "acct.source_manual": "Manual",

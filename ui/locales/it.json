@@ -55,6 +55,7 @@
   "acct.section_other": "Altro",
   "acct.section_revenue": "Ricavi",
   "acct.soa_kind_payment": "Pagamento",
+  "acct.soa_merged_notice": "Questo estratto conto e relativo al contatto in cui questo e stato unito.",
   "acct.soa_pick_contact": "Seleziona un cliente o fornitore per vedere l'estratto conto.",
   "acct.soa_title": "Estratto conto",
   "acct.source_manual": "Manuale",

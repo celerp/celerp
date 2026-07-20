@@ -55,6 +55,7 @@
   "acct.section_other": "Otros",
   "acct.section_revenue": "Ingresos",
   "acct.soa_kind_payment": "Pago",
+  "acct.soa_merged_notice": "Este estado de cuenta corresponde al contacto con el que se fusiono este.",
   "acct.soa_pick_contact": "Selecciona un cliente o proveedor para ver su estado de cuenta.",
   "acct.soa_title": "Estado de cuenta",
   "acct.source_manual": "Manual",

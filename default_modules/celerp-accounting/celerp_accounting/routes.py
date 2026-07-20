@@ -608,7 +608,10 @@ async def journal(
         for entry in state.get("entries", []):
             code = entry.get("account")
             amounts = _line_amounts(entry)
-            if amounts is None:
+            # Same rule as every other report: a line with no account code or
+            # unparsable amounts is skipped, so the journal never shows a row
+            # the trial balance and general ledger do not count.
+            if not code or amounts is None:
                 continue
             if posted:
                 total_debit += amounts[0]

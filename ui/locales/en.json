@@ -55,6 +55,7 @@
   "acct.section_other": "Other",
   "acct.section_revenue": "Revenue",
   "acct.soa_kind_payment": "Payment",
+  "acct.soa_merged_notice": "This statement is for the contact that this one was merged into.",
   "acct.soa_pick_contact": "Select a customer or supplier to view their statement.",
   "acct.soa_title": "Statement of Account",
   "acct.source_manual": "Manual",

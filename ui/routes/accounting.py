@@ -113,10 +113,18 @@ def _href(path: str, params: dict) -> str:
     return f"{path}?{qs}" if qs else path
 
 
-def _soa_merge_redirect(request: Request, winner: str, base_path: str):
-    """Re-point a print/export URL at the merge winner's statement."""
+def _soa_merge_redirect(request: Request, winner: str, base_path: str, requested: str = ""):
+    """Re-point a print/export URL at the merge winner's statement.
+
+    Carries the contact that was asked for so the printed page and the exported
+    file both state whose statement this actually is: substituting one party's
+    figures for another's without saying so would be a silent swap on an
+    outward-facing document.
+    """
     params = dict(request.query_params)
     params["contact_id"] = winner
+    if requested and requested != winner:
+        params["merged_from"] = requested
     return RedirectResponse(f"{base_path}?{urlencode(params)}", status_code=302)
 
 
@@ -379,8 +387,12 @@ def setup_routes(app):
                     winner = data.get("merged_into") or (data.get("contact") or {}).get("id") or contact_id
                     if winner != contact_id:
                         # Merged contact: keep the URL on the merge winner so the
-                        # bookmarkable state matches what is shown.
-                        qs = f"?tab=soa&contact_id={winner}"
+                        # bookmarkable state matches what is shown, and carry the
+                        # contact that was asked for so the destination can say
+                        # whose statement this actually is (GDR 2d: never
+                        # substitute data silently).
+                        qs = (f"?tab=soa&contact_id={quote_plus(winner)}"
+                              f"&merged_from={quote_plus(contact_id)}")
                         if d_from:
                             qs += f"&from={d_from}"
                         if d_to:
@@ -398,7 +410,8 @@ def setup_routes(app):
                         cls="flex-row flex-between",
                     ),
                     _soa_view(data, contacts, contact_id, currency,
-                              date_from=d_from or "", date_to=d_to or ""),
+                              date_from=d_from or "", date_to=d_to or "",
+                              merged_from=request.query_params.get("merged_from", "")),
                 )
             else:
                 return RedirectResponse("/accounting", status_code=302)
@@ -683,11 +696,14 @@ def setup_routes(app):
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            return _soa_merge_redirect(request, data["merged_into"], "/accounting/print/soa")
+            return _soa_merge_redirect(request, data["merged_into"], "/accounting/print/soa",
+                                       requested=contact_id)
 
         contact = data.get("contact") or {}
         # An outward document: company block (report header), contact block, period, closing.
         body = Div(
+            (P(t("acct.soa_merged_notice"), cls="report-section")
+             if request.query_params.get("merged_from") else None),
             Div(
                 H3(t("label.contact"), cls="report-section-title"),
                 P(contact.get("name", "")),
@@ -919,11 +935,16 @@ def setup_routes(app):
         except APIError as e:
             return _plain_error_response(e)
         if data.get("merged_into"):
-            return _soa_merge_redirect(request, data["merged_into"], "/accounting/export/soa/csv")
+            return _soa_merge_redirect(request, data["merged_into"], "/accounting/export/soa/csv",
+                                       requested=contact_id)
 
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["date", "ref", "kind", "debit", "credit", "balance"])
+        if request.query_params.get("merged_from"):
+            # The exported file states the substitution too: a spreadsheet
+            # outlives the redirect that produced it.
+            _csv_row(w, ["", "", t("acct.soa_merged_notice"), "", "", ""])
         _csv_row(w, [d_from, "", "Opening balance", "", "", data.get("opening_balance", 0)])
         for row in data.get("rows", []):
             _csv_row(w, [row.get("date", ""), row.get("doc_ref") or row.get("doc_id") or "",
@@ -1319,8 +1340,12 @@ def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
         return fmt_money(val, currency) if val else ""
 
     def _void_action(entry: dict) -> FT:
-        if not (entry.get("je_type") == "manual" and entry.get("status") == "posted"):
+        if entry.get("status") != "posted":
             return Td("")
+        # Auto-posted entries keep the control and are refused by the server with
+        # an explanation naming the source document. Removing the button instead
+        # would leave the user guessing why an entry cannot be voided (GDR 2e:
+        # validate at the function level, never restrict the interface).
         return Td(Details(
             Summary(t("btn.void"), cls="btn btn--danger btn--sm"),
             Form(
@@ -1420,9 +1445,11 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
         Td(searchable_select(f"account_{idx}", acct_opts, value=line.get("account", ""),
                              placeholder=t("th.account"), cls_extra="cell-input")),
         Td(Input(type="number", name=f"debit_{idx}", value=line.get("debit", ""), step="any",
-                 min="0", cls="cell-input", oninput="celerpJeTotals()"), cls="cell--number"),
+                 min="0", cls="cell-input", oninput="celerpJeTotals()",
+                 onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"), cls="cell--number"),
         Td(Input(type="number", name=f"credit_{idx}", value=line.get("credit", ""), step="any",
-                 min="0", cls="cell-input", oninput="celerpJeTotals()"), cls="cell--number"),
+                 min="0", cls="cell-input", oninput="celerpJeTotals()",
+                 onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"), cls="cell--number"),
         Td(Button("✕", type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
                   onclick="celerpJeRemoveLine(this)")),
     )
@@ -1480,7 +1507,8 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
             Div(
                 Div(
                     Label(t("th.date"), cls="form-label"),
-                    Input(type="date", name="ts", value=ts, cls="date-input", required=True),
+                    Input(type="date", name="ts", value=ts, cls="date-input", required=True,
+                  onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"),
                 ),
                 Div(
                     Label(t("th.memo"), cls="form-label"),
@@ -1650,7 +1678,8 @@ def _soa_table(data: dict, currency: str | None = None,
 
 
 def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
-              currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
+              currency: str | None = None, date_from: str = "", date_to: str = "",
+              merged_from: str = "") -> FT:
     opts = [
         (c.get("id", ""), f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
         for c in contacts if c.get("id")
@@ -1667,4 +1696,8 @@ def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
     )
     if not contact_id or data is None:
         return Div(selector, empty_state_cta(t("acct.soa_pick_contact")))
-    return Div(selector, _soa_table(data, currency, date_from, date_to))
+    # The requested contact was merged into this one, so the figures below are
+    # not the contact that was asked for. Say so, on screen and on anything
+    # printed from it (GDR 2d).
+    notice = (Div(t("acct.soa_merged_notice"), cls="error-banner") if merged_from else None)
+    return Div(selector, notice, _soa_table(data, currency, date_from, date_to))

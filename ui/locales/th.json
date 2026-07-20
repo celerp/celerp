@@ -55,6 +55,7 @@
   "acct.section_other": "อื่นๆ",
   "acct.section_revenue": "รายได้",
   "acct.soa_kind_payment": "การชำระเงิน",
+  "acct.soa_merged_notice": "ใบแจ้งยอดนี้เป็นของผู้ติดต่อที่รายนี้ถูกรวมเข้าไป",
   "acct.soa_pick_contact": "เลือกลูกค้าหรือซัพพลายเออร์เพื่อดูใบแจ้งยอด",
   "acct.soa_title": "ใบแจ้งยอดบัญชี",
   "acct.source_manual": "ด้วยตนเอง",

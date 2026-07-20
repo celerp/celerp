@@ -146,7 +146,7 @@ async def test_journal_tab_renders(ui_client):
     assert "INV-1" in html
     # Newest entry (2026-01-20) renders before the older one
     assert html.index("2026-01-20") < html.index("2026-01-15")
-    # Manual entries offer void; auto entries do not
+    # Every posted entry offers void; the server explains any refusal
     assert "void" in html.lower()
 
 
@@ -200,6 +200,36 @@ async def test_soa_tab_renders(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_void_control_shown_for_auto_entries(ui_client):
+    """The control stays on auto-posted entries; the server explains the refusal.
+    Hiding it would leave the user guessing why an entry cannot be voided."""
+    r = await _get(ui_client, "/accounting?tab=journal")
+    assert r.status_code == 200
+    # Two posted entries in the fixture, one manual and one auto-generated;
+    # both carry a void control.
+    assert r.text.count("/void") >= 2
+
+
+@pytest.mark.asyncio
+async def test_soa_merge_substitution_is_disclosed(ui_client):
+    """Landing on the merge winner's statement must say so, on screen and on
+    anything printed or exported from it."""
+    page = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:9&merged_from=contact:old")
+    assert page.status_code == 200
+    assert "merged into" in page.text
+
+    printed = await _get(ui_client,
+                         "/accounting/print/soa?contact_id=contact:9&merged_from=contact:old")
+    assert printed.status_code == 200
+    assert "merged into" in printed.text
+
+    csv_out = await _get(ui_client,
+                         "/accounting/export/soa/csv?contact_id=contact:9&merged_from=contact:old")
+    assert csv_out.status_code == 200
+    assert "merged into" in csv_out.text
+
+
+@pytest.mark.asyncio
 async def test_soa_tab_without_contact_prompts(ui_client):
     r = await _get(ui_client, "/accounting?tab=soa")
     assert r.status_code == 200
@@ -211,7 +241,11 @@ async def test_soa_merged_contact_redirects(ui_client):
     r = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:old",
                    get_soa={"merged_into": "contact:new"})
     assert r.status_code in (302, 303)
-    assert "contact:new" in r.headers["location"]
+    loc = r.headers["location"]
+    assert "contact_id=contact%3Anew" in loc or "contact_id=contact:new" in loc
+    # The contact that was asked for rides along so the destination can disclose
+    # the substitution, but it is never the contact being shown.
+    assert "merged_from" in loc
 
 
 @pytest.mark.asyncio
@@ -386,8 +420,9 @@ async def test_soa_print_merge_redirect_with_encoded_contact_id(ui_client):
                    get_soa={"merged_into": "contact:new"})
     assert r.status_code == 302
     loc = r.headers["location"]
-    assert "contact%3Anew" in loc or "contact:new" in loc
-    assert "contact%3Aold" not in loc and "contact:old" not in loc
+    assert "contact_id=contact%3Anew" in loc or "contact_id=contact:new" in loc
+    assert "contact_id=contact%3Aold" not in loc and "contact_id=contact:old" not in loc
+    assert "merged_from" in loc
 
 
 @pytest.mark.asyncio

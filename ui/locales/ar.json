@@ -55,6 +55,7 @@
   "acct.section_other": "أخرى",
   "acct.section_revenue": "الإيرادات",
   "acct.soa_kind_payment": "دفعة",
+  "acct.soa_merged_notice": "هذا الكشف يخص جهة الاتصال التي تم دمج هذه الجهة فيها.",
   "acct.soa_pick_contact": "اختر عميلاً أو مورداً لعرض كشف الحساب.",
   "acct.soa_title": "كشف حساب",
   "acct.source_manual": "يدوي",

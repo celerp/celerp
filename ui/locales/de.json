@@ -55,6 +55,7 @@
   "acct.section_other": "Sonstige",
   "acct.section_revenue": "Umsatz",
   "acct.soa_kind_payment": "Zahlung",
+  "acct.soa_merged_notice": "Dieser Auszug gehoert zu dem Kontakt, in den dieser zusammengefuehrt wurde.",
   "acct.soa_pick_contact": "Kunde oder Lieferant auswählen, um den Kontoauszug anzuzeigen.",
   "acct.soa_title": "Kontoauszug",
   "acct.source_manual": "Manuell",

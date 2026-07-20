@@ -55,6 +55,7 @@
   "acct.section_other": "その他",
   "acct.section_revenue": "収益",
   "acct.soa_kind_payment": "支払",
+  "acct.soa_merged_notice": "この明細書は、この連絡先の統合先の連絡先のものです。",
   "acct.soa_pick_contact": "取引明細書を表示する顧客または仕入先を選択してください。",
   "acct.soa_title": "取引明細書",
   "acct.source_manual": "手動",
