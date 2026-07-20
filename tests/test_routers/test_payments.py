@@ -776,6 +776,52 @@ async def test_void_cn_application_posts_no_bank_movement(client):
 
 
 @pytest.mark.asyncio
+async def test_cn_refund_credits_the_bank(client):
+    """Refunding a credit note pays money OUT: the bank account is credited,
+    never debited."""
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 60.0, "line_total": 60.0}],
+        "subtotal": 60.0, "tax": 0.0, "total": 60.0,
+    })
+    assert r.status_code == 200
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
+        "amount": 60.0, "date": "2026-03-05", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    refund_lines = [l for l in ledger["lines"] if l["date"] == "2026-03-05"]
+    assert refund_lines
+    assert refund_lines[0]["credit"] == pytest.approx(60.0, abs=0.01)
+    assert refund_lines[0]["debit"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_delete_cn_settlement_blocked(client):
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 30.0, "line_total": 30.0}],
+        "subtotal": 30.0, "tax": 0.0, "total": 30.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                          json={"target_doc_id": inv, "amount": 30.0})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    cn_pay = next(p for p in doc["payments"] if p.get("method") == "credit_note")
+    r = await client.delete(f"/docs/{inv}/payments/{cn_pay['index']}", headers=_h(token))
+    assert r.status_code == 422
+    assert "void" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_unvoid_blocked_in_locked_period(client):
     """Unvoiding an invoice restores its finalize entry on the invoice's own
     date, so a lock over that period must block the unvoid."""

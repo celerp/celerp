@@ -805,6 +805,37 @@ async def test_close_year_zeroes_revenue_expense_cogs(client):
     assert abs(nets.get("3200", 0.0) + 300.0) < 0.01
 
 
+@pytest.mark.asyncio
+async def test_close_year_rerun_posts_residual(client):
+    """Re-closing a year after an unlock-edit cycle posts a NEW residual
+    closing entry instead of silently deduping into the first close."""
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 500.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 500.0},
+    ], ts="2026-03-01")
+    r = await client.post("/accounting/close-year", headers=_h(tok),
+                          json={"fiscal_year_end": "2026-12-31"})
+    assert r.status_code == 200, r.text
+
+    # Unlock, backdate more revenue into the closed year, re-close.
+    await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": None})
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 200.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 200.0},
+    ], ts="2026-06-01")
+    assert r.status_code == 200, r.text
+    r = await client.post("/accounting/close-year", headers=_h(tok),
+                          json={"fiscal_year_end": "2026-12-31"})
+    assert r.status_code == 200, r.text
+
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
+                           params={"date_to": "2027-01-01"})).json()
+    nets = {l["code"]: l["net"] for l in tb["lines"]}
+    assert abs(nets.get("4100", 0.0)) < 0.01  # revenue fully closed after the re-run
+    assert abs(nets.get("3200", 0.0) + 700.0) < 0.01  # both closes in retained earnings
+
+
 # ---------------------------------------------------------------------------
 # Cross-report consistency
 # ---------------------------------------------------------------------------

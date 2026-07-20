@@ -107,13 +107,16 @@ async def _check_missing_jes(
                           and p.get("method") not in ("credit_note", "applied")]
             # Docs compacted by pre-tombstone deletions renumbered their index
             # fields while minted keys kept the originals. When at least as
-            # many pay keys exist as active bank payments, every payment is
-            # covered under some historical index - repairing by today's
-            # fields would double-post, so the doc is treated as healthy.
+            # many pay keys exist as bank payments EVER recorded (voided and
+            # tombstoned ones minted keys too), every payment is covered under
+            # some historical index - repairing by today's fields would
+            # double-post, so the doc is treated as healthy.
+            _bank_all = [p for p in (state.get("payments") or [])
+                         if p.get("method") not in ("credit_note", "applied")]
             _pay_key_prefix = f"je:{entity_id}:invoice.paid:"
             _minted = sum(1 for k in existing_keys
                           if k.startswith(_pay_key_prefix) and k.endswith(":c"))
-            if _minted < len(_bank_pays):
+            if _minted < len(_bank_all):
                 for pay in _bank_pays:
                     _idx = pay.get("index", 0)
                     pay_key = je_idempotency_key(entity_id, f"invoice.paid:{_idx}", "c")

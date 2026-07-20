@@ -579,10 +579,12 @@ async def journal(
     hiding voids would misstate it - but they are excluded from the period totals.
     """
     rows = await _je_rows(session, company_id, include_void=True)
-    # Dateless JEs are always included, matching the per-account ledger.
+    # Dateless JEs count as pre-period, exactly like the trial balance,
+    # general ledger, and per-account ledger: excluded once a start date is
+    # set, included otherwise, so period totals cross-foot between reports.
     rows = [
         r for r in rows
-        if not (r[2] and date_from and r[2] < date_from)
+        if not (date_from and (not r[2] or r[2] < date_from))
         and not (r[2] and date_to and r[2] > date_to)
     ]
     # Sort by date with entity_id as the deterministic, replay-stable tiebreak.
@@ -2760,13 +2762,26 @@ async def close_fiscal_year(
         "credit": net_float if net_float >= 0 else 0.0,
     })
 
-    # Emit the closing JE
-    je_id = f"je:close:{year_end}"
+    # Emit the closing JE. Cycle-aware: re-closing the same year after an
+    # unlock-edit cycle must post a NEW residual entry, not silently dedupe
+    # into the first close's keys and report success while posting nothing.
     from celerp.events.engine import emit_event
+    from celerp.models.ledger import LedgerEntry
     from celerp.services.je_keys import je_idempotency_key
 
-    idem_create = je_idempotency_key(year_end, "fiscal.close", "c")
-    idem_posted = je_idempotency_key(year_end, "fiscal.close", "p")
+    _cycle = sum(
+        1 for k in (await session.execute(
+            select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.idempotency_key.like(f"je:{year_end}:fiscal.close%"),
+            )
+        )).scalars().all()
+        if k.endswith(":c")
+    )
+    _cycle_tag = f":{_cycle}" if _cycle else ""
+    je_id = f"je:close:{year_end}{_cycle_tag}"
+    idem_create = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "c")
+    idem_posted = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "p")
 
     await emit_event(
         session,

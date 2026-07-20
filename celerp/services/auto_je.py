@@ -132,6 +132,13 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
             {"account": "2110", "debit": base_amount, "credit": 0.0},
             {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
         ]
+    elif doc_type == "credit_note":
+        # Cash refund of a credit note: money LEAVES the bank and the credit
+        # balance the note held against AR is cleared.
+        entries = [
+            {"account": "1120", "debit": base_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+        ]
     else:
         entries = [
             {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
@@ -200,7 +207,10 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}",
+        # Entity id carries the application's index: the same credit note can
+        # be applied to the same invoice more than once, and each application
+        # must be a distinct entry so voiding one never erases another.
+        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}:{payment_index}",
         idem_create=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "p"),
         memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
@@ -596,6 +606,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": _INVENTORY_ACCT, "debit": float(total_cogs), "credit": 0.0},
             {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
@@ -619,6 +630,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
@@ -657,6 +669,7 @@ async def create_for_receive_undone(
         idem_create=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {bill_id} goods-received undone",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": "2110", "debit": float(total_cost), "credit": 0.0},
             {"account": credit_account, "debit": 0.0, "credit": float(total_cost)},
@@ -675,6 +688,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_create=je_idempotency_key(order_id, "mfg.completed", "c"),
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": _INVENTORY_ACCT, "debit": output_cost, "credit": 0.0},
             {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
@@ -721,6 +735,7 @@ async def create_for_audit_adjustment(
         idem_create=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "p"),
         memo=f"Inventory audit adjustment {list_id}",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=entries,
         metadata_={"trigger": "audit.adjusted", "list_id": list_id},
     )
