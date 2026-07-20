@@ -95,9 +95,21 @@ def _date_params(d_from: str, d_to: str) -> dict:
     return {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
 
 
+def _fname_date(v: str) -> str:
+    """A date for a download filename: digits and dashes only, else 'all'.
+
+    Filenames land in a Content-Disposition header, so raw query text must
+    never reach them (header parameter injection, latin-1 encoding errors).
+    """
+    v = (v or "")[:10]
+    return v if re.fullmatch(r"[0-9-]+", v) else "all"
+
+
 def _href(path: str, params: dict) -> str:
-    """path?k=v joining only non-empty params; bare path when none."""
-    qs = "&".join(f"{k}={v}" for k, v in params.items() if v)
+    """path?k=v joining only non-empty params, values URL-encoded; bare path
+    when none. Encoded values also keep header-borne redirects (HX-Redirect,
+    Location) free of raw user text."""
+    qs = urlencode({k: v for k, v in params.items() if v})
     return f"{path}?{qs}" if qs else path
 
 
@@ -727,7 +739,7 @@ def setup_routes(app):
         w.writerow(["Net Profit", "", "", data.get("net_profit", 0), ""])
 
         buf.seek(0)
-        fname = f"pnl_{d_from or 'all'}_{d_to or 'all'}.csv"
+        fname = f"pnl_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -756,7 +768,7 @@ def setup_routes(app):
             w.writerow([])
 
         buf.seek(0)
-        fname = f"balance_sheet_{as_of}.csv"
+        fname = f"balance_sheet_{_fname_date(as_of)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -785,7 +797,7 @@ def setup_routes(app):
         w.writerow(["TOTAL", "", data.get("total_debit", 0), data.get("total_credit", 0)])
 
         buf.seek(0)
-        fname = f"trial_balance_{d_from or 'all'}_{d_to or 'all'}.csv"
+        fname = f"trial_balance_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -848,7 +860,7 @@ def setup_routes(app):
                 ])
 
         buf.seek(0)
-        fname = f"journal_{d_from or 'all'}_{d_to or 'all'}.csv"
+        fname = f"journal_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -863,35 +875,10 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            # The journal is fetched without date filters: lines dated before the
-            # range are folded into each GL row's opening balance, so the cut
-            # below must mirror the backend's bucketing exactly.
-            data, journal = await asyncio.gather(
-                api.get_general_ledger(token, params),
-                api.get_journal(token, {}),
-            )
-
-            # Per-account detail from posted journal lines, keyed by the line's
-            # literal account code (parent accounts only show their own lines).
-            detail: dict[str, list] = {}
-            for entry in journal.get("entries", []):
-                if entry.get("status") != "posted":
-                    continue
-                ts = str(entry.get("ts") or "")[:10]
-                if d_from and (not ts or ts < d_from):
-                    continue  # inside the GL row's opening balance
-                if d_to and ts > d_to:
-                    continue
-                source = entry.get("source_doc") or {}
-                source_ref = source.get("doc_ref") or source.get("doc_id") or _je_source_label(entry, csv_export=True)
-                memo = entry.get("memo", "")
-                for line in entry.get("lines", []):
-                    detail.setdefault(line.get("account", ""), []).append((
-                        ts, source_ref, memo,
-                        to_decimal(line.get("debit") or 0),
-                        to_decimal(line.get("credit") or 0),
-                    ))
+            # One call: the backend buckets summary and detail together, so the
+            # export can never disagree with the on-screen general ledger.
+            data = await api.get_general_ledger(
+                token, {**_date_params(d_from, d_to), "include_lines": "1"})
 
             buf = io.StringIO()
             w = csv.writer(buf)
@@ -903,16 +890,18 @@ def setup_routes(app):
                 opening = row.get("opening", 0)
                 _csv_row(w, [code, name, "", "", "Opening balance", "", "", opening])
                 running = to_decimal(opening)
-                for ts, source_ref, memo, debit, credit in detail.get(code, []):
+                for line in row.get("lines", []):
+                    debit = to_decimal(line.get("debit") or 0)
+                    credit = to_decimal(line.get("credit") or 0)
                     running += (debit - credit) if debit_normal else (credit - debit)
-                    _csv_row(w, [code, name, ts, source_ref, memo,
-                                 float(debit), float(credit), float(running)])
+                    _csv_row(w, [code, name, line.get("date", ""), line.get("source_ref") or "",
+                                 line.get("memo", ""), float(debit), float(credit), float(running)])
                 _csv_row(w, [code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
         except APIError as e:
             return _plain_error_response(e)
 
         buf.seek(0)
-        fname = f"general_ledger_{d_from or 'all'}_{d_to or 'all'}.csv"
+        fname = f"general_ledger_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",
@@ -950,7 +939,7 @@ def setup_routes(app):
         buf.seek(0)
         contact_name = (data.get("contact") or {}).get("name") or contact_id
         contact_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contact_name).strip("_") or "contact"
-        fname = f"soa_{contact_slug}_{d_from or 'all'}_{d_to or 'all'}.csv"
+        fname = f"soa_{contact_slug}_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
         return StreamingResponse(
             iter([buf.read()]),
             media_type="text/csv",

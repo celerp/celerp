@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -11,7 +12,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -20,6 +21,7 @@ from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
+from celerp.services.je_keys import je_void_data
 from celerp.services.money import round_money, to_decimal, to_stored_float
 
 router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
@@ -439,6 +441,13 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return (company.settings or {}).get("currency", "USD") if company else "USD"
 
 
+def _id_chunks(ids: list[str], size: int = 10_000):
+    """Slices for IN() clauses: asyncpg caps a statement at 32767 bind
+    arguments, and a mature company's id lists can exceed that."""
+    for i in range(0, len(ids), size):
+        yield ids[i:i + size]
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
@@ -454,17 +463,14 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
 
     if not je_ids:
         return {}
-    # Chunked IN: asyncpg caps a statement at 32767 bind arguments, and a
-    # mature company's posted-JE list can exceed that.
-    _CHUNK = 10_000
     ledger_events = []
-    for i in range(0, len(je_ids), _CHUNK):
+    for chunk in _id_chunks(je_ids):
         ledger_events.extend((
             await session.execute(
                 select(LedgerEntry).where(
                     LedgerEntry.company_id == company_id,
                     LedgerEntry.event_type == "acc.journal_entry.created",
-                    LedgerEntry.entity_id.in_(je_ids[i:i + _CHUNK]),
+                    LedgerEntry.entity_id.in_(chunk),
                 )
             )
         ).scalars().all())
@@ -478,12 +484,12 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
 
     doc_ids = sorted({m["doc_id"] for m in je_meta.values()})
     doc_states: dict[str, dict] = {}
-    for i in range(0, len(doc_ids), _CHUNK):
+    for chunk in _id_chunks(doc_ids):
         doc_rows = (
             await session.execute(
                 select(Projection).where(
                     Projection.company_id == company_id,
-                    Projection.entity_id.in_(doc_ids[i:i + _CHUNK]),
+                    Projection.entity_id.in_(chunk),
                 )
             )
         ).scalars().all()
@@ -499,14 +505,14 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         payment_index = meta.get("payment_index")
         if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided"):
             payments = state.get("payments", [])
-            if 0 <= payment_index < len(payments):
-                payment = payments[payment_index]
-                # Deleted payments tombstone in place, so indices stay stable
-                # going forward; projections built before that change may hold
-                # compacted lists where an older JE's stored index points at a
-                # different payment. The JE's date is the payment date it was
-                # posted for; on mismatch fall back to the doc-level rate
-                # rather than show another payment's.
+            # Payments are identified by their index FIELD (stable since
+            # deletions tombstone in place). Projections compacted before that
+            # change may hold rewritten fields pointing at a different payment,
+            # so the JE's date (the payment date it was posted for) is checked;
+            # on mismatch fall back to the doc-level rate rather than show
+            # another payment's.
+            payment = next((p for p in payments if p.get("index") == payment_index), None)
+            if payment is not None:
                 ev_ts = je_ts.get(je_id, "")
                 p_date = str(payment.get("payment_date") or "")[:10]
                 if not ev_ts or not p_date or ev_ts == p_date:
@@ -660,6 +666,11 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
+    # Strict YYYY-MM-DD: reports filter and sort by lexical string compare, so
+    # variants fromisoformat tolerates (basic 20260105, week dates) would sort
+    # outside their real period and vanish from date-bounded reports.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload.ts or ""):
+        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
     try:
         date.fromisoformat(payload.ts)
     except ValueError:
@@ -692,8 +703,8 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail=f"Account {line.account} is inactive.")
         children = children_of.get(line.account)
         if children:
-            # Parent accounts roll their children up in reports; a posting here would
-            # display twice (once on the parent, once folded into each child ledger).
+            # Parent accounts are grouping rollups (the balance sheet sums their
+            # children); postings belong on leaf accounts.
             raise HTTPException(
                 status_code=422,
                 detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
@@ -734,19 +745,29 @@ async def create_manual_journal_entry(
         idempotency_key=f"je:manual:{payload.idempotency_token}:c",
         metadata_={},
     )
-    if created.entity_id != je_id:
+    if getattr(created, "was_deduped", False):
         # The token was already used: emit_event returned the original event
         # instead of inserting. A byte-identical retry (double click, network
         # replay) answers with the original entry; a DIFFERENT payload on the
         # same token means the user edited and resubmitted a stale form, and a
         # success response would describe amounts that were never posted.
         orig = created.data or {}
+
+        def _norm(lines: list) -> list:
+            # Compare money as rounded Decimals so a byte-identical retry never
+            # trips on float representation differences across storage layers.
+            out = []
+            for l in lines or []:
+                amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
+                out.append((l.get("account"), round_money(amounts[0], base), round_money(amounts[1], base)))
+            return out
+
         if (orig.get("ts") != payload.ts
                 or (orig.get("memo") or "") != (payload.memo or "")
-                or orig.get("entries") != entries):
+                or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,
-                detail="This entry was already posted with different values. Review the journal before posting again.",
+                detail="This entry was already posted with different amounts. Review the journal, then post again if a new entry is intended.",
             )
         je_id = created.entity_id
     await emit_event(
@@ -755,7 +776,7 @@ async def create_manual_journal_entry(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": payload.ts},
         actor_id=user.id,
         location_id=None,
         source="manual",
@@ -800,12 +821,7 @@ async def void_manual_journal_entry(
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
     reason = payload.reason if payload else None
-    data: dict = {"reason": reason}
-    entry_ts = str(state.get("ts") or "")[:10]
-    if entry_ts:
-        # The void reverses balances on the entry's original date; carrying that date
-        # lets the shared period-lock check reject voids into a locked period.
-        data["ts"] = entry_ts
+    data = je_void_data(reason, state)
     await emit_event(
         session,
         company_id=company_id,
@@ -843,24 +859,13 @@ async def account_ledger(
     posted = await _je_rows(session, company_id)
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
-    # If this account has a parent that has sub-accounts, also include entries posted
-    # directly to the parent (legacy JEs from before the sub-account split).
-    # This ensures e.g. 1130-P ledger shows old 1130 entries alongside new 1130-P entries.
-    parent_legacy_codes: set[str] = set()
-    if account and account.parent_code:
-        sibling_count = (
-            await session.execute(
-                select(func.count()).select_from(Account).where(
-                    Account.company_id == company_id,
-                    Account.parent_code == account.parent_code,
-                )
-            )
-        ).scalar()
-        if sibling_count and sibling_count > 1:
-            parent_legacy_codes.add(account.parent_code)
-    match_codes = {account_code} | parent_legacy_codes
+    # Lines are matched by the literal account code, exactly like the trial
+    # balance, journal, and general ledger bucket them, so the drilldown always
+    # reconciles with the report row it was opened from. Legacy entries posted
+    # directly to a parent code appear on the parent's own ledger.
+    match_codes = {account_code}
 
-    # Filter to lines that touch this account (or its legacy parent), apply date filter
+    # Filter to lines that touch this account, apply date filter
     lines = []
     for je_id, state, ts in posted:
         # Dateless JEs (ts="") are always included - hiding them would be worse than showing them.
@@ -871,6 +876,9 @@ async def account_ledger(
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
                 continue
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
             ref = refs.get(je_id) or {}
             lines.append({
                 "date": ts,
@@ -878,8 +886,8 @@ async def account_ledger(
                 "memo": state.get("memo", ""),
                 "doc_id": ref.get("doc_id"),
                 "doc_ref": ref.get("doc_ref"),
-                "debit": float(entry.get("debit") or 0),
-                "credit": float(entry.get("credit") or 0),
+                "debit": float(amounts[0]),
+                "credit": float(amounts[1]),
             })
 
     # Sort chronologically for running balance
@@ -971,6 +979,7 @@ async def trial_balance(
 async def general_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
+    include_lines: bool = False,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
@@ -991,7 +1000,9 @@ async def general_ledger(
     opening_raw: dict[str, Decimal] = {}
     period_debit: dict[str, Decimal] = {}
     period_credit: dict[str, Decimal] = {}
-    for _, state, ts in posted:
+    detail: dict[str, list] = {}
+    detail_jes: set[str] = set()
+    for je_id, state, ts in posted:
         for entry in state.get("entries", []):
             code = entry.get("account")
             amounts = _line_amounts(entry)
@@ -1005,6 +1016,21 @@ async def general_ledger(
                 continue
             period_debit[code] = period_debit.get(code, Decimal(0)) + d
             period_credit[code] = period_credit.get(code, Decimal(0)) + c
+            if include_lines:
+                detail.setdefault(code, []).append({
+                    "date": ts, "je_id": je_id, "memo": state.get("memo", ""),
+                    "debit": float(d), "credit": float(c),
+                })
+                detail_jes.add(je_id)
+
+    detail_refs: dict[str, dict] = {}
+    if include_lines and detail_jes:
+        detail_refs = await _je_doc_refs(session, company_id, sorted(detail_jes))
+        for rows_for_code in detail.values():
+            rows_for_code.sort(key=lambda l: (l["date"], l["je_id"]))
+            for line in rows_for_code:
+                ref = detail_refs.get(line["je_id"]) or {}
+                line["source_ref"] = ref.get("doc_ref")
 
     base = await _base_currency(session, company_id)
     rows_out = []
@@ -1028,7 +1054,7 @@ async def general_ledger(
         tot_debit += d
         tot_credit += c
         tot_closing += signed_closing
-        rows_out.append({
+        row_out = {
             "code": code,
             "name": acc.name if acc else code,
             "account_type": account_type,
@@ -1039,7 +1065,10 @@ async def general_ledger(
             "debit": to_stored_float(round_money(d, base)),
             "credit": to_stored_float(round_money(c, base)),
             "closing": to_stored_float(round_money(signed_closing, base)),
-        })
+        }
+        if include_lines:
+            row_out["lines"] = detail.get(code, [])
+        rows_out.append(row_out)
 
     return {
         "date_from": date_from,
@@ -1402,7 +1431,10 @@ async def _compute_bank_balance(
     for _, state, _ in await _je_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == chart_account_code:
-                net += Decimal(str(entry.get("debit") or 0)) - Decimal(str(entry.get("credit") or 0))
+                amounts = _line_amounts(entry)
+                if amounts is None:
+                    continue
+                net += amounts[0] - amounts[1]
     return float(net)
 
 
@@ -1543,7 +1575,7 @@ async def create_bank_account(
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.posted",
-            data={},
+            data={"ts": today},
             actor_id=user.id,
             location_id=None,
             source="bank_account_opening",
@@ -1679,7 +1711,7 @@ async def create_transfer(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": payload.date},
         actor_id=user.id,
         location_id=None,
         source="transfer",
@@ -1776,13 +1808,16 @@ async def _je_entries_for_account(
     for je_id, state, _ in await _je_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == account_code:
+                amounts = _line_amounts(entry)
+                if amounts is None:
+                    continue
                 result.append({
                     "je_id": je_id,
                     "ts": state.get("ts") or state.get("created_at") or "",
                     "memo": state.get("memo", ""),
-                    "debit": float(entry.get("debit") or 0),
-                    "credit": float(entry.get("credit") or 0),
-                    "amount": float(entry.get("debit") or 0) - float(entry.get("credit") or 0),
+                    "debit": float(amounts[0]),
+                    "credit": float(amounts[1]),
+                    "amount": float(amounts[0] - amounts[1]),
                 })
     result.sort(key=lambda x: x["ts"])
     return result
@@ -2240,7 +2275,7 @@ async def create_je_from_line(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": entry_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -2301,7 +2336,7 @@ async def split_stmt_line(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": sl.line_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -2484,7 +2519,7 @@ async def write_off_difference(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": recon.statement_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -2751,7 +2786,7 @@ async def close_fiscal_year(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": year_end},
         actor_id=user.id,
         location_id=None,
         source="fiscal_close",

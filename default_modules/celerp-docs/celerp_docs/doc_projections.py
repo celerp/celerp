@@ -156,7 +156,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({
-            "index": len(current["payments"]),
+            # The recorder allocates the index and skips any value a journal
+            # entry was ever minted with (docs compacted by pre-tombstone
+            # deletions can have minted indices beyond the list length), so a
+            # payment's index field, not its list position, is its identity.
+            "index": data.get("index", len(current["payments"])),
             "amount": float(data["amount"]),
             "currency": data.get("currency"),
             "method": data.get("method"),
@@ -175,35 +179,63 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "doc.payment.voided":
         idx = data["payment_index"]
         payments = current.get("payments", [])
-        if 0 <= idx < len(payments):
-            payments[idx]["status"] = "voided"
-            payments[idx]["void_reason"] = data.get("void_reason")
-            payments[idx]["refund_date"] = data.get("refund_date")
+        # Payments are identified by their index FIELD (list position can lag
+        # behind on docs compacted by pre-tombstone deletions).
+        target = next((p for p in payments if p.get("index") == idx), None)
+        if target is not None:
+            target["status"] = "voided"
+            target["void_reason"] = data.get("void_reason")
+            target["refund_date"] = data.get("refund_date")
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
             total = to_decimal(current.get("total", 0))
-            outstanding = max(Decimal(0), total - active_total)
-            current["amount_paid"] = to_stored_float(active_total)
+            # Refunds adjust amount_paid without a payments[] row, so a recompute
+            # from the list alone would silently restore refunded amounts.
+            refunded = to_decimal(current.get("total_refunded", 0))
+            paid = max(Decimal(0), active_total - refunded)
+            outstanding = max(Decimal(0), total - paid)
+            current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if active_total > 0 else "final")
+            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
     elif event_type == "doc.payment.deleted":
         idx = data["payment_index"]
         payments = current.get("payments", [])
-        if 0 <= idx < len(payments):
+        if data.get("tombstone"):
             # Tombstone in place, never compact: payment indices are identity.
             # Journal-entry ids and idempotency keys embed the index, so a
             # removed slot must stay occupied or a later payment would reuse
             # the index and its journal entry would dedupe into the old one,
-            # silently posting nothing.
-            payments[idx]["status"] = "deleted"
+            # silently posting nothing. Lookup is by index FIELD, since list
+            # position can lag on docs compacted by pre-tombstone deletions.
+            target = next((p for p in payments if p.get("index") == idx), None)
+            changed = target is not None
+            if changed:
+                target["status"] = "deleted"
+        else:
+            # Deletion events written before the tombstone flag compacted the
+            # list positionally; replaying them must keep doing exactly that,
+            # because every later event in those streams references the
+            # compacted positions.
+            changed = 0 <= idx < len(payments)
+            if changed:
+                del payments[idx]
+                for i, p in enumerate(payments):
+                    p["index"] = i
+        if changed:
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
             total = to_decimal(current.get("total", 0))
-            outstanding = max(Decimal(0), total - active_total)
-            current["amount_paid"] = to_stored_float(active_total)
+            refunded = to_decimal(current.get("total_refunded", 0))
+            paid = max(Decimal(0), active_total - refunded)
+            outstanding = max(Decimal(0), total - paid)
+            current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if active_total > 0 else "final")
+            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
     elif event_type == "doc.payment.refunded":
         refunded = to_decimal(data["amount"])
         total = to_decimal(current.get("total", 0))
+        # Tracked so later void/delete recomputes (which rebuild amount_paid
+        # from the payments list) keep the refund subtracted.
+        current["total_refunded"] = to_stored_float(
+            to_decimal(current.get("total_refunded", 0)) + refunded)
         paid = max(Decimal(0), to_decimal(current.get("amount_paid", 0)) - refunded)
         outstanding = max(Decimal(0), total - paid)
         current["amount_paid"] = to_stored_float(paid)

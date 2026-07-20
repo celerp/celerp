@@ -460,6 +460,9 @@ class DocRevertedToDraft(BaseModel):
     reason: str | None = None
     doc_type: str | None = None  # for PO->bill revert: restored doc_type
     ref_id: str | None = None    # for PO->bill revert: restored ref_id
+    # The document's own date: the revert restates that period, so the period
+    # lock evaluates it even when no posted finalize JE exists to void.
+    ts: str | None = None
 
 
 class DocUnvoided(BaseModel):
@@ -504,6 +507,13 @@ class DocPaymentDeleted(BaseModel):
     delete_reason: str | None = None
     amount: float | None = None     # deleted payment amount, for the history detail
     method: str | None = None
+    # True on events written since deletion started tombstoning the payment in
+    # place; absent on the compaction-era events, whose replay must keep
+    # compacting because later events reference the compacted indices.
+    tombstone: bool = False
+    # The payment's own date: the period lock evaluates the deletion against
+    # the payment's period even when there is no posted JE to void.
+    ts: str | None = None
 
 
 class DocConverted(BaseModel):
@@ -773,6 +783,10 @@ class AccJournalEntryCreated(BaseModel):
 
 class AccJournalEntryPosted(BaseModel):
     posted_at: str | None = None
+    # The entry's effective date, mirrored from the created event so the
+    # period-lock check evaluates the entry's period for both halves of the
+    # created/posted pair (a dateless posted event is checked against today).
+    ts: str | None = None
 
 
 class AccJournalEntryVoided(BaseModel):

@@ -3238,7 +3238,7 @@ celerpUpdateBulkAlloc();
             breadcrumbs([("Dashboard", "/dashboard"), ("Payments", None)]),
             page_header("Payments"),
             tabs,
-            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={tab}{extra_params}", lang=lang),
+            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={quote_plus(tab)}{extra_params}", lang=lang),
             summary_bar,
             filter_bar,
             payment_table,

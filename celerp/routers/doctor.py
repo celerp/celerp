@@ -35,7 +35,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.je_keys import je_idempotency_key
+from celerp.services.je_keys import je_idempotency_key, je_void_data
 
 router = APIRouter()
 
@@ -98,15 +98,22 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            # Check payment JE (payment keys are cumulative-paid scoped)
-            amount_paid = float(state.get("amount_paid", 0) or 0)
-            if amount_paid > 0:
-                paid_key = str(int(round(amount_paid * 100)))
-                pay_key = je_idempotency_key(entity_id, "invoice.paid", "c")
+            # Check payment JEs: one per recorded ACTIVE payment, keyed by that
+            # payment's own index (the key auto_je actually mints). Tombstoned
+            # deletions keep their slots, so indices identify payments exactly.
+            for pay in (state.get("payments") or []):
+                if pay.get("status") != "active":
+                    continue
+                _idx = pay.get("index", 0)
+                pay_key = je_idempotency_key(entity_id, f"invoice.paid:{_idx}", "c")
                 if pay_key not in existing_keys:
-                    missing.append({"doc_id": entity_id, "trigger": "payment", "amount": amount_paid})
+                    missing.append({"doc_id": entity_id, "trigger": "payment",
+                                    "amount": pay.get("amount"), "payment_index": _idx})
                     if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, payment_index=len(state.get("payments", [])) - 1 if state.get("payments") else 0)
+                        await _emit_payment_je(session, company_id, user_id, entity_id,
+                                               float(pay.get("amount") or 0), state,
+                                               payment_index=_idx,
+                                               payment=pay)
                         existing_keys.add(pay_key)
                         fixed += 1
 
@@ -168,7 +175,7 @@ async def _check_duplicate_jes(
                 await emit_event(
                     session, company_id=company_id, entity_id=dup.entity_id,
                     entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data={"reason": "Doctor: duplicate JE"},
+                    data=je_void_data("Doctor: duplicate JE", dup.data or {}),
                     actor_id=user_id, location_id=None, source="doctor",
                     idempotency_key=f"doctor:void:{dup.idempotency_key}",
                     metadata_={"voided_by": "doctor", "kept_id": keep.id},
@@ -331,7 +338,7 @@ async def _check_zero_amount_jes(
                     await emit_event(
                         session, company_id=company_id, entity_id=je.entity_id,
                         entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                        data={"reason": "Doctor: zero-amount JE"},
+                        data=je_void_data("Doctor: zero-amount JE", ev.data or {}),
                         actor_id=user_id, location_id=None, source="doctor",
                         idempotency_key=f"doctor:void-zero:{ev.idempotency_key}",
                         metadata_={"voided_by": "doctor"},
@@ -431,6 +438,7 @@ async def _emit_payment_je(
     state: dict,
     *,
     payment_index: int = 0,
+    payment: dict | None = None,
 ) -> None:
     """Delegate to auto_je.create_for_doc_payment for DRY compliance.
 
@@ -439,14 +447,16 @@ async def _emit_payment_je(
     This is the one legitimate fallback - historical repair where real bank is unknowable.
     """
     from celerp.services import auto_je as _auto_je
-    bank_code = (state.get("payments") or [{}])[0].get("bank_account") or "1111"  # Doctor fallback: default bank always exists
-    ts = state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat()
+    payment = payment or {}
+    bank_code = payment.get("bank_account") or "1111"  # Doctor fallback: default bank always exists
+    ts = (payment.get("payment_date") or state.get("issue_date") or state.get("created_at")
+          or __import__("datetime").date.today().isoformat())
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         amount=amount, payment_index=payment_index,
         bank_account_code=bank_code,
         doc_type=state.get("doc_type", "invoice"),
-        payment_date=ts,
+        payment_date=str(ts)[:10],
     )
 
 

@@ -14,7 +14,7 @@ from decimal import Decimal as _Dec
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.je_keys import je_idempotency_key
+from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
@@ -71,7 +71,7 @@ async def _emit_auto_posted_je(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": ts} if ts else {},
         actor_id=user_id,
         location_id=None,
         source="auto_je",
@@ -434,10 +434,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
                 entity_id=je_id,
                 entity_type="journal_entry",
                 event_type="acc.journal_entry.voided",
-                # ts: the void's effective date is the entry's own date, so the
-                # period lock blocks reverts that would mutate a locked period.
-                data={"reason": f"Reversed: {doc_id} reverted to draft",
-                      "ts": row.state.get("ts")},
+                data=je_void_data(f"Reversed: {doc_id} reverted to draft", row.state),
                 actor_id=user_id,
                 location_id=None,
                 source="auto_je",
@@ -571,8 +568,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": f"Reversed: {doc_id} fulfillment reversed",
-                  "ts": row.state.get("ts")},
+            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -738,8 +734,7 @@ async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: st
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": f"Reversed: audit {list_id} stock adjustment undone",
-                  "ts": row.state.get("ts")},
+            data=je_void_data(f"Reversed: audit {list_id} stock adjustment undone", row.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -846,6 +841,28 @@ async def upsert_opening_inventory_je(
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
             return  # already correct and has a date, nothing to do
 
+    # This upsert runs inside report views (balance sheet), so a period lock on
+    # the OB entry must degrade to "leave the books as they are" - a report GET
+    # can never fail because the lock forbids restating the opening balance.
+    # Both halves (void + repost) are lock-checked BEFORE anything mutates, so
+    # a lock can never leave a half-done restatement behind.
+    from datetime import date as _date
+
+    from fastapi import HTTPException as _HTTPExc
+
+    from celerp.events.engine import _check_period_lock
+
+    today = str(_date.today())
+    try:
+        if ob_proj and ob_proj.state.get("status") == "posted":
+            await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
+        if needed >= 0.01:
+            await _check_period_lock(session, company_id, {"ts": today})
+    except _HTTPExc as exc:
+        if exc.status_code == 422 and "locked" in str(exc.detail).lower():
+            return
+        raise
+
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
         from celerp.events.engine import emit_event as _emit
@@ -855,7 +872,7 @@ async def upsert_opening_inventory_je(
             entity_id=ob_je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": "opening inventory amount updated"},
+            data=je_void_data("opening inventory amount updated", ob_proj.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -866,8 +883,6 @@ async def upsert_opening_inventory_je(
     if needed < 0.01:
         return  # gap closed, no new JE needed
 
-    from datetime import date as _date
-    today = str(_date.today())
     await _emit_auto_posted_je(
         session,
         company_id=company_id,

@@ -177,8 +177,9 @@ async def test_manual_je_line_validation(client):
 
 @pytest.mark.asyncio
 async def test_manual_je_parent_account_rejected(client):
-    """1130 has child accounts (1130-P etc.); posting to the parent would
-    double-display in every child ledger, so it is rejected naming children."""
+    """1130 has child accounts (1130-P etc.); parents are grouping rollups,
+    so postings belong on leaf accounts and the parent is rejected naming
+    its children."""
     tok = await _reg(client)
     r = await _post_manual_je(client, tok, [
         {"account": "1130", "debit": 10.0, "credit": 0},
@@ -711,6 +712,53 @@ async def test_batch_import_tolerates_null_amounts(client):
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok))).json()
     bank = [l for l in tb["lines"] if l["code"] == "1111"]
     assert bank and abs(bank[0]["total_debit"] - 10.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_ledger_buckets_by_literal_code_only(client):
+    """A legacy entry posted directly to a parent code shows on the parent's
+    own ledger and nowhere else, matching how TB/GL/journal bucket it."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}",
+        "event_type": "acc.journal_entry.created",
+        "data": {"status": "posted", "ts": "2026-01-10", "entries": [
+            {"account": "1130", "debit": 70.0, "credit": 0},
+            {"account": "3200", "debit": 0, "credit": 70.0},
+        ]},
+        "source": "test", "idempotency_key": str(uuid.uuid4()),
+    }]})
+    assert r.status_code == 200 and r.json()["created"] == 1
+
+    parent = (await client.get("/accounting/ledger/1130", headers=_h(tok))).json()
+    assert any(abs(l["debit"] - 70.0) < 0.01 for l in parent["lines"])
+    child = (await client.get("/accounting/ledger/1130-P", headers=_h(tok))).json()
+    assert not any(abs(l["debit"] - 70.0) < 0.01 for l in child["lines"])
+
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    rows = {r["code"]: r for r in gl["rows"]}
+    assert abs(rows["1130"]["closing"] - 70.0) < 0.01
+    assert "1130-P" not in rows or abs(rows["1130-P"]["closing"]) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_general_ledger_include_lines(client):
+    """include_lines returns per-account detail bucketed by the same scan as
+    the summary, with running math that ties opening to closing."""
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10", memo="early")
+    await _post_manual_je(client, tok, _bal(40.0), ts="2026-02-10", memo="late")
+
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok),
+                           params={"date_from": "2026-02-01", "date_to": "2026-02-28",
+                                   "include_lines": "true"})).json()
+    rows = {r["code"]: r for r in gl["rows"]}
+    bank = rows["1111"]
+    assert abs(bank["opening"] - 100.0) < 0.01
+    assert len(bank["lines"]) == 1
+    assert bank["lines"][0]["memo"] == "late"
+    assert abs(bank["opening"] + bank["lines"][0]["debit"] - bank["lines"][0]["credit"]
+               - bank["closing"]) < 0.01
 
 
 @pytest.mark.asyncio

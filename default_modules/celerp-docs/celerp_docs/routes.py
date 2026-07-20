@@ -1202,6 +1202,11 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
         event_data["reason"] = payload.reason
+    # The revert restates the document's own period, so the lock is evaluated
+    # against that date even when no posted finalize JE exists to void.
+    _doc_date = state.get("finalized_at") or state.get("issue_date")
+    if _doc_date:
+        event_data["ts"] = str(_doc_date)[:10]
 
     # PO->bill revert: restore doc_type and ref_id
     extra_data: dict = {}
@@ -1404,7 +1409,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
         # Replay guard for referenced (online) payments: the same Stripe intent
         # arriving twice (return leg + webhook push) records exactly once.
         reference = body.get("reference")
-        if reference and any(p.get("reference") == reference for p in doc_state.get("payments", [])):
+        # Deleted tombstones do not hold the reference: deleting a mistaken
+        # payment frees its charge to be re-recorded, as removal always did.
+        if reference and any(p.get("reference") == reference and p.get("status") != "deleted"
+                             for p in doc_state.get("payments", [])):
             raise HTTPException(status_code=409, detail="Payment already recorded")
         outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
         if outstanding <= 0:
@@ -1427,7 +1435,21 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
             raise HTTPException(status_code=422, detail="bank_account is required")
         body.setdefault("currency", doc_state.get("currency", "USD"))
         body["remaining_balance"] = max(0.0, outstanding - amount)
+        # Next index: past the list, and past any index a journal entry was
+        # ever minted with. Deletions used to compact the list, so on docs
+        # compacted before tombstoning, len() alone can land on an index whose
+        # JE idempotency key already exists - the new payment's JE would
+        # silently dedupe into the deleted one's and post nothing.
         payment_index = len(doc_state.get("payments", []))
+        from celerp.models.ledger import LedgerEntry as _LE
+        from celerp.services.je_keys import je_idempotency_key as _je_k
+        from sqlalchemy import select as _sel
+        while (await session.execute(_sel(_LE.id).where(
+                _LE.company_id == company_id,
+                _LE.idempotency_key == _je_k(entity_id, f"invoice.paid:{payment_index}", "c"),
+        ).limit(1))).first() is not None:
+            payment_index += 1
+        body["index"] = payment_index
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
             data=body, actor_id=actor_id, location_id=None, source=source,
@@ -1500,9 +1522,10 @@ class VoidPaymentBody(BaseModel):
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     payments = row.state.get("payments", [])
-    if payload.payment_index < 0 or payload.payment_index >= len(payments):
+    # Payments are identified by their index FIELD, not list position.
+    payment = next((p for p in payments if p.get("index") == payload.payment_index), None)
+    if payment is None:
         raise HTTPException(status_code=422, detail="Invalid payment index")
-    payment = payments[payload.payment_index]
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Payment is already voided")
 
@@ -1590,14 +1613,32 @@ async def delete_payment(
 
     row = await _get_doc(session, company_id, entity_id)
     payments = row.state.get("payments", [])
-    if payment_index < 0 or payment_index >= len(payments):
+    # Payments are identified by their index FIELD, not list position.
+    payment = next((p for p in payments if p.get("index") == payment_index), None)
+    if payment is None:
         raise HTTPException(status_code=422, detail="Invalid payment index")
-    payment = payments[payment_index]
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
 
-    # Determine the JE id for this payment
+    # Determine the JE for this payment. The exact-index id covers every
+    # payment recorded since indices became stable; on docs compacted by
+    # pre-tombstone deletions the stored index was rewritten, so fall back to
+    # the posted pay-JE whose date matches the payment.
     je_id = f"je:auto:{entity_id}:pay:{payment_index}"
+    _je_probe = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if _je_probe is None or _je_probe.state.get("status") != "posted":
+        _pay_rows = (await session.execute(
+            _sa.select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_id.like(f"je:auto:{entity_id}:pay:%"),
+            )
+        )).scalars().all()
+        _p_date = str(payment.get("payment_date") or "")[:10]
+        for _cand in _pay_rows:
+            if (_cand.state.get("status") == "posted"
+                    and str(_cand.state.get("ts") or "")[:10] == _p_date):
+                je_id = _cand.entity_id
+                break
 
     # Check reconciliation status - query all sessions that include this JE
     recon_result = await session.execute(
@@ -1633,23 +1674,27 @@ async def delete_payment(
     # locked period is rejected here before anything mutates.
     je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if je_row is not None and je_row.state.get("status") == "posted":
-        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa: PLC0415
+        from celerp.services.je_keys import je_idempotency_key as _je_key, je_void_data as _je_void  # noqa: PLC0415
         await emit_event(
             session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip(),
-                  "ts": je_row.state.get("ts")},
+            data=_je_void(f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip(),
+                          je_row.state),
             actor_id=user.id, location_id=None, source="auto_je",
             idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
 
-    # Emit doc.payment.deleted - projection tombstones the row in place
+    # Emit doc.payment.deleted - projection tombstones the row in place.
+    # tombstone marks the new reducer semantics (pre-flag events compacted, and
+    # replaying them must keep doing so); ts is the payment's own date, so the
+    # period lock rejects the deletion even when no posted JE exists to void.
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.deleted",
         data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
-              "amount": payment.get("amount"), "method": payment.get("method")},
+              "amount": payment.get("amount"), "method": payment.get("method"),
+              "tombstone": True, "ts": payment.get("payment_date")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )

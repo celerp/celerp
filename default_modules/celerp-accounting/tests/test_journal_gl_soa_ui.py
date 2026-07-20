@@ -285,37 +285,44 @@ async def test_trial_balance_export_passes_dates(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_gl_csv_from_journal_no_per_account_calls(ui_client):
-    """The GL export derives detail from one journal call: no get_ledger call
-    per account, voids excluded, running balance signed by debit_normal."""
+async def test_gl_csv_single_call_with_backend_lines(ui_client):
+    """The GL export makes one general-ledger call with include_lines and
+    never re-derives detail: no get_ledger, no get_journal, running balance
+    signed by the backend's debit_normal flag."""
+    gl = json.loads(json.dumps(_GL))
+    gl["rows"][0]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
+                              "memo": "Adjustment", "source_ref": None,
+                              "debit": 40.0, "credit": 0.0}]
+    gl["rows"][1]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
+                              "memo": "Adjustment", "source_ref": None,
+                              "debit": 0.0, "credit": 40.0}]
     ledger_mock = AsyncMock(return_value=_LEDGER)
-    journal = json.loads(json.dumps(_JOURNAL))
-    journal["entries"].append({
-        "je_id": "je:manual:void1", "ts": "2026-01-22", "memo": "voided",
-        "status": "void", "je_type": "manual", "void_reason": "x",
-        "source_doc": None,
-        "lines": [{"account": "1111", "name": "Bank", "debit": 999.0, "credit": 0.0}],
-        "fx": None,
-    })
-    ps = _patches(get_journal=journal)
+    journal_mock = AsyncMock(return_value=_JOURNAL)
+    gl_mock = AsyncMock(return_value=gl)
+    ps = _patches()
     for p in ps:
         p.start()
     try:
-        with patch("ui.api_client.get_ledger", new=ledger_mock):
+        with patch("ui.api_client.get_ledger", new=ledger_mock), \
+             patch("ui.api_client.get_journal", new=journal_mock), \
+             patch("ui.api_client.get_general_ledger", new=gl_mock):
             r = await ui_client.get("/accounting/export/general-ledger/csv", cookies=_cookies())
     finally:
         for p in ps:
             p.stop()
     assert r.status_code == 200
     ledger_mock.assert_not_called()
-    assert "999" not in r.text  # voided entry excluded
+    journal_mock.assert_not_called()
+    called_params = gl_mock.call_args.args[1] if len(gl_mock.call_args.args) > 1 else gl_mock.call_args.kwargs.get("params", {})
+    assert called_params.get("include_lines") == "1"
     lines = r.text.strip().splitlines()
     bank = [l for l in lines if l.startswith("1111")]
-    # Opening 100 + debit 100 (posted journal line) = closing 200 for the bank row
     assert any("Opening balance" in l and "100.0" in l for l in bank)
-    # Credit-normal account: the 100 credit INCREASES the running balance
-    sales = [l for l in lines if l.startswith("4100") and "Sales" in l]
-    assert sales
+    # Debit-normal: opening 100 + 40 debit = 140 running on the detail row
+    assert any(l.endswith("140.0") and "Adjustment" in l for l in bank)
+    # Credit-normal account: the 40 credit INCREASES the running balance
+    sales = [l for l in lines if l.startswith("4100") and "Adjustment" in l]
+    assert sales and any(l.endswith("140.0") for l in sales)
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.je_keys import je_idempotency_key
+from celerp.services.je_keys import je_idempotency_key, je_void_data
 
 router = APIRouter()
 
@@ -167,7 +167,7 @@ async def _check_duplicate_jes(
                 await emit_event(
                     session, company_id=company_id, entity_id=dup.entity_id,
                     entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data={"reason": "Doctor: duplicate JE"},
+                    data=je_void_data("Doctor: duplicate JE", dup.data or {}),
                     actor_id=user_id, location_id=None, source="doctor",
                     idempotency_key=f"doctor:void:{dup.idempotency_key}",
                     metadata_={"voided_by": "doctor", "kept_id": keep.id},
@@ -330,7 +330,7 @@ async def _check_zero_amount_jes(
                     await emit_event(
                         session, company_id=company_id, entity_id=je.entity_id,
                         entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                        data={"reason": "Doctor: zero-amount JE"},
+                        data=je_void_data("Doctor: zero-amount JE", ev.data or {}),
                         actor_id=user_id, location_id=None, source="doctor",
                         idempotency_key=f"doctor:void-zero:{ev.idempotency_key}",
                         metadata_={"voided_by": "doctor"},

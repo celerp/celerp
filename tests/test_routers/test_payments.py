@@ -672,6 +672,73 @@ async def test_payment_after_deletion_gets_its_own_journal_entry(client):
 
 
 @pytest.mark.asyncio
+async def test_payment_index_skips_legacy_minted_keys(client, session):
+    """Docs compacted by pre-tombstone deletions can hold fewer payments than
+    the highest index a journal entry was ever minted with; a new payment must
+    allocate past those keys or its JE would silently dedupe into a dead one."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from sqlalchemy import select as _sel
+
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 80.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Simulate the legacy compaction era: the doc holds one payment at index 0,
+    # but a JE idempotency key for index 1 already exists from a payment that
+    # an old-style deletion removed from the list.
+    doc_row = (await session.execute(_sel(Projection).where(
+        Projection.entity_id == inv, Projection.entity_type == "doc"))).scalar_one()
+    session.add(LedgerEntry(
+        company_id=doc_row.company_id, entity_id=f"je:auto:{inv}:pay:1",
+        entity_type="journal_entry", event_type="acc.journal_entry.created",
+        data={"memo": "legacy", "entries": []}, actor_id=None, location_id=None,
+        source="test", idempotency_key=f"je:{inv}:invoice.paid:1:c", metadata_={},
+    ))
+    await session.flush()
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-02-01", "amount": 120.0, "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    new_pay = [p for p in doc["payments"] if p["payment_date"] == "2026-02-01"]
+    assert new_pay and new_pay[0]["index"] == 2  # skipped the dead index 1
+
+    # And its journal entry is real: the bank ledger shows the receipt.
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    feb = [l for l in ledger["lines"] if l["date"] == "2026-02-01"]
+    assert feb and feb[0]["debit"] == pytest.approx(120.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_void_recompute_keeps_refunds(client):
+    """Voiding a payment recomputes amount_paid from the payments list; a
+    prior refund must stay subtracted."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 150.0)
+    for d, amt in (("2026-01-10", 100.0), ("2026-01-12", 50.0)):
+        r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                              json={"payment_date": d, "amount": amt, "bank_account": "1111"})
+        assert r.status_code == 200
+    r = await client.post(f"/docs/{inv}/refund", headers=_h(token),
+                          json={"amount": 30.0, "payment_date": "2026-01-20"})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_paid"] == pytest.approx(120.0, abs=0.01)
+
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 1})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    # 100 active - 30 refunded, not the bare 100 the list alone would say
+    assert doc["amount_paid"] == pytest.approx(70.0, abs=0.01)
+    assert doc["amount_outstanding"] == pytest.approx(80.0, abs=0.01)
+
+
+@pytest.mark.asyncio
 async def test_delete_payment_invalid_index(client):
     """DELETE with an out-of-range index returns 422."""
     token = await _register(client)
