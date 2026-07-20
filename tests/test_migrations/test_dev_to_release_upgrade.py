@@ -25,6 +25,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from celerp import __version__
 from celerp.cli import _reconcile_after_migrate, _run_migrations
@@ -49,9 +50,13 @@ def _head_rev() -> str:
 
 
 def _swap_db(url: str, dbname: str) -> str:
-    """Replace the database name (last path segment) in a SQLAlchemy URL."""
-    base, _, _old = url.rpartition("/")
-    return f"{base}/{dbname}"
+    """Replace the database name in a SQLAlchemy URL.
+
+    Parsed rather than string-split: a socket DSN carries its directory in a
+    query parameter (?host=/var/run/postgresql), so splitting on the last "/"
+    rewrites the socket path instead of the database.
+    """
+    return make_url(url).set(database=dbname).render_as_string(hide_password=False)
 
 
 @pytest.fixture()

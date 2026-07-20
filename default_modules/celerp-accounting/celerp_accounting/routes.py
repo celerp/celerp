@@ -403,6 +403,31 @@ async def batch_import_accounting(
 # Accounting reports - derived from journal_entry projections
 # ---------------------------------------------------------------------------
 
+def _require_iso_date(value: str | None, field: str) -> None:
+    """Reject anything that is not a strict YYYY-MM-DD date.
+
+    Reports filter and sort by lexical string compare, so variants
+    fromisoformat tolerates (basic 20260105, week dates) would sort outside
+    their real period and vanish from date-bounded reports. An unparsable
+    filter is refused rather than silently yielding an empty report, which
+    reads as "no activity" when it really means "the question was malformed".
+    """
+    if value is None:
+        return
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+        )
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+        )
+
+
 async def _je_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
 ) -> list[tuple[str, dict, str]]:
@@ -578,6 +603,8 @@ async def journal(
     Voided entries stay visible flagged status="void" - a journal is a record, and
     hiding voids would misstate it - but they are excluded from the period totals.
     """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
     rows = await _je_rows(session, company_id, include_void=True)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
@@ -671,15 +698,7 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
-    # Strict YYYY-MM-DD: reports filter and sort by lexical string compare, so
-    # variants fromisoformat tolerates (basic 20260105, week dates) would sort
-    # outside their real period and vanish from date-bounded reports.
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", payload.ts or ""):
-        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
-    try:
-        date.fromisoformat(payload.ts)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
+    _require_iso_date(payload.ts or "", "entry")
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
     if not payload.idempotency_token:
@@ -996,6 +1015,8 @@ async def general_ledger(
     (debit-normal for asset/expense/cogs, credit-normal otherwise), matching the
     per-account ledger's running balance. Detail rows live at /ledger/{code}.
     """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
     posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
@@ -1277,6 +1298,8 @@ async def statement_of_account(
     balance and their payments (applications, refunds) add back, so an applied
     credit note is never double-counted against the invoice it settles.
     """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
     contact_row = await session.get(Projection, (company_id, contact_id))
     if not contact_row or contact_row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -2689,12 +2712,7 @@ async def set_period_lock(
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {})
     if payload.lock_date:
-        # Validate date format
-        from datetime import date as date_type
-        try:
-            date_type.fromisoformat(payload.lock_date)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
+        _require_iso_date(payload.lock_date, "lock")
         settings["lock_date"] = payload.lock_date
         settings["lock_date_set_by"] = str(user.id)
         settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()

@@ -896,3 +896,36 @@ async def test_cross_report_consistency(client):
     mine = [c for c in aging["lines"] if c["customer_id"] == contact]
     aging_total = mine[0]["total"]
     assert abs(soa["closing_balance"] - aging_total) < 0.01
+
+
+@pytest.mark.parametrize("param", ["date_from", "date_to"])
+@pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45", "20260105", "2026-W01"])
+async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
+    """An unparsable filter is refused, not answered with an empty report.
+
+    Silently returning zero rows reads as "no activity in this period" when it
+    really means the question was malformed, and an accountant cannot tell the
+    two apart from the screen.
+    """
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(100.0))
+    contact = await _contact(client, tok)
+
+    for path in ("/accounting/journal", "/accounting/general-ledger",
+                 f"/accounting/soa/{contact}"):
+        r = await client.get(path, headers=_h(tok), params={param: bad})
+        assert r.status_code == 422, f"{path} accepted {bad!r}: {r.text}"
+        assert param in r.json()["detail"]
+
+
+async def test_report_date_filters_accept_valid_dates(client):
+    """The strict check does not reject the dates the UI actually sends."""
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(100.0))
+    contact = await _contact(client, tok)
+
+    for path in ("/accounting/journal", "/accounting/general-ledger",
+                 f"/accounting/soa/{contact}"):
+        r = await client.get(path, headers=_h(tok),
+                             params={"date_from": "2026-01-01", "date_to": "2026-12-31"})
+        assert r.status_code == 200, f"{path}: {r.text}"

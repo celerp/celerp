@@ -1513,7 +1513,8 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 Div(
                     Label(t("th.memo"), cls="form-label"),
                     Input(type="text", name="memo", value=memo, cls="form-input",
-                          placeholder=t("acct.memo_hint")),
+                          placeholder=t("acct.memo_hint"),
+                          onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"),
                 ),
                 cls="flex-row gap-sm",
             ),

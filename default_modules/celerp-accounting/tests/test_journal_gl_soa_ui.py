@@ -526,3 +526,22 @@ def test_new_locale_keys_present_everywhere():
             data = json.load(fh)
         missing = [k for k in _NEW_KEYS if not data.get(k)]
         assert not missing, f"{fname} missing locale keys: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_je_form_every_text_field_exits_on_escape(ui_client):
+    """GDR 2j: Escape exits every field on the entry form, memo included.
+
+    The memo input was the one field left without a handler while its
+    siblings all had one, so Escape worked everywhere except the field a
+    user is most likely to be typing prose into.
+    """
+    r = await _get(ui_client, "/accounting/journal/new")
+    assert r.status_code == 200
+    html = r.text
+
+    import re as _re
+    for name in ("ts", "memo", "debit_0", "credit_0"):
+        m = _re.search(rf'<input[^>]*name="{name}"[^>]*>', html)
+        assert m, f"no input named {name} in the entry form"
+        assert "Escape" in m.group(0), f'input {name} has no Escape handler: {m.group(0)}'

@@ -53,7 +53,7 @@ def test_marketplace_flow() -> None:
 
 
 def test_accounting_flow() -> None:
-    state = apply_accounting_event({}, "acc.journal_entry.created", {"memo": "m", "lines": []})
+    state = apply_accounting_event({}, "acc.journal_entry.created", {"memo": "m", "entries": []})
     assert state["status"] == "posted"
 
     state = apply_accounting_event(state, "acc.journal_entry.posted", {})
