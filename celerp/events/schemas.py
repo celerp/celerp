@@ -773,6 +773,19 @@ class JELine(BaseModel):
     account: str | None = ""
     debit: float | None = 0
     credit: float | None = 0
+    # The foreign amounts the author actually typed, when the entry carries a
+    # rate. Stored rather than derived so the journal shows the document's own
+    # figure: dividing the local amount back out can read 99.99 against a
+    # 100.00 invoice, which is exactly what an auditor is tying back.
+    fx_debit: float | None = None
+    fx_credit: float | None = None
+
+
+class JEFx(BaseModel):
+    """The currency and rate one whole entry was recorded in."""
+
+    currency: str
+    rate: float
 
 
 class AccJournalEntryCreated(BaseModel):
@@ -784,6 +797,9 @@ class AccJournalEntryCreated(BaseModel):
     status: str | None = None
     je_type: str | None = None
     entries: list[JELine] = Field(default_factory=list)
+    # Absent on an ordinary base-currency entry. Its absence is the correct
+    # representation of such an entry, not a compatibility branch.
+    fx: JEFx | None = None
 
 
 class AccJournalEntryPosted(BaseModel):
