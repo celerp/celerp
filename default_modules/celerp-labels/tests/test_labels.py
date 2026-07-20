@@ -966,13 +966,18 @@ async def test_print_pdf_contains_derived_weight_for_carat_item(client: AsyncCli
     assert r_pdf.status_code == 200
     assert r_pdf.content[:4] == b"%PDF"
 
-    # reportlab encodes content streams as ASCII85 + Flate; unwrap both to
-    # reach the drawn text.
+    assert b"38.60 carat" in _pdf_text(r_pdf.content), (
+        "derived weight (quantity + sell unit) must appear on the printed label"
+    )
+
+
+def _pdf_text(pdf_bytes: bytes) -> bytes:
+    """Unwrap PDF content streams (ASCII85 + Flate as reportlab encodes them)."""
     import base64
     import re
     import zlib
     decoded = b""
-    for stream in re.findall(rb"stream\r?\n(.*?)endstream", r_pdf.content, re.DOTALL):
+    for stream in re.findall(rb"stream\r?\n(.*?)endstream", pdf_bytes, re.DOTALL):
         raw = stream.strip(b"\r\n")
         try:
             raw = base64.a85decode(raw, adobe=True)
@@ -982,9 +987,7 @@ async def test_print_pdf_contains_derived_weight_for_carat_item(client: AsyncCli
             decoded += zlib.decompress(raw)
         except zlib.error:
             decoded += raw
-    assert b"38.60 carat" in decoded, (
-        "derived weight (quantity + sell unit) must appear on the printed label"
-    )
+    return decoded
 
 
 # ── printer dot-grid alignment + leading ─────────────────────────────────────
@@ -1043,3 +1046,119 @@ def test_printed_label_drops_the_category_picker_prefix():
     # plain labels and empties are untouched
     assert display_label("SKU") == "SKU"
     assert display_label("") == ""
+
+
+# ── Condensed Measurements field ───────────────────────────────────────────────
+
+def test_measurements_field_in_common_fields():
+    """"measurements" is a built-in text field in the designer picker list."""
+    from celerp_labels.ui_routes import _COMMON_FIELDS
+    assert ("measurements", "Measurements", "text") in _COMMON_FIELDS
+
+
+def test_resolve_measurements_prefers_stored_value():
+    """A stored measurements attribute wins over composing from dimensions."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    from celerp_labels.service import resolve_field_value
+    unit_map = build_unit_map(DEFAULT_UNITS)
+    item = {
+        "name": "Gem",
+        "attributes": {"measurements": "7.10 x 7.05 x 4.30", "length": "1", "width": "2", "height": "3"},
+    }
+    assert resolve_field_value(item, "measurements", unit_map) == "7.10 x 7.05 x 4.30"
+
+
+def test_resolve_measurements_composes_from_dimensions():
+    """No stored measurements: length, width, height compose as "L x W x H"."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    from celerp_labels.service import resolve_field_value
+    unit_map = build_unit_map(DEFAULT_UNITS)
+    item = {"name": "Gem", "attributes": {"length": "6.51", "width": "6.54", "height": "4.01"}}
+    assert resolve_field_value(item, "measurements", unit_map) == "6.51 x 6.54 x 4.01"
+
+
+def test_resolve_measurements_missing_dimension_yields_empty():
+    """Any missing dimension yields "", never a partial string like "6.5 x  x 4.0"."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    from celerp_labels.service import resolve_field_value
+    unit_map = build_unit_map(DEFAULT_UNITS)
+    for attrs in (
+        {"length": "6.51", "width": "6.54"},
+        {"length": "6.51", "height": "4.01"},
+        {"width": "6.54", "height": "4.01"},
+        {"length": "6.51", "width": "", "height": "4.01"},
+        {},
+    ):
+        item = {"name": "Gem", "attributes": attrs}
+        assert resolve_field_value(item, "measurements", unit_map) == "", attrs
+
+
+def test_measurements_sample_preview():
+    """The editor preview sample data carries a realistic condensed value."""
+    from celerp_labels.ui_routes import _SAMPLE_DATA
+    assert _SAMPLE_DATA.get("measurements") == "6.51 x 6.54 x 4.01"
+
+
+def test_measurements_in_field_picker():
+    """The searchable field select offers one Measurements option (builtin group)."""
+    import json
+    from celerp_labels.ui_routes import _build_field_options_js
+    groups = json.loads(_build_field_options_js("", None, None))
+    builtin = groups[0]["options"]
+    assert {"k": "measurements", "v": "Measurements"} in builtin
+
+
+def test_measurements_pdf_render():
+    """The PDF render path prints the composed measurements string."""
+    from celerp_labels.service import render_label_pdf
+    template = {"name": "T", "fields": [{"key": "measurements", "label": "Measurements", "type": "text"}]}
+    item = {"name": "Gem", "attributes": {"length": "6.51", "width": "6.54", "height": "4.01"}}
+    pdf = render_label_pdf([item], template)
+    assert pdf[:4] == b"%PDF"
+    assert b"6.51 x 6.54 x 4.01" in _pdf_text(pdf)
+
+
+def test_measurements_text_fallback_render():
+    """render_label_text (no-reportlab fallback) shows the same composed value."""
+    from celerp_labels.service import render_label_text
+    template = {"name": "T", "fields": [{"key": "measurements", "label": "Measurements", "type": "text"}]}
+    item = {"name": "Gem", "attributes": {"length": "6.51", "width": "6.54", "height": "4.01"}}
+    assert "Measurements: 6.51 x 6.54 x 4.01" in render_label_text([item], template)
+
+
+def test_attribute_discovery_skips_builtin_measurements():
+    """Attribute discovery seeds dedup from builtin keys, so a discovered
+    "measurements" attribute never produces a duplicate picker entry."""
+    from celerp_labels.ui_routes import _COMMON_FIELDS
+    builtin_keys = {k for k, _, _ in _COMMON_FIELDS}
+    assert "measurements" in builtin_keys
+
+
+def test_existing_attribute_fields_unchanged():
+    """Templates using separate length/width/height fields resolve as before."""
+    from celerp_labels.service import render_label_text
+    template = {"name": "T", "fields": [
+        {"key": "length", "label": "Length", "type": "text"},
+        {"key": "width", "label": "Width", "type": "text"},
+        {"key": "height", "label": "Height", "type": "text"},
+    ]}
+    item = {"name": "Gem", "attributes": {"length": "6.51", "width": "6.54", "height": "4.01"}}
+    text = render_label_text([item], template)
+    assert "Length: 6.51" in text
+    assert "Width: 6.54" in text
+    assert "Height: 4.01" in text
+
+
+def test_printable_label_sheet_escapes_values():
+    """Free-text item values render HTML-escaped in the printable sheet."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    template = {"name": "T", "format": "40x30mm", "fields": [
+        {"key": "name", "label": "", "type": "text"},
+        {"key": "barcode_text", "type": "barcode_text"},
+    ]}
+    item = {"name": "<script>alert(1)</script>", "barcode": "<b>123</b>"}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "<b>123</b>" not in html
+    assert "&lt;b&gt;123&lt;/b&gt;" in html

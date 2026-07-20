@@ -78,6 +78,7 @@ _COMMON_FIELDS = [
     ("weight", "Weight", "text"),
     ("pieces", "Pieces", "text"),
     ("unit", "Unit", "text"),
+    ("measurements", "Measurements", "text"),
     ("cost_price", "Cost Price", "text"),
     ("sale_price", "Sale Price", "text"),
     ("description", "Description", "text"),
@@ -108,6 +109,7 @@ _SAMPLE_DATA = {
     "weight": "2.5",
     "pieces": "3",
     "unit": "pcs",
+    "measurements": "6.51 x 6.54 x 4.01",
     "cost_price": "150.00",
     "sale_price": "299.00",
     "retail_price": "299.00",
@@ -1148,7 +1150,7 @@ def _printable_label_sheet(
                 # per-field size still wins.
                 fs_pt = float(fs) if fs not in (None, "") else BARCODE_TEXT_DEFAULT_PT
                 span_style = f' style="font-size:{fs_pt}pt;"'
-                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{val}</span></div>')
+                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{html_escape(str(val))}</span></div>')
             elif ftype == "qr":
                 field_lines.append(_qr_tag(val, wrap_style=pos))
             else:
@@ -1162,7 +1164,7 @@ def _printable_label_sheet(
                 bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
                 field_lines.append(
-                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{display}</div>')
+                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{html_escape(str(display))}</div>')
         label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
 
     html = f"""<!DOCTYPE html>

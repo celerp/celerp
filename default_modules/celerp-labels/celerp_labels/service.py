@@ -131,6 +131,10 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
     - pieces on a pieces-sold item -> quantity
     - unit -> the item's sell_by
     - qr / barcode / barcode_text -> the item's barcode, falling back to SKU
+    - measurements -> the stored value, else "length x width x height" composed
+      from the dimension attributes only when all three are present (a partial
+      join like "6.5 x  x 4.0" would read as a complete measurement of a
+      different shape)
     """
     sell_by = item.get("sell_by")
     if key in ("qr", "barcode", "barcode_text"):
@@ -142,6 +146,12 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
         return format_qty(item.get("quantity"), sell_by, unit_map)
     if key == "unit":
         return _item_val(item, key) or str(sell_by or "")
+    if key == "measurements":
+        stored = _item_val(item, key)
+        if stored:
+            return stored
+        dims = [_item_val(item, d) for d in ("length", "width", "height")]
+        return " x ".join(dims) if all(dims) else ""
     return _item_val(item, key)
 
 
