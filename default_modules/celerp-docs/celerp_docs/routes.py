@@ -1586,10 +1586,25 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                 # Find the matching payment on the other doc; its index FIELD
                 # is its identity (list position can differ on skip-allocated
                 # docs).
-                for pi, pp in enumerate(paired_payments):
+                # Correlate the exact counterpart: the same credit note can be
+                # applied to the same invoice several times, so match the
+                # paired index recorded at apply time, then fall back to the
+                # same amount and date before settling for the first match.
+                _linked = [
+                    (pi, pp) for pi, pp in enumerate(paired_payments)
                     if pp.get("status") == "active" and (
                         (pp.get("source_doc_id") == entity_id) or (pp.get("target_doc_id") == entity_id)
-                    ):
+                    )
+                ]
+                _exact = [c for c in _linked if c[1].get("paired_index") == payload.payment_index]
+                if not _exact:
+                    _exact = [
+                        c for c in _linked
+                        if abs(float(c[1].get("amount") or 0) - float(payment.get("amount") or 0)) < 0.005
+                        and str(c[1].get("payment_date") or "")[:10] == str(payment.get("payment_date") or "")[:10]
+                    ]
+                for pi, pp in (_exact or _linked):
+                    if True:
                         if _app_idx is None and pp.get("method") == "applied":
                             _app_idx = pp.get("index", pi)
                         await emit_event(
@@ -1866,6 +1881,10 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
                 "source_doc_id": entity_id, "payment_date": payment_date,
                 "currency": cn.get("currency", "USD"),
                 "index": inv_pay_index,
+                # The counterpart's index on the other doc: voiding one side
+                # must release exactly its pair, even when the same credit
+                # note is applied to the same invoice more than once.
+                "paired_index": payment_idx,
             },
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={},
@@ -1878,6 +1897,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
                 "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
                 "currency": cn.get("currency", "USD"),
                 "index": payment_idx,
+                "paired_index": inv_pay_index,
             },
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},

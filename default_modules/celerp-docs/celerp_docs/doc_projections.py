@@ -170,6 +170,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             "conversion_rate": data.get("conversion_rate"),
             "source_doc_id": data.get("source_doc_id"),
             "target_doc_id": data.get("target_doc_id"),
+            "paired_index": data.get("paired_index"),
             # Online charge that exceeded the fresh outstanding (a manual
             # payment raced the checkout): the applied amount is clamped and
             # the real charge stays on record to refund or credit.

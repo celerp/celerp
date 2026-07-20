@@ -174,6 +174,13 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
             {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
             {"account": "2110", "debit": 0.0, "credit": base_amount},
         ]
+    elif doc_type == "credit_note":
+        # Reverse of the refund's outflow: the money comes back into the bank
+        # and the credit balance is restored against AR.
+        entries = [
+            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": base_amount},
+        ]
     else:
         entries = [
             {"account": "1120", "debit": base_amount, "credit": 0.0},

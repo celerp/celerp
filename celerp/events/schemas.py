@@ -486,6 +486,11 @@ class DocPaymentReceived(BaseModel):
     conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
+    # The recorder allocates the payment's identity index (skipping any value
+    # a journal entry was minted with); paired_index links the two halves of a
+    # credit-note application.
+    index: int | None = None
+    paired_index: int | None = None
 
 
 class DocPaymentRefunded(BaseModel):

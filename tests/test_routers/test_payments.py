@@ -800,6 +800,69 @@ async def test_cn_refund_credits_the_bank(client):
 
 
 @pytest.mark.asyncio
+async def test_cn_refund_void_returns_the_cash(client):
+    """Voiding a credit-note refund brings the money back: the reversal debits
+    the bank, so refund + void nets to zero."""
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 60.0, "line_total": 60.0}],
+        "subtotal": 60.0, "tax": 0.0, "total": 60.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
+        "amount": 60.0, "date": "2026-03-05", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{cn}", headers=_h(token))).json()
+    refund = next(p for p in doc["payments"] if p.get("method") == "refund")
+    r = await client.post(f"/docs/{cn}/void-payment", headers=_h(token),
+                          json={"payment_index": refund["index"]})
+    assert r.status_code == 200, r.text
+
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    net = sum(l["debit"] - l["credit"] for l in ledger["lines"])
+    assert net == pytest.approx(0.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_void_correct_cn_application_of_several(client):
+    """The same credit note applied twice to one invoice: voiding one
+    application releases exactly that amount, not its sibling's."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+        "subtotal": 100.0, "tax": 0.0, "total": 100.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    for amt in (30.0, 70.0):
+        r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                              json={"target_doc_id": inv, "amount": amt})
+        assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    seventy = next(p for p in doc["payments"]
+                   if p.get("method") == "credit_note" and abs(p["amount"] - 70.0) < 0.01)
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": seventy["index"]})
+    assert r.status_code == 200, r.text
+
+    # The invoice releases 70 and the credit note gets exactly 70 back
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_outstanding"] == pytest.approx(170.0, abs=0.01)
+    cn_doc = (await client.get(f"/docs/{cn}", headers=_h(token))).json()
+    assert cn_doc["amount_outstanding"] == pytest.approx(70.0, abs=0.01)
+    surviving = [p for p in cn_doc["payments"]
+                 if p.get("status") == "active" and p.get("method") == "applied"]
+    assert len(surviving) == 1
+    assert surviving[0]["amount"] == pytest.approx(30.0, abs=0.01)
+
+
+@pytest.mark.asyncio
 async def test_delete_cn_settlement_blocked(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
