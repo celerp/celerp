@@ -1363,6 +1363,8 @@
   "th.filename": "Filename",
   "th.filename_pattern": "Filename pattern",
   "th.frequency": "Frequency",
+  "th.fx_credit": "FX Credit",
+  "th.fx_debit": "FX Debit",
   "th.generated_documents": "Generated Documents",
   "th.hero": "Hero",
   "th.hs_code": "HS Code",

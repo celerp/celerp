@@ -151,6 +151,38 @@ async def test_journal_tab_renders(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_journal_tab_shows_fx_columns(ui_client):
+    """Auditors need the foreign amounts and the rate used per transaction on
+    the journal itself, not only in the export."""
+    r = await _get(ui_client, "/accounting?tab=journal")
+    assert r.status_code == 200
+    html = r.text
+    assert "FX Debit" in html and "FX Credit" in html and "Rate" in html
+    assert "35" in html  # the transaction's exchange rate
+    # 350.00 base at 35.0 is 10.00 in the foreign currency
+    assert "10.00" in html
+
+
+@pytest.mark.asyncio
+async def test_journal_tab_hides_fx_columns_without_fx(ui_client):
+    """A single-currency journal keeps its original narrow shape: no empty
+    foreign-currency columns for businesses that never trade in one."""
+    plain = json.loads(json.dumps(_JOURNAL))
+    for entry in plain["entries"]:
+        entry["fx"] = None
+    r = await _get(ui_client, "/accounting?tab=journal", get_journal=plain)
+    assert r.status_code == 200
+    assert "FX Debit" not in r.text and "FX Credit" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_journal_print_shows_fx_columns(ui_client):
+    r = await _get(ui_client, "/accounting/print/journal")
+    assert r.status_code == 200
+    assert "FX Debit" in r.text and "FX Credit" in r.text
+
+
+@pytest.mark.asyncio
 async def test_general_ledger_tab_renders(ui_client):
     r = await _get(ui_client, "/accounting?tab=general-ledger")
     assert r.status_code == 200

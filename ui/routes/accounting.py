@@ -834,14 +834,9 @@ def setup_routes(app):
             for line in entry.get("lines", []):
                 debit = float(line.get("debit") or 0)
                 credit = float(line.get("credit") or 0)
-                fx_debit = fx_credit = ""
-                if rate:
-                    # Foreign amounts derive from the stored rate; when no rate was
-                    # recorded the FX columns stay blank rather than guessing.
-                    if debit:
-                        fx_debit = float(round_money(to_decimal(debit) / to_decimal(rate), fx_currency))
-                    if credit:
-                        fx_credit = float(round_money(to_decimal(credit) / to_decimal(rate), fx_currency))
+                _fx_d, _fx_c = _fx_line_amounts(debit, credit, fx)
+                fx_debit = _fx_d if _fx_d is not None else ""
+                fx_credit = _fx_c if _fx_c is not None else ""
                 _csv_row(w, [
                     str(entry.get("ts") or "")[:10],
                     entry.get("je_id", ""),
@@ -1281,12 +1276,44 @@ def _journal_totals(data: dict, currency: str | None = None) -> FT:
     return _totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01, currency)
 
 
+def _fx_line_amounts(debit: float, credit: float, fx: dict | None) -> tuple[float | None, float | None]:
+    """A journal line's foreign-currency amounts, or (None, None) when the entry
+    carries no rate.
+
+    The ledger stores base currency, so the foreign amounts are derived from the
+    transaction's own recorded rate. Without a rate nothing is shown: a guessed
+    figure on an audited journal is worse than a blank.
+    """
+    rate = (fx or {}).get("rate") or 0
+    if not rate:
+        return (None, None)
+    fx_currency = fx.get("currency")
+    rate_d = to_decimal(rate)
+    fx_debit = float(round_money(to_decimal(debit) / rate_d, fx_currency)) if debit else None
+    fx_credit = float(round_money(to_decimal(credit) / rate_d, fx_currency)) if credit else None
+    return (fx_debit, fx_credit)
+
+
+def _fmt_exchange_rate(rate) -> str:
+    """An exchange rate is a ratio, not an amount: no currency symbol, and
+    trailing zeros trimmed so 35.0 reads as 35 and 36.55 keeps its precision."""
+    try:
+        s = f"{float(rate):,.6f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return ""
+    return s or "0"
+
+
 def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
                   date_to: str = "", show_actions: bool = True) -> FT:
     entries = list(data.get("entries", []))
     if not entries:
         return P(t("acct.no_journal_entries"), cls="empty-state")
     entries.reverse()  # the API returns ascending; the screen shows newest first
+    # Foreign-currency columns appear only when this period actually holds a
+    # foreign-currency transaction, so a single-currency journal stays as narrow
+    # as it has always been.
+    has_fx = any(e.get("fx") for e in entries)
 
     def _fmt_nonzero(val: float) -> str:
         return fmt_money(val, currency) if val else ""
@@ -1332,18 +1359,38 @@ def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
             Td("", cls="cell--number"),
             Td("", cls="cell--number"),
         ]
+        fx = entry.get("fx") or {}
+        if has_fx:
+            # The rate belongs to the transaction, so it is stated once on the
+            # entry, next to the lines it converted.
+            cells += [
+                Td("", cls="cell--number"),
+                Td("", cls="cell--number"),
+                Td(_fmt_exchange_rate(fx.get("rate")) if fx.get("rate") else "",
+                   cls="cell--number cell--mono"),
+            ]
         if show_actions:
             cells.append(_void_action(entry))
         rows.append(Tr(*cells, cls=row_cls) if row_cls else Tr(*cells))
         for line in entry.get("lines", []):
+            debit = float(line.get("debit") or 0)
+            credit = float(line.get("credit") or 0)
             line_cells = [
                 Td(""),
                 Td(""),
                 Td(f"{line.get('account', '')} {line.get('name', '')}".strip(),
                    style="padding-left:2rem"),
-                Td(_fmt_nonzero(float(line.get("debit") or 0)), cls="cell--number"),
-                Td(_fmt_nonzero(float(line.get("credit") or 0)), cls="cell--number"),
+                Td(_fmt_nonzero(debit), cls="cell--number"),
+                Td(_fmt_nonzero(credit), cls="cell--number"),
             ]
+            if has_fx:
+                fx_debit, fx_credit = _fx_line_amounts(debit, credit, fx)
+                fx_currency = fx.get("currency")
+                line_cells += [
+                    Td(fmt_money(fx_debit, fx_currency) if fx_debit else "", cls="cell--number"),
+                    Td(fmt_money(fx_credit, fx_currency) if fx_credit else "", cls="cell--number"),
+                    Td("", cls="cell--number"),
+                ]
             if show_actions:
                 line_cells.append(Td(""))
             rows.append(Tr(*line_cells, cls=row_cls) if row_cls else Tr(*line_cells))
@@ -1355,6 +1402,12 @@ def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
         Th(t("th.debit"), cls="cell--number"),
         Th(t("th.credit"), cls="cell--number"),
     ]
+    if has_fx:
+        headers += [
+            Th(t("th.fx_debit"), cls="cell--number"),
+            Th(t("th.fx_credit"), cls="cell--number"),
+            Th(t("th.rate"), cls="cell--number"),
+        ]
     if show_actions:
         headers.append(Th(""))
     return Table(Thead(Tr(*headers)), Tbody(*rows), cls="data-table")
