@@ -855,10 +855,12 @@ async def create_manual_journal_entry(
                 "account": FX_ROUNDING_ACCOUNT,
                 "debit": to_stored_float(residual) if residual > 0 else 0.0,
                 "credit": to_stored_float(-residual) if residual < 0 else 0.0,
-                # A local-only plug: it has no foreign face amount, because the
-                # author never typed one.
-                "fx_debit": None,
-                "fx_credit": None,
+                # 0.0 rather than null on both sides: the display prefers a
+                # stored foreign amount over deriving one, and a null pair would
+                # fall through to division and invent a foreign figure for a
+                # line the author never typed in any currency.
+                "fx_debit": 0.0,
+                "fx_credit": 0.0,
             })
 
     je_id = f"je:manual:{uuid.uuid4()}"
@@ -890,14 +892,28 @@ async def create_manual_journal_entry(
         def _norm(lines: list) -> list:
             # Compare money as rounded Decimals so a byte-identical retry never
             # trips on float representation differences across storage layers.
+            # The foreign amounts come along: two different rates can convert to
+            # the same local figures, and comparing only those would read a
+            # corrected rate as an identical retry and silently post nothing.
             out = []
             for l in lines or []:
                 amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
-                out.append((l.get("account"), round_money(amounts[0], base), round_money(amounts[1], base)))
+                out.append((
+                    l.get("account"),
+                    round_money(amounts[0], base), round_money(amounts[1], base),
+                    l.get("fx_debit"), l.get("fx_credit"),
+                ))
             return out
 
+        def _norm_fx(f: dict | None) -> tuple | None:
+            if not f:
+                return None
+            return ((f.get("currency") or "").upper(), to_decimal(f.get("rate") or 0))
+
+        submitted_fx = {"currency": fx.currency, "rate": fx.rate} if fx else None
         if (orig.get("ts") != payload.ts
                 or (orig.get("memo") or "") != (payload.memo or "")
+                or _norm_fx(orig.get("fx")) != _norm_fx(submitted_fx)
                 or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,

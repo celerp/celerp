@@ -1020,8 +1020,9 @@ async def test_manual_je_fx_rounding_residual_posted_as_extra_line(client):
     assert len(entry["lines"]) == 4 + 1
     plug = next(l for l in entry["lines"] if l["account"] == "6960")
     assert plug["debit"] == 0.01 and plug["credit"] == 0.0
-    # A local-only plug: no foreign face amount, because none was typed.
-    assert plug["fx_debit"] is None and plug["fx_credit"] is None
+    # A local-only plug: zero on both sides, so the display takes the stored
+    # branch and never divides a local figure back into an invented foreign one.
+    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
     assert j["total_debit"] == j["total_credit"] == 300.25
 
 
@@ -1199,3 +1200,39 @@ async def test_cross_report_consistency_with_fx_and_rounding(client):
 
     fx_entry = next(e for e in journal["entries"] if e["ts"] == "2026-01-11")
     assert next(l for l in fx_entry["lines"] if l["account"] == "6100")["fx_debit"] == 33.33
+
+
+async def test_manual_je_fx_token_reuse_conflicts_when_rate_rounds_to_same_local(client):
+    """Two rates can convert to identical local figures. Comparing only those
+    would read a corrected rate as a retry and silently post nothing."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    token = uuid.uuid4().hex
+    first = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 1.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 1.0},
+    ], token=token, fx={"currency": "USD", "rate": 35.001})
+    assert first.status_code == 200, first.text
+
+    second = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 1.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 1.0},
+    ], token=token, fx={"currency": "USD", "rate": 35.004})
+    assert second.status_code == 409, second.text
+
+
+async def test_manual_je_fx_rounding_line_claims_no_foreign_amount(client):
+    """The plug is local-only: it must not carry a foreign figure, because the
+    author never typed one in any currency."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 3.0025})
+
+    plug = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
+                if l["account"] == "6960")
+    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0

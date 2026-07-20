@@ -781,11 +781,16 @@ class JELine(BaseModel):
     fx_credit: float | None = None
 
 
-class JEFx(BaseModel):
-    """The currency and rate one whole entry was recorded in."""
+class AccJournalEntryFx(BaseModel):
+    """The currency and rate one whole entry was recorded in.
 
-    currency: str
-    rate: float
+    Both sides tolerate absence: this validates the shape of an already-stored
+    event, and a malformed or partial fx read back from history must degrade to
+    a blank cell rather than refuse to load the journal.
+    """
+
+    currency: str | None = None
+    rate: float | None = None
 
 
 class AccJournalEntryCreated(BaseModel):
@@ -799,7 +804,7 @@ class AccJournalEntryCreated(BaseModel):
     entries: list[JELine] = Field(default_factory=list)
     # Absent on an ordinary base-currency entry. Its absence is the correct
     # representation of such an entry, not a compatibility branch.
-    fx: JEFx | None = None
+    fx: AccJournalEntryFx | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

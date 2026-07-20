@@ -450,7 +450,8 @@ def setup_routes(app):
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
                                    lines: list[dict], idem_token: str, error: str | None,
-                                   date_from: str = "", date_to: str = ""):
+                                   date_from: str = "", date_to: str = "",
+                                   currency: str = "", rate: str = ""):
         if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
             return base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
@@ -473,7 +474,8 @@ def setup_routes(app):
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _accounting_tabs("journal"),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
-                                date_from=date_from, date_to=date_to),
+                                date_from=date_from, date_to=date_to,
+                                currency=currency, rate=rate),
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
@@ -581,7 +583,9 @@ def setup_routes(app):
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
                                           idem_token=idem_token, error=error,
-                                          date_from=d_from, date_to=d_to)
+                                          date_from=d_from, date_to=d_to,
+                                          currency=currency,
+                                          rate=str(form.get("rate") or "").strip())
 
     @app.post("/accounting/journal/{je_id}/void")
     async def journal_void(request: Request, je_id: str):
@@ -872,8 +876,13 @@ def setup_routes(app):
                 credit = float(line.get("credit") or 0)
                 _fx_d, _fx_c = _fx_line_amounts(
                     debit, credit, fx, line.get("fx_debit"), line.get("fx_credit"))
-                fx_debit = _fx_d if _fx_d is not None else ""
-                fx_credit = _fx_c if _fx_c is not None else ""
+                # A zero foreign amount is not a figure the author typed: the
+                # rounding plug carries 0.0 on both sides and belongs in the
+                # export as blank cells, with no currency claimed for it.
+                fx_debit = _fx_d if _fx_d else ""
+                fx_credit = _fx_c if _fx_c else ""
+                line_fx_currency = fx_currency if (fx_debit != "" or fx_credit != "") else ""
+                line_rate = rate if (fx_debit != "" or fx_credit != "") else ""
                 _csv_row(w, [
                     str(entry.get("ts") or "")[:10],
                     entry.get("je_id", ""),
@@ -884,10 +893,10 @@ def setup_routes(app):
                     debit,
                     credit,
                     base_currency,
-                    fx_currency,
+                    line_fx_currency,
                     fx_debit,
                     fx_credit,
-                    rate or "",
+                    line_rate or "",
                     entry.get("status", ""),
                 ])
 
@@ -1489,7 +1498,8 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
 
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
                         idem_token: str, error: str | None = None,
-                        date_from: str = "", date_to: str = "") -> FT:
+                        date_from: str = "", date_to: str = "",
+                        currency: str = "", rate: str = "") -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -1597,19 +1607,23 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 Div(
                     Div(
                         Label(t("th.currency"), cls="form-label"),
-                        searchable_select("currency", CURRENCIES, value="",
+                        searchable_select("currency", CURRENCIES, value=currency,
                                           placeholder=t("acct.currency_base_hint"),
                                           cls_extra="cell-input"),
                     ),
                     Div(
                         Label(t("th.rate"), cls="form-label"),
-                        Input(type="number", name="rate", value="1.0000", step="0.0001",
+                        Input(type="number", name="rate", value=rate or "1.0000", step="0.0001",
                               min="0", cls="form-input", oninput="celerpJeTotals()",
                               onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
                     ),
                     cls="flex-row gap-sm",
                 ),
                 cls="je-fx-reveal",
+                # Reopened when a currency survives a failed submission, so the
+                # user sees the values they typed instead of a collapsed control
+                # that looks like it was never touched.
+                open=bool(currency),
             ),
             Div("", id="je-rounding-preview", cls="report-section"),
             Template(_je_line_row("__IDX__", {}, acct_opts), id="je-line-tpl"),

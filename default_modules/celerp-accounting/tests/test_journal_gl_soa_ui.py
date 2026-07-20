@@ -649,3 +649,20 @@ def test_fx_line_amounts_blank_when_rate_absent():
     from ui.routes.accounting import _fx_line_amounts
 
     assert _fx_line_amounts(100.0, 0, {"currency": "USD", "rate": 0}) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_je_form_keeps_currency_and_rate_after_a_failed_submit(ui_client):
+    """A rejected entry re-renders with the foreign values still typed in and
+    the control open, rather than silently discarding them."""
+    r = await _post(ui_client, "/accounting/journal/new", {
+        "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-keep-1",
+        "account_0": "1111", "debit_0": "10", "credit_0": "",
+        "account_1": "4100", "debit_1": "", "credit_1": "10",
+        "currency": "QQQ", "rate": "35.5",
+    })
+    assert r.status_code == 200
+    html = r.text
+    # The reveal is reopened so the user can see what was refused.
+    assert '<details open class="je-fx-reveal"' in html
+    assert 'value="35.5"' in html
