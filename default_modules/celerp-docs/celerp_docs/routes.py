@@ -1603,19 +1603,17 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                         if abs(float(c[1].get("amount") or 0) - float(payment.get("amount") or 0)) < 0.005
                         and str(c[1].get("payment_date") or "")[:10] == str(payment.get("payment_date") or "")[:10]
                     ]
-                for pi, pp in (_exact or _linked):
-                    if True:
-                        if _app_idx is None and pp.get("method") == "applied":
-                            _app_idx = pp.get("index", pi)
-                        await emit_event(
-                            session, company_id=company_id, entity_id=paired_doc_id, entity_type="doc",
-                            event_type="doc.payment.voided",
-                            data={"payment_index": pp.get("index", pi), "void_reason": payload.void_reason or "Paired void",
-                                  "amount": pp.get("amount"), "method": pp.get("method")},
-                            actor_id=user.id, location_id=None, source="api",
-                            idempotency_key=str(uuid.uuid4()), metadata_={},
-                        )
-                        break
+                for pi, pp in (_exact or _linked)[:1]:
+                    if _app_idx is None and pp.get("method") == "applied":
+                        _app_idx = pp.get("index", pi)
+                    await emit_event(
+                        session, company_id=company_id, entity_id=paired_doc_id, entity_type="doc",
+                        event_type="doc.payment.voided",
+                        data={"payment_index": pp.get("index", pi), "void_reason": payload.void_reason or "Paired void",
+                              "amount": pp.get("amount"), "method": pp.get("method")},
+                        actor_id=user.id, location_id=None, source="api",
+                        idempotency_key=str(uuid.uuid4()), metadata_={},
+                    )
                 # Applications of this CN to this invoice still active after
                 # this void (governs whether the legacy shared entry may be
                 # voided).
