@@ -399,7 +399,7 @@ def setup_routes(app):
             _demand_table(lines),
             Script(COLUMN_FILTER_JS),
         )
-        return base_shell(
+        return await base_shell(
             page_header(
                 "Demand Planning",
                 search_bar(placeholder="Search product / document...", target="#mfg-table",
@@ -463,7 +463,7 @@ def setup_routes(app):
             _order_table(shown, today=date.today().isoformat()),
             Script(COLUMN_FILTER_JS),
         )
-        return base_shell(
+        return await base_shell(
             page_header(
                 "Work In Progress",
                 search_bar(placeholder="Search run / SKU...", target="#mfg-table",
@@ -553,7 +553,7 @@ def setup_routes(app):
         head = P("Make: " + ", ".join(
             f"{p.get('sku') or p.get('item_id')} ({_qty(p.get('quantity', 0), p.get('unit'))})"
             for p in products), cls="hint") if products else P("No products with a shortfall in the selection.", cls="hint")
-        return base_shell(
+        return await base_shell(
             page_header(
                 "Component Requirements",
                 Button("Print", type="button", cls="btn btn--primary", onclick="window.print()"),

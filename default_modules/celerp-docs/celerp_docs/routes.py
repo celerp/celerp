@@ -26,8 +26,8 @@ from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user, require_manager, require_operator, viewer_read_only
-from celerp.services.permissions import assert_role_permission, get_current_company_settings, role_has_permission
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
@@ -38,7 +38,7 @@ from celerp.services.list_behavior import (
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Closed-set shipment fields: unknown values never reach the event log ('' clears).
 _SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
@@ -635,7 +635,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
 
 
 @router.patch("/sequences/{doc_type}")
-async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), user=Depends(require_manager), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -705,6 +705,7 @@ async def get_doc_pdf(
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
@@ -858,7 +859,7 @@ async def create_doc(
 
 
 @router.patch("/{entity_id}")
-async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1056,7 +1057,7 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
 
 
 @router.post("/{entity_id}/send")
-async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot send void document")
@@ -1114,7 +1115,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
 
 @router.post("/{entity_id}/finalize")
-async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
@@ -1220,7 +1221,7 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
 
 
 @router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
@@ -1249,7 +1250,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
 
 
 @router.post("/{entity_id}/revert-to-draft")
-async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     previous_status = state.get("status")
@@ -1324,6 +1325,7 @@ async def renumber_doc(
     entity_id: str,
     payload: DocRenumberBody,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1374,7 +1376,7 @@ async def renumber_doc(
 
 
 @router.post("/{entity_id}/unvoid")
-async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     if state.get("status") != "void":
@@ -1421,7 +1423,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
 async def bulk_delete_drafts(
     doc_ids: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("delete_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error)."""
@@ -1443,7 +1445,7 @@ async def bulk_delete_drafts(
 
 
 @router.delete("/{entity_id}")
-async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
@@ -1574,7 +1576,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
 
 
 @router.post("/{entity_id}/payment")
-async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     # Snapshot before any flush() to avoid SQLAlchemy lazy-load expiry.
     _doc_state = dict(row.state)
@@ -1587,7 +1589,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 
 
 @router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     paid = float(row.state.get("amount_paid", 0) or 0)
     if payload.amount > paid + 1e-9:
@@ -1616,7 +1618,7 @@ class VoidPaymentBody(BaseModel):
 
 
 @router.post("/{entity_id}/void-payment")
-async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
@@ -1754,7 +1756,7 @@ async def delete_payment(
     payment_index: int,
     payload: DeletePaymentBody = DeletePaymentBody(),
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("record_payments"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1897,7 +1899,7 @@ class ApplyToInvoiceBody(BaseModel):
 
 
 @router.post("/{entity_id}/apply-to-invoice")
-async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     cn_row = await _get_doc(session, company_id, entity_id)
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
@@ -2012,7 +2014,7 @@ class CnRefundBody(BaseModel):
 
 
 @router.post("/{entity_id}/cn-refund")
-async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     cn = row.state
     if cn.get("doc_type") != "credit_note":
@@ -2083,7 +2085,7 @@ class BulkPaymentBody(BaseModel):
 
 
 @router.post("/bulk-payment")
-async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
         raise HTTPException(status_code=422, detail="No documents specified")
 
@@ -2170,7 +2172,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
 
 @router.post("/{entity_id}/receive")
-async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
@@ -2415,7 +2417,7 @@ class ReturnBody(BaseModel):
 
 
 @router.post("/{entity_id}/return-items")
-async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc_type = row.state.get("doc_type")
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
@@ -2462,6 +2464,7 @@ class ShipmentFromDocsBody(BaseModel):
 async def create_shipment_from_docs(
     payload: ShipmentFromDocsBody,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2558,7 +2561,7 @@ async def create_shipment_from_docs(
 
 
 @router.post("/{entity_id}/convert")
-async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     if state.get("doc_type") == "quotation":
@@ -2707,6 +2710,7 @@ async def add_doc_note(
     entity_id: str,
     payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2738,6 +2742,7 @@ async def update_doc_note(
     note_id: str,
     payload: NoteUpdate,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2761,6 +2766,7 @@ async def delete_doc_note(
     entity_id: str,
     note_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2783,6 +2789,7 @@ async def delete_doc_note(
 async def import_doc(
     body: DocImportRecord,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2878,6 +2885,7 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
 async def batch_import_docs(
     body: DocBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -3018,7 +3026,7 @@ async def export_docs_csv(
 # List routes (formerly list_routes.py) - merged here to eliminate WET copy
 # ---------------------------------------------------------------------------
 
-lists_router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+lists_router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class ListCreatePayload(BaseModel):
@@ -3228,6 +3236,7 @@ async def get_list(
 async def create_list(
     payload: ListCreatePayload,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3253,6 +3262,7 @@ async def patch_list(
     entity_id: str,
     payload: ListPatch,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3277,6 +3287,7 @@ async def patch_list(
 async def finalize_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3326,7 +3337,7 @@ async def revert_list_to_draft(
     entity_id: str,
     payload: DocRevertBody = DocRevertBody(),
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("finalize_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3348,6 +3359,7 @@ async def void_list(
     entity_id: str,
     payload: ListVoidBody = ListVoidBody(),
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3367,7 +3379,7 @@ async def void_list(
 async def delete_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("delete_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3387,6 +3399,7 @@ async def convert_list(
     entity_id: str,
     payload: ListConvertBody,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3423,6 +3436,7 @@ async def convert_list(
 async def duplicate_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3463,6 +3477,7 @@ async def add_list_note(
     entity_id: str,
     payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3494,6 +3509,7 @@ async def update_list_note(
     note_id: str,
     payload: NoteUpdate,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3517,6 +3533,7 @@ async def delete_list_note(
     entity_id: str,
     note_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3540,6 +3557,7 @@ async def delete_list_note(
 async def import_list(
     body: ListImportRecord,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3582,6 +3600,7 @@ async def import_lists_template():
 async def batch_import_lists(
     body: ListBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -3731,7 +3750,7 @@ async def fulfill_lines(
     entity_id: str,
     body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4012,7 +4031,7 @@ async def revert_lines(
     entity_id: str,
     body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4159,7 +4178,7 @@ async def receive_return(
     entity_id: str,
     payload: ReceiveReturnPayload,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4368,7 +4387,7 @@ async def receive_return(
 async def undo_receive_return(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4475,7 +4494,7 @@ async def undo_receive_return(
 async def undo_receive(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4588,6 +4607,7 @@ async def upload_doc_file(
     entity_id: str,
     file: UploadFile,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4667,6 +4687,7 @@ async def tag_doc_file(
     file_id: str,
     document_tag: str = Form(""),
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4696,6 +4717,7 @@ async def update_doc_file_description(
     file_id: str,
     description: str = Form(""),
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4724,6 +4746,7 @@ async def delete_doc_file(
     entity_id: str,
     file_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4852,6 +4875,7 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
 async def create_audit_list(
     payload: AuditCreateBody,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4887,7 +4911,7 @@ async def create_audit_list(
 @lists_router.post("/{entity_id}/scan")
 async def scan_list(
     entity_id: str, payload: ListScanBody,
-    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """One scan endpoint for every list type, dispatching on (list_type, status):
@@ -4957,7 +4981,7 @@ async def scan_list(
 @lists_router.patch("/{entity_id}/line/{item_id}")
 async def set_audit_count(
     entity_id: str, item_id: str, payload: ListCountBody,
-    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
@@ -4983,7 +5007,7 @@ class SetScannedBody(BaseModel):
 @lists_router.post("/{entity_id}/set-scanned")
 async def set_scanned(
     entity_id: str, payload: SetScannedBody = SetScannedBody(),
-    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
@@ -5015,7 +5039,7 @@ async def set_scanned(
 @lists_router.post("/{entity_id}/adjust")
 async def adjust_audit(
     entity_id: str, company_id=Depends(get_current_company_id),
-    _: None = Depends(require_manager), user=Depends(get_current_user),
+    _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Audit terminal action: overwrite each counted line's item qty to its count (finalized ->
@@ -5072,7 +5096,7 @@ async def adjust_audit(
 @lists_router.post("/{entity_id}/undo-adjust")
 async def undo_audit_adjust(
     entity_id: str, company_id=Depends(get_current_company_id),
-    _: None = Depends(require_manager), user=Depends(get_current_user),
+    _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
@@ -5107,7 +5131,7 @@ class ListChangeTypeBody(BaseModel):
 @lists_router.post("/{entity_id}/change-type")
 async def change_list_type(
     entity_id: str, payload: ListChangeTypeBody,
-    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Change a list's type while it is a draft OR issued (finalized). The change is just another
@@ -5141,7 +5165,7 @@ async def change_list_type(
 @lists_router.post("/{entity_id}/send")
 async def send_list(
     entity_id: str, payload: DocSendBody = DocSendBody(),
-    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
@@ -5183,6 +5207,7 @@ async def send_list(
 @lists_router.post("/{entity_id}/unmark-sent")
 async def unmark_list_sent(
     entity_id: str, company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Clear the sent milestone (the list stays finalized)."""
@@ -5200,7 +5225,7 @@ class ListMoveBody(BaseModel):
 @lists_router.post("/{entity_id}/move")
 async def move_transfer(
     entity_id: str, payload: ListMoveBody,
-    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Transfer action: relocate every item on a finalized transfer to one location, by emitting the

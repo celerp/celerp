@@ -20,11 +20,12 @@ from celerp.events.engine import emit_event
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.je_keys import je_void_data
 from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
+from celerp.services.permissions import require_permission
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Default Thai chart of accounts seeded on company creation.
 # Follows Thai Accounting Standards (TAS) structure.
@@ -231,6 +232,7 @@ def _account_to_dict(acc: Account) -> dict:
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     """Return all accounts sorted by code."""
     rows = (
@@ -244,7 +246,7 @@ async def get_chart(
 
 @router.post("/chart/seed")
 async def seed_chart_endpoint(
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Seed the default chart of accounts for this company. Only adds missing accounts."""
@@ -281,7 +283,7 @@ async def seed_chart_endpoint(
 @router.post("/accounts")
 async def create_account(
     payload: AccountCreate,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     existing = (
@@ -309,7 +311,7 @@ async def create_account(
 async def patch_account(
     code: str,
     payload: AccountPatch,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     acc = (
@@ -334,7 +336,9 @@ async def patch_account(
 
 
 @router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False)
-async def import_accounting_template():
+async def import_accounting_template(
+    _: None = require_permission("manage_accounting"),
+):
     return PlainTextResponse(
         "entity_id,event_type,idempotency_key,code,name,account_type,parent_code,is_active\n",
         media_type="text/csv",
@@ -345,7 +349,7 @@ async def import_accounting_template():
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_accounting(
     body: AccBatchImportRequest,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -635,7 +639,7 @@ async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Journal: every entry with its lines, source-doc link, and FX info.
@@ -750,7 +754,7 @@ class ManualJEVoidPayload(BaseModel):
 async def create_manual_journal_entry(
     payload: ManualJECreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -967,7 +971,7 @@ async def void_manual_journal_entry(
     entity_id: str,
     payload: ManualJEVoidPayload | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1012,7 +1016,7 @@ async def account_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
@@ -1086,7 +1090,7 @@ async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Trial balance: one row per account with debit/credit totals.
@@ -1150,7 +1154,7 @@ async def general_ledger(
     date_to: str | None = None,
     include_lines: bool = False,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """General ledger summary: opening balance, period debits/credits, and closing
@@ -1259,7 +1263,7 @@ async def general_ledger(
 async def profit_and_loss(
     date_from: str | None = None,
     date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Profit and Loss statement for the period.
@@ -1315,7 +1319,7 @@ async def profit_and_loss(
 async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1428,7 +1432,7 @@ async def statement_of_account(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Statement of account for one contact: opening balance, dated doc/payment
@@ -1633,6 +1637,7 @@ async def list_bank_accounts(
     include_inactive: bool = False,
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(BankAccount).where(BankAccount.company_id == company_id)
     if not include_inactive:
@@ -1652,6 +1657,7 @@ async def get_bank_account(
     bank_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     b = (
         await session.execute(
@@ -1669,7 +1675,7 @@ async def get_bank_account(
 async def create_bank_account(
     payload: BankAccountCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1766,7 +1772,7 @@ async def patch_bank_account(
     bank_id: uuid.UUID,
     payload: BankAccountPatch,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     b = (
@@ -1816,7 +1822,7 @@ class TransferCreate(BaseModel):
 async def create_transfer(
     payload: TransferCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1999,7 +2005,7 @@ async def _je_entries_for_account(
 async def start_reconciliation(
     payload: ReconciliationStart,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     bank = (
@@ -2032,6 +2038,7 @@ async def get_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     recon = (
         await db.execute(
@@ -2075,7 +2082,7 @@ async def match_reconciliation(
     session_id: uuid.UUID,
     payload: ReconciliationMatch,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon = (
@@ -2102,7 +2109,7 @@ async def match_reconciliation(
 async def complete_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon = (
@@ -2197,7 +2204,7 @@ async def import_recon_csv(
     file: UploadFile = File(...),
     column_map: str | None = FastForm(None),  # JSON-encoded dict
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Upload and parse a bank statement CSV, store lines."""
@@ -2273,6 +2280,7 @@ async def get_statement_lines(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     recon = (await db.execute(
         select(ReconciliationSession).where(
@@ -2296,7 +2304,7 @@ async def get_statement_lines(
 async def auto_match_recon(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Run the auto-matching algorithm against all unmatched statement lines."""
@@ -2366,7 +2374,7 @@ async def match_stmt_line(
     line_id: uuid.UUID,
     payload: StmtLineMatchPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
@@ -2386,7 +2394,7 @@ async def unmatch_stmt_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
@@ -2407,7 +2415,7 @@ async def create_je_from_line(
     payload: StmtLineCreatePayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _m: None = Depends(require_manager),
+    _m: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a journal entry from a bank statement line and auto-match it."""
@@ -2469,7 +2477,7 @@ async def split_stmt_line(
     payload: StmtLineSplitPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _m: None = Depends(require_manager),
+    _m: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Split a bank line into multiple JE lines across different accounts."""
@@ -2529,7 +2537,7 @@ async def patch_stmt_line(
     line_id: uuid.UUID,
     payload: StmtLinePatch,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
@@ -2547,7 +2555,7 @@ async def attach_to_line(
     line_id: uuid.UUID,
     file: UploadFile = File(...),
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Attach a document to a statement line (stores file, returns attachment id)."""
@@ -2577,7 +2585,7 @@ async def remove_line_attachment(
     line_id: uuid.UUID,
     att_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
@@ -2592,7 +2600,7 @@ async def bulk_confirm_recon(
     session_id: uuid.UUID,
     payload: BulkConfirmPayload | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm all 'suggested' matches (make them fully matched)."""
@@ -2634,7 +2642,7 @@ async def write_off_difference(
     payload: WriteOffPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _m: None = Depends(require_manager),
+    _m: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a small adjustment JE to zero out the remaining difference."""
@@ -2710,6 +2718,7 @@ async def get_recon_rules(
     bank_account_id: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(ReconciliationRule).where(ReconciliationRule.company_id == company_id)
     if bank_account_id:
@@ -2722,7 +2731,7 @@ async def get_recon_rules(
 async def create_recon_rule(
     payload: ReconRuleCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     rule = ReconciliationRule(
@@ -2748,7 +2757,7 @@ async def patch_recon_rule(
     rule_id: uuid.UUID,
     payload: ReconRulePatch,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     rule = (await db.execute(
@@ -2772,7 +2781,7 @@ async def patch_recon_rule(
 async def delete_recon_rule(
     rule_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     rule = (await db.execute(
@@ -2832,6 +2841,7 @@ class CloseYearPayload(BaseModel):
 async def get_period_lock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
 ) -> dict:
     from celerp.models.company import Company
     company = await session.get(Company, company_id)
@@ -2848,7 +2858,7 @@ async def set_period_lock(
     payload: PeriodLockPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user: object = Depends(get_current_user),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.company import Company
@@ -2877,7 +2887,7 @@ async def close_fiscal_year(
     payload: CloseYearPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user: object = Depends(get_current_user),
-    _: None = Depends(require_manager),
+    _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""

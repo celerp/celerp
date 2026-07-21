@@ -23,7 +23,7 @@ from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.permissions import role_has_permission
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
@@ -435,6 +435,7 @@ async def _inventory_content(
     locations: list[dict],
     col_manager_open: bool = False,
     lang: str = "en",
+    role: str = "owner",
 ) -> FT:
     """Build the #inventory-content fragment (tabs + valuation + cards + table + pagination).
 
@@ -514,7 +515,7 @@ async def _inventory_content(
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
-        _bulk_toolbar(locations, p, total_items),
+        _bulk_toolbar(locations, p, total_items, settings=company.get("settings") or {}, role=role),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
             cls="column-manager-row",
@@ -542,6 +543,15 @@ async def _inventory_content(
     )
 
 
+async def _import_export_allowed(request: Request, token: str) -> bool:
+    """True when the caller's role holds import_export_data over live company settings."""
+    try:
+        settings = (await api.get_company(token)).get("settings") or {}
+    except APIError:
+        settings = {}
+    return role_has_permission(settings, _get_role(request), "import_export_data")
+
+
 def setup_routes(app):
 
     @app.get("/inventory")
@@ -565,6 +575,11 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
 
+        _settings = company.get("settings") or {}
+        _role = _get_role(request)
+        if not role_has_permission(_settings, _role, "view_inventory"):
+            return RedirectResponse("/dashboard", status_code=302)
+
         currency = company.get("currency")
         lang = get_lang(request)
         vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -572,7 +587,7 @@ def setup_routes(app):
         eff_schema = _effective_schema(schema, cat_schemas, active_cat)
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
 
-        content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang)
+        content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang, role=_role)
 
         # Search must carry the active filters (status/category/type/location), so searching inside
         # e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.
@@ -582,10 +597,9 @@ def setup_routes(app):
         ) if v}
         _search_url = "/inventory/content" + (f"?{urlencode(_search_filters)}" if _search_filters else "")
 
-        _role_level = _ROLE_LEVELS.get(_get_role(request), 0)
-        _is_manager = _role_level >= _ROLE_LEVELS["manager"]
-        _is_operator = _role_level >= _ROLE_LEVELS["operator"]
-        return base_shell(
+        _can_import_export = role_has_permission(_settings, _role, "import_export_data")
+        _can_edit_inventory = role_has_permission(_settings, _role, "edit_inventory")
+        return await base_shell(
             page_header(
                 t("page.inventory", lang),
                 search_bar(
@@ -593,10 +607,10 @@ def setup_routes(app):
                     target="#inventory-content",
                     url=_search_url,
                 ),
-                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _is_manager else "",
-                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _is_operator else "",
-                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _is_manager else "",
-                A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _is_manager else "",
+                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
+                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
+                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _can_import_export else "",
+                A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _can_import_export else "",
             ),
             content,
             Script(_BULK_SPLIT_JS),
@@ -633,7 +647,7 @@ def setup_routes(app):
             locations = loc_resp.get("items", [])
         except APIError as e:
             schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request))
+        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request), role=_get_role(request))
 
     @app.post("/inventory/columns")
     async def inventory_columns(request: Request):
@@ -676,7 +690,7 @@ def setup_routes(app):
             locations = loc_resp.get("items", [])
         except APIError:
             schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, col_manager_open=True, lang=get_lang(request))
+        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, col_manager_open=True, lang=get_lang(request), role=_get_role(request))
 
     @app.get("/inventory/search")
     async def inventory_search(request: Request):
@@ -696,14 +710,14 @@ def setup_routes(app):
             locations = loc_resp.get("items", [])
         except APIError as e:
             schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request))
+        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request), role=_get_role(request))
 
     @app.get("/inventory/export/csv")
     async def inventory_export_csv(request: Request):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         p = _parse_params(request)
         params: dict = {}
@@ -732,10 +746,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
-        return base_shell(
+        return await base_shell(
             page_header(
                 t("page.import_inventory", lang),
                 A(t("btn.back", lang), href="/inventory", cls="btn btn--secondary"),
@@ -753,7 +767,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         try:
             price_lists = await api.get_price_lists(token)
@@ -782,13 +796,13 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         rows, err = await read_csv_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 _import_upload_form(error=err),
                 title="Import Inventory - Celerp",
@@ -799,7 +813,7 @@ def setup_routes(app):
 
         cols = list(rows[0].keys()) if rows else []
         if not cols:
-            return base_shell(
+            return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 _import_upload_form(error="CSV file has no columns."),
                 title="Import Inventory - Celerp",
@@ -821,7 +835,7 @@ def setup_routes(app):
         cat_schemas = await api.get_all_category_schemas(token)
         cat_attrs = _union_category_attr_keys(cat_schemas)
 
-        return base_shell(
+        return await base_shell(
             page_header(t("page.import_inventory", lang)),
             column_mapping_form(
                 csv_cols=cols,
@@ -847,13 +861,13 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 _import_upload_form(error="CSV data expired. Please re-upload."),
                 title="Import Inventory - Celerp",
@@ -881,7 +895,7 @@ def setup_routes(app):
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             cat_schemas = await api.get_all_category_schemas(token)
             cat_attrs = _union_category_attr_keys(cat_schemas)
-            return base_shell(
+            return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 column_mapping_form(
                     csv_cols=original_cols,
@@ -912,7 +926,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
         validate, cell_renderers = await _build_item_validator(token)
 
-        return base_shell(
+        return await base_shell(
             page_header(t("page.import_inventory", lang)),
             _csv_validation_result(
                 rows=rows,
@@ -938,7 +952,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
         csv_data = _resolve_csv_text(form)
@@ -968,7 +982,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
         csv_data = _resolve_csv_text(form)
@@ -982,7 +996,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+        if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
 
         import uuid
@@ -1355,7 +1369,7 @@ def setup_routes(app):
         await _inject_reorder_hints(token, item)
         detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
             page_header(
                 item.get("name") or item.get("sku") or entity_id,
@@ -1405,7 +1419,7 @@ def setup_routes(app):
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"),
                          (name, f"/inventory/{entity_id}"), ("History", None)]),
             page_header(
@@ -1796,15 +1810,16 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            schema, item, cat_schemas, locs = await asyncio.gather(
+            schema, item, cat_schemas, locs, company = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
                 api.get_all_category_schemas(token),
                 api.get_locations(token),
+                api.get_company(token),
             )
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["operator"]:
+        if not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory"):
             # Viewers are read-only: swap back a non-editable display cell.
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
@@ -4115,7 +4130,8 @@ function celerpPrintLabel(entityId, templateId) {
         return Response("", status_code=204, headers={"HX-Refresh": "true"})
 
 
-def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0) -> FT:
+def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
+                  settings: dict | None = None, role: str = "owner") -> FT:
     """Sticky toolbar: [N selected] [Clear] [Action ▾] [context-area].
 
     Single action dropdown drives everything. Context area swaps based on selection.
@@ -4135,8 +4151,13 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     # Module bulk actions - each shows a confirm button in the context area.
     # action_type="navigate" → opens in new tab via native form submit.
     # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
+    visible_bulk_actions = [
+        action for action in get_slot("bulk_action")
+        if not action.get("permission")
+        or role_has_permission(settings or {}, role, action["permission"])
+    ]
     module_action_opts = []
-    for action in get_slot("bulk_action"):
+    for action in visible_bulk_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
         module_action_opts.append(
             Option(action.get("label", "Action"), value=f"mod:{action_id}")
@@ -4181,7 +4202,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         Div(id="bulk-context", cls="bulk-context"),
         Div(id="bulk-action-result"),
         # Hidden templates for context area content
-        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action"), p or {}, total_items),
+        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, visible_bulk_actions, p or {}, total_items),
         id="bulk-toolbar",
         cls="bulk-toolbar",
         **{"data-hidden": "true"},

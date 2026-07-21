@@ -35,6 +35,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 
 router = APIRouter()
@@ -858,6 +859,7 @@ async def run_doctor(
     from_version: str | None = Query(None, description="Previous version string - triggers upgrade report when provided with fix=true"),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     check_names = [c.strip() for c in checks.split(",")] if checks else ALL_CHECKS
@@ -900,6 +902,7 @@ async def run_doctor(
 @router.get("/relay/status")
 async def relay_status(
     _user=Depends(get_current_user),
+    _: None = require_permission("manage_company_settings"),
 ) -> dict:
     """Return the current Cloud Relay (cloudflared) status.
 

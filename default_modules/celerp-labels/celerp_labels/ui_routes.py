@@ -997,7 +997,7 @@ def _label_settings_root(
     )
 
 
-def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
+async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
     """Show template picker + confirm Print button for bulk label printing."""
     ft = _ft()
     Div, H2, Form, Label, Select, Option, Button, P, Input = (
@@ -1009,9 +1009,9 @@ def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_b
     hidden_ids = [Input(type="hidden", name="selected", value=eid) for eid in entity_ids]
     template_opts = [Option(tpl["name"], value=tpl["id"]) for tpl in templates]
 
-    return base_shell(
+    return await base_shell(
         Div(
-            H2(f"Print Labels — {len(entity_ids)} item(s)"),
+            H2(f"Print Labels - {len(entity_ids)} item(s)"),
             P(f"Selected: {', '.join(entity_ids[:5])}{'...' if len(entity_ids) > 5 else ''}"),
             Form(
                 *hidden_ids,
@@ -1385,7 +1385,7 @@ def setup_ui_routes(app) -> None:
         # Auto-redirect to first template if any exist
         if templates:
             return RedirectResponse(f"/settings/labels/{templates[0]['id']}", status_code=302)
-        return base_shell(
+        return await base_shell(
             _label_settings_root(templates),
             title="Label Templates - Celerp",
             nav_active="labels",
@@ -1399,14 +1399,14 @@ def setup_ui_routes(app) -> None:
         templates = await _seed_presets_if_empty(request)
         tpl = next((x for x in templates if x["id"] == tmpl_id), None)
         if not tpl:
-            return base_shell(
+            return await base_shell(
                 _label_settings_root(templates, flash="Template not found.", flash_kind="error"),
                 title="Label Templates - Celerp",
                 nav_active="labels",
                 request=request,
             )
         global_extra, category_attrs = await _fetch_extra_fields(request)
-        return base_shell(
+        return await base_shell(
             _label_settings_root(templates, active_id=tmpl_id, editor=_editor_panel(tpl, global_extra, category_attrs)),
             title=f"Edit: {tpl['name']} - Celerp",
             nav_active="labels",
@@ -1652,7 +1652,7 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+        return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
     @app.get("/labels/print-list")
     async def labels_print_list(request: Request):
@@ -1686,7 +1686,7 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+        return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
 
 

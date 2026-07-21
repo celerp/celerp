@@ -16,7 +16,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, ROLE_LEVELS
 from celerp.services.permissions import (
     PERMISSIONS,
     ROLES,
@@ -275,7 +275,7 @@ async def me(company_id=Depends(get_current_company_id), session: AsyncSession =
 
 
 @router.patch("/me")
-async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _=Depends(require_admin), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
@@ -327,13 +327,13 @@ async def patch_role_permissions(
     # Checking a role's box lowers the threshold to that role; unchecking raises it
     # to the next role up, since every role at or above the threshold inherits.
     if payload.granted:
-        new_min_role = payload.role_key
+        new_threshold = payload.role_key
     else:
         higher = sorted((r for r in ROLES if r.level > ROLE_LEVELS[payload.role_key]), key=lambda r: r.level)
         # The owner column is always granted and never rendered as an unchecked box,
         # so there is always a higher role to raise the threshold to here.
-        new_min_role = higher[0].key
-    if ROLE_LEVELS[new_min_role] < ROLE_LEVELS[perm.floor_role]:
+        new_threshold = higher[0].key
+    if ROLE_LEVELS[new_threshold] < ROLE_LEVELS[perm.floor_role]:
         raise HTTPException(
             status_code=422,
             detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
@@ -344,11 +344,11 @@ async def patch_role_permissions(
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
     overrides = dict(settings.get("role_permissions") or {})
-    overrides[perm.key] = new_min_role
+    overrides[perm.key] = new_threshold
     settings["role_permissions"] = overrides
     company.settings = settings
     await session.commit()
-    return {"ok": True, "perm_key": perm.key, "min_role": new_min_role}
+    return {"ok": True, "perm_key": perm.key, "threshold_role": new_threshold}
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ async def patch_location(location_id: str, payload: LocationPatch, company_id=De
 async def delete_location(
     location_id: str,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -563,7 +563,7 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
 async def create_user(
     payload: UserCreate,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_users"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.accounting import UserCompany
@@ -615,7 +615,7 @@ async def patch_user(
     user_id: uuid.UUID,
     payload: UserPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_users"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.accounting import UserCompany
@@ -679,7 +679,7 @@ async def get_item_schema(company_id=Depends(get_current_company_id), role: str 
 async def patch_item_schema(
     payload: ItemSchemaPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -718,7 +718,7 @@ async def patch_category_schema(
     category: str,
     payload: CategorySchemaPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -777,7 +777,7 @@ async def get_all_category_schemas(company_id=Depends(get_current_company_id), s
 async def merge_category_schemas(
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Auto-merge attribute keys discovered during import into category schemas.
@@ -836,7 +836,7 @@ def _slugify_category(name: str) -> str:
 async def create_category(
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     name = str(payload.get("name") or "").strip()
@@ -867,7 +867,7 @@ async def rename_category(
     category_key: str,
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -918,7 +918,7 @@ async def rename_category(
 async def delete_category(
     category_key: str,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -1006,7 +1006,7 @@ async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSe
 async def patch_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1119,7 +1119,7 @@ async def get_payment_terms(company_id=Depends(get_current_company_id), session:
 async def patch_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1203,7 +1203,7 @@ async def get_contact_tags(company_id=Depends(get_current_company_id), session: 
 async def patch_contact_tags(
     payload: ContactTagsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1233,7 +1233,7 @@ async def get_contact_defaults(company_id=Depends(get_current_company_id), sessi
 async def patch_contact_defaults(
     payload: ContactDefaultsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1283,7 +1283,7 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
 async def patch_terms_conditions(
     payload: TermsConditionsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1332,7 +1332,7 @@ async def get_purchasing_taxes(
 async def patch_purchasing_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1401,7 +1401,7 @@ async def get_purchasing_payment_terms(
 async def patch_purchasing_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1489,7 +1489,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
 async def put_units(
     payload: UnitsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     _validate_units(payload.units)
@@ -1512,7 +1512,7 @@ class RelayEnablePayload(BaseModel):
     instance_id: str = Field("", description="Optional stable instance identifier.")
 
 
-@router.post("/me/relay/enable", dependencies=[Depends(require_admin)])
+@router.post("/me/relay/enable", dependencies=[require_permission("manage_integrations")])
 async def enable_relay(
     payload: RelayEnablePayload,
     _company_id=Depends(get_current_company_id),
@@ -1544,7 +1544,7 @@ async def enable_relay(
     return {"ok": True, "message": "Cloud Relay activated."}
 
 
-@router.post("/me/relay/disable", dependencies=[Depends(require_admin)])
+@router.post("/me/relay/disable", dependencies=[require_permission("manage_integrations")])
 async def disable_relay(_company_id=Depends(get_current_company_id)) -> dict:
     """Deactivate the Cloud Relay. Stops cloudflared and closes the WS connection. Admin-only."""
     from celerp.config import settings as _cfg
@@ -1621,7 +1621,7 @@ async def list_modules(
     return await asyncio.to_thread(_scan_modules)
 
 
-@router.post("/me/modules/{module_name}/enable", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
 async def enable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
@@ -1641,7 +1641,7 @@ async def enable_module(
     return {"ok": True, "name": module_name, "enabled": True, "restart_required": True, "enabled_modules": enabled_list}
 
 
-@router.post("/me/modules/{module_name}/disable", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")])
 async def disable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
@@ -1666,7 +1666,7 @@ async def disable_module(
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
 
 
-@router.delete("/me", dependencies=[Depends(require_admin)])
+@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])
 async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1690,7 +1690,7 @@ async def deactivate_company(
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
 
-@router.post("/me/reactivate", dependencies=[Depends(require_admin)])
+@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")])
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1774,7 +1774,7 @@ async def get_price_lists(
 async def patch_price_lists(
     payload: PriceListsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1809,7 +1809,7 @@ async def get_base_price_list(
 async def patch_base_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1846,7 +1846,7 @@ async def get_default_price_list(
 async def patch_default_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1859,7 +1859,7 @@ async def patch_default_price_list(
     return {"ok": True}
 
 
-@router.post("/me/demo/reseed", dependencies=[Depends(require_admin)])
+@router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")])
 async def reseed_demo_items(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),

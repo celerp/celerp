@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.company import Company
-from celerp.services.auth import get_current_company_id, get_current_user, require_admin
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.services.units import DEFAULT_UNITS
 
 _PRESETS_DIR = Path(__file__).parent / "presets"
@@ -129,7 +130,7 @@ def _ensure_unit_seeded(settings: dict, unit_name: str) -> None:
 def _build_router() -> APIRouter:
     router = APIRouter()
     read_deps = [Depends(get_current_user)]
-    write_deps = [Depends(get_current_user), Depends(require_admin)]
+    write_deps = [Depends(get_current_user), require_permission("manage_company_settings")]
 
     @router.get("/verticals/categories", dependencies=read_deps)
     async def list_categories() -> list[dict]:

@@ -25,13 +25,14 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
-from celerp.services.auth import get_current_user, require_admin, viewer_read_only
+from celerp.services.auth import get_current_user
 from celerp.services.money import currency_dp, to_minor_units
+from celerp.services.permissions import require_permission
 
 log = logging.getLogger(__name__)
 
 public_router = APIRouter()
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Only these can be paid online (a bill/PO is money you owe, not money owed to you).
 _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
@@ -169,7 +170,7 @@ async def payments_status(user=Depends(get_current_user)) -> dict:
 
 
 @router.post("/payments/connect")
-async def payments_connect(_: None = Depends(require_admin)) -> dict:
+async def payments_connect(_: None = require_permission("manage_integrations")) -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
     if not result or not result.get("url"):
@@ -178,5 +179,5 @@ async def payments_connect(_: None = Depends(require_admin)) -> dict:
 
 
 @router.post("/payments/disconnect")
-async def payments_disconnect(_: None = Depends(require_admin)) -> dict:
+async def payments_disconnect(_: None = require_permission("manage_integrations")) -> dict:
     return {"disconnected": await pay.disconnect()}

@@ -113,7 +113,7 @@ def setup_routes(app):
             method="post", action="/settings/manufacturing", cls="settings-card",
         )
 
-        return base_shell(
+        return await base_shell(
             page_header("Manufacturing Settings"),
             prefs,
             await _work_centers_section(token),

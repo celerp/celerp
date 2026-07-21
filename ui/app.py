@@ -253,7 +253,7 @@ app.add_middleware(I18nMiddleware)
 async def ui_404_handler(request: Request, exc) -> HTMLResponse:
     from ui.components.shell import base_shell, page_header
     from fasthtml.common import A, Div, P
-    page = base_shell(
+    page = await base_shell(
         page_header("Page Not Found"),
         Div(
             P("The page you requested does not exist.", cls="flash flash--error"),
@@ -273,7 +273,7 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
     _logging.getLogger(__name__).error("UI 500: %s", exc, exc_info=True)
     from ui.components.shell import base_shell, page_header
     from fasthtml.common import A, Div, P
-    page = base_shell(
+    page = await base_shell(
         page_header("Something Went Wrong"),
         Div(
             P("An unexpected error occurred. Please try again.", cls="flash flash--error"),
@@ -407,11 +407,11 @@ if os.path.isdir(_ai_ui_pkg) and _ai_ui_pkg not in _sys.path:
     _sys.path.insert(0, _ai_ui_pkg)
 try:
     from celerp.modules.slots import register as _register_ui_slot
-    _register_ui_slot("nav", {
-        "group": "AI", "key": "ai", "href": "/ai", "label": "AI Assistant",
-        "label_key": "nav.ai_assistant", "order": 90, "settings_href": "/ai/settings",
-        "min_role": "operator", "_module": "celerp-ai",
-    })
+    from celerp.modules.loader import read_manifest as _read_manifest
+    from pathlib import Path as _Path
+    _ai_nav = _read_manifest(_Path(_ai_ui_pkg)).get("slots", {}).get("nav")
+    if _ai_nav:
+        _register_ui_slot("nav", {**_ai_nav, "_module": "celerp-ai"})
     _importlib.import_module("celerp_ai.ui_routes").setup_ui_routes(app)
 except ImportError:
     pass  # AI package not present — skip silently

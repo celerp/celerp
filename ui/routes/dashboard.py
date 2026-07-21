@@ -562,7 +562,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             if e.status == 404:
                 return RedirectResponse("/setup", status_code=302)
-            return base_shell(
+            return await base_shell(
                 page_header("Dashboard"),
                 Div(f"Error loading dashboard: {e.detail}", cls="error-banner"),
                 title="Dashboard - Celerp",
@@ -572,7 +572,7 @@ def setup_routes(app):
         except Exception as e:
             import logging as _log
             _log.getLogger(__name__).exception("Dashboard load failed: %s", e)
-            return base_shell(
+            return await base_shell(
                 page_header("Dashboard"),
                 Div(f"Error loading dashboard: {type(e).__name__}", cls="error-banner"),
                 title="Dashboard - Celerp",
@@ -607,7 +607,7 @@ def setup_routes(app):
         # Strip margin sub-text unless the caller may see costs.
         if not _role_has_permission(settings, role, "set_inventory_prices"):
             values.pop("margin_pct_sub", None)
-        return base_shell(
+        return await base_shell(
             page_header(t("page.dashboard", lang)),
             # Stargazer/supporter ask shown where setup actually lands (company-settings
             # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
@@ -678,7 +678,7 @@ def setup_routes(app):
 
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
-        return base_shell(
+        return await base_shell(
             page_header("Activity History", A("← Dashboard", href="/dashboard", cls="btn btn-secondary")),
             Div(
                 filters,

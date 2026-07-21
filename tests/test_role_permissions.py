@@ -28,7 +28,7 @@ def test_roles_derived_from_role_levels():
         assert r.label_key == f"settings.{r.key}"
 
 
-# The full 2.1 catalogue: key -> (default_min_role, grantable, floor_role).
+# The full 2.1 catalogue: key -> (default_role, grantable, floor_role).
 # Defaults reproduce the thresholds the enforcement sites carry today.
 EXPECTED_CATALOGUE = {
     # viewer defaults (view keys floor at viewer)
@@ -77,7 +77,7 @@ def test_permissions_registry_shape():
     assert set(by_key) == set(EXPECTED_CATALOGUE)
     for key, (default, grantable, floor) in EXPECTED_CATALOGUE.items():
         p = by_key[key]
-        assert p.default_min_role == default, key
+        assert p.default_role == default, key
         assert p.grantable is grantable, key
         assert p.floor_role == floor, key
         assert p.label, key
@@ -744,3 +744,302 @@ async def test_cost_basis_kpi_follows_permission(ui):
 
     content = await _render_dashboard(ui, "manager", {}, vertical)
     assert b"Cost Basis" in content
+
+
+# ── Default parity, override flips, and write floors (2.8) ─────────────────────
+
+async def test_write_floor_rejects_viewer_grant(client, session):
+    """Granting set_inventory_prices to viewer sits below its operator floor: the
+    matrix save returns 422 naming the floor, the replacement for the deleted
+    router-level read-only baseline."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "set_inventory_prices", "role_key": "viewer", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+    assert "operator" in r.json()["detail"]
+
+
+async def test_default_parity_matrix(client, session):
+    """With empty overrides, each default tier's representative endpoint allows the
+    role at its default and denies the role one level below - the exact thresholds
+    the enforcement sites carried before the registry. The per-key resolver parity
+    is proven exhaustively by test_defaults_match_current_behavior; this pins the
+    HTTP behavior at every tier boundary."""
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.com', 'viewer')}"}
+
+    def _item(sku):
+        return {"sku": sku, "name": "Par", "quantity": 1,
+                "location_id": ctx["location_id"], "sell_by": "piece"}
+
+    # operator tier: edit_inventory (POST /items). viewer denied, operator allowed.
+    assert (await client.post("/items", json=_item("PAR-V"), headers=viewer_h)).status_code == 403
+    assert (await client.post("/items", json=_item("PAR-O"), headers=ctx["operator_h"])).status_code == 200
+
+    # manager tier: set_inventory_prices (POST /items/{id}/price). operator denied, manager allowed.
+    price = {"price_type": "retail_price", "new_price": 12.0}
+    assert (await client.post(f"/items/{ctx['item_id']}/price", json=price, headers=ctx["operator_h"])).status_code == 403
+    assert (await client.post(f"/items/{ctx['item_id']}/price", json=price, headers=ctx["manager_h"])).status_code == 200
+
+    # admin tier: manage_company_settings (PATCH /companies/me). manager denied, admin allowed.
+    assert (await client.patch("/companies/me", json={"name": "Par X"}, headers=ctx["manager_h"])).status_code == 403
+    assert (await client.patch("/companies/me", json={"name": "Par Y"}, headers=admin_h)).status_code == 200
+
+    # owner tier: manage_permissions (PATCH matrix). admin denied, owner allowed.
+    grant = {"perm_key": "set_inventory_prices", "role_key": "operator", "granted": True}
+    assert (await client.patch(_ROLE_PERM_URL, json=grant, headers=admin_h)).status_code == 403
+    assert (await client.patch(_ROLE_PERM_URL, json=grant, headers=ctx["admin_h"])).status_code == 200
+
+
+async def test_override_grant_flips_gate(client, session):
+    """Granting a key to a role below its default flips that role's representative
+    endpoint from 403 to success."""
+    ctx = await perm_setup(client, session)
+    price = {"price_type": "retail_price", "new_price": 20.0}
+    # operator lacks set_inventory_prices (manager default) by default.
+    assert (await client.post(f"/items/{ctx['item_id']}/price", json=price, headers=ctx["operator_h"])).status_code == 403
+    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    assert (await client.post(f"/items/{ctx['item_id']}/price", json=price, headers=ctx["operator_h"])).status_code == 200
+
+
+async def test_override_revoke_flips_gate(client, session):
+    """Raising a key's threshold above a role flips that role's representative
+    endpoint from success to 403."""
+    ctx = await perm_setup(client, session)
+
+    def _item(sku):
+        return {"sku": sku, "name": "Rev", "quantity": 1,
+                "location_id": ctx["location_id"], "sell_by": "piece"}
+
+    # operator holds edit_inventory (operator default) today.
+    assert (await client.post("/items", json=_item("REV-1"), headers=ctx["operator_h"])).status_code == 200
+    await grant_permission(client, ctx["admin_h"], "edit_inventory", "manager")
+    assert (await client.post("/items", json=_item("REV-2"), headers=ctx["operator_h"])).status_code == 403
+
+
+async def test_fixed_rows_reject_patch(client, session):
+    """PATCH targeting any fixed row is refused for everyone, owner included."""
+    ctx = await perm_setup(client, session)
+    for key in ("manage_permissions", "manage_company_lifecycle", "manage_billing"):
+        r = await client.patch(
+            _ROLE_PERM_URL,
+            json={"perm_key": key, "role_key": "admin", "granted": True},
+            headers=ctx["admin_h"],
+        )
+        assert r.status_code == 403, (key, r.text)
+
+
+def test_nav_visibility_follows_permissions():
+    """Sidebar entries render exactly when the caller's resolved role holds the
+    entry's permission: a granted lower role gains an entry, a revoked higher role
+    loses one."""
+    import os
+    from celerp.modules.loader import load_all
+    # Register the docs nav slots deterministically: the global slot registry's
+    # state depends on process-wide import order, so load the module directly.
+    load_all(os.environ.get("MODULE_DIR") or "default_modules", {"celerp-docs"})
+    from fasthtml.common import to_xml
+
+    from ui.components.shell import _sidebar
+
+    # Payments gates on view_payments (manager default): operator cannot see it...
+    assert "/payments" not in to_xml(_sidebar("dashboard", role="operator", settings={}))
+    # ...until it is granted down to operator.
+    granted = {"role_permissions": {"view_payments": "operator"}}
+    assert "/payments" in to_xml(_sidebar("dashboard", role="operator", settings=granted))
+
+    # Sales Documents gate on view_documents (viewer default): a manager sees them,
+    # but not once the key is raised to admin.
+    assert "/docs?type=invoice" in to_xml(_sidebar("dashboard", role="manager", settings={}))
+    revoked = {"role_permissions": {"view_documents": "admin"}}
+    assert "/docs?type=invoice" not in to_xml(_sidebar("dashboard", role="manager", settings=revoked))
+
+
+def test_kpi_specs_follow_permissions():
+    """Dashboard KPI cards filter on permission membership: a permissioned card
+    shows only for roles holding the key; ungated cards always show."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.dashboard import _kpi_grid
+
+    cfg = {"kpis": [
+        {"label": "Cost Basis", "value_fn": "cost_total", "permission": "set_inventory_prices"},
+        {"label": "Item Count", "value_fn": "item_count"},
+    ]}
+    values = {"cost_total": "400", "item_count": "3"}
+
+    op = to_xml(_kpi_grid(cfg, values, role="operator", settings={}))
+    assert "Cost Basis" not in op and "Item Count" in op
+
+    granted = {"role_permissions": {"set_inventory_prices": "operator"}}
+    assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="operator", settings=granted))
+    assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="manager", settings={}))
+
+
+async def test_owner_column_fixed(ui):
+    """The owner column renders checked and disabled in every grantable row: the
+    owner holds everything and cannot be unset."""
+    html = await _render_users_tab(ui, "owner", {})
+    for perm in ("edit_documents", "set_inventory_prices", "manage_users"):
+        cell = _cell(html, perm, "owner")
+        assert "checked" in cell, perm
+        assert "disabled" in cell, perm
+
+
+async def test_deactivate_owner_only(client, session):
+    """Company deactivation is owner-only: an admin is refused, the owner succeeds."""
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
+    assert (await client.delete("/companies/me", headers=admin_h)).status_code == 403
+    assert (await client.delete("/companies/me", headers=ctx["admin_h"])).status_code == 200
+
+
+async def test_reactivate_and_reseed_owner_only(client, session):
+    """Reactivation and demo reseed are owner-only like deactivation."""
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
+
+    # Reseed on the active company: the gate refuses the admin, the owner succeeds.
+    assert (await client.post("/companies/me/demo/reseed", headers=admin_h)).status_code == 403
+    assert (await client.post("/companies/me/demo/reseed", headers=ctx["admin_h"])).status_code == 200
+
+    # Reactivate gate refuses the admin while the company is still active (the gate
+    # runs before any state check); the owner then deactivates and reactivates.
+    assert (await client.post("/companies/me/reactivate", headers=admin_h)).status_code == 403
+    assert (await client.delete("/companies/me", headers=ctx["admin_h"])).status_code == 200
+    assert (await client.post("/companies/me/reactivate", headers=ctx["admin_h"])).status_code == 200
+
+
+def test_web_access_link_requires_integrations():
+    """The footer Web Access link renders only for a role holding manage_integrations
+    (admin default): absent for a manager, present for an admin."""
+    from fasthtml.common import to_xml
+
+    from ui.components.shell import _sidebar
+
+    assert "/settings/cloud" not in to_xml(_sidebar("dashboard", role="manager", settings={}))
+    assert "/settings/cloud" in to_xml(_sidebar("dashboard", role="admin", settings={}))
+
+
+async def test_ai_routes_require_permission(client, session):
+    """An AI endpoint returns 403 for a viewer under default permissions; an
+    operator (holding use_ai_assistant by default) is admitted. The AI router also
+    sits behind the Cloud+AI subscription gate (require_session_token); this test
+    isolates the permission gate by satisfying that subscription gate, so a plain
+    subscription pass cannot be mistaken for a permission pass."""
+    from celerp.main import app
+    from celerp.session_gate import require_session_token
+
+    ctx = await perm_setup(client, session)
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.com', 'viewer')}"}
+    app.dependency_overrides[require_session_token] = lambda: None
+    try:
+        assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
+        assert (await client.get("/ai/memory", headers=ctx["operator_h"])).status_code == 200
+    finally:
+        app.dependency_overrides.pop(require_session_token, None)
+
+
+async def test_accounting_reads_require_permission(client, session):
+    """The chart-of-accounts read returns 403 for an operator; a manager (holding
+    manage_accounting by default) is admitted."""
+    ctx = await perm_setup(client, session)
+    assert (await client.get("/accounting/chart", headers=ctx["operator_h"])).status_code == 403
+    assert (await client.get("/accounting/chart", headers=ctx["manager_h"])).status_code == 200
+
+
+def test_bulk_action_filter_enforced():
+    """A permission-gated bulk action is dropped from the inventory bulk toolbar for
+    a role lacking the key and kept for a role holding it, while an ungated action
+    always shows. The gated shape mirrors the connectors module's adjust_inventory
+    contribution; injecting it keeps the test independent of which optional modules
+    a given deployment enables."""
+    from unittest.mock import patch
+
+    from fasthtml.common import to_xml
+
+    from ui.routes.inventory import _bulk_toolbar
+
+    actions = [
+        {"label": "Enable Shopify sync", "form_action": "/api/items/bulk/shopify-sync/enable",
+         "icon": "🛍", "action_type": "htmx", "permission": "adjust_inventory",
+         "_module": "celerp-connectors"},
+        {"label": "Print Labels", "form_action": "/labels/print-bulk",
+         "icon": "🖨", "action_type": "navigate", "_module": "celerp-labels"},
+    ]
+
+    def _fake_get(slot):
+        return list(actions) if slot == "bulk_action" else []
+
+    with patch("celerp.modules.slots.get", side_effect=_fake_get):
+        operator_html = to_xml(_bulk_toolbar([], settings={}, role="operator"))
+        manager_html = to_xml(_bulk_toolbar([], settings={}, role="manager"))
+
+    # adjust_inventory defaults to manager: the operator loses the gated action,
+    # keeps the ungated one; the manager sees both.
+    assert "Enable Shopify sync" not in operator_html
+    assert "Print Labels" in operator_html
+    assert "Enable Shopify sync" in manager_html
+
+
+async def test_payments_page_requires_permission(ui):
+    """/payments redirects an operator (lacking view_payments, a manager default) to
+    the dashboard rather than rendering the payments list."""
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+
+    company = {"currency": "THB", "settings": {}}
+    with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
+        r = await ui.get("/payments", cookies={"celerp_token": make_test_token(role="operator")})
+    assert r.status_code == 302
+    assert r.headers["location"] == "/dashboard"
+
+
+async def test_raised_view_inventory_redirects_viewer(ui):
+    """With view_inventory raised to operator, a viewer requesting /inventory is
+    redirected to the dashboard. The page reads settings from the company, so the
+    raised override is enough to close the page to the viewer."""
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+
+    company = {"currency": "THB",
+               "settings": {"role_permissions": {"view_inventory": "operator"}}}
+    patches = [
+        patch("ui.api_client.get_company", AsyncMock(return_value=company)),
+        patch("ui.api_client.get_item_schema", AsyncMock(return_value={})),
+        patch("ui.api_client.get_all_category_schemas", AsyncMock(return_value={})),
+        patch("ui.api_client.get_column_prefs", AsyncMock(return_value={})),
+        patch("ui.api_client.get_locations", AsyncMock(return_value={"items": []})),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        r = await ui.get("/inventory", cookies={"celerp_token": make_test_token(role="viewer")})
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 302
+    assert r.headers["location"] == "/dashboard"
+
+
+def test_guard_family_removed():
+    """No source file under celerp/, ui/, or default_modules/ still names the deleted
+    guard family or the old min_role nav vocabulary."""
+    import pathlib
+    import subprocess
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    banned = ["require_admin", "require_operator", "require_manager", "require_min_role",
+              "viewer_read_only", "_check_role", "min_role"]
+    pattern = r"\b(" + "|".join(banned) + r")\b"
+    r = subprocess.run(
+        ["grep", "-rnE", pattern, "celerp", "ui", "default_modules", "--include=*.py"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    assert r.returncode == 1, f"guard-family stragglers found:\n{r.stdout}"

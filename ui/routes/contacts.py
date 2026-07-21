@@ -22,7 +22,8 @@ from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form a
 from ui.components.files import _files_section as _shared_files_section, _DOCUMENT_TAGS
 from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
-from ui.config import get_token as _token
+from ui.config import get_token as _token, get_role as _get_role
+from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates
 
@@ -663,7 +664,7 @@ def _contacts_content(
     )
 
 
-def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Request, q: str, page: int, total: int, per_page: int, sort: str, sort_dir: str, currency: str | None = None) -> FT:
+async def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Request, q: str, page: int, total: int, per_page: int, sort: str, sort_dir: str, currency: str | None = None, settings: dict | None = None) -> FT:
     """Renders the full contact list page for customers or vendors."""
     label = "Customers" if contact_type == "customer" else "Vendors"
     nav_key = "customers" if contact_type == "customer" else "vendors"
@@ -673,16 +674,17 @@ def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Reque
     schema = _contact_schema(contact_type)
     et = f"{contact_type}s"
 
-    from celerp.services.auth import ROLE_LEVELS as _RLV
-    from ui.config import get_role as _role_of
-    _lvl = _RLV.get(_role_of(request), 0)
-    return base_shell(
+    _settings = settings or {}
+    _role = _get_role(request)
+    _can_edit = role_has_permission(_settings, _role, "edit_contacts")
+    _can_import_export = role_has_permission(_settings, _role, "import_export_data")
+    return await base_shell(
         page_header(
             label,
             search_bar(placeholder=f"Search {label.lower()}...", target="#contacts-content", url=search_url),
-            Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _lvl >= _RLV["operator"] else "",
-            A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
-            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+            Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
+            A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
+            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(contact_type),
@@ -769,7 +771,7 @@ def _clean_external_ref(ref: str | None) -> str | None:
     return ref
 
 
-def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, request: Request, *,
+async def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, request: Request, *,
                          contact_id: str = "", show_financials: bool = True, show_delete: bool = True,
                          show_contact_addresses: bool = True, extra_sections: list | None = None,
                          back: tuple | None = None, nav_active: str | None = None,
@@ -829,7 +831,7 @@ def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, 
         style="display:flex; align-items:center; padding: 0.5rem 0;",
     )
 
-    return base_shell(
+    return await base_shell(
         breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (page_title, None)]),
         page_header(page_title),
         autofocus_script,
@@ -901,7 +903,7 @@ def setup_routes(app):
         # Placeholder entries bubble to the top so users notice them
         _placeholder = f"New Customer"
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
-        return _contacts_page_shell("customer", contacts, request, q, page, total, per_page, sort, sort_dir, currency)
+        return await _contacts_page_shell("customer", contacts, request, q, page, total, per_page, sort, sort_dir, currency, settings=company.get("settings") or {})
 
     # ── /contacts/vendors ─────────────────────────────────────────────────
 
@@ -939,7 +941,7 @@ def setup_routes(app):
         # Placeholder entries bubble to the top so users notice them
         _placeholder = "New Vendor"
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
-        return _contacts_page_shell("vendor", contacts, request, q, page, total, per_page, sort, sort_dir, currency)
+        return await _contacts_page_shell("vendor", contacts, request, q, page, total, per_page, sort, sort_dir, currency, settings=company.get("settings") or {})
 
     # ── /contacts/search-options ──────────────────────────────────────────
 
@@ -1097,7 +1099,7 @@ def setup_routes(app):
             href=f"/contacts/sales{'?show_closed=1' if not show_closed else ''}",
             cls="btn btn--secondary btn--sm",
         ) if sfn_installed else ""
-        return base_shell(
+        return await base_shell(
             page_header(
                 "Sales Funnel",
                 A(t("page.new_deal"), href="/crm/deals/new", cls="btn btn--primary") if sfn_installed else "",
@@ -1137,7 +1139,7 @@ def setup_routes(app):
         except Exception:
             company = {}
 
-        return build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id)
+        return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail
@@ -1164,15 +1166,15 @@ def setup_routes(app):
 
     @app.get("/finance/company-details")
     async def company_details(request: Request):
-        from ui.routes.settings import _check_role
+        from ui.routes.settings import _check_permission
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_company_settings")):
             return r
         sid = await _resolve_self_contact_id(token)
         if not sid:
-            return base_shell(
+            return await base_shell(
                 page_header("🏢 Company Details"),
                 empty_state_cta("Your company's own contact record has not been initialised yet."),
                 title="Company Details - Celerp", nav_active="company-details", request=request,
@@ -1191,7 +1193,7 @@ def setup_routes(app):
         # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
         from ui.routes.settings import _company_settings_card
         from ui.i18n import get_lang
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
             page_header("🏢 Company Details"),
             Div(
@@ -1243,11 +1245,11 @@ def setup_routes(app):
     async def company_files_upload(request: Request):
         """Dropzone upload from the Company Files page: store the file on the self-contact so it appears
         both here and in the company's customer/vendor entries. Returns the refreshed aggregated section."""
-        from ui.routes.settings import _check_role
+        from ui.routes.settings import _check_permission
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_company_settings")):
             return r
         sid = await _resolve_self_contact_id(token)
         form = await request.form()
@@ -1679,9 +1681,11 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        from ui.config import get_role as _get_role_c
-        if _RLV.get(_get_role_c(request), 0) < _RLV["operator"]:
+        try:
+            _settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            _settings = {}
+        if not role_has_permission(_settings, _get_role(request), "edit_contacts"):
             # Viewers are read-only: return the display state instead of an input.
             return await contact_field_display(request, contact_id, field)
         try:
@@ -2071,7 +2075,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        return base_shell(
+        return await base_shell(
             page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_upload_form(
                 cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2110,7 +2114,7 @@ def setup_routes(app):
         form = await request.form()
         rows, err = await _csv_read_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2127,7 +2131,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
-        return base_shell(
+        return await base_shell(
             page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_column_mapping_form(
                 csv_cols=cols,
@@ -2153,7 +2157,7 @@ def setup_routes(app):
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2172,7 +2176,7 @@ def setup_routes(app):
         if mapping_errors:
             csv_ref = _stash_csv(csv_text)
             rows = list(_csv_mod.DictReader(_io.StringIO(csv_text)))
-            return base_shell(
+            return await base_shell(
                 page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_column_mapping_form(
                     csv_cols=original_cols,
@@ -2195,7 +2199,7 @@ def setup_routes(app):
         rows = list(_csv_mod.DictReader(_io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols)
 
-        return base_shell(
+        return await base_shell(
             page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_validation_result(
                 rows=rows,

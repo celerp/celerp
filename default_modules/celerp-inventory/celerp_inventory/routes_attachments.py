@@ -41,9 +41,10 @@ from celerp.services.attachments import (
     resolve_preview_image_id,
     store_upload,
 )
-from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _VALID_TYPES: set[str] = {"image", "video", "certificate", "view_360"}
 
@@ -82,6 +83,7 @@ async def upload_attachment(
     file: UploadFile = File(...),
     attachment_type: str | None = Query(default=None),
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -119,6 +121,7 @@ async def delete_attachment(
     entity_id: str,
     att_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
@@ -140,6 +143,7 @@ async def set_preview_image(
     entity_id: str,
     att_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -169,6 +173,7 @@ async def bulk_attach_legacy(
     file: UploadFile = File(...),
     override_hero: bool = Query(False),
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -209,6 +214,7 @@ async def bulk_attach_files(
     file: UploadFile = File(...),
     override_hero: bool = Query(False, description="If true, override existing hero image for matched items"),
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -365,6 +371,7 @@ async def upload_item_file(
     file: UploadFile = File(...),
     document_tag: str | None = None,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -424,6 +431,7 @@ async def tag_item_file(
     file_id: str,
     document_tag: str = Form(""),
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -455,6 +463,7 @@ async def update_item_file_description(
     file_id: str,
     description: str = Form(""),
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -485,6 +494,7 @@ async def set_item_file_hero(
     entity_id: str,
     file_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -517,6 +527,7 @@ async def delete_item_file(
     entity_id: str,
     file_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:

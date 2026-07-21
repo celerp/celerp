@@ -5,8 +5,8 @@
 Covers:
 - visible_to_roles: cost_price hidden from operator on GET /items and GET /items/{id}
 - Write-path guard: operator cannot set cost_price on POST /items or PATCH /items/{id}
-- require_manager: operator blocked from destructive/financial operations
-- require_admin: operator/manager blocked from admin-only ops
+- manager-default gates: operator blocked from destructive/financial operations
+- admin-default gates: operator/manager blocked from admin-only ops
 - Admin, owner, and manager can access all guarded routes
 - 5-role hierarchy: owner > admin > manager > operator > viewer
 - Legacy JWT migration: salesperson → operator
@@ -134,7 +134,7 @@ class TestCostPriceWriteGuard:
         assert r.status_code == 200
 
 
-# ── require_manager: destructive item operations ──────────────────────────────
+# ── manager-default gates: destructive item operations ──────────────────────────────
 
 class TestManagerRequiredItemOps:
 
@@ -326,7 +326,7 @@ class TestManagerRequiredDocOps:
         )
         assert r.status_code == 403
 
-# ── require_manager: accounting operations ────────────────────────────────────
+# ── manager-default gates: accounting operations ────────────────────────────────────
 
 class TestManagerRequiredAccountingOps:
 
@@ -369,7 +369,7 @@ class TestManagerRequiredAccountingOps:
         assert r.status_code == 200
 
 
-# ── require_manager: reports with cost data ───────────────────────────────────
+# ── manager-default gates: reports with cost data ───────────────────────────────────
 
 class TestManagerRequiredReports:
 
@@ -406,7 +406,7 @@ class TestManagerRequiredReports:
         assert r.status_code == 200
 
 
-# ── require_admin: admin-only operations ─────────────────────────────────────
+# ── admin-default gates: admin-only operations ─────────────────────────────────────
 
 class TestAdminOnlyOps:
 
@@ -470,7 +470,7 @@ class TestAdminOnlyOps:
 class TestRoleHierarchy:
 
     async def test_owner_can_patch_company(self, client, session):
-        """Owner (level 5) passes require_admin (level 4)."""
+        """Owner (level 5) meets the admin-default threshold (level 4)."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         # The registered user has role=owner; token carries owner
@@ -492,7 +492,7 @@ class TestRoleHierarchy:
         assert r.status_code == 200
 
     async def test_admin_user_can_patch_company(self, client, session):
-        """Explicitly created admin (level 4) also passes require_admin."""
+        """Explicitly created admin (level 4) also meets the admin-default threshold."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         admin2_tok = await _invite_user(client, session, admin_h, "admin2@x.com", "admin")
@@ -670,13 +670,13 @@ class TestLegacyRoleMigration:
         assert r.status_code == 403
 
 
-# ── require_min_role: importable guard ───────────────────────────────────────
+# ── ROLE_LEVELS: the numeric role hierarchy ──────────────────────────────────
 
-class TestRequireMinRole:
+class TestRoleLevels:
 
-    async def test_require_min_role_importable(self, client, session):
-        """require_min_role and ROLE_LEVELS are importable from auth service."""
-        from celerp.services.auth import ROLE_LEVELS, require_min_role
+    async def test_role_levels_strictly_increasing(self, client, session):
+        """ROLE_LEVELS carries every role and is strictly increasing."""
+        from celerp.services.auth import ROLE_LEVELS
         assert "viewer" in ROLE_LEVELS
         assert "operator" in ROLE_LEVELS
         assert "manager" in ROLE_LEVELS
@@ -685,13 +685,6 @@ class TestRequireMinRole:
         # Levels are strictly increasing
         assert ROLE_LEVELS["viewer"] < ROLE_LEVELS["operator"] < ROLE_LEVELS["manager"]
         assert ROLE_LEVELS["manager"] < ROLE_LEVELS["admin"] < ROLE_LEVELS["owner"]
-
-    async def test_require_min_role_returns_depends(self, client, session):
-        """require_min_role returns a FastAPI Depends object."""
-        from fastapi.params import Depends
-        from celerp.services.auth import require_min_role
-        dep = require_min_role("operator")
-        assert isinstance(dep, Depends)
 
     async def test_legacy_migration_dict(self, client, session):
         """_ROLE_MIGRATION maps salesperson → operator."""
@@ -808,7 +801,7 @@ class TestCostPriceWriteGuard:
         assert r.status_code == 200
 
 
-# ── require_manager: destructive item operations ──────────────────────────────
+# ── manager-default gates: destructive item operations ──────────────────────────────
 
 class TestManagerRequiredItemOps:
 
@@ -896,8 +889,8 @@ class TestManagerRequiredItemOps:
         assert r.status_code == 200
 
 
-# ── require_manager: financial document operations ────────────────────────────
-# ── require_manager: accounting operations ────────────────────────────────────
+# ── manager-default gates: financial document operations ────────────────────────────
+# ── manager-default gates: accounting operations ────────────────────────────────────
 
 class TestManagerRequiredAccountingOps:
 
@@ -940,7 +933,7 @@ class TestManagerRequiredAccountingOps:
         assert r.status_code == 200
 
 
-# ── require_manager: reports with cost data ───────────────────────────────────
+# ── manager-default gates: reports with cost data ───────────────────────────────────
 
 class TestManagerRequiredReports:
 
@@ -977,7 +970,7 @@ class TestManagerRequiredReports:
         assert r.status_code == 200
 
 
-# ── require_admin: admin-only operations ─────────────────────────────────────
+# ── admin-default gates: admin-only operations ─────────────────────────────────────
 
 class TestAdminOnlyOps:
 
@@ -1036,10 +1029,10 @@ class TestAdminOnlyOps:
         assert r.status_code == 200
 
 
-# ── Nav item min_role tests ───────────────────────────────────────────────────
+# ── Nav item permission tests ─────────────────────────────────────────────────
 
-class TestNavMinRole:
-    """Module nav items must declare correct min_role for sidebar filtering."""
+class TestNavPermissions:
+    """Module nav items must declare the correct permission key for sidebar filtering."""
 
     def _load_nav_items(self) -> list[dict]:
         """Collect nav items from all default modules."""
@@ -1062,48 +1055,50 @@ class TestNavMinRole:
             items.extend(nav)
         return items
 
+    def _default_role(self, key: str) -> str:
+        from celerp.services.permissions import _PERMISSIONS_BY_KEY
+        return _PERMISSIONS_BY_KEY[key].default_role
+
     def test_finance_nav_requires_manager(self):
         for item in self._load_nav_items():
             if item.get("group") == "Finance":
-                assert item.get("min_role") == "manager", (
-                    f"Finance nav item {item.get('key')} should require manager, got {item.get('min_role')}"
+                perm = item.get("permission")
+                assert perm, f"Finance nav item {item.get('key')} must declare a permission"
+                assert self._default_role(perm) == "manager", (
+                    f"Finance nav item {item.get('key')} should gate on a manager permission, got {perm}"
                 )
 
     def test_document_and_contact_nav_allows_viewer(self):
-        """The roles table promises 'View documents & contacts' at viewer level, so
-        the document/contact sections must be visible to viewers. Writing is still
-        blocked by the API's viewer_read_only guard - visibility is not capability."""
+        """The matrix promises 'View documents & contacts' at viewer level, so the
+        document/contact sections must be visible to viewers. Writing is still
+        blocked by the operator floor on the edit permissions - visibility is not
+        capability."""
         viewer_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
         inventory_viewer_keys = {"inventory", "inventory_sold", "inventory_archived"}
         for item in self._load_nav_items():
             group = item.get("group")
             key = item.get("key")
+            perm = item.get("permission")
             if group in viewer_groups:
-                assert item.get("min_role") == "viewer", (
-                    f"Nav item {key} in {group} should allow viewer, got {item.get('min_role')}"
+                assert perm and self._default_role(perm) == "viewer", (
+                    f"Nav item {key} in {group} should allow viewer, got {perm}"
                 )
             elif key in inventory_viewer_keys:
-                assert item.get("min_role") == "viewer", (
-                    f"Nav item {key} in Inventory should allow viewer, got {item.get('min_role')}"
+                assert perm and self._default_role(perm) == "viewer", (
+                    f"Nav item {key} in Inventory should allow viewer, got {perm}"
                 )
 
     def test_dashboard_allows_viewer(self):
         for item in self._load_nav_items():
             if item.get("key") == "dashboard":
-                min_role = item.get("min_role", "viewer")
-                assert min_role == "viewer", f"Dashboard should allow viewer, got {min_role}"
+                perm = item.get("permission")
+                if perm:
+                    assert self._default_role(perm) == "viewer", (
+                        f"Dashboard should allow viewer, got {perm}"
+                    )
 
 
 # ── Sidebar role filtering tests ─────────────────────────────────────────────
-
-def _make_jwt(role: str) -> str:
-    """Create a minimal JWT with the given role (unsigned, for UI cookie parsing)."""
-    import base64
-    import json
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps({"role": role, "sub": "test"}).encode()).rstrip(b"=").decode()
-    return f"{header}.{payload}.nosig"
-
 
 class TestSidebarRoleFiltering:
     """Sidebar correctly filters nav items by user role."""
@@ -1123,45 +1118,6 @@ class TestSidebarRoleFiltering:
         from ui.components.shell import _sidebar
         sidebar_html = str(_sidebar("dashboard", role="admin"))
         assert "/settings/general" in sidebar_html
-
-
-# ── UI settings role guard tests ─────────────────────────────────────────────
-
-class TestSettingsRoleGuard:
-    """Settings page handlers redirect low-role users to dashboard."""
-
-    def test_check_role_blocks_operator(self):
-        from ui.routes.settings import _check_role
-        from unittest.mock import MagicMock
-        request = MagicMock()
-        request.cookies = {"celerp_token": _make_jwt("operator")}
-        result = _check_role(request, "admin")
-        assert result is not None
-        assert result.status_code == 302
-
-    def test_check_role_allows_admin(self):
-        from ui.routes.settings import _check_role
-        from unittest.mock import MagicMock
-        request = MagicMock()
-        request.cookies = {"celerp_token": _make_jwt("admin")}
-        result = _check_role(request, "admin")
-        assert result is None
-
-    def test_check_role_allows_owner(self):
-        from ui.routes.settings import _check_role
-        from unittest.mock import MagicMock
-        request = MagicMock()
-        request.cookies = {"celerp_token": _make_jwt("owner")}
-        result = _check_role(request, "admin")
-        assert result is None
-
-    def test_check_role_manager_for_operational_settings(self):
-        from ui.routes.settings import _check_role
-        from unittest.mock import MagicMock
-        request = MagicMock()
-        request.cookies = {"celerp_token": _make_jwt("manager")}
-        assert _check_role(request, "manager") is None
-        assert _check_role(request, "admin") is not None
 
 
 # ── Activity/ledger cost redaction (H3) ───────────────────────────────────────

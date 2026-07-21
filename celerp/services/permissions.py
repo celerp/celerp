@@ -30,8 +30,8 @@ class Role(NamedTuple):
 class Permission(NamedTuple):
     key: str
     label: str  # plain untranslated string, like the matrix rows it labels
-    default_min_role: str
-    grantable: bool  # False: fixed at default_min_role, overrides rejected
+    default_role: str
+    grantable: bool  # False: fixed at default_role, overrides rejected
     floor_role: str  # lowest role an owner may set as this permission's minimum
 
 
@@ -42,7 +42,7 @@ ROLES: list[Role] = [
 
 # floor_role: viewer for the view keys, operator for every write-capable key.
 # The operator floor is what keeps viewers read-only now that the router-level
-# viewer_read_only baseline is gone: no override can set a write key below it.
+# read-only baseline is gone: no override can set a write key below it.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
     Permission("view_documents", "View documents", "viewer", True, "viewer"),
@@ -96,7 +96,7 @@ def permission_min_level(settings: dict | None, key: str) -> int:
         override_role = overrides.get(key)
         if override_role in ROLE_LEVELS:
             return ROLE_LEVELS[override_role]
-    return ROLE_LEVELS[perm.default_min_role]
+    return ROLE_LEVELS[perm.default_role]
 
 
 def role_has_permission(settings: dict | None, role: str, key: str) -> bool:

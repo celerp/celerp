@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -228,7 +229,7 @@ async def sales_report(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Sales report from invoice projections.
@@ -432,7 +433,7 @@ async def purchases_report(
     period: str = "monthly",
     date_from: str | None = None,
     date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Purchasing report from purchase order projections."""

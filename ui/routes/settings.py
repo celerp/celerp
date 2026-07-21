@@ -20,7 +20,6 @@ from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, c
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
@@ -1073,7 +1072,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
-        return base_shell(
+        return await base_shell(
             page_header(t("btn.create_user", lang), A(t("btn.back_to_settings", lang), href="/settings/general?tab=users", cls="btn btn--secondary")),
             Div(
                 H3(t("settings.new_user", lang), cls="settings-section-title"),
@@ -2446,7 +2445,8 @@ def setup_routes(app):
         """Proxy factory-reset to the API. Owner only."""
         import httpx
         role = _get_role(request)
-        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
+        from celerp.services.permissions import role_has_permission
+        if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div("Owner role required.", cls="flash flash--error")
         from ui.config import API_BASE, COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
@@ -2473,7 +2473,8 @@ def setup_routes(app):
         """Deactivate the current company and redirect to login. Owner only."""
         import httpx
         role = _get_role(request)
-        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
+        from celerp.services.permissions import role_has_permission
+        if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div("Only the company owner can deactivate this company.", cls="flash flash--error")
         from ui.config import API_BASE
         token = _token(request)

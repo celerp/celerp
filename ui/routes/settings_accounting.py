@@ -17,7 +17,7 @@ from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select
 
 from ui.routes.accounting_import import ACCOUNT_TYPES
-from ui.routes.settings import _token, _check_role
+from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t, get_lang
 
@@ -406,7 +406,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "manage_module_settings")):
             return r
         tab = request.query_params.get("tab", "bank-accounts")
         try:
@@ -445,7 +445,7 @@ def setup_routes(app):
             tab = "bank-accounts"
 
         msg = request.query_params.get("msg", "").strip()
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Accounting"),
             page_header("Finance Settings"),
             flash(msg) if msg else None,
@@ -467,7 +467,7 @@ def setup_routes(app):
         except APIError:
             currency = "USD"
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Accounting"),
             page_header(
                 "Add Bank Account",
@@ -572,7 +572,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             return RedirectResponse("/settings/accounting?tab=bank-accounts", status_code=302)
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Accounting"),
             page_header(
                 f"Edit {b.get('bank_name', 'Bank Account')}",

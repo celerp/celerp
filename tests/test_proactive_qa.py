@@ -543,6 +543,7 @@ class TestHtmxPartialContract:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
             r = await ui_client.get("/api/items/item:x/field/name/edit", cookies=_authed())
         assert r.status_code == 200
@@ -564,6 +565,7 @@ class TestHtmxPartialContract:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
         ):
             r = await ui_client.get("/api/items/item:x/field/weight_unit/edit", cookies=_authed())
         assert r.status_code == 200
