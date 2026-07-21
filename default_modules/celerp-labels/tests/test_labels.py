@@ -1183,3 +1183,49 @@ def test_printable_label_sheet_escapes_values():
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<b>123</b>" not in html
     assert "&lt;b&gt;123&lt;/b&gt;" in html
+
+
+@pytest.mark.asyncio
+async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, session):
+    """PDF label printing honors the set_inventory_prices permission: an
+    ungranted operator's print carries no cost value, a granted operator's does."""
+    from test_helpers import grant_permission, invite_user
+
+    headers = await _headers(client)
+    loc = await client.post(
+        "/companies/me/locations",
+        json={"name": "Main", "type": "warehouse", "address": None, "is_default": True},
+        headers=headers,
+    )
+    r = await client.post(
+        "/items",
+        json={"sku": "COSTLBL", "name": "Cost Label Item", "quantity": 1,
+              "location_id": loc.json()["id"], "cost_price": 123.45,
+              "retail_price": 500.0, "sell_by": "piece"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    t = await client.post(
+        "/api/labels/templates",
+        json={"name": "CostTpl", "format": "40x30mm", "fields": [
+            {"key": "name", "label": "Name", "type": "text"},
+            {"key": "cost_price", "label": "Cost Price", "type": "text"},
+        ]},
+        headers=headers,
+    )
+    assert t.status_code == 201, t.text
+    tid = t.json()["id"]
+
+    op_tok = await invite_user(client, session, headers, "op_labels@example.com", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+
+    r_ungranted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
+    assert r_ungranted.status_code == 200
+    assert b"123.45" not in _pdf_text(r_ungranted.content)
+
+    await grant_permission(client, headers, "set_inventory_prices", "operator")
+    r_granted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
+    assert r_granted.status_code == 200
+    assert b"123.45" in _pdf_text(r_granted.content)

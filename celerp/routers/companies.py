@@ -17,6 +17,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.permissions import get_current_company_settings, role_has_permission
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -606,9 +607,9 @@ _COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"}
 
 
 @router.get("/me/item-schema")
-async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> list[dict]:
     schema = await get_effective_field_schema(session, company_id)
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+    if not role_has_permission(settings, role, "set_inventory_prices"):
         schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
     return schema
 
@@ -1696,9 +1697,10 @@ async def get_price_lists(
         company.settings = settings
         await session.commit()
         price_lists = seeded
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        # Below manager: no cost lists, and names/descriptions only. A derived list's
-        # factor stays manager+ because price ÷ factor would reveal a cost-based base.
+    if not role_has_permission(company.settings, role, "set_inventory_prices"):
+        # Without set_inventory_prices: no cost lists, and names/descriptions only. A
+        # derived list's factor stays gated because price ÷ factor would reveal a
+        # cost-based base.
         price_lists = [
             {"name": pl.get("name", ""), "description": pl.get("description", "")}
             for pl in price_lists

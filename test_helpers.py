@@ -85,3 +85,77 @@ async def create_location(client, headers: dict, name: str = "Warehouse 2") -> s
     r = await client.post("/companies/me/locations", headers=headers,
                           json={"name": name, "type": "warehouse"})
     return r.json()["id"]
+
+
+# ── Role/permission bootstrap ─────────────────────────────────────────────────
+
+async def register_admin(client) -> str:
+    """Register first-admin (creates owner role) and return access token."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "Perm Co", "email": "admin@perm.com", "name": "Admin", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"]
+
+
+async def invite_user(client, session, admin_headers: dict, email: str, role: str) -> str:
+    """Create a user with the given role and return their access token."""
+    from celerp.services.session_tracker import clear as _clear_tracker
+    r = await client.post(
+        "/companies/me/users",
+        json={"email": email, "name": role.title(), "role": role, "password": "pw123"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text
+    await _clear_tracker(session)  # clear so the new user can log in
+    r2 = await client.post("/auth/login", json={"email": email, "password": "pw123"})
+    assert r2.status_code == 200, r2.text
+    return r2.json()["access_token"]
+
+
+async def create_item(client, headers: dict, location_id: str, sku: str = "SKU-PERM") -> str:
+    """Create an item as admin and return its entity_id."""
+    r = await client.post(
+        "/items",
+        json={"sku": sku, "name": "Perm Item", "quantity": 5, "location_id": location_id, "cost_price": 100.0, "sell_by": "piece"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def perm_setup(client, session):
+    """Bootstrap: admin token, manager token, operator token, location_id, item_id."""
+    admin_tok = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_tok}"}
+
+    loc_r = await client.post(
+        "/companies/me/locations",
+        json={"name": "Main", "type": "warehouse", "address": None, "is_default": True},
+        headers=admin_h,
+    )
+    location_id = loc_r.json()["id"]
+    item_id = await create_item(client, admin_h, location_id)
+
+    manager_tok = await invite_user(client, session, admin_h, "mgr@perm.com", "manager")
+    operator_tok = await invite_user(client, session, admin_h, "operator@perm.com", "operator")
+
+    return {
+        "admin_h":    {"Authorization": f"Bearer {admin_tok}"},
+        "manager_h":  {"Authorization": f"Bearer {manager_tok}"},
+        "staff_h":    {"Authorization": f"Bearer {operator_tok}"},   # alias for legacy tests
+        "operator_h": {"Authorization": f"Bearer {operator_tok}"},
+        "location_id": location_id,
+        "item_id": item_id,
+    }
+
+
+async def grant_permission(client, admin_headers: dict, permission: str, role: str) -> None:
+    """Set a company role_permissions override via the settings merge."""
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"role_permissions": {permission: role}}},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text

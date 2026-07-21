@@ -117,6 +117,19 @@ def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
         )
 
 
+async def get_current_company_settings(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """FastAPI dependency: the caller's company settings dict, read fresh.
+
+    The single vehicle every route uses to resolve dynamic permissions, so a
+    toggle takes effect on the next request; a missing company row yields {}.
+    """
+    company = await session.get(Company, company_id)
+    return (company.settings if company else {}) or {}
+
+
 def require_permission(key: str):
     """FastAPI dependency: 403 unless the caller's role holds *key*.
 

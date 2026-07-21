@@ -21,6 +21,13 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, viewer_read_only, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
+from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
+from celerp.services.permissions import (
+    assert_role_permission,
+    get_current_company_settings,
+    require_permission,
+    role_has_permission,
+)
 from celerp.services.pricing import (
     coerce_price,
     derived_price_keys,
@@ -184,28 +191,6 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     return flat
 
 
-def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dict]) -> list[dict]:
-    """Strip fields from item dicts that the caller's role is not allowed to see.
-
-    Two sources of restrictions:
-    1. Schema-driven: field has visible_to_roles set and caller level is below minimum.
-    2. Hardcoded: cost fields (cost_price, cost_total) require manager+.
-    """
-    caller_level = ROLE_LEVELS.get(role, 0)
-    restricted = {
-        f["key"]
-        for f in field_schema
-        if f.get("visible_to_roles") and caller_level < min(
-            ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
-        )
-    }
-    if caller_level < ROLE_LEVELS["manager"]:
-        restricted |= _COST_ITEM_KEYS
-    if not restricted:
-        return items
-    return [{k: v for k, v in item.items() if k not in restricted} for item in items]
-
-
 class ItemCreate(BaseModel):
     model_config = {"extra": "allow"}  # Accept dynamic price fields (e.g. vip_price)
 
@@ -314,16 +299,13 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
-# Fields stripped from item responses for roles below manager.
-_COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
-
-
 @router.get("")
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     limit: int = 50,
     offset: int = 0,
     q: str | None = None,
@@ -464,7 +446,8 @@ async def list_items(
 
     # Apply visible_to_roles filtering from company field schema
     field_schema = await get_effective_field_schema(session, company_id, category=None)
-    result = _apply_field_visibility(result, role, field_schema)
+    can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
+    result = apply_field_visibility(result, role, field_schema, can_set_prices)
 
     # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
     # so staff always see the items that need to be picked/sold first at the top.
@@ -510,6 +493,7 @@ async def get_valuation(
     status: str | None = None,
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Aggregate inventory valuation from projections.
@@ -605,7 +589,7 @@ async def get_valuation(
                 pass
 
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
-    show_cost = ROLE_LEVELS.get(role, 0) >= ROLE_LEVELS["manager"]
+    show_cost = role_has_permission(settings, role, "set_inventory_prices")
 
     price_totals_out = {
         k: float(v) for k, v in price_totals.items()
@@ -728,7 +712,7 @@ async def list_item_categories(
 
 
 @router.get("/{entity_id}")
-async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
@@ -745,7 +729,8 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          updated_at=row.updated_at,
                          price_config=await get_price_config(session, company_id))
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
-    filtered = _apply_field_visibility([flat], role, field_schema)
+    can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
+    filtered = apply_field_visibility([flat], role, field_schema, can_set_prices)
     return filtered[0]
 
 
@@ -844,10 +829,10 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
 
 
 @router.post("")
-async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: operator/viewer cannot set cost fields on creation (manager+ required)
-    if (payload.cost_price is not None or payload.cost_total is not None) and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost fields")
+async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    # Guard: setting cost fields on creation requires the set_inventory_prices permission.
+    if payload.cost_price is not None or payload.cost_total is not None:
+        assert_role_permission(settings, role, "set_inventory_prices")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
@@ -979,11 +964,16 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
 
 @router.patch("/{entity_id}")
-async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: restricted fields require manager+ role
+async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    # Guard: restricted fields require a role at the schema-configured floor.
     from celerp.services.field_schema import get_effective_field_schema
     field_schema = await get_effective_field_schema(session, company_id)
     restricted = {f["key"] for f in field_schema if f.get("visible_to_roles") and ROLE_LEVELS.get(role, 0) < min(ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"])}
+    # Cost fields are gated by set_inventory_prices, not by the schema role floor:
+    # a granted operator edits cost, an ungranted manager still cannot.
+    restricted -= COST_ITEM_KEYS
+    if not role_has_permission(settings, role, "set_inventory_prices"):
+        restricted |= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
     blocked = changed_keys & restricted
     if blocked:
@@ -2441,7 +2431,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 
 @router.post("/{entity_id}/price")
-async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = require_permission("set_inventory_prices"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.

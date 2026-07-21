@@ -13,7 +13,7 @@ from ui.components.shell import base_shell, page_header, star_supporter_card
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.permissions import role_has_permission as _role_has_permission
 from urllib.parse import urlencode as _urlencode
 
 
@@ -43,7 +43,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_exposure_high"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub", "href": "/docs?type=invoice&status=outstanding",         "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -67,7 +67,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "coins_precious_metals": {
         "kpis": [
             {"key": "stock_cost",     "label": "Stock Value (Cost)","value_fn": "cost_total",       "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "stock_retail",   "label": "Stock Value (Retail)","value_fn": "retail_total",  "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "operator"},
+            {"key": "stock_retail",   "label": "Stock Value (Retail)","value_fn": "retail_total",  "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "edit_inventory"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",   "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",     "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count","sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -88,7 +88,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "watches": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_pieces_sub",     "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
@@ -153,7 +153,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "fashion": {
         "kpis": [
             {"key": "active_stock",   "label": "Active Stock",     "value_fn": "active_items_count","sub_fn": "retail_total_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Value",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Value",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
@@ -174,7 +174,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "electronics": {
         "kpis": [
             {"key": "inv_value",      "label": "Inventory Value",  "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "low_stock",      "label": "Low / Out of Stock","value_fn": "low_stock_items",  "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
@@ -267,7 +267,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "wine_spirits": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -330,7 +330,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "furniture": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -372,7 +372,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "books_media": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_titles_sub",     "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "memo_out",       "label": "Consignment",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
@@ -394,7 +394,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "min_role": "manager"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -417,7 +417,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
 _DEFAULT_CONFIG: dict = {
     "kpis": [
         {"key": "inv_value",      "label": "Inventory (active)",  "value_fn": "active_items_count","sub_fn": "total_items_sub",      "href": "/inventory"},
-        {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "min_role": "manager"},
+        {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "permission": "set_inventory_prices"},
         {"key": "retail_value",   "label": "Retail Value",        "value_fn": "retail_total",      "sub_fn": "at_retail_sub",        "href": "/inventory"},
         {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status_in=final,sent,awaiting_payment,partial", "alert_fn": "ar_positive"},
         {"key": "revenue_mtd",    "label": "Revenue MTD",         "value_fn": "revenue_mtd",       "sub_fn": None,                   "href": "/reports/sales?preset=this_month&group_by=customer"},
@@ -603,16 +603,17 @@ def setup_routes(app):
                              crm_data, mfg_data, purchasing_data, currency)
 
         role = _get_role(request)
-        # Strip margin sub-text for roles below manager.
-        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["manager"]:
+        settings = company.get("settings") or {}
+        # Strip margin sub-text unless the caller may see costs.
+        if not _role_has_permission(settings, role, "set_inventory_prices"):
             values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
-            # Stargazer/supporter ask shown where setup actually lands (admin only;
-            # hidden in neutral/dismissed). Self-hides once dismissed install-wide.
-            *([star_supporter_card("dashboard")] if _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"] else []),
-            _kpi_grid(cfg, values, role=role),
-            _secondary_kpi_grid(cfg, values, role=role),
+            # Stargazer/supporter ask shown where setup actually lands (company-settings
+            # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
+            *([star_supporter_card("dashboard")] if _role_has_permission(settings, role, "manage_company_settings") else []),
+            _kpi_grid(cfg, values, role=role, settings=settings),
+            _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
                             kpis_data.get("sales", {}).get("revenue_trend", []), currency),
             _activity_feed(activities, currency) if cfg.get("show_activity") else "",
@@ -740,20 +741,18 @@ def _kpi_card(spec: dict, values: dict) -> FT:
     return Div(inner, cls=card_cls)
 
 
-def _kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
+def _kpi_grid(cfg: dict, values: dict, role: str = "owner", settings: dict | None = None) -> FT:
     cards = [_kpi_card(spec, values) for spec in cfg.get("kpis", [])
-             if user_level >= _ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
+             if "permission" not in spec or _role_has_permission(settings, role, spec["permission"])]
     return Div(*cards, cls="kpi-grid")
 
 
-def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
+def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner", settings: dict | None = None) -> FT:
     secondary = cfg.get("secondary_kpis", [])
     if not secondary:
         return ""
     cards = [_kpi_card(spec, values) for spec in secondary
-             if user_level >= ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
+             if "permission" not in spec or _role_has_permission(settings, role, spec["permission"])]
     if not cards:
         return ""
     return Div(*cards, cls="kpi-grid kpi-grid--secondary")

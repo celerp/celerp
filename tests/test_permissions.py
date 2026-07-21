@@ -16,68 +16,14 @@ from __future__ import annotations
 import pytest
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# ── Shared helpers (canonical source: test_helpers.py at repo root) ───────────
 
-async def _register_admin(client) -> str:
-    """Register first-admin (creates owner role) and return access token."""
-    r = await client.post(
-        "/auth/register",
-        json={"company_name": "Perm Co", "email": "admin@perm.com", "name": "Admin", "password": "pw"},
-    )
-    assert r.status_code == 200, r.text
-    return r.json()["access_token"]
-
-
-async def _invite_user(client, session, admin_headers: dict, email: str, role: str) -> str:
-    """Create a user with the given role and return their access token."""
-    from celerp.services.session_tracker import clear as _clear_tracker
-    r = await client.post(
-        "/companies/me/users",
-        json={"email": email, "name": role.title(), "role": role, "password": "pw123"},
-        headers=admin_headers,
-    )
-    assert r.status_code == 200, r.text
-    await _clear_tracker(session)  # clear so the new user can log in
-    r2 = await client.post("/auth/login", json={"email": email, "password": "pw123"})
-    assert r2.status_code == 200, r2.text
-    return r2.json()["access_token"]
-
-
-async def _create_item(client, headers: dict, location_id: str, sku: str = "SKU-PERM") -> str:
-    """Create an item as admin and return its entity_id."""
-    r = await client.post(
-        "/items",
-        json={"sku": sku, "name": "Perm Item", "quantity": 5, "location_id": location_id, "cost_price": 100.0, "sell_by": "piece"},
-        headers=headers,
-    )
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
-
-
-async def _setup(client, session):
-    """Bootstrap: admin token, manager token, operator token, location_id, item_id."""
-    admin_tok = await _register_admin(client)
-    admin_h = {"Authorization": f"Bearer {admin_tok}"}
-
-    loc_r = await client.post(
-        "/companies/me/locations",
-        json={"name": "Main", "type": "warehouse", "address": None, "is_default": True},
-        headers=admin_h,
-    )
-    location_id = loc_r.json()["id"]
-    item_id = await _create_item(client, admin_h, location_id)
-
-    manager_tok = await _invite_user(client, session, admin_h, "mgr@perm.com", "manager")
-    operator_tok = await _invite_user(client, session, admin_h, "operator@perm.com", "operator")
-
-    return {
-        "admin_h":    {"Authorization": f"Bearer {admin_tok}"},
-        "manager_h":  {"Authorization": f"Bearer {manager_tok}"},
-        "staff_h":    {"Authorization": f"Bearer {operator_tok}"},   # alias for legacy tests
-        "operator_h": {"Authorization": f"Bearer {operator_tok}"},
-        "location_id": location_id,
-        "item_id": item_id,
-    }
+from test_helpers import (  # noqa: E402
+    create_item as _create_item,
+    invite_user as _invite_user,
+    perm_setup as _setup,
+    register_admin as _register_admin,
+)
 
 
 # ── visible_to_roles: cost_price field visibility ─────────────────────────────

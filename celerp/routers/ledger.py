@@ -12,6 +12,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import redact_entries_for_role, redact_event_costs
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.permissions import get_current_company_settings
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -26,6 +27,7 @@ async def list_entries(
     offset: int = 0,
     company_id: str = Depends(get_current_company_id),
     role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     q = select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc())
@@ -81,16 +83,16 @@ async def list_entries(
         for r in rows
     ]
     # Fail-closed cost redaction: never ship cost amounts to under-manager roles.
-    return {"items": redact_entries_for_role(items, role), "total": total}
+    return {"items": redact_entries_for_role(items, settings, role), "total": total}
 
 
 @router.get("/{entry_id}")
-async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id:
         raise HTTPException(status_code=404, detail="Not found")
     from celerp.services.activity_redaction import can_see_costs
-    data = entry.data if can_see_costs(role) else redact_event_costs(entry.event_type, entry.data or {})
+    data = entry.data if can_see_costs(settings, role) else redact_event_costs(entry.event_type, entry.data or {})
     return {
         "id": entry.id,
         "entity_id": entry.entity_id,
