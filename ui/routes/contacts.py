@@ -874,6 +874,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_contacts")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
@@ -912,6 +916,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_contacts")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")

@@ -1316,6 +1316,10 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         if not entity_id or entity_id.strip() == "":
             return RedirectResponse("/inventory", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_inventory")
+        if denied:
+            return denied
         try:
             schema, item, company, cat_schemas, price_lists, units_resp = await asyncio.gather(
                 api.get_item_schema(token),

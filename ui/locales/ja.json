@@ -1050,6 +1050,7 @@
   "pay.send_includes_button": "支払いボタン（{amount}）が含まれます。",
   "pay.settings_connected": "✓ 接続済み。共有した請求書と送信メールに支払いボタンが表示され、顧客がオンラインで支払えるようになりました。",
   "pay.upgrade_desc": "顧客がカードで請求書をオンライン決済できるようにします。まずこのインスタンスをCelerp Cloudに接続し、次にStripeアカウントを連携してください。",
+  "perm.page_no_access": "このページにアクセスする権限がありません。",
   "reason_export.gift": "贈答品",
   "reason_export.not_for_resale": "再販売不可",
   "reason_export.personal_effects": "身の回り品",

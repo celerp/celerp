@@ -1104,6 +1104,7 @@
   "pay.send_includes_button": "Includes a Pay button ({amount}).",
   "pay.settings_connected": "✓ Connected. The Pay button now appears on shared invoices and in the send email, so customers can pay you online.",
   "pay.upgrade_desc": "Let customers pay invoices online by card. Connect this instance to Celerp Cloud first, then link a Stripe account.",
+  "perm.page_no_access": "You do not have access to this page.",
   "reason_export.gift": "Gift",
   "reason_export.not_for_resale": "Not for resale",
   "reason_export.personal_effects": "Personal effects",

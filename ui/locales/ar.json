@@ -1050,6 +1050,7 @@
   "pay.send_includes_button": "يتضمن زر دفع ({amount}).",
   "pay.settings_connected": "✓ تم الاتصال. يظهر زر الدفع الآن على الفواتير المشتركة وفي بريد الإرسال، ليتمكن العملاء من الدفع لك عبر الإنترنت.",
   "pay.upgrade_desc": "اسمح للعملاء بدفع الفواتير عبر الإنترنت بالبطاقة. اربط هذه النسخة بـ Celerp Cloud أولًا، ثم اربط حساب Stripe.",
+  "perm.page_no_access": "ليس لديك حق الوصول إلى هذه الصفحة.",
   "reason_export.gift": "هدية",
   "reason_export.not_for_resale": "ليست لإعادة البيع",
   "reason_export.personal_effects": "أمتعة شخصية",

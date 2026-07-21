@@ -580,6 +580,18 @@ def setup_routes(app):
                 request=request,
             )
 
+        settings = company.get("settings") or {}
+        role = _get_role(request)
+        lang = get_lang(request)
+        if not _role_has_permission(settings, role, "view_dashboards"):
+            return await base_shell(
+                page_header(t("page.dashboard", lang)),
+                Div(t("perm.page_no_access", lang), cls="error-banner"),
+                title="Dashboard - Celerp",
+                nav_active="dashboard",
+                request=request,
+            )
+
         try:
             ar_aging = await api.get_ar_aging(token)
         except APIError:
@@ -593,7 +605,6 @@ def setup_routes(app):
         vertical = company.get("vertical") or ""
         cfg = _VERTICAL_CONFIGS.get(vertical, _DEFAULT_CONFIG)
         currency = company.get("currency")
-        lang = get_lang(request)
 
         crm_data = kpis_data.get("crm", {})
         mfg_data = kpis_data.get("manufacturing", {})
@@ -602,8 +613,6 @@ def setup_routes(app):
         values = _kpi_values(kpis_data, valuation, doc_summary,
                              crm_data, mfg_data, purchasing_data, currency)
 
-        role = _get_role(request)
-        settings = company.get("settings") or {}
         # Strip margin sub-text unless the caller may see costs.
         if not _role_has_permission(settings, role, "set_inventory_prices"):
             values.pop("margin_pct_sub", None)
@@ -630,6 +639,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_dashboards")
+        if denied:
+            return denied
 
         q = request.query_params.get("q", "")
         date_from = request.query_params.get("date_from", "")

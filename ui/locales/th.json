@@ -1050,6 +1050,7 @@
   "pay.send_includes_button": "มีปุ่มชำระเงิน ({amount})",
   "pay.settings_connected": "✓ เชื่อมต่อแล้ว ปุ่มชำระเงินจะแสดงบนใบแจ้งหนี้ที่แชร์และในอีเมลส่งเอกสาร เพื่อให้ลูกค้าชำระเงินให้คุณทางออนไลน์ได้",
   "pay.upgrade_desc": "ให้ลูกค้าชำระใบแจ้งหนี้ออนไลน์ด้วยบัตร เชื่อมต่ออินสแตนซ์นี้กับ Celerp Cloud ก่อน แล้วจึงเชื่อมบัญชี Stripe",
+  "perm.page_no_access": "คุณไม่มีสิทธิ์เข้าถึงหน้านี้",
   "reason_export.gift": "ของขวัญ",
   "reason_export.not_for_resale": "ไม่ใช่เพื่อการขายต่อ",
   "reason_export.personal_effects": "ของใช้ส่วนตัว",

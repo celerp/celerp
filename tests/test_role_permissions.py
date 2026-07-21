@@ -1028,6 +1028,62 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     assert r.headers["location"] == "/dashboard"
 
 
+async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
+    """A viewer requesting *path* with *perm_key* raised to operator is redirected
+    to the dashboard by the page-level gate, before the handler loads any data."""
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+
+    company = {"currency": "THB",
+               "settings": {"role_permissions": {perm_key: "operator"}}}
+    with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
+        r = await ui.get(path, cookies={"celerp_token": make_test_token(role="viewer")})
+    assert r.status_code == 302, (path, r.status_code)
+    assert r.headers["location"] == "/dashboard", path
+
+
+async def test_dashboard_page_requires_view_dashboards(ui):
+    """A viewer whose view_dashboards is revoked gets the not-authorized shell on
+    /dashboard, not the KPI grid. The page has nowhere to redirect (it is the
+    redirect target), so it degrades in place with a clear message."""
+    no_access = b"You do not have access to this page."
+    revoked = {"role_permissions": {"view_dashboards": "operator"}}
+    content = await _render_dashboard(ui, "viewer", revoked, "coins_precious_metals")
+    assert no_access in content
+
+    allowed = await _render_dashboard(ui, "viewer", {}, "coins_precious_metals")
+    assert no_access not in allowed
+
+
+async def test_history_page_requires_view_dashboards(ui):
+    await _assert_page_redirects_when_revoked(ui, "/history", "view_dashboards")
+
+
+async def test_docs_page_requires_view_documents(ui):
+    await _assert_page_redirects_when_revoked(ui, "/docs", "view_documents")
+
+
+async def test_lists_page_requires_view_documents(ui):
+    await _assert_page_redirects_when_revoked(ui, "/lists", "view_documents")
+
+
+async def test_doc_detail_requires_view_documents(ui):
+    await _assert_page_redirects_when_revoked(ui, "/docs/doc_1", "view_documents")
+
+
+async def test_customers_page_requires_view_contacts(ui):
+    await _assert_page_redirects_when_revoked(ui, "/contacts/customers", "view_contacts")
+
+
+async def test_vendors_page_requires_view_contacts(ui):
+    await _assert_page_redirects_when_revoked(ui, "/contacts/vendors", "view_contacts")
+
+
+async def test_item_detail_requires_view_inventory(ui):
+    await _assert_page_redirects_when_revoked(ui, "/inventory/item_1", "view_inventory")
+
+
 def test_guard_family_removed():
     """No source file under celerp/, ui/, or default_modules/ still names the deleted
     guard family or the old min_role nav vocabulary."""

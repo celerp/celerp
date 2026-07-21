@@ -843,6 +843,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
         status = request.query_params.get("status", "")
@@ -1780,6 +1784,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         try:
             doc = await api.get_doc(token, entity_id)
         except (APIError, Exception) as e:
@@ -3671,6 +3679,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         list_type = request.query_params.get("type", "")
         status = request.query_params.get("status", "")

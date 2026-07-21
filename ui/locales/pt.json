@@ -1050,6 +1050,7 @@
   "pay.send_includes_button": "Inclui um botão Pagar ({amount}).",
   "pay.settings_connected": "✓ Conectado. O botão Pagar agora aparece nas faturas compartilhadas e no e-mail de envio, para que os clientes possam pagar você online.",
   "pay.upgrade_desc": "Permita que os clientes paguem faturas online com cartão. Conecte esta instância ao Celerp Cloud primeiro e depois vincule uma conta Stripe.",
+  "perm.page_no_access": "Você não tem acesso a esta página.",
   "reason_export.gift": "Presente",
   "reason_export.not_for_resale": "Não destinado à revenda",
   "reason_export.personal_effects": "Bens pessoais",
