@@ -122,6 +122,7 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
+from .service import BARCODE_HEIGHT_DEFAULT
 from .service import display_label as _svc_display_label
 from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
 
@@ -707,7 +708,7 @@ def _editor_panel(
         '<input type="number" name="fields[' + idx + '][fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' +
         ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
         ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
+        '<input type="number" name="fields[' + idx + '][barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
         ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
         '<label class="fld-bold-wrap" title="Bold this field">' +
@@ -1144,7 +1145,7 @@ def _printable_label_sheet(
                 auto_y += _auto_step(ftype, f.get("fontSize"))
             pos = f"left:{left_mm}mm;top:{top_mm}mm;"
             if ftype == "barcode":
-                bc_height = int(f.get("barcode_height") or 8)
+                bc_height = int(f.get("barcode_height") or BARCODE_HEIGHT_DEFAULT)
                 field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")

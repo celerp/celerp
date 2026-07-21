@@ -221,6 +221,7 @@ def snap_to_dots(value_mm: float, dpi: int = DEFAULT_PRINTER_DPI, minimum_dots: 
     dots = max(int(minimum_dots), int(round(float(value_mm) / d)))
     return dots * d
 QR_SIZE_MM = 10.0    # QR codes are a fixed 10mm square on labels (minimum scannable size)
+BARCODE_HEIGHT_DEFAULT = 8   # bar height (mm, 1-30) a barcode field uses when none is set
 
 
 def _svg_markup(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, stretch: bool) -> str:
@@ -379,7 +380,7 @@ def render_label_pdf(
                         # printer's dot grid and the white gaps stay open. Natural width;
                         # squeeze only when the label is genuinely too narrow (never stretch up).
                         # Bar height honors the field's barcode_height setting (mm, 1-30), like the designer.
-                        img_h = max(1, min(30, int(field.get("barcode_height") or 8))) * mm
+                        img_h = max(1, min(30, int(field.get("barcode_height") or BARCODE_HEIGHT_DEFAULT))) * mm
                         # Snap the X-dimension to whole printer dots for the same reason the
                         # SVG path does: 0.33mm is 3.90 dots at 300dpi, so an unsnapped module
                         # rasterizes as a mix of 3- and 4-dot bars.

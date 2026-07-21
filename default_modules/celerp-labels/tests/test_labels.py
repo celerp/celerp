@@ -1110,6 +1110,16 @@ def test_new_field_seeds_default_font_size():
     assert f'[fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' in html
 
 
+def test_new_field_seeds_default_barcode_height():
+    """A field added in the designer carries the default bar height in its box, so a
+    barcode field shows the height it will print at rather than blank."""
+    from fasthtml.common import to_xml
+    from celerp_labels.ui_routes import _editor_panel
+    from celerp_labels.service import BARCODE_HEIGHT_DEFAULT
+    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
+    assert f'[barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' in html
+
+
 def test_measurements_in_field_picker():
     """The searchable field select offers one Measurements option (builtin group)."""
     import json
