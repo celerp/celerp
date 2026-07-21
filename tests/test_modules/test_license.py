@@ -17,6 +17,7 @@ from celerp.modules.license import (
     _verify_remote,
     _write_cache,
     check_license,
+    exchange_api_key_for_jwt,
     is_premium_path,
 )
 
@@ -40,6 +41,45 @@ def test_is_premium_path_nested(tmp_path):
     pkg = tmp_path / "some" / "premium_modules" / "deep" / "celerp-test"
     pkg.mkdir(parents=True)
     assert is_premium_path(pkg) is True
+
+
+def test_is_premium_path_marker_file(tmp_path):
+    """A downloaded paid module lands in the regular module dir (not a
+    premium_modules/ tree) carrying the marketplace installer's marker."""
+    from celerp.modules.importer import PREMIUM_MARKER
+    pkg = tmp_path / "modules" / "celerp-warehousing"
+    pkg.mkdir(parents=True)
+    assert is_premium_path(pkg) is False
+    (pkg / PREMIUM_MARKER).write_text("")
+    assert is_premium_path(pkg) is True
+
+
+# ── exchange_api_key_for_jwt ────────────────────────────────────────────────
+
+def test_exchange_api_key_for_jwt_success():
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen({"access_token": "jwt-xyz"})):
+        assert exchange_api_key_for_jwt("https://relay.example.com", "api-key-1") == "jwt-xyz"
+
+
+def test_exchange_api_key_for_jwt_missing_inputs():
+    assert exchange_api_key_for_jwt("", "api-key-1") is None
+    assert exchange_api_key_for_jwt("https://relay.example.com", "") is None
+
+
+def test_exchange_api_key_for_jwt_network_error_returns_none():
+    with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        assert exchange_api_key_for_jwt("https://relay.example.com", "api-key-1") is None
+
+
+def test_exchange_api_key_for_jwt_invalid_key_returns_none():
+    http_err = urllib.error.HTTPError(url="", code=401, msg="Unauthorized", hdrs=None, fp=None)  # type: ignore[arg-type]
+    with patch("urllib.request.urlopen", side_effect=http_err):
+        assert exchange_api_key_for_jwt("https://relay.example.com", "bad-key") is None
+
+
+def test_exchange_api_key_for_jwt_malformed_response_returns_none():
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen({"no_token_here": True})):
+        assert exchange_api_key_for_jwt("https://relay.example.com", "api-key-1") is None
 
 
 # ── cache helpers ─────────────────────────────────────────────────────────────
@@ -94,14 +134,14 @@ def _mock_urlopen(response_data: dict, status: int = 200):
 
 def test_verify_remote_licensed(tmp_path):
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": True, "status": "active"})):
-        licensed, status = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
+        licensed, status, kind, ljwt = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
     assert licensed is True
     assert status == "active"
 
 
 def test_verify_remote_not_licensed(tmp_path):
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": False, "status": "not_licensed"})):
-        licensed, status = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
+        licensed, status, kind, ljwt = _verify_remote("celerp-test", "https://relay.example.com", "jwt-token")
     assert licensed is False
     assert status == "not_licensed"
 
@@ -124,7 +164,7 @@ def test_verify_remote_network_error_raises():
 def test_check_license_live_success(tmp_path):
     """Live verification succeeds and writes cache."""
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": True, "status": "active"})):
-        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
     assert result is True
     cache_file = tmp_path / "license_cache" / "celerp-test.json"
     assert cache_file.exists()
@@ -132,10 +172,28 @@ def test_check_license_live_success(tmp_path):
     assert cached["licensed"] is True
 
 
+def test_relay_denial_does_not_fall_back_to_stale_cache(tmp_path):
+    """A relay 401/403 (e.g. the license was revoked) is a definite denial and
+    must NOT be overridden by a recently-cached 'licensed: true' - otherwise a
+    cancelled subscription would keep working off the offline grace for days."""
+    import urllib.error
+    # seed a fresh 'licensed' cache
+    cache = tmp_path / "license_cache" / "celerp-test.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"licensed": True, "status": "active",
+                                 "license_kind": "subscription", "cached_at": time.time()}))
+    http_err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)  # type: ignore[arg-type]
+    with patch("urllib.request.urlopen", side_effect=http_err):
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
+    assert result is False
+    # the denial is recorded, not left as the stale 'active'
+    assert json.loads(cache.read_text())["licensed"] is False
+
+
 def test_check_license_live_not_licensed(tmp_path):
     """Live verification returns False and writes cache."""
     with patch("urllib.request.urlopen", return_value=_mock_urlopen({"licensed": False, "status": "not_licensed"})):
-        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
     assert result is False
 
 
@@ -146,7 +204,7 @@ def test_check_license_offline_grace_uses_cache(tmp_path):
     _write_cache(cache_file, licensed=True, status="active")
 
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
-        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
     assert result is True
 
 
@@ -158,12 +216,118 @@ def test_check_license_offline_expired_cache_denies(tmp_path):
     cache_file.write_text(json.dumps({"licensed": True, "status": "active", "cached_at": old_ts}))
 
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
-        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
     assert result is False
 
 
 def test_check_license_offline_no_cache_denies(tmp_path):
     """When relay unreachable and no cache, denies."""
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
-        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path)
+        result = check_license("celerp-test", "https://relay.example.com", "jwt", tmp_path, "iid-1")
     assert result is False
+
+
+def test_offline_only_never_calls_relay_and_grants_from_grace_cache(tmp_path):
+    """offline_only: when no live token could be obtained, decide from the grace
+    cache WITHOUT any network call (a transient outage should fall back to cached
+    state, not be treated as a fresh answer)."""
+    cache_file = tmp_path / "license_cache" / "celerp-test.json"
+    cache_file.parent.mkdir(parents=True)
+    _write_cache(cache_file, licensed=True, status="active")
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not call relay")):
+        result = check_license("celerp-test", "https://relay.example.com", "",
+                               tmp_path, "iid-1", offline_only=True)
+    assert result is True
+
+
+def test_offline_only_denies_when_no_cache(tmp_path):
+    """offline_only with no lifetime JWT and no grace cache returns False - a
+    startup token-exchange failure falls back to cached state, and there is none."""
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not call relay")):
+        result = check_license("celerp-test", "https://relay.example.com", "",
+                               tmp_path, "iid-1", offline_only=True)
+    assert result is False
+
+
+# ── offline lifetime license (ES256) ─────────────────────────────────────────
+
+def _test_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    priv = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = priv.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    pub_pem = priv.public_key().public_bytes(serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    return priv_pem, pub_pem
+
+
+def _sign_lifetime(priv_pem, slug, sub="iid-1"):
+    from jose import jwt
+    return jwt.encode({"iss": "celerp-relay", "sub": sub, "mod": slug, "kind": "lifetime"},
+                      priv_pem, algorithm="ES256")
+
+
+def test_lifetime_jwt_verifies_offline(monkeypatch):
+    import celerp.modules.license as lic
+    priv, pub = _test_keypair()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", pub)
+    tok = _sign_lifetime(priv, "celerp-warehousing")  # sub defaults to "iid-1"
+    assert lic._verify_lifetime_jwt(tok, "celerp-warehousing", "iid-1") is True
+    # wrong module, tampered, wrong kind, empty, MISSING instance -> all False
+    assert lic._verify_lifetime_jwt(tok, "celerp-hr", "iid-1") is False
+    assert lic._verify_lifetime_jwt(tok[:-4] + "AAAA", "celerp-warehousing", "iid-1") is False
+    assert lic._verify_lifetime_jwt("", "celerp-warehousing", "iid-1") is False
+    assert lic._verify_lifetime_jwt(tok, "celerp-warehousing", "") is False
+    # A license issued to a different instance must be rejected.
+    assert lic._verify_lifetime_jwt(tok, "celerp-warehousing", "iid-2") is False
+    other = _sign_lifetime(priv, "celerp-warehousing", sub="someone-else")
+    assert lic._verify_lifetime_jwt(other, "celerp-warehousing", "iid-1") is False
+
+
+def test_check_license_lifetime_works_fully_offline(monkeypatch, tmp_path):
+    """A stored lifetime JWT licenses the module for its OWN instance with NO
+    network call at all."""
+    import celerp.modules.license as lic
+    priv, pub = _test_keypair()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", pub)
+    # seed the cache with a valid lifetime JWT (sub defaults to "iid-1")
+    cache = tmp_path / "license_cache" / "celerp-warehousing.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"licensed": True, "status": "active",
+        "license_kind": "lifetime", "license_jwt": _sign_lifetime(priv, "celerp-warehousing"),
+        "cached_at": 0}))   # cached_at 0 = ancient: proves grace is bypassed for lifetime
+    # any network call would raise - prove it's never made
+    with patch("urllib.request.urlopen", side_effect=AssertionError("must not phone home")):
+        assert lic.check_license("celerp-warehousing", "https://relay.example.com",
+                                 "jwt", tmp_path, "iid-1") is True
+
+
+def test_lifetime_license_rejected_on_other_instance(monkeypatch, tmp_path):
+    """A lifetime JWT issued to instance iid-1 must not verify on a different
+    instance (iid-2). Offline, it denies outright."""
+    import celerp.modules.license as lic
+    priv, pub = _test_keypair()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", pub)
+    cache = tmp_path / "license_cache" / "celerp-warehousing.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"licensed": True, "status": "active",
+        "license_kind": "lifetime",
+        "license_jwt": _sign_lifetime(priv, "celerp-warehousing", sub="iid-1"),
+        "cached_at": 0}))
+    with patch("urllib.request.urlopen", side_effect=OSError("offline")):
+        assert lic.check_license("celerp-warehousing", "https://relay.example.com",
+                                 "jwt", tmp_path, "iid-2") is False
+
+
+def test_is_premium_path_marker_file(tmp_path):
+    """A module dir carrying the marketplace installer's marker is license-gated
+    even outside a premium_modules/ tree (paid downloads land in MODULE_DIR)."""
+    from celerp.modules.importer import PREMIUM_MARKER
+    from celerp.modules.license import is_premium_path
+
+    mod = tmp_path / "modules" / "celerp-warehousing"
+    mod.mkdir(parents=True)
+    assert not is_premium_path(mod)
+    (mod / PREMIUM_MARKER).write_text("")
+    assert is_premium_path(mod)

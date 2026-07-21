@@ -1692,6 +1692,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        if _check_role(request, "admin"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
 
@@ -1991,6 +1993,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
         """HTMX: send OTP via API process (uses canonical instance_id)."""
+        if _check_role(request, "admin"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
@@ -2019,6 +2023,8 @@ def setup_routes(app):
         Using the API process ensures the same instance_id is used for both
         the /billing/claim relay call and the subsequent /auth/activate call.
         """
+        if _check_role(request, "admin"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
@@ -2093,6 +2099,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
         """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        if _check_role(request, "admin"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         ui_token = _token(request)

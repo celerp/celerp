@@ -329,12 +329,23 @@ def write_config(cfg: dict) -> None:
 def resolve_install_order(names: list[str], module_dir: Path) -> list[str]:
     """Return names + all transitive depends_on deps, in topo order.
 
-    Searches module_dir and premium_modules/ for package manifests.
+    Searches module_dir, premium_modules/, and every MODULE_DIR entry (where
+    marketplace-installed and sideloaded third-party packages land) for manifests.
     """
     import ast as _ast
 
     _pkg_root = module_dir.parent
     _search_dirs = [module_dir, _pkg_root / "premium_modules"]
+    # Marketplace/sideloaded modules live in MODULE_DIR, not the bundled trees.
+    # Without these a third-party module's own depends_on is invisible, so the
+    # dependency is never pre-enabled and the module silently fails to load after
+    # restart (the loader skips it as "requires X, which is not enabled").
+    for _d in os.environ.get("MODULE_DIR", "").split(","):
+        _d = _d.strip()
+        if _d:
+            _p = Path(_d)
+            if _p not in _search_dirs:
+                _search_dirs.append(_p)
 
     def _find_pkg(name: str) -> Path | None:
         for d in _search_dirs:

@@ -24,10 +24,12 @@ are separate, deliberate steps (see the modules UI).
 from __future__ import annotations
 
 import ast
+import errno
 import os
 import shutil
 import stat
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -38,17 +40,28 @@ MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 _RESERVED_PREFIX = "celerp-"
 _NAME_MAX = 64
 
+# Marker file the marketplace installer drops inside a PAID module's directory.
+# The license gate (celerp.modules.license.is_premium_path) treats a directory
+# carrying it like premium_modules/, so downloaded paid modules are license-checked
+# at load without needing a second module dir.
+PREMIUM_MARKER = ".celerp-premium"
+
 
 class ModuleImportError(Exception):
     """User-facing import failure. Message is safe to show in the UI."""
 
 
-def _validate_name(name: str) -> None:
+def _validate_name(name: str, *, official: bool = False) -> None:
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError("Module name missing or too long.")
-    if name.startswith(_RESERVED_PREFIX):
+    # The celerp- prefix is the trust boundary: sideloads may never claim it, and
+    # the marketplace-download path (official=True, relay-authenticated) may ONLY
+    # install under it - so neither path can impersonate the other.
+    if official != name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError(
             "The 'celerp-' name prefix is reserved for official modules."
+            if not official else
+            "Official module packages must use the 'celerp-' name prefix."
         )
     ok = all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
     if not ok or not name[0].isalnum():
@@ -124,10 +137,21 @@ def _target_for(name: str) -> Path:
     return target
 
 
-def _finish(staged: Path, manifest: dict) -> dict:
+def _finish(staged: Path, manifest: dict, *, official: bool = False,
+            premium: bool = False) -> dict:
     name = str(manifest.get("name", ""))
-    _validate_name(name)
+    _validate_name(name, official=official)
     _check_min_version(manifest)
+    # Reconcile the marker in BOTH directions - belt and suspenders alongside
+    # the explicit reserved-name refusals above: this is the one place every
+    # entrypoint (zip, folder) funnels through, so it is the actual source of
+    # truth for whether an installed module is license-gated, regardless of
+    # what either entrypoint's package contents happened to carry.
+    marker = staged / PREMIUM_MARKER
+    if premium:
+        marker.write_text("")
+    else:
+        marker.unlink(missing_ok=True)
     target = _target_for(name)
     # Land atomically: copy into a temp dir on the SAME filesystem as the module
     # dir (staged lives under /tmp, often a different device, where shutil.move
@@ -135,18 +159,27 @@ def _finish(staged: Path, manifest: dict) -> dict:
     # disk-full), then os.replace the finished tree into place. On any failure
     # the partial temp dir is removed and the error is a clean ModuleImportError,
     # not a 500.
-    landing = target.parent / f".{name}.incoming-{os.getpid()}"
+    # os.getpid() is identical across concurrent requests in the same process
+    # (installs run via asyncio.to_thread, i.e. real OS threads sharing one
+    # PID) - two simultaneous installs of the same slug would then race on
+    # this exact path, corrupting each other's copytree/replace. A per-call
+    # random suffix makes every attempt's landing dir unique regardless of
+    # concurrency.
+    landing = target.parent / f".{name}.incoming-{uuid.uuid4().hex}"
     try:
         shutil.rmtree(landing, ignore_errors=True)
         shutil.copytree(staged, landing)
         os.replace(landing, target)
-    except FileExistsError:
-        shutil.rmtree(landing, ignore_errors=True)
-        raise ModuleImportError(
-            f"A module named '{name}' already exists. Remove it first, then import."
-        )
     except OSError as exc:
         shutil.rmtree(landing, ignore_errors=True)
+        # A concurrent install of the same slug can land the target between
+        # _target_for()'s check and this replace. os.replace onto a populated
+        # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
+        # both mean "already there", so surface the same friendly message.
+        if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
+            raise ModuleImportError(
+                f"A module named '{name}' already exists. Remove it first, then import."
+            )
         raise ModuleImportError(f"Could not write the module to disk: {exc}")
     return {
         "name": name,
@@ -180,8 +213,13 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
     )
 
 
-def install_from_zip(data: bytes) -> dict:
-    """Validate and install a module from zip bytes. Returns manifest summary."""
+def install_from_zip(data: bytes, *, official: bool = False,
+                     premium: bool = False) -> dict:
+    """Validate and install a module from zip bytes. Returns manifest summary.
+
+    `official` is set ONLY by the marketplace installer (relay-authenticated
+    download): it flips the celerp- prefix rule from forbidden to required.
+    `premium` drops the license-gate marker for paid modules."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError("Archive is too large (limit 50 MB).")
     tmp_zip = None
@@ -212,6 +250,13 @@ def install_from_zip(data: bytes) -> dict:
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if stat.S_ISLNK(mode):
                     raise ModuleImportError("Archive contains symlinks; refused.")
+                if rel == PREMIUM_MARKER:
+                    # Only the installer itself may write this file (it's how
+                    # the license gate decides a module is paid) - a package
+                    # that ships it would either fake premium status on a free
+                    # module or collide with a genuinely paid install's marker.
+                    raise ModuleImportError(
+                        "Archive contains a reserved file name; refused.")
                 unpacked += info.file_size
                 if unpacked > MAX_UNPACKED_BYTES:
                     raise ModuleImportError("Archive expands too large; refused.")
@@ -224,7 +269,7 @@ def install_from_zip(data: bytes) -> dict:
                     "No __init__.py at the module root; not a Celerp module package."
                 )
             manifest = _read_manifest(init_py.read_text(encoding="utf-8", errors="replace"))
-            return _finish(out, manifest)
+            return _finish(out, manifest, official=official, premium=premium)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -241,6 +286,10 @@ def install_from_folder(source: str | Path) -> dict:
         raise ModuleImportError(
             "No __init__.py at the folder root; not a Celerp module package."
         )
+    if (src / PREMIUM_MARKER).exists():
+        # Same reserved-name refusal as the zip path - only the installer
+        # itself may write this file.
+        raise ModuleImportError("Folder contains a reserved file name; refused.")
     total = 0
     for p in src.rglob("*"):
         if p.is_symlink():

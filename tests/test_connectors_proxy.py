@@ -40,3 +40,38 @@ async def test_fetch_access_token_raises_on_error_code():
     with patch("ui.api_client.get_connector_access_token", new=AsyncMock(return_value=err)):
         with pytest.raises(RuntimeError, match="No woocommerce connection found"):
             await _fetch_access_token("woocommerce", "jwt")
+
+
+@pytest.mark.asyncio
+async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
+    """A relay 402 (free account) must render the trial CTA on the connectors
+    tab, not the generic could-not-load network message."""
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    with patch("ui.routes.settings_connectors._fetch_catalog",
+               AsyncMock(return_value=([], "Connectors need an active plan.", True))), \
+         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
+        panel = await connectors_tab_content("en", token="tok")
+
+    from fasthtml.common import to_xml
+    html = to_xml(panel)
+    assert "/settings/cloud" in html                       # the upgrade CTA link
+    assert "connector-entitlement-cta" in html
+    assert "Could not load connectors" not in html
+
+
+@pytest.mark.asyncio
+async def test_connectors_tab_shows_fetch_error_detail():
+    """A non-entitlement failure shows the actual error detail (e.g. relay
+    unreachable), so it reads as what it is instead of a generic string."""
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    with patch("ui.routes.settings_connectors._fetch_catalog",
+               AsyncMock(return_value=([], "Relay timed out.", False))), \
+         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
+        panel = await connectors_tab_content("en", token="tok")
+
+    from fasthtml.common import to_xml
+    html = to_xml(panel)
+    assert "Relay timed out." in html
+    assert "connector-entitlement-cta" not in html

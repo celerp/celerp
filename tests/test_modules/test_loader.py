@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from contextlib import contextmanager
+
 from celerp.modules import slots
 from celerp.modules.loader import (
     ModuleLoadError,
@@ -52,6 +54,23 @@ def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> 
         """).strip()
     )
     return pkg
+
+
+@contextmanager
+def _preserved_sys_modules(prefixes: list[str]):
+    """Save already-imported sys.modules entries matching any prefix; afterwards
+    remove whatever the test imported and restore the originals. Evicting
+    without restoring breaks later tests: mock.patch by import path would
+    re-import a FRESH module object while the app under test still calls
+    functions from the original namespace, so the patch lands on a dead copy."""
+    saved = {k: v for k, v in sys.modules.items() if any(p in k for p in prefixes)}
+    try:
+        yield
+    finally:
+        for k in list(sys.modules.keys()):
+            if any(p in k for p in prefixes):
+                sys.modules.pop(k, None)
+        sys.modules.update(saved)
 
 
 # ── Happy path ────────────────────────────────────────────────────────────────
@@ -124,6 +143,140 @@ class TestLoadAll:
         _make_module(tmp_path, "no-version", '{"name": "no-version"}')
         result = load_all(tmp_path, {"no-version"})
         assert result == []
+
+
+# ── Premium license gate ──────────────────────────────────────────────────────
+# is_premium_path() (celerp.modules.license) treats a directory carrying the
+# marketplace installer's PREMIUM_MARKER as license-gated. load_all resolves a
+# relay JWT from settings.gateway_token (the real GATEWAY_TOKEN credential),
+# exchanged via exchange_api_key_for_jwt. A prior version read CELERP_RELAY_URL
+# / CELERP_INSTANCE_JWT, which are set in no environment, so as written the gate
+# could not have verified a license once premium modules shipped (no premium
+# modules exist yet, so nothing was actually ungated in production).
+
+class TestPremiumLicenseGate:
+    def _make_premium_module(self, tmp_path, name="paid-mod") -> Path:
+        from celerp.modules.importer import PREMIUM_MARKER
+        pkg = _make_module(tmp_path, name, f'{{"name": "{name}", "version": "1.0"}}')
+        (pkg / PREMIUM_MARKER).write_text("")
+        return pkg
+
+    def test_no_gateway_token_skips_check_dev_mode(self, tmp_path, monkeypatch):
+        """Never-activated instance (no gateway_token at all): the check is
+        skipped gracefully, not treated as a license failure."""
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "")
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
+
+    def test_no_premium_module_makes_zero_token_exchanges(self, tmp_path, monkeypatch):
+        """No premium module present -> the relay token exchange (a blocking
+        network call at startup) must never happen. Guards the lazy-resolve:
+        every ordinary user with only free/bundled modules pays no network cost
+        at load time."""
+        from celerp.config import settings as _s
+        calls = []
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: calls.append(1) or "relay-jwt-1")
+        _make_module(tmp_path, "free-a", '{"name": "free-a", "version": "1.0"}')
+        _make_module(tmp_path, "free-b", '{"name": "free-b", "version": "1.0"}')
+        result = load_all(tmp_path, {"free-a", "free-b"})
+        assert len(result) == 2
+        assert calls == [], "no premium module: must not exchange a token"
+
+    def test_multiple_premium_modules_exchange_token_once(self, tmp_path, monkeypatch):
+        """The JWT is the same for every module, so N premium modules must
+        trigger exactly ONE token exchange, not N."""
+        from celerp.config import settings as _s
+        calls = []
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: calls.append(1) or "relay-jwt-1")
+        monkeypatch.setattr("celerp.modules.loader.check_license", lambda **kw: True)
+        self._make_premium_module(tmp_path, name="paid-a")
+        self._make_premium_module(tmp_path, name="paid-b")
+        self._make_premium_module(tmp_path, name="paid-c")
+        result = load_all(tmp_path, {"paid-a", "paid-b", "paid-c"})
+        assert len(result) == 3
+        assert len(calls) == 1, f"expected exactly one token exchange, got {len(calls)}"
+
+    def test_valid_license_loads_module(self, tmp_path, monkeypatch):
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: "relay-jwt-1")
+        monkeypatch.setattr(
+            "celerp.modules.loader.check_license",
+            lambda **kw: True)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
+
+    def test_no_license_skips_module_with_load_error(self, tmp_path, monkeypatch):
+        from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
+        monkeypatch.setattr(_s, "gateway_token", "api-key-1")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: "relay-jwt-1")
+        monkeypatch.setattr(
+            "celerp.modules.loader.check_license",
+            lambda **kw: False)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert result == []
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
+
+    def test_token_exchange_failure_still_verifies_offline(self, tmp_path, monkeypatch):
+        """gateway_token is set but the live token exchange fails (rotated key, or
+        a transient startup failure). The check is not skipped: the license is
+        still verified offline (offline_only=True), so with no offline lifetime
+        JWT and no grace cache the module is not loaded."""
+        from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
+        seen = {}
+        monkeypatch.setattr(_s, "gateway_token", "stale-key")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: None)
+
+        def _spy(**kw):
+            seen.update(kw)
+            return False   # no offline lifetime JWT, no grace cache -> deny
+
+        monkeypatch.setattr("celerp.modules.loader.check_license", _spy)
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert result == []                       # not loaded without a valid license
+        assert seen.get("offline_only") is True   # decided offline, relay not called live
+        assert seen.get("instance_jwt") == ""     # no live token was available
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
+
+    def test_token_exchange_failure_still_honors_offline_license(self, tmp_path, monkeypatch):
+        """The flip side: when the exchange fails but the offline path (lifetime
+        JWT or grace cache) grants, the module still loads - the relay being
+        briefly unreachable never strands a genuinely licensed module."""
+        from celerp.config import settings as _s
+        monkeypatch.setattr(_s, "gateway_token", "stale-key")
+        monkeypatch.setattr(_s, "gateway_http_url", "https://relay.test")
+        monkeypatch.setattr(
+            "celerp.modules.loader.exchange_api_key_for_jwt",
+            lambda relay_url, api_key: None)
+        monkeypatch.setattr("celerp.modules.loader.check_license",
+                            lambda **kw: True)   # offline path grants
+        self._make_premium_module(tmp_path)
+        result = load_all(tmp_path, {"paid-mod"})
+        assert len(result) == 1
 
 
 # ── BSL protection ────────────────────────────────────────────────────────────
@@ -364,20 +517,50 @@ class TestDependencySystem:
 
     # ── Circular deps ──────────────────────────────────────────────────────────
 
-    def test_circular_dep_does_not_crash(self, tmp_path):
-        """Circular A→B→A must not cause RecursionError."""
+    def test_circular_dep_detected_and_both_skipped(self, tmp_path):
+        """Circular A→B→A must not crash, and the cycle must be detected: both
+        modules are skipped with a recorded error, not loaded in a bogus order."""
+        from celerp.modules.loader import load_errors
         self._make(tmp_path, "circ-a", depends_on=["circ-b"])
         self._make(tmp_path, "circ-b", depends_on=["circ-a"])
-        # Should not raise; both may be skipped
         result = load_all(tmp_path, {"circ-a", "circ-b"})
-        # We don't assert on result content — just no exception
-        assert isinstance(result, list)
+        names = [m["name"] for m in result]
+        assert "circ-a" not in names
+        assert "circ-b" not in names
+        errors = load_errors()
+        # at least one member of the cycle is flagged as such (the other is
+        # reported as depending on a skipped module)
+        assert "cycle" in errors.get("circ-a", "").lower() or \
+               "cycle" in errors.get("circ-b", "").lower()
 
-    def test_self_dep_does_not_crash(self, tmp_path):
-        """Module that depends on itself must not cause RecursionError."""
+    def test_self_dep_detected_and_skipped(self, tmp_path):
+        """A module depending on itself is a trivial cycle: skipped, not loaded."""
+        from celerp.modules.loader import load_errors
         self._make(tmp_path, "self-dep", depends_on=["self-dep"])
         result = load_all(tmp_path, {"self-dep"})
-        assert isinstance(result, list)
+        assert not any(m["name"] == "self-dep" for m in result)
+        assert "cycle" in load_errors().get("self-dep", "").lower()
+
+    def test_cycle_does_not_poison_unrelated_module(self, tmp_path):
+        """A dependency cycle among some modules must not prevent an unrelated,
+        healthy module from loading."""
+        self._make(tmp_path, "circ-a", depends_on=["circ-b"])
+        self._make(tmp_path, "circ-b", depends_on=["circ-a"])
+        self._make(tmp_path, "healthy")
+        result = load_all(tmp_path, {"circ-a", "circ-b", "healthy"})
+        names = [m["name"] for m in result]
+        assert "healthy" in names
+        assert "circ-a" not in names and "circ-b" not in names
+
+    def test_three_node_cycle_detected_and_all_skipped(self, tmp_path):
+        """A multi-hop cycle A->B->C->A exercises the back-edge through more than
+        one on_stack frame; all three must be skipped, none loaded."""
+        self._make(tmp_path, "n-a", depends_on=["n-b"])
+        self._make(tmp_path, "n-b", depends_on=["n-c"])
+        self._make(tmp_path, "n-c", depends_on=["n-a"])
+        result = load_all(tmp_path, {"n-a", "n-b", "n-c"})
+        names = [m["name"] for m in result]
+        assert "n-a" not in names and "n-b" not in names and "n-c" not in names
 
     # ── resolve_install_order (config.py) ──────────────────────────────────────
 
@@ -410,6 +593,33 @@ class TestDependencySystem:
         result = resolve_install_order(["ghost-xyz"], tmp_path)
         # Returns with ghost-xyz (no crash, no auto-skip — install may fail later)
         assert "ghost-xyz" in result
+
+    def test_resolve_install_order_survives_a_cycle(self, tmp_path):
+        """resolve_install_order must terminate (no RecursionError) on a cyclic
+        depends_on graph; the loader's own _topo_sort is the enforcement point, so
+        here we only pin that this helper returns rather than blowing the stack."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "cyc-a", depends_on=["cyc-b"])
+        self._make(tmp_path, "cyc-b", depends_on=["cyc-a"])
+        result = resolve_install_order(["cyc-a"], tmp_path)
+        assert "cyc-a" in result and "cyc-b" in result
+
+    def test_resolve_install_order_finds_deps_in_module_dir(self, tmp_path, monkeypatch):
+        """A marketplace/sideloaded module lives in MODULE_DIR, not the bundled
+        trees. Its depends_on must still be discovered and pre-enabled, or the
+        loader skips it at next boot as 'requires X, which is not enabled'."""
+        from celerp.config import resolve_install_order
+        bundled = tmp_path / "default_modules"
+        bundled.mkdir()
+        market = tmp_path / "market"
+        market.mkdir()
+        # third-party module and its dependency both land in MODULE_DIR
+        self._make(market, "third-party", depends_on=["tp-dep"])
+        self._make(market, "tp-dep")
+        monkeypatch.setenv("MODULE_DIR", str(market))
+        result = resolve_install_order(["third-party"], bundled)
+        assert "tp-dep" in result
+        assert result.index("tp-dep") < result.index("third-party")
 
     # ── Real module manifest validation ────────────────────────────────────────
 
@@ -449,24 +659,21 @@ class TestDependencySystem:
         from celerp.modules import loader as _loader, slots as _slots
         _loader._loaded.clear()
         _slots.clear()
-        import sys as _sys
-        try:
-            result = _loader.load_all(
-                real_dir,
-                {"celerp-inventory", "celerp-contacts", "celerp-docs"},
-            )
-            names = [m["name"] for m in result]
-            assert "celerp-contacts" in names
-            assert "celerp-docs" in names
-            assert names.index("celerp-contacts") < names.index("celerp-docs"), (
-                "celerp-contacts must load before celerp-docs (it's a declared dep)"
-            )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            for k in list(_sys.modules.keys()):
-                if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k:
-                    _sys.modules.pop(k, None)
+        with _preserved_sys_modules(["celerp_docs", "celerp_contacts", "celerp_inventory"]):
+            try:
+                result = _loader.load_all(
+                    real_dir,
+                    {"celerp-inventory", "celerp-contacts", "celerp-docs"},
+                )
+                names = [m["name"] for m in result]
+                assert "celerp-contacts" in names
+                assert "celerp-docs" in names
+                assert names.index("celerp-contacts") < names.index("celerp-docs"), (
+                    "celerp-contacts must load before celerp-docs (it's a declared dep)"
+                )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()
 
     def test_celerp_docs_skipped_when_contacts_not_enabled(self, tmp_path):
         """With real modules: docs is skipped when contacts not in enabled set.
@@ -480,22 +687,19 @@ class TestDependencySystem:
         from celerp.modules import loader as _loader, slots as _slots
         _loader._loaded.clear()
         _slots.clear()
-        import sys as _sys
-        try:
-            result = _loader.load_all(
-                real_dir,
-                {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
-            )
-            names = [m["name"] for m in result]
-            assert "celerp-docs" not in names, (
-                "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
-            )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            for k in list(_sys.modules.keys()):
-                if "celerp_docs" in k or "celerp_inventory" in k:
-                    _sys.modules.pop(k, None)
+        with _preserved_sys_modules(["celerp_docs", "celerp_inventory"]):
+            try:
+                result = _loader.load_all(
+                    real_dir,
+                    {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
+                )
+                names = [m["name"] for m in result]
+                assert "celerp-docs" not in names, (
+                    "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
+                )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()
 
 
 # ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
@@ -736,6 +940,74 @@ class TestElectronTrustedModuleDirs:
             "AST scan must catch lazy imports inside function bodies"
         )
 
+    def test_ast_scan_follows_indirection_into_sibling_file(self, tmp_path):
+        """The scan follows local imports transitively: a protected import in a
+        helper file the entry module pulls in is still detected."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "indir-test"
+        inner = pkg / "indir_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("from .impl import setup_api_routes\n")
+        (inner / "impl.py").write_text(
+            "import celerp.session_gate\n"
+            "def setup_api_routes(app):\n    pass\n"
+        )
+        violations = _ast_scan_module_file(pkg, "indir_test.routes")
+        assert "celerp.session_gate" in violations
+
+    def test_ast_scan_follows_absolute_intra_package_indirection(self, tmp_path):
+        """Same, via an absolute intra-package import (from pkg.impl import ...)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "abs-test"
+        inner = pkg / "abs_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("from abs_test import helper\n")
+        (inner / "helper.py").write_text("from celerp.ai.quota import check\n")
+        violations = _ast_scan_module_file(pkg, "abs_test.routes")
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_dynamic_importlib(self, tmp_path):
+        """A dynamic importlib.import_module(...) with a string-literal target is
+        flagged (a plain Import/ImportFrom walk would not see a Call)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "dyn-test"
+        inner = pkg / "dyn_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "import importlib\n"
+            "def go():\n"
+            "    m = importlib.import_module('celerp.ai.quota')\n"
+            "    return m\n"
+        )
+        violations = _ast_scan_module_file(pkg, "dyn_test.routes")
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_dunder_import(self, tmp_path):
+        """__import__('celerp.session_gate') is likewise flagged."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "dunder-test"
+        inner = pkg / "dunder_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text("x = __import__('celerp.session_gate')\n")
+        violations = _ast_scan_module_file(pkg, "dunder_test.routes")
+        assert "celerp.session_gate" in violations
+
+    def test_ast_scan_clean_transitive_no_false_positive(self, tmp_path):
+        """A clean module that imports local + stdlib helpers must NOT be flagged
+        (guards against the transitive walk over-reporting)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "clean-test"
+        inner = pkg / "clean_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "import os\n"
+            "from .helper import util\n"
+            "from celerp.modules.api import public_api\n"   # PUBLIC api is allowed
+        )
+        (inner / "helper.py").write_text("import json\ndef util():\n    return json.dumps({})\n")
+        violations = _ast_scan_module_file(pkg, "clean_test.routes")
+        assert violations == set()
+
     def test_bundled_first_party_modules_load_with_bsl_imports(self):
         """A first-party module that imports BSL internals must load from the real default_modules
         directory (trusted=True, no AST scan). celerp-admin is the regression subject: it imports
@@ -752,47 +1024,34 @@ class TestElectronTrustedModuleDirs:
             import pytest as _pytest
             _pytest.skip("default_modules not available")
         from celerp.modules import loader as _loader, slots as _slots
-        import sys as _sys
         _loader._loaded.clear()
         _slots.clear()
-        # Save any already-imported module entries so we can restore them after
-        # the test (instead of evicting them, which breaks tests that run after
-        # this one and hold references to the original module objects).
-        _evict_prefixes = [
+        with _preserved_sys_modules([
             "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
             "celerp_inventory", "celerp_contacts", "celerp_docs",
-        ]
-        _saved_modules = {
-            k: v for k, v in _sys.modules.items()
-            if any(x in k for x in _evict_prefixes)
-        }
-        try:
-            # celerp-connectors depends on celerp-inventory + celerp-docs; include both
-            result = _loader.load_all(
-                real_dir,
-                {
-                    "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
-                    "celerp-inventory", "celerp-contacts", "celerp-docs",
-                },
-            )
-            loaded_names = {m["name"] for m in result}
-            # celerp-admin imports kernel/BSL internals yet must be trusted when bundled (the trust bug).
-            assert "celerp-admin" in loaded_names, (
-                "celerp-admin failed to load from default_modules — "
-                "it imports BSL internals and is being wrongly treated as untrusted. "
-                "This is the Electron trust bug."
-            )
-            # The proprietary cloud components are folded into core and must NOT load as pluggable
-            # modules (the loader skips them; they are direct-wired in celerp/main.py and ui/app.py).
-            for folded in ("celerp-ai", "celerp-backup", "celerp-connectors"):
-                assert folded not in loaded_names, (
-                    f"{folded} is core-folded and must not be loaded by the module loader"
+        ]):
+            try:
+                # celerp-connectors depends on celerp-inventory + celerp-docs; include both
+                result = _loader.load_all(
+                    real_dir,
+                    {
+                        "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
+                        "celerp-inventory", "celerp-contacts", "celerp-docs",
+                    },
                 )
-        finally:
-            _loader._loaded.clear()
-            _slots.clear()
-            # Remove modules added during this test, then restore originals.
-            for k in list(_sys.modules.keys()):
-                if any(x in k for x in _evict_prefixes):
-                    _sys.modules.pop(k, None)
-            _sys.modules.update(_saved_modules)
+                loaded_names = {m["name"] for m in result}
+                # celerp-admin imports kernel/BSL internals yet must be trusted when bundled (the trust bug).
+                assert "celerp-admin" in loaded_names, (
+                    "celerp-admin failed to load from default_modules - "
+                    "it imports BSL internals and is being wrongly treated as untrusted. "
+                    "This is the Electron trust bug."
+                )
+                # The proprietary cloud components are folded into core and must NOT load as pluggable
+                # modules (the loader skips them; they are direct-wired in celerp/main.py and ui/app.py).
+                for folded in ("celerp-ai", "celerp-backup", "celerp-connectors"):
+                    assert folded not in loaded_names, (
+                        f"{folded} is core-folded and must not be loaded by the module loader"
+                    )
+            finally:
+                _loader._loaded.clear()
+                _slots.clear()

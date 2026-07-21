@@ -2034,6 +2034,28 @@ async def import_module_path(token: str, path: str) -> dict:
         return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
 
 
+async def buy_module(token: str, slug: str, kind: str) -> dict:
+    """POST /companies/me/modules/buy - get a Stripe Checkout URL for a paid module."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/buy",
+                                   json={"slug": slug, "kind": kind})).json()
+
+
+async def module_licenses(token: str) -> list[str]:
+    """GET /companies/me/modules/licenses - slugs with an active license."""
+    async with _api_client(token) as c:
+        r = await c.get("/companies/me/modules/licenses")
+        return (r.json().get("licensed", []) or []) if r.status_code == 200 else []
+
+
+async def marketplace_install(token: str, slug: str) -> dict:
+    """POST /companies/me/modules/marketplace-install - download a marketplace
+    module from the relay and install + enable it (the download can take a while)."""
+    async with _api_client(token, timeout=90.0) as c:
+        return _raise(await c.post("/companies/me/modules/marketplace-install",
+                                   json={"slug": slug})).json()
+
+
 async def restart_system(token: str) -> dict:
     """POST /system/restart — graceful restart; the process manager respawns."""
     async with _api_client(token) as c:
@@ -2223,6 +2245,24 @@ async def get_instance_id(token: str) -> str:
         return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
 
+async def account_methods(token: str) -> dict:
+    """GET /settings/account-methods — optional sign-in methods + Google start URL."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/settings/account-methods")).json()
+
+
+async def account_signup(token: str, email: str) -> dict:
+    """POST /settings/account-signup — send the magic sign-in link."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/account-signup", json={"email": email})).json()
+
+
+async def account_status(token: str) -> dict:
+    """GET /settings/account-status — poll the relay account state."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/settings/account-status")).json()
+
+
 async def send_otp(token: str, email: str) -> dict:
     """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
     async with _api_client(token) as c:
@@ -2235,12 +2275,13 @@ async def cloud_claim(token: str, payload: dict) -> dict:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 
-async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
+async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:
     """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
-    Returns (connectors, error_detail). error_detail is "" on success."""
+    Returns (connectors, error_detail, needs_plan). error_detail is "" on success;
+    needs_plan is True when the relay refused with 402 (no entitled plan)."""
     async with _api_client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
-    return data.get("connectors", []), data.get("error", "")
+    return data.get("connectors", []), data.get("error", ""), bool(data.get("needs_plan"))
 
 
 async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:

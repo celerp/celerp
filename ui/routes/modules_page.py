@@ -49,6 +49,22 @@ def _modules_dir_display() -> str:
     return raw.split(",")[0].strip()
 
 
+def _license_upsell(lang: str) -> FT:
+    """Moment-of-need Connect upsell shown when a paid module is licensed to
+    another computer. Frames it additively (your module still works there;
+    Connect brings it here + across devices/team), not as a punitive error."""
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import build_subscribe_url
+    url = build_subscribe_url(ensure_instance_id(), "cloud")
+    return Div(
+        Strong(t("modules.license_move_title", lang), cls="small"),
+        P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),
+        A(t("btn.get_connect", lang), href=url, target="_blank", rel="noopener noreferrer",
+          cls="btn btn--sm btn--primary"),
+        cls="module-license-upsell",
+    )
+
+
 def _restart_pending(modules: list[dict]) -> bool:
     """Derived, not transient: a restart is pending whenever a module's desired
     state (enabled) differs from its actual state (running). This covers both
@@ -106,21 +122,27 @@ def _local_panel(modules: list[dict], lang: str = "en",
 
         status_parts = []
         if running:
-            status_parts.append(Span("running", cls="badge badge--green"))
+            status_parts.append(Span(t("modules.badge_running", lang), cls="badge badge--active"))
+        elif enabled and load_error and "license" in load_error.lower():
+            # A paid module present but not licensed on THIS computer (e.g. moved
+            # from another machine): reframe the failure as the Connect upsell
+            # rather than a dead red error - the moment-of-need conversion point.
+            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
+            status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
             # A broken module fails loudly, not silently.
-            status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--red"))
+            status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--danger"))
             status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
         elif enabled:
-            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--yellow"))
+            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
         else:
-            status_parts.append(Span("disabled", cls="badge badge--grey"))
+            status_parts.append(Span(t("modules.badge_disabled", lang), cls="badge badge--inactive"))
 
         dependents = required_by.get(name, [])
         if effectively_enabled:
             if dependents:
                 toggle_btn = Button(t("btn.disable", lang),
-                    title=f"Required by: {', '.join(dependents)}",
+                    title=t("modules.required_by", lang, names=", ".join(dependents)),
                     disabled=True,
                     cls="btn btn--sm btn--danger btn--disabled",
                 )
@@ -129,6 +151,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
                     hx_post=f"/modules/{name}/disable",
                     hx_target="#local-modules-panel",
                     hx_swap="outerHTML",
+                    hx_disabled_elt="this",
                     cls="btn btn--sm btn--danger",
                 )
         else:
@@ -136,6 +159,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 hx_post=f"/modules/{name}/enable",
                 hx_target="#local-modules-panel",
                 hx_swap="outerHTML",
+                hx_disabled_elt="this",
                 cls="btn btn--sm btn--primary",
             )
 
@@ -154,6 +178,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             hx_post="/modules/restart",
             hx_target="#local-modules-panel",
             hx_swap="outerHTML",
+            hx_disabled_elt="this",
             cls="btn btn--sm btn--primary",
             style="margin-left:12px;",
         ),
@@ -174,7 +199,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             P(t("modules.import_warning", lang), cls="text-muted small"),
             Form(
                 Input(type="file", name="file", accept=".zip", required=True),
-                Button(t("btn.import_module", lang), type="submit", cls="btn btn--sm btn--primary"),
+                Button(t("btn.import_module", lang), type="submit", hx_disabled_elt="this", cls="btn btn--sm btn--primary"),
                 hx_post="/modules/import",
                 hx_encoding="multipart/form-data",
                 hx_target="#local-modules-panel",
@@ -211,18 +236,21 @@ def _local_panel(modules: list[dict], lang: str = "en",
             cls="modules-empty",
         )
     else:
-        content = Table(
-            Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.status", lang)), Th(""))),
-            Tbody(*rows),
-            cls="data-table",
+        content = Div(
+            Table(
+                Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.status", lang)), Th(""))),
+                Tbody(*rows),
+                cls="data-table",
+            ),
+            cls="table-scroll-wrap",
         )
 
     build_card = Div(
         H3(t("modules.build_title", lang), cls="section-title mt-lg"),
         P(t("modules.build_body", lang), cls="text-muted mb-sm"),
         Div(
-            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
-            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
+            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
             cls="mf-btns",
         ),
         cls="module-build-card",
@@ -273,10 +301,14 @@ def _local_panel(modules: list[dict], lang: str = "en",
     )
 
 
-def _restarting_panel(lang: str) -> FT:
+def _restarting_panel(lang: str, panel_id: str = "local-modules-panel") -> FT:
     """Shown right after POST /system/restart. Desktop: Electron reloads the
     window itself once the servers are back. Server mode: this script polls
-    the same origin and reloads when the UI answers again."""
+    the same origin and reloads when the UI answers again.
+
+    *panel_id* is the id of the panel the restart was triggered from, so the
+    outerHTML swap keeps that element's identity (the marketplace flow and the
+    local-modules flow each target their own panel)."""
     return Div(
         P(t("modules.restarting", lang), cls="text-muted"),
         P(t("modules.restart_timeout", lang), cls="flash flash--warning",
@@ -295,7 +327,7 @@ def _restarting_panel(lang: str) -> FT:
           }, 2500);
         })();
         """),
-        id="local-modules-panel",
+        id=panel_id,
         cls="settings-card",
     )
 
@@ -330,7 +362,122 @@ def _catalog_price(m: dict, lang: str) -> str:
     return t("marketplace.free", lang)
 
 
-def _catalog_card(m: dict, lang: str, installed: set[str]):
+def _buy_btn(slug: str, kind: str, label: str, lang: str):
+    """A Buy button: POSTs to /modules/buy, which returns the waiting panel that
+    opens Stripe Checkout in the browser and polls for the license."""
+    return Button(t("btn.buy", lang) + " " + label,
+                  hx_post=f"/modules/buy?slug={slug}&kind={kind}",
+                  hx_target="#marketplace-panel", hx_swap="outerHTML",
+                  hx_disabled_elt="this",
+                  cls="btn btn--sm btn--primary")
+
+
+def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
+    """Shown after starting checkout: open Stripe Checkout in the browser and
+    poll the catalog (which re-renders with the module owned once the webhook
+    lands the license). Resumable - closing the tab does not lose the purchase.
+    Cancel (button or Esc) returns to the catalog; after 10 minutes the poll
+    stops and a still-waiting message with a manual refresh takes over.
+
+    *n* is the server-side poll counter (0 on the first render from /modules/buy,
+    then incremented by /modules/buy-poll on each re-fetch)."""
+    import json as _json
+    POLL_MAX = 120   # 120 x 5s ≈ 10 minutes, then stop polling
+    actions = [
+        Button(t("btn.cancel", lang), id="buy-cancel",
+               hx_get="/modules/marketplace-panel",
+               hx_target="#marketplace-panel", hx_swap="outerHTML",
+               cls="btn btn--sm btn--secondary"),
+    ]
+    # The Stripe URL is only known on the FIRST render (from /modules/buy). On a
+    # re-poll (url is None) we keep waiting without a stale reopen link.
+    if url:
+        actions.insert(0, A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+                            rel="noopener noreferrer", cls="btn btn--sm btn--secondary"))
+
+    parts = [
+        P(t("marketplace.waiting_payment", lang), cls="text-muted"),
+        Div(*actions, style="display:flex;gap:8px;"),
+    ]
+    if n < POLL_MAX:
+        # Keep the poll element in a SIBLING wrapper that carries no swap target of
+        # its own; it re-fetches buy-poll, which re-emits this whole panel (poll
+        # intact) until the module is owned, then swaps in the catalog. The counter
+        # bounds the wait server-side, so it survives every panel swap.
+        parts.append(Div(id="buy-poll",
+                         hx_get=f"/modules/buy-poll?slug={slug}&n={n + 1}",
+                         hx_trigger="every 5s",
+                         hx_target="#marketplace-panel", hx_swap="outerHTML"))
+    else:
+        parts.append(P(t("marketplace.waiting_timeout", lang),
+                       cls="flash flash--warning"))
+    if url:
+        # First render only: open Checkout in the external browser, and wire Esc to
+        # cancel. Attached to document once so it isn't re-added on every re-poll.
+        parts.append(Script(
+            f"(function(){{var u={_json.dumps(url)};"
+            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
+            f"else{{window.open(u,'_blank');}}}})();"))
+        parts.append(Script("""
+        (function () {
+          if (window.__celerpBuyEsc) return;
+          window.__celerpBuyEsc = function (e) {
+            if (e.key === 'Escape') {
+              var b = document.getElementById('buy-cancel');
+              if (b) { b.click(); }
+            }
+          };
+          document.addEventListener('keydown', window.__celerpBuyEsc);
+        })();
+        """))
+    return Div(*parts, id="marketplace-panel", cls="settings-card")
+
+
+async def _build_marketplace_panel(token: str, lang: str) -> FT:
+    """The marketplace catalog fragment (id=marketplace-panel). Shared by the
+    tab load, the poll-until-owned target, and every 'back to catalog' path."""
+    try:
+        modules_list, from_cache = await catalog.fetch_catalog()
+    except Exception:
+        return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"),
+                   id="marketplace-panel")
+    installed = set()
+    try:
+        installed = {m["name"] for m in await api.get_modules(token)}
+    except APIError:
+        pass
+    licensed = set()
+    try:
+        licensed = set(await api.module_licenses(token))
+    except APIError:
+        pass
+    trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
+    community = [m for m in modules_list if m["tier"] == "community"]
+    children = []
+    if from_cache:
+        children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
+    if not modules_list:
+        children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
+    children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
+    children.append(_community_zone(len(community), lang))
+    children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
+    return Div(*children, id="marketplace-panel")
+
+
+def _marketplace_error_panel(message: str, lang: str):
+    """An action failed: keep the message on screen (no auto-reload wiping it)
+    with an explicit way back to the catalog."""
+    return Div(
+        Div(message, cls="flash flash--error"),
+        Button(t("btn.back", lang),
+               hx_get="/modules/marketplace-panel",
+               hx_target="#marketplace-panel", hx_swap="outerHTML",
+               cls="btn btn--sm btn--secondary"),
+        id="marketplace-panel", cls="settings-card",
+    )
+
+
+def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | None = None):
     """One catalog entry: summary row, detail drawer with disclosures first."""
     tier = m["tier"]
     body = []
@@ -354,10 +501,11 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
     body.append(Div(*links, cls="marketplace-card__links"))
-    # CTA per tier. One-click install of vaulted artifacts is the verified
-    # milestone; today official links out and community hands off to Import.
+    # CTA per tier.
+    licensed = licensed or set()
+    is_paid = bool(m.get("price_monthly") or m.get("price_once"))
     if m["id"] in installed:
-        body.append(Span(t("settings.installed", lang), cls="badge badge--green"))
+        body.append(Span(t("settings.installed", lang), cls="badge badge--active"))
     elif tier == "community":
         body.append(Div(
             A(t("marketplace.get_from_author", lang), href=m.get("repo", "#"),
@@ -365,6 +513,37 @@ def _catalog_card(m: dict, lang: str, installed: set[str]):
             A(t("btn.import_module", lang), href="/modules?import=1",
               cls="btn btn--sm btn--secondary"),
             style="display:flex;gap:8px;",
+        ))
+    elif is_paid and m["id"] not in licensed:
+        # Official/verified PAID module, not yet owned: Buy button(s). The one-time
+        # purchase copy states plainly it is not a Connect subscription.
+        buys = []
+        if m.get("price_monthly"):
+            buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
+        if m.get("price_once"):
+            buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
+        body.append(Div(*buys, cls="marketplace-card__buys",
+                        style="display:flex;gap:8px;flex-wrap:wrap;"))
+        # Third-party (non-official) paid module: the sale is made by the author,
+        # who processes the payment and receives the buyer's order details.
+        # Disclose that before purchase.
+        if tier != "official":
+            body.append(P(Strong(t("marketplace.sold_by", lang, author=m["author"])), " ",
+                          t("marketplace.third_party_data_note", lang, author=m["author"]),
+                          cls="text-muted small"))
+        body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
+    elif is_paid:
+        # Owned (licensed): one-click vault install - download, import, enable;
+        # restart activates. Failures re-render with the error and the button
+        # stays, so a failed download is never a dead end.
+        body.append(Div(
+            Span(t("marketplace.owned", lang), cls="badge badge--active"),
+            Button(t("btn.install", lang),
+                   hx_post=f"/modules/marketplace-install?slug={m['id']}",
+                   hx_target="#marketplace-panel", hx_swap="outerHTML",
+                   hx_disabled_elt="this",
+                   cls="btn btn--sm btn--primary"),
+            style="display:flex;gap:8px;align-items:center;",
         ))
     else:
         body.append(A(t("settings.view_install", lang),
@@ -540,16 +719,22 @@ def setup_routes(app):
         if redirect:
             return redirect
         lang = get_lang(request)
+        # The restart button lives in two panels (local-modules and marketplace);
+        # each targets its own id, so echo it back to keep the swap in place.
+        panel = request.query_params.get("panel", "local-modules-panel")
+        marketplace = panel == "marketplace-panel"
         try:
             await api.restart_system(token)
         except APIError as e:
+            if marketplace:
+                return _marketplace_error_panel(e.detail or str(e), lang)
             modules = []
             try:
                 modules = await api.get_modules(token)
             except APIError:
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
-        return _restarting_panel(lang)
+        return _restarting_panel(lang, panel_id=panel)
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):
@@ -557,33 +742,87 @@ def setup_routes(app):
         token = _token(request)
         if not token or not _is_admin(request):
             return Div(id="marketplace-panel")
-        lang = get_lang(request)
-        try:
-            modules_list, from_cache = await catalog.fetch_catalog()
-        except Exception:
-            return Div(
-                P(t("marketplace.could_not_load", lang), cls="text-muted"),
-                id="marketplace-panel",
-            )
+        return await _build_marketplace_panel(token, get_lang(request))
 
-        installed = set()
+    @app.get("/modules/buy-poll")
+    async def buy_poll(request: Request):
+        """Poll target while a purchase is pending: re-emit the waiting panel
+        (keeping the poll alive) until the module is licensed/installed here, then
+        flip to the catalog. A server-side counter bounds the wait so the poll
+        stops after ~10 minutes even across panel swaps."""
+        token = _token(request)
+        if not token or not _is_admin(request):
+            return Div(id="marketplace-panel")
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
+        try:
+            n = int(request.query_params.get("n", "0"))
+        except ValueError:
+            n = 0
+        licensed = installed = set()
+        try:
+            licensed = set(await api.module_licenses(token))
+        except APIError:
+            pass
         try:
             installed = {m["name"] for m in await api.get_modules(token)}
         except APIError:
             pass
+        if slug in licensed or slug in installed:
+            # The purchase landed - show the catalog (module now Owned/installed).
+            return await _build_marketplace_panel(token, lang)
+        return _buy_waiting_panel(None, slug, lang, n=n)
 
-        trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
-        community = [m for m in modules_list if m["tier"] == "community"]
+    @app.post("/modules/buy")
+    async def modules_buy(request: Request):
+        """Start a module purchase: get the Stripe Checkout URL from the relay and
+        return the waiting panel (opens Checkout in the browser, polls the license)."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
+        kind = request.query_params.get("kind", "monthly")
+        try:
+            res = await api.buy_module(token, slug, kind)
+        except APIError as e:
+            return _marketplace_error_panel(e.detail or str(e), lang)
+        return _buy_waiting_panel(res.get("url", ""), slug, lang)
 
-        children = []
-        if from_cache:
-            children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
-        if not modules_list:
-            children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
-        children.extend(_catalog_card(m, lang, installed) for m in trusted)
-        children.append(_community_zone(len(community), lang))
-        children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
-        return Div(*children, id="marketplace-panel")
+    @app.post("/modules/marketplace-install")
+    async def modules_marketplace_install(request: Request):
+        """One-click install of an owned (or free) marketplace module: the local
+        API downloads from the relay, imports, and enables; restart activates.
+        Errors stay on screen with a way back - the Install button re-renders
+        with the catalog, so retrying is always possible."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        slug = request.query_params.get("slug", "")
+        try:
+            info = await api.marketplace_install(token, slug)
+        except APIError as e:
+            return _marketplace_error_panel(e.detail or str(e), lang)
+        return Div(
+            Div(t("marketplace.install_success", lang,
+                  name=info.get("display_name") or info.get("name", slug)),
+                cls="flash flash--success"),
+            P(t("settings._a_restart_is_required_for_module_changes_to_take", lang),
+              cls="text-muted small"),
+            Div(
+                Button(t("btn.restart_now", lang),
+                       hx_post="/modules/restart?panel=marketplace-panel",
+                       hx_target="#marketplace-panel", hx_swap="outerHTML",
+                       cls="btn btn--sm btn--primary"),
+                Button(t("btn.back", lang),
+                       hx_get="/modules/marketplace-panel",
+                       hx_target="#marketplace-panel", hx_swap="outerHTML",
+                       cls="btn btn--sm btn--secondary"),
+                style="display:flex;gap:8px;",
+            ),
+            id="marketplace-panel", cls="settings-card",
+        )
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):
@@ -609,13 +848,26 @@ def setup_routes(app):
                     Button(t("btn.continue", lang), id="community-continue", disabled=True,
                         hx_post="/modules/community-ack",
                         hx_target="#community-zone", hx_swap="outerHTML",
+                        hx_disabled_elt="this",
                         cls="btn btn--sm btn--primary"),
-                    Button(t("btn.cancel", lang),
+                    Button(t("btn.cancel", lang), id="community-cancel",
                         hx_get="/modules/community-panel?hide=1",
                         hx_target="#community-zone", hx_swap="outerHTML",
                         cls="btn btn--sm btn--secondary"),
                     style="display:flex;gap:8px;margin-top:8px;",
                 ),
+                Script("""
+                (function () {
+                  function esc(e) {
+                    if (e.key === 'Escape') {
+                      var b = document.getElementById('community-cancel');
+                      if (b) { b.click(); }
+                      document.removeEventListener('keydown', esc);
+                    }
+                  }
+                  document.addEventListener('keydown', esc);
+                })();
+                """),
                 cls="marketplace-community-warning",
                 id="community-zone",
             )

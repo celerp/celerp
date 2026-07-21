@@ -343,6 +343,75 @@ async def cloud_instance_id() -> dict:
     return {"instance_id": ensure_instance_id()}
 
 
+@router.get("/settings/account-methods")
+async def account_methods_api() -> dict:
+    """Which optional sign-in methods the relay offers, plus the browser URL for
+    the Google flow (started in the system browser, bound to this instance).
+    Degrades to email-only when the relay is unreachable - never an error."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    relay_base = _rhu()
+    iid = ensure_instance_id()
+    google = False
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(f"{relay_base}/auth/methods")
+        if r.status_code == 200:
+            data = r.json()
+            google = bool(data.get("google")) if isinstance(data, dict) else False
+    except Exception:
+        pass
+    return {
+        "google": google,
+        "google_start_url": f"{relay_base}/auth/google/start?instance_id={iid}",
+    }
+
+
+@router.post("/settings/account-signup")
+async def account_signup_api(payload: dict) -> dict:
+    """Proxy the magic-link signup request using the API-process instance_id."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    email = str(payload.get("email", "")).strip()
+    if not email:
+        return {"error": "Email required."}
+    relay_base = _rhu()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(f"{relay_base}/auth/signup/request",
+                             json={"email": email, "instance_id": ensure_instance_id()})
+    except httpx.HTTPError:
+        return {"error": f"Cannot reach {relay_base} - check your internet connection."}
+    if r.status_code == 202:
+        return {"sent": True}
+    try:
+        detail = r.json().get("detail", r.text[:120])
+    except Exception:
+        detail = r.text[:120]
+    return {"error": str(detail), "status_code": r.status_code}
+
+
+@router.get("/settings/account-status")
+async def account_status_api() -> dict:
+    """Proxy the relay account status for the app's post-sign-in polling."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    relay_base = _rhu()
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(f"{relay_base}/auth/account",
+                            params={"instance_id": ensure_instance_id()})
+    except httpx.HTTPError:
+        return {"error": "unreachable"}
+    if r.status_code != 200:
+        return {"error": f"status {r.status_code}"}
+    data = r.json()
+    return data if isinstance(data, dict) else {"error": "unexpected response"}
+
+
 @router.post("/settings/cloud-send-otp")
 async def cloud_send_otp_api(payload: dict) -> dict:
     """Proxy /billing/claim/send-otp to relay using API-process instance_id."""
@@ -498,6 +567,15 @@ async def connectors_catalog_api() -> dict:
 
     if r.status_code == 200:
         return {"connectors": r.json().get("connectors", [])}
+    if r.status_code == 402:
+        # Free accounts reach this page but connectors need a paid plan - show
+        # the relay's plain upgrade message, not a bare status code.
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = ""
+        return {"error": detail or "Connectors need an active Celerp Connect plan.",
+                "needs_plan": True, "connectors": []}
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 
