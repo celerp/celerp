@@ -20,6 +20,7 @@ from starlette.responses import RedirectResponse, StreamingResponse, PlainTextRe
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
+from ui.components.currency import CURRENCIES
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -449,7 +450,8 @@ def setup_routes(app):
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
                                    lines: list[dict], idem_token: str, error: str | None,
-                                   date_from: str = "", date_to: str = ""):
+                                   date_from: str = "", date_to: str = "",
+                                   currency: str = "", rate: str = ""):
         if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
             return base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
@@ -472,7 +474,8 @@ def setup_routes(app):
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _accounting_tabs("journal"),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
-                                date_from=date_from, date_to=date_to),
+                                date_from=date_from, date_to=date_to,
+                                currency=currency, rate=rate),
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
@@ -529,6 +532,24 @@ def setup_routes(app):
         except ValueError:
             error = t("acct.err_amounts_numeric")
 
+        # An untouched reveal posts an ordinary entry: no currency chosen means
+        # no fx key at all, so the request is byte-identical to today's.
+        fx_payload: dict | None = None
+        currency = str(form.get("currency") or "").strip().upper()
+        if error is None and currency:
+            valid_codes = {c for c, _ in CURRENCIES}
+            if currency not in valid_codes:
+                error = t("acct.err_currency_unknown")
+            else:
+                try:
+                    rate = float(str(form.get("rate") or "").strip() or 0)
+                except ValueError:
+                    rate = 0.0
+                if not _math.isfinite(rate) or rate <= 0:
+                    error = t("acct.err_rate_positive")
+                else:
+                    fx_payload = {"currency": currency, "rate": rate}
+
         if error is None:
             try:
                 await api.create_journal_entry(token, {
@@ -536,6 +557,7 @@ def setup_routes(app):
                     "memo": memo,
                     "entries": entries,
                     "idempotency_token": idem_token,
+                    **({"fx": fx_payload} if fx_payload else {}),
                 })
                 # Land on the journal with the entry guaranteed visible: keep the
                 # filter the user came from, widened to include the posted date.
@@ -561,7 +583,9 @@ def setup_routes(app):
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
                                           idem_token=idem_token, error=error,
-                                          date_from=d_from, date_to=d_to)
+                                          date_from=d_from, date_to=d_to,
+                                          currency=currency,
+                                          rate=str(form.get("rate") or "").strip())
 
     @app.post("/accounting/journal/{je_id}/void")
     async def journal_void(request: Request, je_id: str):
@@ -850,9 +874,15 @@ def setup_routes(app):
             for line in entry.get("lines", []):
                 debit = float(line.get("debit") or 0)
                 credit = float(line.get("credit") or 0)
-                _fx_d, _fx_c = _fx_line_amounts(debit, credit, fx)
-                fx_debit = _fx_d if _fx_d is not None else ""
-                fx_credit = _fx_c if _fx_c is not None else ""
+                _fx_d, _fx_c = _fx_line_amounts(
+                    debit, credit, fx, line.get("fx_debit"), line.get("fx_credit"))
+                # A zero foreign amount is not a figure the author typed: the
+                # rounding plug carries 0.0 on both sides and belongs in the
+                # export as blank cells, with no currency claimed for it.
+                fx_debit = _fx_d if _fx_d else ""
+                fx_credit = _fx_c if _fx_c else ""
+                line_fx_currency = fx_currency if (fx_debit != "" or fx_credit != "") else ""
+                line_rate = rate if (fx_debit != "" or fx_credit != "") else ""
                 _csv_row(w, [
                     str(entry.get("ts") or "")[:10],
                     entry.get("je_id", ""),
@@ -863,10 +893,10 @@ def setup_routes(app):
                     debit,
                     credit,
                     base_currency,
-                    fx_currency,
+                    line_fx_currency,
                     fx_debit,
                     fx_credit,
-                    rate or "",
+                    line_rate or "",
                     entry.get("status", ""),
                 ])
 
@@ -1297,18 +1327,27 @@ def _journal_totals(data: dict, currency: str | None = None) -> FT:
     return _totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01, currency)
 
 
-def _fx_line_amounts(debit: float, credit: float, fx: dict | None) -> tuple[float | None, float | None]:
+def _fx_line_amounts(debit: float, credit: float, fx: dict | None,
+                     fx_debit: float | None = None,
+                     fx_credit: float | None = None) -> tuple[float | None, float | None]:
     """A journal line's foreign-currency amounts, or (None, None) when the entry
     carries no rate.
 
-    The ledger stores base currency, so the foreign amounts are derived from the
-    transaction's own recorded rate. Without a rate nothing is shown: a guessed
+    A manually entered foreign line stores the figures the author actually
+    typed, and those win: they are what the source document says, and dividing
+    the local amount back out can land a cent away from it. Only a
+    document-linked line, which stores no foreign amounts of its own, is
+    derived from the recorded rate. Without a rate nothing is shown: a guessed
     figure on an audited journal is worse than a blank.
     """
+    if fx_debit is not None or fx_credit is not None:
+        return (fx_debit, fx_credit)
     rate = (fx or {}).get("rate") or 0
-    if not rate:
+    fx_currency = (fx or {}).get("currency")
+    # A rate with no currency cannot be formatted: the amount would be rounded
+    # at a defaulted precision and shown under a currency nobody recorded.
+    if not rate or not fx_currency:
         return (None, None)
-    fx_currency = fx.get("currency")
     rate_d = to_decimal(rate)
     fx_debit = float(round_money(to_decimal(debit) / rate_d, fx_currency)) if debit else None
     fx_credit = float(round_money(to_decimal(credit) / rate_d, fx_currency)) if credit else None
@@ -1409,7 +1448,8 @@ def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
                 Td(_fmt_nonzero(credit), cls="cell--number"),
             ]
             if has_fx:
-                fx_debit, fx_credit = _fx_line_amounts(debit, credit, fx)
+                fx_debit, fx_credit = _fx_line_amounts(
+                    debit, credit, fx, line.get("fx_debit"), line.get("fx_credit"))
                 fx_currency = fx.get("currency")
                 line_cells += [
                     Td(fmt_money(fx_debit, fx_currency) if fx_debit else "", cls="cell--number"),
@@ -1450,6 +1490,9 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
         Td(Input(type="number", name=f"credit_{idx}", value=line.get("credit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"), cls="cell--number"),
+        # Read-only: the local figure is server-computed and must never be a
+        # request field, or a client could post amounts unrelated to the rate.
+        Td("", cls="cell--number cell--muted je-local", data_idx=idx),
         Td(Button("✕", type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
                   onclick="celerpJeRemoveLine(this)")),
     )
@@ -1457,7 +1500,8 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
 
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
                         idem_token: str, error: str | None = None,
-                        date_from: str = "", date_to: str = "") -> FT:
+                        date_from: str = "", date_to: str = "",
+                        currency: str = "", rate: str = "") -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -1487,16 +1531,56 @@ function celerpJeRemoveLine(btn) {{
     btn.closest('tr').remove();
     celerpJeTotals();
 }}
+function celerpJeFx() {{
+    // The picker writes through a hidden input, same as every combobox here.
+    var cur = document.querySelector('[name="currency"]');
+    var rateEl = document.querySelector('[name="rate"]');
+    var rate = parseFloat(rateEl ? rateEl.value : '') || 0;
+    return {{ currency: cur ? (cur.value || '') : '', rate: rate }};
+}}
 function celerpJeTotals() {{
     var d = 0, c = 0;
+    var fx = celerpJeFx();
+    var on = fx.currency !== '' && fx.rate > 0;
     document.querySelectorAll('#je-lines [name^="debit_"]').forEach(function(el) {{ d += Math.round((parseFloat(el.value) || 0) * 100); }});
     document.querySelectorAll('#je-lines [name^="credit_"]').forEach(function(el) {{ c += Math.round((parseFloat(el.value) || 0) * 100); }});
     document.getElementById('je-total-debit').textContent = {_json.dumps(t("acct.total_debit"))} + ': ' + (d / 100).toFixed(2);
     document.getElementById('je-total-credit').textContent = {_json.dumps(t("acct.total_credit"))} + ': ' + (c / 100).toFixed(2);
     var chip = document.getElementById('je-balance-chip');
+    // Balance is judged on the amounts the user typed, which under a rate are
+    // the foreign ones. The server applies the same rule.
     var balanced = d === c && d > 0;
     chip.textContent = balanced ? {_json.dumps(t("acct.balanced"))} : {_json.dumps(t("acct.out_of_balance"))};
     chip.className = balanced ? 'val-chip' : 'val-chip val-chip--alert';
+
+    var head = document.getElementById('je-local-head');
+    head.textContent = on ? {_json.dumps(t("acct.local_amount"))} : '';
+    var localDebit = 0, localCredit = 0;
+    document.querySelectorAll('#je-lines tr').forEach(function(row) {{
+        var cell = row.querySelector('.je-local');
+        if (!cell) return;
+        if (!on) {{ cell.textContent = ''; return; }}
+        var dv = parseFloat((row.querySelector('[name^="debit_"]') || {{}}).value) || 0;
+        var cv = parseFloat((row.querySelector('[name^="credit_"]') || {{}}).value) || 0;
+        // Each line converts and rounds on its own, exactly as the server does,
+        // so the preview cannot disagree with what gets posted.
+        var ld = Math.round(dv * fx.rate * 100), lc = Math.round(cv * fx.rate * 100);
+        localDebit += ld; localCredit += lc;
+        cell.textContent = ((ld || lc) / 100).toFixed(2);
+    }});
+
+    var preview = document.getElementById('je-rounding-preview');
+    var residual = localCredit - localDebit;
+    if (on && balanced && residual !== 0) {{
+        // GDR 2d: nothing is added to the books without the user seeing it first.
+        var side = residual > 0 ? {_json.dumps(t("th.debit"))} : {_json.dumps(t("th.credit"))};
+        preview.textContent = {_json.dumps(t("acct.rounding_line_preview"))}
+            .replace('{{account}}', '6960')
+            .replace('{{side}}', side)
+            .replace('{{amount}}', (Math.abs(residual) / 100).toFixed(2));
+    }} else {{
+        preview.textContent = '';
+    }}
 }}
 if (document.readyState === 'loading') {{ document.addEventListener('DOMContentLoaded', celerpJeTotals); }} else {{ celerpJeTotals(); }}
 """
@@ -1518,12 +1602,39 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 ),
                 cls="flex-row gap-sm",
             ),
+            # Collapsed by default: an accountant who never posts in a foreign
+            # currency sees the same form as before and no extra decision.
+            Details(
+                Summary(t("acct.record_foreign_currency"), cls="btn btn--ghost btn--sm"),
+                Div(
+                    Div(
+                        Label(t("th.currency"), cls="form-label"),
+                        searchable_select("currency", CURRENCIES, value=currency,
+                                          placeholder=t("acct.currency_base_hint"),
+                                          cls_extra="cell-input"),
+                    ),
+                    Div(
+                        Label(t("th.rate"), cls="form-label"),
+                        Input(type="number", name="rate", value=rate or "1.0000", step="0.0001",
+                              min="0", cls="form-input", oninput="celerpJeTotals()",
+                              onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    ),
+                    cls="flex-row gap-sm",
+                ),
+                cls="je-fx-reveal",
+                # Reopened when a currency survives a failed submission, so the
+                # user sees the values they typed instead of a collapsed control
+                # that looks like it was never touched.
+                open=bool(currency),
+            ),
+            Div("", id="je-rounding-preview", cls="report-section"),
             Template(_je_line_row("__IDX__", {}, acct_opts), id="je-line-tpl"),
             Table(
                 Thead(Tr(
                     Th(t("th.account")),
                     Th(t("th.debit"), cls="cell--number"),
                     Th(t("th.credit"), cls="cell--number"),
+                    Th("", id="je-local-head", cls="cell--number"),
                     Th(""),
                 )),
                 Tbody(*rows, id="je-lines"),

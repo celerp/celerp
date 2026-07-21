@@ -22,7 +22,7 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
 from celerp.services.je_keys import je_void_data
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
 
 router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
@@ -85,7 +85,13 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6960", "name": "Foreign Exchange Rounding", "account_type": "expense", "parent_code": "6000"},
 ]
+
+# Absorbs the cents left over when each line of a foreign-currency entry rounds
+# independently. Not the FX revaluation of open balances over time, which is a
+# different concern handled elsewhere.
+FX_ROUNDING_ACCOUNT = "6960"
 
 
 class AccountCreate(BaseModel):
@@ -466,6 +472,40 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return (company.settings or {}).get("currency", "USD") if company else "USD"
 
 
+async def _validated_fx(
+    session: AsyncSession, company_id: uuid.UUID, fx: "ManualJEFx | None"
+) -> "ManualJEFx | None":
+    """Check a manual entry's currency and rate, or return None for an ordinary
+    base-currency entry.
+
+    Every message names the field at fault: an accountant who mistypes a rate
+    should be told which value was refused, not handed a generic rejection.
+    """
+    if fx is None:
+        return None
+    currency = (fx.currency or "").upper()
+    if currency not in ISO_4217_CURRENCIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown currency {fx.currency}. Use a three-letter ISO 4217 code.",
+        )
+    base = await _base_currency(session, company_id)
+    if currency == base:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{currency} is this company's own currency. Leave the foreign "
+                "currency blank to post an ordinary entry."
+            ),
+        )
+    if not math.isfinite(fx.rate) or fx.rate <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Exchange rate must be greater than zero, not {fx.rate}.",
+        )
+    return ManualJEFx(currency=currency, rate=fx.rate)
+
+
 def _id_chunks(ids: list[str], size: int = 10_000):
     """Slices for IN() clauses: asyncpg caps a statement at 32767 bind
     arguments, and a mature company's id lists can exceed that."""
@@ -648,6 +688,11 @@ async def journal(
                 "name": account_names.get(code, code),
                 "debit": float(amounts[0]),
                 "credit": float(amounts[1]),
+                # Present only on a foreign-currency line. The rounding plug and
+                # every base-currency line carry None, which the view renders as
+                # an empty cell rather than a guessed figure.
+                "fx_debit": entry.get("fx_debit"),
+                "fx_credit": entry.get("fx_credit"),
             })
         ref = refs.get(je_id)
         entries_out.append({
@@ -659,7 +704,9 @@ async def journal(
             "void_reason": state.get("void_reason"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
-            "fx": ref["fx"] if ref else None,
+            # A document-linked entry carries its rate on the source doc; a
+            # manual entry carries its own, typed by the author.
+            "fx": ref["fx"] if ref else state.get("fx"),
         })
 
     return {
@@ -677,11 +724,22 @@ class ManualJELine(BaseModel):
     credit: float = 0
 
 
+class ManualJEFx(BaseModel):
+    """The currency and rate for a whole entry. The author types the foreign
+    amounts on each line; the server converts them to base currency."""
+
+    currency: str
+    rate: float
+
+
 class ManualJECreate(BaseModel):
     ts: str  # ISO date "YYYY-MM-DD"
     memo: str = ""
     entries: list[ManualJELine]
     idempotency_token: str
+    # Absent for an ordinary base-currency entry, which is the common case and
+    # is untouched by any of the conversion below.
+    fx: ManualJEFx | None = None
 
 
 class ManualJEVoidPayload(BaseModel):
@@ -703,6 +761,7 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
+    fx = await _validated_fx(session, company_id, payload.fx)
 
     accounts = (
         await session.execute(
@@ -716,8 +775,14 @@ async def create_manual_journal_entry(
             children_of.setdefault(a.parent_code, []).append(a.code)
 
     base = await _base_currency(session, company_id)
+    # With a rate, the author typed foreign amounts: they are validated and
+    # balanced at the foreign currency's precision, then converted. Without one
+    # the amounts are already base currency and nothing below changes.
+    amount_currency = fx.currency if fx else base
     total_debit = Decimal(0)
     total_credit = Decimal(0)
+    local_debit = Decimal(0)
+    local_credit = Decimal(0)
     entries: list[dict] = []
     for line in payload.entries:
         acc = account_map.get(line.account)
@@ -737,23 +802,83 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
-        d = round_money(line.debit, base)
-        c = round_money(line.credit, base)
+        d = round_money(line.debit, amount_currency)
+        c = round_money(line.credit, amount_currency)
         if d > 0 and c > 0:
             raise HTTPException(status_code=422, detail="Each line must have an amount on only one side, debit or credit.")
         if d == 0 and c == 0:
             raise HTTPException(status_code=422, detail="Each line needs a debit or credit amount.")
         total_debit += d
         total_credit += c
-        entries.append({"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)})
+        if fx:
+            ld = round_money(d * to_decimal(fx.rate), base)
+            lc = round_money(c * to_decimal(fx.rate), base)
+            local_debit += ld
+            local_credit += lc
+            entries.append({
+                "account": line.account,
+                "debit": to_stored_float(ld),
+                "credit": to_stored_float(lc),
+                "fx_debit": to_stored_float(d) if d else None,
+                "fx_credit": to_stored_float(c) if c else None,
+            })
+        else:
+            entries.append({"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)})
 
     if total_debit != total_credit:
+        where = f" in {fx.currency}" if fx else ""
         raise HTTPException(
             status_code=422,
-            detail=f"Entry is out of balance: debits {total_debit} do not equal credits {total_credit}.",
+            detail=f"Entry is out of balance{where}: debits {total_debit} do not equal credits {total_credit}.",
         )
     if total_debit == 0:
         raise HTTPException(status_code=422, detail="Entry total must be greater than zero.")
+
+    if fx:
+        # Each line converts and rounds independently, so a set of foreign
+        # amounts that balance exactly can convert to local amounts that do not.
+        # The difference is posted as its own visible line rather than folded
+        # into a real account, where it would silently misstate that account.
+        residual = local_credit - local_debit
+        # Provably bounded: each line rounds by at most half a smallest unit of
+        # the foreign currency before conversion, and by at most half a smallest
+        # unit of the base currency after it. Breaching this would mean the
+        # conversion arithmetic is wrong, not that the user typed something odd,
+        # so it fails as a server error rather than posting a number that failed
+        # its own sanity check.
+        half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
+        half_base = Decimal(10) ** -currency_dp(base) / 2
+        ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
+        if abs(residual) > ceiling:
+            # Raised rather than asserted: `python -O` strips assert statements,
+            # and a guard on a posted money figure must not depend on how the
+            # interpreter was launched.
+            raise RuntimeError(
+                f"exchange rounding residual {residual} exceeds the bound {ceiling} "
+                f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
+            )
+        if residual != 0:
+            rounding = account_map.get(FX_ROUNDING_ACCOUNT)
+            if not rounding or not rounding.is_active:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Account {FX_ROUNDING_ACCOUNT} is needed to post the "
+                        "exchange-rate rounding difference and is missing or "
+                        "inactive. Re-seed the chart of accounts in Settings."
+                    ),
+                )
+            entries.append({
+                "account": FX_ROUNDING_ACCOUNT,
+                "debit": to_stored_float(residual) if residual > 0 else 0.0,
+                "credit": to_stored_float(-residual) if residual < 0 else 0.0,
+                # 0.0 rather than null on both sides: the display prefers a
+                # stored foreign amount over deriving one, and a null pair would
+                # fall through to division and invent a foreign figure for a
+                # line the author never typed in any currency.
+                "fx_debit": 0.0,
+                "fx_credit": 0.0,
+            })
 
     je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
@@ -762,7 +887,11 @@ async def create_manual_journal_entry(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.created",
-        data={"memo": payload.memo, "ts": payload.ts, "entries": entries, "je_type": "manual", "status": "posted"},
+        data={
+            "memo": payload.memo, "ts": payload.ts, "entries": entries,
+            "je_type": "manual", "status": "posted",
+            **({"fx": {"currency": fx.currency, "rate": fx.rate}} if fx else {}),
+        },
         actor_id=user.id,
         location_id=None,
         source="manual",
@@ -780,14 +909,28 @@ async def create_manual_journal_entry(
         def _norm(lines: list) -> list:
             # Compare money as rounded Decimals so a byte-identical retry never
             # trips on float representation differences across storage layers.
+            # The foreign amounts come along: two different rates can convert to
+            # the same local figures, and comparing only those would read a
+            # corrected rate as an identical retry and silently post nothing.
             out = []
             for l in lines or []:
                 amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
-                out.append((l.get("account"), round_money(amounts[0], base), round_money(amounts[1], base)))
+                out.append((
+                    l.get("account"),
+                    round_money(amounts[0], base), round_money(amounts[1], base),
+                    l.get("fx_debit"), l.get("fx_credit"),
+                ))
             return out
 
+        def _norm_fx(f: dict | None) -> tuple | None:
+            if not f:
+                return None
+            return ((f.get("currency") or "").upper(), to_decimal(f.get("rate") or 0))
+
+        submitted_fx = {"currency": fx.currency, "rate": fx.rate} if fx else None
         if (orig.get("ts") != payload.ts
                 or (orig.get("memo") or "") != (payload.memo or "")
+                or _norm_fx(orig.get("fx")) != _norm_fx(submitted_fx)
                 or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,

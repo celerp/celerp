@@ -52,12 +52,21 @@ async def _user_with_role(client, session, admin_token: str, role: str) -> str:
     return r2.json()["access_token"]
 
 
-async def _post_manual_je(client, tok, entries, ts="2026-01-15", memo="Adjustment", token=None):
-    r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
+async def _post_manual_je(client, tok, entries, ts="2026-01-15", memo="Adjustment", token=None,
+                          fx=None):
+    payload = {
         "ts": ts, "memo": memo, "entries": entries,
         "idempotency_token": token or uuid.uuid4().hex,
-    })
+    }
+    if fx is not None:
+        payload["fx"] = fx
+    r = await client.post("/accounting/journal-entries", headers=_h(tok), json=payload)
     return r
+
+
+async def _thb(client, tok):
+    """Put the company on a base currency that is not the tested foreign one."""
+    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
 
 
 def _bal(entry_lines):
@@ -929,3 +938,315 @@ async def test_report_date_filters_accept_valid_dates(client):
         r = await client.get(path, headers=_h(tok),
                              params={"date_from": "2026-01-01", "date_to": "2026-12-31"})
         assert r.status_code == 200, f"{path}: {r.text}"
+
+
+# --- Foreign-currency manual journal entries (J2) ---------------------------
+
+
+async def test_manual_je_fx_converts_foreign_to_local(client):
+    """The author types foreign amounts; the server stores base currency and
+    keeps the typed figures so an auditor can tie them to the document."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 10.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+    assert r.status_code == 200, r.text
+
+    j = await _journal(client, tok)
+    entry = j["entries"][0]
+    assert entry["fx"] == {"currency": "USD", "rate": 35.0}
+    debit_line = next(l for l in entry["lines"] if l["debit"])
+    credit_line = next(l for l in entry["lines"] if l["credit"])
+    assert debit_line["debit"] == 350.0 and debit_line["fx_debit"] == 10.0
+    assert credit_line["credit"] == 350.0 and credit_line["fx_credit"] == 10.0
+
+
+async def test_manual_je_fx_base_currency_rejected(client):
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "THB", "rate": 1.0})
+    assert r.status_code == 422
+    assert "THB" in r.json()["detail"]
+
+
+async def test_manual_je_fx_invalid_currency_code_rejected(client):
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "QQQ", "rate": 2.0})
+    assert r.status_code == 422
+    assert "QQQ" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("rate", [0, -5.0])
+async def test_manual_je_fx_nonpositive_rate_rejected(client, rate):
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "USD", "rate": rate})
+    assert r.status_code == 422
+    assert "rate" in r.json()["detail"].lower()
+
+
+async def test_manual_je_fx_balance_checked_on_foreign_totals(client):
+    """Balance is judged on what the author typed, and the message says so."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 10.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 9.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+    assert r.status_code == 422
+    assert "USD" in r.json()["detail"]
+
+
+async def test_manual_je_fx_rounding_residual_posted_as_extra_line(client):
+    """Lines that balance in the foreign currency can convert to local amounts
+    that do not; the difference posts as its own disclosed line."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 3.0025})
+    assert r.status_code == 200, r.text
+
+    # 33.33 and 33.34 convert to 100.07, 100.07, 100.10 = 300.24, while the
+    # 100.00 credit converts to 300.25: a one-cent debit plug.
+    j = await _journal(client, tok)
+    entry = j["entries"][0]
+    assert len(entry["lines"]) == 4 + 1
+    plug = next(l for l in entry["lines"] if l["account"] == "6960")
+    assert plug["debit"] == 0.01 and plug["credit"] == 0.0
+    # A local-only plug: zero on both sides, so the display takes the stored
+    # branch and never divides a local figure back into an invented foreign one.
+    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
+    assert j["total_debit"] == j["total_credit"] == 300.25
+
+
+async def test_manual_je_fx_zero_residual_adds_no_line(client):
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 50.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 50.0},
+    ], fx={"currency": "USD", "rate": 2.0})
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert len(entry["lines"]) == 2
+    assert entry["lines"][0]["debit"] == 100.0
+
+
+async def test_manual_je_fx_respects_foreign_currency_decimal_places(client):
+    """JPY has no minor unit, so both sides quantize to whole yen and balance."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 100.5, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 101.0},
+    ], fx={"currency": "JPY", "rate": 0.30})
+    assert r.status_code == 200, r.text
+
+
+async def test_manual_je_fx_token_reuse_with_different_rate_conflicts(client):
+    """Same amounts at a different rate is a different entry, not a retry."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    token = uuid.uuid4().hex
+    first = await _post_manual_je(client, tok, _bal(10.0), token=token,
+                                  fx={"currency": "USD", "rate": 35.0})
+    assert first.status_code == 200, first.text
+    second = await _post_manual_je(client, tok, _bal(10.0), token=token,
+                                   fx={"currency": "USD", "rate": 36.0})
+    assert second.status_code == 409, second.text
+
+
+async def test_manual_je_fx_rounding_account_missing_rejected(client):
+    """With 6960 inactive, an entry that needs a plug is refused, not silently
+    posted out of balance."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    patched = await client.patch("/accounting/accounts/6960", headers=_h(tok),
+                                 json={"is_active": False})
+    assert patched.status_code == 200, patched.text
+    r = await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 3.0025})
+    assert r.status_code == 422
+    assert "6960" in r.json()["detail"]
+
+
+async def test_seed_chart_includes_fx_rounding_account(client):
+    tok = await _reg(client)
+    chart = (await client.get("/accounting/chart", headers=_h(tok))).json()
+    items = chart["items"] if isinstance(chart, dict) else chart
+    row = next(a for a in items if a["code"] == "6960")
+    assert row["account_type"] == "expense" and row["parent_code"] == "6000"
+
+
+async def test_manual_je_without_fx_is_unchanged(client):
+    """J1: an ordinary entry carries no fx and no foreign amounts at all."""
+    tok = await _reg(client)
+    r = await _post_manual_je(client, tok, _bal(100.0))
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert entry["fx"] is None
+    assert all(l["fx_debit"] is None and l["fx_credit"] is None for l in entry["lines"])
+
+
+async def test_manual_je_fx_residual_can_land_on_the_credit_side(client):
+    """A residual is not always a debit; the plug follows whichever side is
+    short, which is why one difference account carries both signs."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 3.005})
+    assert r.status_code == 200, r.text
+
+    j = await _journal(client, tok)
+    plug = next(l for l in j["entries"][0]["lines"] if l["account"] == "6960")
+    assert plug["credit"] == 0.01 and plug["debit"] == 0.0
+    assert j["total_debit"] == j["total_credit"] == 300.51
+
+
+async def test_manual_je_fx_missing_rate_rejected(client):
+    """A currency with no rate is incomplete, not a default of 1.0."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
+        "ts": "2026-01-15", "memo": "m", "entries": _bal(10.0),
+        "idempotency_token": uuid.uuid4().hex,
+        "fx": {"currency": "USD"},
+    })
+    assert r.status_code == 422
+
+
+async def test_seed_chart_endpoint_backfills_fx_rounding_account(client):
+    """Re-seeding an existing chart adds 6960 without disturbing the rest."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/chart/seed", headers=_h(tok))
+    assert r.status_code in (200, 409), r.text
+
+    chart = (await client.get("/accounting/chart", headers=_h(tok))).json()
+    items = chart["items"] if isinstance(chart, dict) else chart
+    row = next(a for a in items if a["code"] == "6960")
+    assert row["account_type"] == "expense" and row["parent_code"] == "6000"
+
+
+async def test_void_manual_je_fx_preserves_stored_foreign_amounts(client):
+    """Voiding removes the entry from the books but not from the record: the
+    foreign amounts and rate stay for the audit trail."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    posted = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 10.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+    je_id = posted.json()["je_id"]
+
+    v = await client.post(f"/accounting/journal-entries/{je_id}/void", headers=_h(tok),
+                          json={"reason": "keyed twice"})
+    assert v.status_code == 200, v.text
+
+    entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)
+    assert entry["status"] == "void"
+    assert entry["fx"] == {"currency": "USD", "rate": 35.0}
+    assert next(l for l in entry["lines"] if l["fx_debit"])["fx_debit"] == 10.0
+    # Out of the books: a voided entry contributes nothing to the totals.
+    assert (await _journal(client, tok))["total_debit"] == 0.0
+
+
+async def test_cross_report_consistency_with_fx_and_rounding(client):
+    """The journal, trial balance, and general ledger agree once a foreign
+    entry and its rounding line are in the period."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10")
+    await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], ts="2026-01-11", fx={"currency": "USD", "rate": 3.0025})
+
+    journal = await _journal(client, tok, date_from="2026-01-01", date_to="2026-12-31")
+    tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
+                           params={"date_to": "2026-12-31"})).json()
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok),
+                           params={"date_to": "2026-12-31"})).json()
+
+    assert abs(journal["total_debit"] - tb["total_debit"]) < 0.01
+    assert abs(journal["total_credit"] - tb["total_credit"]) < 0.01
+    assert gl["balanced"] is True
+
+    tb_net = {l["code"]: l["net"] for l in tb["lines"]}
+    assert abs(tb_net["6960"] - 0.01) < 0.001, "the rounding plug must reach the trial balance"
+    for row in gl["rows"]:
+        signed = row["closing"]
+        if row["account_type"] not in ("asset", "expense", "cogs"):
+            signed = -signed
+        assert abs(signed - tb_net.get(row["code"], 0.0)) < 0.01, row["code"]
+
+    fx_entry = next(e for e in journal["entries"] if e["ts"] == "2026-01-11")
+    assert next(l for l in fx_entry["lines"] if l["account"] == "6100")["fx_debit"] == 33.33
+
+
+async def test_manual_je_fx_token_reuse_conflicts_when_rate_rounds_to_same_local(client):
+    """Two rates can convert to identical local figures. Comparing only those
+    would read a corrected rate as a retry and silently post nothing."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    token = uuid.uuid4().hex
+    first = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 1.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 1.0},
+    ], token=token, fx={"currency": "USD", "rate": 35.001})
+    assert first.status_code == 200, first.text
+
+    second = await _post_manual_je(client, tok, [
+        {"account": "1111", "debit": 1.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 1.0},
+    ], token=token, fx={"currency": "USD", "rate": 35.004})
+    assert second.status_code == 409, second.text
+
+
+async def test_manual_je_fx_rounding_line_claims_no_foreign_amount(client):
+    """The plug is local-only: it must not carry a foreign figure, because the
+    author never typed one in any currency."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 3.0025})
+
+    plug = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
+                if l["account"] == "6960")
+    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
+
+
+async def test_manual_je_fx_residual_stays_within_its_bound(client):
+    """A large rate scales the bound with it, so an honest conversion never
+    trips the sanity check that guards the plug."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        {"account": "6100", "debit": 33.33, "credit": 0},
+        {"account": "6200", "debit": 33.33, "credit": 0},
+        {"account": "6300", "debit": 33.34, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 100.00},
+    ], fx={"currency": "USD", "rate": 300.25})
+    assert r.status_code == 200, r.text
