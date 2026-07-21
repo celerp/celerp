@@ -26,11 +26,12 @@ from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user, require_manager, require_operator, viewer_read_only
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, get_price_config, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -275,6 +276,71 @@ async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[
         if sku and sell_by:
             result[sku] = sell_by
     return result
+
+
+async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, price_config) -> float:
+    """The base-list catalog price for a document line's item, or 0.0 if unknown.
+
+    Resolved server side the same way a scanned line is priced (flatten then
+    resolve against the base price list), so the price a line "should" carry is
+    computed identically to how it was stamped when added.
+    """
+    from celerp_inventory.routes import _flatten_item
+
+    item_id = line.get("item_id") or line.get("entity_id")
+    proj = None
+    if item_id:
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if proj is None and line.get("sku"):
+        proj = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    Projection.state["sku"].astext == line["sku"],
+                )
+            )
+        ).scalars().first()
+    if proj is None or not proj.state:
+        return 0.0
+    _lists, base_name, _currency = price_config
+    return resolve_price(_flatten_item(proj.state, proj.entity_id, price_config=price_config), base_name)
+
+
+async def _assert_doc_price_permission(
+    session: AsyncSession,
+    company_id,
+    settings: dict,
+    role: str,
+    incoming_lines: list[dict],
+    stored_by_idx: dict[int, dict] | None,
+) -> None:
+    """Reject a sales-document price override when the caller lacks set_sales_doc_prices.
+
+    A line's unit_price is an override when it differs from its reference price: the
+    stored line at the same index when editing an existing document, otherwise the
+    item's catalog price. A line with no catalog reference (no item, or an unknown
+    one) treats any non-zero unit_price as an override. Lines that leave the price at
+    its reference save regardless of the permission, so quantity-only edits are never
+    blocked. Settings are read once per request, so a stale page is still denied at
+    save time.
+    """
+    if role_has_permission(settings, role, "set_sales_doc_prices"):
+        return
+    price_config = None
+    for idx, line in enumerate(incoming_lines):
+        incoming = coerce_price(line.get("unit_price"))
+        if incoming is None:
+            continue
+        stored = (stored_by_idx or {}).get(idx)
+        if stored is not None:
+            reference = coerce_price(stored.get("unit_price")) or 0.0
+        else:
+            if price_config is None:
+                price_config = await get_price_config(session, company_id)
+            reference = await _catalog_unit_price(session, company_id, line, price_config)
+        if abs(incoming - reference) > 1e-6:
+            assert_role_permission(settings, role, "set_sales_doc_prices")
 
 
 async def _assert_ref_id_unique(
@@ -639,6 +705,8 @@ async def get_doc_pdf(
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -666,6 +734,15 @@ async def create_doc(
         for li in payload.line_items:
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
+
+        # Price-override gate: a new line whose unit_price deviates from the item's
+        # catalog price is a price override, rejected when the caller lacks
+        # set_sales_doc_prices. This closes the create path so the gate cannot be
+        # bypassed by making a new draft with overridden prices.
+        await _assert_doc_price_permission(
+            session, company_id, settings, role,
+            [li.model_dump() for li in payload.line_items], None,
+        )
 
     # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
     # transaction so concurrent doc creation can't read the same numbering
@@ -781,7 +858,7 @@ async def create_doc(
 
 
 @router.patch("/{entity_id}")
-async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -800,6 +877,13 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
         )
     row = await _get_doc(session, company_id, entity_id)
+    # Price-override gate: reject unit_price changes when the caller lacks
+    # set_sales_doc_prices, comparing incoming lines against the stored lines by
+    # index. Runs for drafts and finalized documents alike, before the draft branch.
+    _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_incoming_lines, list):
+        _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
+        await _assert_doc_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
         locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS

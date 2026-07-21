@@ -331,6 +331,146 @@ async def test_dashboard_activity_granted_operator(client, session):
                for a in acts), "granted operator should see unredacted activity costs"
 
 
+# ── Sales document price gate (J5) ────────────────────────────────────────────
+
+async def _make_draft_invoice(client, headers, ctx, unit_price, ref_id):
+    """Create a one-line draft invoice referencing the perm item; return its id."""
+    r = await client.post(
+        "/docs",
+        json={
+            "doc_type": "invoice",
+            "ref_id": ref_id,
+            "line_items": [{
+                "sku": "SKU-PERM", "item_id": ctx["item_id"],
+                "quantity": 2, "unit_price": unit_price,
+            }],
+            "total": 2 * unit_price,
+        },
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def _line_patch(item_id, quantity, unit_price, old_quantity=2, old_unit_price=50.0):
+    """A DocPatch body changing the single line to the given quantity/price."""
+    line = {"sku": "SKU-PERM", "item_id": item_id}
+    return {"fields_changed": {"line_items": {
+        "old": [{**line, "quantity": old_quantity, "unit_price": old_unit_price}],
+        "new": [{**line, "quantity": quantity, "unit_price": unit_price}],
+    }}}
+
+
+async def test_operator_revoked_patch_price_403(client, session):
+    """With set_sales_doc_prices raised to manager, an operator changing unit_price
+    on a draft is rejected naming the permission; a quantity-only edit still saves."""
+    ctx = await perm_setup(client, session)
+    doc_id = await _make_draft_invoice(client, ctx["admin_h"], ctx, 50.0, "INV-P40")
+    await grant_permission(client, ctx["admin_h"], "set_sales_doc_prices", "manager")
+
+    r = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 2, 75.0),
+                           headers=ctx["operator_h"])
+    assert r.status_code == 403, r.text
+    assert "set_sales_doc_prices" in r.json()["detail"]
+
+    r2 = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 3, 50.0),
+                            headers=ctx["operator_h"])
+    assert r2.status_code == 200, r2.text
+
+
+async def test_operator_revoked_create_price_403(client, session):
+    """Doc create with a line whose unit_price deviates from the catalog price is
+    rejected; a catalog-priced line succeeds."""
+    ctx = await perm_setup(client, session)
+    r = await client.post(f"/items/{ctx['item_id']}/price",
+                          json={"price_type": "Retail", "new_price": 100.0},
+                          headers=ctx["admin_h"])
+    assert r.status_code == 200, r.text
+    await grant_permission(client, ctx["admin_h"], "set_sales_doc_prices", "manager")
+
+    r = await client.post(
+        "/docs",
+        json={"doc_type": "invoice", "ref_id": "INV-P41A",
+              "line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
+                              "quantity": 1, "unit_price": 150.0}],
+              "total": 150.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 403, r.text
+    assert "set_sales_doc_prices" in r.json()["detail"]
+
+    r2 = await client.post(
+        "/docs",
+        json={"doc_type": "invoice", "ref_id": "INV-P41B",
+              "line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
+                              "quantity": 1, "unit_price": 100.0}],
+              "total": 100.0},
+        headers=ctx["operator_h"],
+    )
+    assert r2.status_code == 200, r2.text
+
+
+async def test_operator_default_sets_doc_price(client, session):
+    """Confirmatory: with no override, an operator sets and edits document prices
+    exactly as today."""
+    ctx = await perm_setup(client, session)
+    r = await client.post(
+        "/docs",
+        json={"doc_type": "invoice", "ref_id": "INV-P42",
+              "line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
+                              "quantity": 1, "unit_price": 999.0}],
+              "total": 999.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+
+    r2 = await client.patch(
+        f"/docs/{doc_id}",
+        json={"fields_changed": {"line_items": {
+            "old": [{"sku": "SKU-PERM", "item_id": ctx["item_id"], "quantity": 1, "unit_price": 999.0}],
+            "new": [{"sku": "SKU-PERM", "item_id": ctx["item_id"], "quantity": 1, "unit_price": 50.0}],
+        }}},
+        headers=ctx["operator_h"],
+    )
+    assert r2.status_code == 200, r2.text
+
+
+async def test_save_doc_lines_surfaces_permission_error(client, session):
+    """The UI save endpoint returns {"error": ...} naming the permission when the
+    underlying PATCH is rejected, driven end to end through the real API."""
+    from unittest.mock import patch
+    from httpx import ASGITransport, AsyncClient
+    from celerp.main import app as api_app
+
+    ctx = await perm_setup(client, session)
+    doc_id = await _make_draft_invoice(client, ctx["admin_h"], ctx, 50.0, "INV-P43")
+    await grant_permission(client, ctx["admin_h"], "set_sales_doc_prices", "manager")
+    operator_token = ctx["operator_h"]["Authorization"].split()[1]
+
+    def _bridged_client(token, timeout=10.0):
+        return AsyncClient(
+            transport=ASGITransport(app=api_app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+            follow_redirects=True,
+        )
+
+    from ui.app import app as ui_app
+    with patch("ui.api_client._client", _bridged_client):
+        async with AsyncClient(transport=ASGITransport(app=ui_app),
+                               base_url="http://ui", follow_redirects=False) as ui_c:
+            r = await ui_c.post(
+                f"/docs/{doc_id}/lines",
+                cookies={"celerp_token": operator_token},
+                json={"line_items": [{"sku": "SKU-PERM", "item_id": ctx["item_id"],
+                                      "quantity": 2, "unit_price": 75.0}],
+                      "subtotal": 150.0, "tax": 0, "total": 150.0},
+            )
+    assert r.status_code == 400, r.text
+    assert "set_sales_doc_prices" in r.json()["error"]
+
+
 # ── Dashboard UI follows the permission ───────────────────────────────────────
 
 @pytest_asyncio.fixture
