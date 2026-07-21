@@ -73,6 +73,21 @@ _SIZES: dict[str, tuple[float, float]] = {
 }
 
 
+def display_label(label: str) -> str:
+    """The printed form of a field label: the leaf of a "Category > Field" path.
+
+    The field picker lists category attributes as "Stones › Origin" so they can be
+    told apart while choosing, and that whole path was then saved as the printed
+    label. On a 25mm sticker the repeated category prefix costs roughly a third of
+    the line and tells the reader nothing - they are holding the stone. Print the
+    leaf; the picker keeps the full path. Applied at render time so labels saved
+    before this still shorten, without anyone re-picking their fields.
+    """
+    if not label:
+        return ""
+    return str(label).split("›")[-1].strip()
+
+
 def _parse_size(fmt: str) -> tuple[float, float]:
     """Return (width_mm, height_mm) for a format string. Public alias kept for compatibility."""
     if fmt in _SIZES:
@@ -116,6 +131,10 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
     - pieces on a pieces-sold item -> quantity
     - unit -> the item's sell_by
     - qr / barcode / barcode_text -> the item's barcode, falling back to SKU
+    - measurements -> the stored value, else "length x width x height" composed
+      from the dimension attributes only when all three are present (a partial
+      join like "6.5 x  x 4.0" would read as a complete measurement of a
+      different shape)
     """
     sell_by = item.get("sell_by")
     if key in ("qr", "barcode", "barcode_text"):
@@ -127,6 +146,12 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
         return format_qty(item.get("quantity"), sell_by, unit_map)
     if key == "unit":
         return _item_val(item, key) or str(sell_by or "")
+    if key == "measurements":
+        stored = _item_val(item, key)
+        if stored:
+            return stored
+        dims = [_item_val(item, d) for d in ("length", "width", "height")]
+        return " x ".join(dims) if all(dims) else ""
     return _item_val(item, key)
 
 
@@ -154,9 +179,49 @@ def render_label_text(
     return "\n".join(lines)
 
 
-_BC_MODULE_MM = 0.2  # Code128 X-dimension (width of one bar module)
+# Code128 X-dimension (width of one bar module). Widened from 0.2mm: a narrow
+# module is both harder to scan once thermal ink spreads and rounds badly on the
+# dot grid - 0.2mm is 2.36 dots at 300dpi, so snapping it lands on 2 dots
+# (0.169mm), thinner than intended and below a comfortable scan width. 0.33mm
+# snaps to a clean 4 dots at 300dpi and 3 dots at 203dpi, both well above the
+# minimum, so the same value is correct on either printer.
+_BC_MODULE_MM = 0.33
+# Bar-width reduction: shave the black bar so the adjacent white gaps stay open
+# against thermal ink bleed. Quantised to whole dots at render time (a dot printer
+# cannot place a fraction of a dot), so this is a nominal figure.
+_BC_BAR_SHRINK_MM = 0.05
 _BC_QUIET_MM = 1.0   # quiet zone on either side of the bars
+
+# Thermal label printers are dot-addressed: 300dpi = 0.0847mm per dot, 203dpi =
+# 0.1251mm. A bar edge that falls between dots gets rounded by the rasterizer, so a
+# nominally uniform X-dimension prints as a mix of (say) 3- and 4-dot bars - uneven
+# bars are what makes a printed barcode scan badly, not vector rendering itself.
+# 0.33mm is 3.90 dots at 300dpi, so we snap the geometry to whole dots: at 300dpi
+# 4 dots = 0.3387mm (visually identical to 0.33), and every bar edge then lands
+# exactly on a dot boundary. Quantising keeps one resolution-independent vector
+# that is exact on 203dpi hardware too - a fixed 300dpi bitmap would be resampled
+# there, which is worse than vector.
+DEFAULT_PRINTER_DPI = 300
+_BC_MIN_MODULE_DOTS = 2   # never let a module collapse below 2 dots (unscannable)
+
+# Leading as a multiple of the font size. 1.25 is tight enough to fit a dense
+# stone/lot label without lines touching; the old renderer effectively used ~3.97
+# (see render_label_pdf), which is why so little fitted on a label.
+_LINE_SPACING = 1.25
+
+
+def dot_mm(dpi: int = DEFAULT_PRINTER_DPI) -> float:
+    """Width of one printer dot in mm."""
+    return 25.4 / float(max(1, int(dpi or DEFAULT_PRINTER_DPI)))
+
+
+def snap_to_dots(value_mm: float, dpi: int = DEFAULT_PRINTER_DPI, minimum_dots: int = 0) -> float:
+    """Round a millimetre length to a whole number of printer dots."""
+    d = dot_mm(dpi)
+    dots = max(int(minimum_dots), int(round(float(value_mm) / d)))
+    return dots * d
 QR_SIZE_MM = 10.0    # QR codes are a fixed 10mm square on labels (minimum scannable size)
+BARCODE_HEIGHT_DEFAULT = 8   # bar height (mm, 1-30) a barcode field uses when none is set
 
 
 def _svg_markup(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, stretch: bool) -> str:
@@ -174,12 +239,18 @@ def _svg_markup(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, 
     )
 
 
-def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False) -> tuple[str, float, float] | None:
+def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False,
+                      dpi: int = DEFAULT_PRINTER_DPI) -> tuple[str, float, float] | None:
     """Render a Code128 barcode as vector SVG (bars only, no text).
 
     Vector output rasterizes sharply at the printer's own dot grid; a raster
     resampled by the print HTML thresholds into merged or dropped bars on
     low-DPI 1-bit label printers.
+
+    Every horizontal length is snapped to a whole number of printer dots for `dpi`
+    (see snap_to_dots), so each bar edge lands exactly on a dot boundary instead of
+    being rounded unevenly by the rasterizer - that rounding, not vector rendering,
+    is what makes printed bars come out uneven.
 
     module_height: bar height in mm (1-30). Default 8.
     Returns (svg_markup, natural_width_mm, height_mm), or None if the barcode
@@ -192,7 +263,13 @@ def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False)
     except Exception:
         return None
     h_mm = float(max(1, min(30, int(module_height))))
-    w_mm = len(pattern) * _BC_MODULE_MM + 2 * _BC_QUIET_MM
+    # Snap the X-dimension, the bar shave and the quiet zone to whole dots.
+    mod_mm = snap_to_dots(_BC_MODULE_MM, dpi, minimum_dots=_BC_MIN_MODULE_DOTS)
+    shrink_mm = snap_to_dots(_BC_BAR_SHRINK_MM, dpi)          # 0 or a whole dot
+    if shrink_mm >= mod_mm:                                    # never erase a module
+        shrink_mm = 0.0
+    quiet_mm = snap_to_dots(_BC_QUIET_MM, dpi)
+    w_mm = len(pattern) * mod_mm + 2 * quiet_mm
     bars = []
     i = 0
     while i < len(pattern):
@@ -200,8 +277,16 @@ def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False)
             j = i
             while j < len(pattern) and pattern[j] == "1":
                 j += 1
-            x = _BC_QUIET_MM + i * _BC_MODULE_MM
-            bars.append(f'<rect x="{x:.1f}" y="0" width="{(j - i) * _BC_MODULE_MM:.1f}" height="{h_mm:g}"/>')
+            x = quiet_mm + i * mod_mm
+            w = (j - i) * mod_mm
+            # Bar-width reduction, dot-wise: a dot-addressed printer can only drop
+            # WHOLE dots, so shave the trailing edge by one dot rather than half a
+            # dot off each side. A symmetric shave would put the bar's left edge on
+            # a half-dot boundary and hand the rasterizer the same rounding problem
+            # this quantisation exists to remove. The following white gap widens by
+            # exactly one dot, which is what compensates for thermal ink bleed.
+            bw = max(dot_mm(dpi), w - shrink_mm)
+            bars.append(f'<rect x="{x:.4f}" y="0" width="{bw:.4f}" height="{h_mm:g}"/>')
             i = j
         else:
             i += 1
@@ -277,7 +362,7 @@ def render_label_pdf(
                 ftype = field.get("type", "text")
                 val = resolve_field_value(item, key, unit_map)
                 font_size = float(field.get("fontSize") or default_font_size)
-                line_h = font_size * mm * 1.4
+                line_h = font_size * _LINE_SPACING
 
                 # Resolve position: explicit x/y override auto-stack
                 if field.get("x") is not None and field.get("y") is not None:
@@ -291,11 +376,18 @@ def render_label_pdf(
 
                 if ftype == "barcode":
                     try:
-                        # Vector barcode: crisp at any printer DPI. Natural width
-                        # (bar-perfect) preferred; squeeze only when the label is
-                        # too narrow. Same rule as the HTML print sheet.
-                        img_h = max(6, min(8, h_mm / 4)) * mm
-                        bc = createBarcodeDrawing("Code128", value=str(val), barHeight=img_h, humanReadable=False)
+                        # Vector barcode at a wide X-dimension so bars land cleanly on the
+                        # printer's dot grid and the white gaps stay open. Natural width;
+                        # squeeze only when the label is genuinely too narrow (never stretch up).
+                        # Bar height honors the field's barcode_height setting (mm, 1-30), like the designer.
+                        img_h = max(1, min(30, int(field.get("barcode_height") or BARCODE_HEIGHT_DEFAULT))) * mm
+                        # Snap the X-dimension to whole printer dots for the same reason the
+                        # SVG path does: 0.33mm is 3.90 dots at 300dpi, so an unsnapped module
+                        # rasterizes as a mix of 3- and 4-dot bars.
+                        _bar_w = snap_to_dots(_BC_MODULE_MM, DEFAULT_PRINTER_DPI,
+                                              minimum_dots=_BC_MIN_MODULE_DOTS)
+                        bc = createBarcodeDrawing("Code128", value=str(val), barHeight=img_h,
+                                                  humanReadable=False, barWidth=_bar_w * mm)
                         avail = (w_mm - 2) * mm - x_pt
                         img_w = min(avail, max(20 * mm, bc.width))
                         if img_w != bc.width:
@@ -322,7 +414,7 @@ def render_label_pdf(
                 else:
                     bold = field.get("bold", False)
                     c.setFont("Helvetica-Bold" if bold else "Helvetica", font_size)
-                    field_label = str(field.get("label", "") or "").strip()
+                    field_label = display_label(field.get("label", ""))
                     display_text = f"{field_label}: {val}" if field_label else val
                     c.drawString(x_pt, y_pt + line_h * 0.2, display_text[:50])
 
