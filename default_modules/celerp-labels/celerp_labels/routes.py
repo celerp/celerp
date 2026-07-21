@@ -280,7 +280,7 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
     from celerp.services.cost_visibility import apply_field_visibility
     from celerp.services.field_schema import get_effective_field_schema
     from celerp.services.pricing import get_price_config
-    from celerp_inventory.routes import _flatten_item
+    from celerp_inventory.routes import flatten_item
 
     proj = (
         await session.execute(
@@ -292,7 +292,7 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
         )
     ).scalar_one_or_none()
     if proj and proj.state:
-        flat = _flatten_item(proj.state, entity_id,
+        flat = flatten_item(proj.state, entity_id,
                              price_config=await get_price_config(session, company_id))
         field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
         can_set_prices = role_has_permission(settings, role, "set_inventory_prices")

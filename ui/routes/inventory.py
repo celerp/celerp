@@ -2159,12 +2159,12 @@ function celerpPrintLabel(entityId, templateId) {
                 return total_td, unit_td
             else:
                 # Fetch old value before patching so activity log shows old → new.
-                # get_item returns a _flatten_item result: attribute fields are already
+                # get_item returns a flatten_item result: attribute fields are already
                 # promoted to top level, so old_item.get(field) is always authoritative.
                 old_item = await api.get_item(token, entity_id)
                 if field == "cost_price":
                     # cost_total is the canonical primitive in state. Editing unit cost must
-                    # derive and overwrite cost_total (unit × qty) so _flatten_item's back-
+                    # derive and overwrite cost_total (unit × qty) so flatten_item's back-
                     # calculation doesn't silently revert the edit on next read.
                     qty = float(old_item.get("quantity") or 0)
                     new_unit = float(value)
@@ -3537,7 +3537,7 @@ function celerpPrintLabel(entityId, templateId) {
                 except ValueError:
                     continue
                 # cost_price is a derived field; always save as cost_total to avoid being
-                # overwritten by _flatten_item on the next read.
+                # overwritten by flatten_item on the next read.
                 # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
                 if conventional_key == "cost_price" and item_qty > 0:
                     old_cost_total = item_for_price.get("cost_total")
@@ -5799,7 +5799,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     labor_rows = recipe.get("labor", [])
     overhead_rows = recipe.get("overhead", [])
 
-    # list_items flattens the projection id onto "id" (see _flatten_item); exclude the
+    # list_items flattens the projection id onto "id" (see flatten_item); exclude the
     # item being edited so it can't be a component of itself.
     item_opts = []
     component_ids: set[str] = set()

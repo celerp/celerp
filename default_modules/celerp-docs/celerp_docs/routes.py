@@ -285,7 +285,7 @@ async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, pri
     resolve against the base price list), so the price a line "should" carry is
     computed identically to how it was stamped when added.
     """
-    from celerp_inventory.routes import _flatten_item
+    from celerp_inventory.routes import flatten_item
 
     item_id = line.get("item_id") or line.get("entity_id")
     proj = None
@@ -304,7 +304,7 @@ async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, pri
     if proj is None or not proj.state:
         return 0.0
     _lists, base_name, _currency = price_config
-    return resolve_price(_flatten_item(proj.state, proj.entity_id, price_config=price_config), base_name)
+    return resolve_price(flatten_item(proj.state, proj.entity_id, price_config=price_config), base_name)
 
 
 async def _assert_doc_price_permission(
@@ -4170,7 +4170,7 @@ async def receive_return(
     - Case 2: No original_doc_id -> query sold inventory by SKU (LIFO), use those values.
     Creates new inventory items (status=available) and a reversing COGS JE.
     """
-    from celerp_inventory.routes import _flatten_item
+    from celerp_inventory.routes import flatten_item
 
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
@@ -4219,7 +4219,7 @@ async def receive_return(
     )).scalars().all()
     item_by_id: dict[str, dict] = {}
     for r in item_rows:
-        flat = _flatten_item(r.state, r.entity_id)
+        flat = flatten_item(r.state, r.entity_id)
         item_by_id[r.entity_id] = flat
         if str(flat.get("status") or "").lower() == "sold" and flat.get("sku") in all_skus:
             sold_map.setdefault(flat["sku"], []).append(flat)
@@ -4842,8 +4842,8 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     else:
         line["quantity"] = 1
         if is_money_list(list_type):
-            from celerp_inventory.routes import _flatten_item
-            flat = _flatten_item(st, item.entity_id, price_config=price_config)
+            from celerp_inventory.routes import flatten_item
+            flat = flatten_item(st, item.entity_id, price_config=price_config)
             line["unit_price"] = resolve_price(flat, price_list or DEFAULT_PRICE_LIST_NAME)
     return line
 

@@ -152,7 +152,7 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields.
 
     When ``price_config`` (``(price_lists, base_price_list, currency)`` from
@@ -341,7 +341,7 @@ async def list_items(
 
     price_config = await get_price_config(session, company_id)
     result = [
-        _flatten_item(r.state, r.entity_id,
+        flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
                       created_at=r.created_at,
@@ -571,7 +571,7 @@ async def get_valuation(
         qty = float(state.get("quantity") or 0)
         # Value from the flattened item so cost (recipe standard / lot total) and derived
         # lists price identically to every other consumer of item state.
-        flat = _flatten_item(state, row.entity_id, price_config=_price_config)
+        flat = flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
             pl_name = pl.get("name", "")
             try:
@@ -666,7 +666,7 @@ async def get_field_values(
     for row in rows:
         if row.entity_id in demo_eids:
             continue
-        flat = _flatten_item(row.state, row.entity_id, price_config=_price_config)
+        flat = flatten_item(row.state, row.entity_id, price_config=_price_config)
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -722,7 +722,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     if row.location_id:
         loc = await session.get(Location, row.location_id)
         loc_name = loc.name if loc else None
-    flat = _flatten_item(row.state, row.entity_id,
+    flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
                          created_at=row.created_at,
@@ -2864,7 +2864,7 @@ async def export_items_csv(
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     price_config = await get_price_config(session, company_id)
-    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
+    items = [flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:

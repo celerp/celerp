@@ -770,7 +770,7 @@ def test_labels_print_doc_sku_dedup():
 
 def test_labels_print_doc_sku_lookup_uses_id_field():
     """The SKU inventory lookup result uses 'id' (not 'entity_id') because
-    _flatten_item() in the inventory routes sets flat['id'] = entity_id.
+    flatten_item() in the inventory routes sets flat['id'] = entity_id.
     Both keys should be tried so either path works."""
     # Simulate what the inventory /items endpoint returns
     item_via_id_key = {"id": "item:xyz", "sku": "SKU-1", "name": "Widget"}
@@ -838,7 +838,7 @@ def test_print_bulk_resolves_sku_prefix():
     assert entity_ids == ["item:abc"]
     assert skus_to_resolve == ["SKU-X", "SKU-Y"]
 
-    # Simulate inventory search response (uses 'id' key from _flatten_item)
+    # Simulate inventory search response (uses 'id' key from flatten_item)
     def _resolve(sku: str, items: list[dict]) -> str | None:
         match = next((it for it in items if (it.get("sku") or "").lower() == sku.lower()), None)
         if match:
