@@ -2980,3 +2980,14 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }
 .module-license-upsell { margin-top: 6px; padding: 10px 12px; max-width: 360px; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
 .module-load-error { margin-top: 4px; }
+/* Modules tables carry multi-line cells (name + description + disclosures), so
+   they need vertical breathing room the fixed-height app tables do not. Scoped
+   to the two modules panels; the global .data-table rule is untouched. */
+#local-modules-panel .data-table td,
+#community-zone .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+/* Community disclosures sit below the description and read quieter than it. */
+.community-disclosure { margin: 2px 0; font-size: 11px; font-style: italic; color: var(--c-text2); }
+/* The self-declared caveat, stated once above the community table. */
+.community-unverified-note { margin-bottom: 12px; }
+/* Gap between the build-your-own card and the community listings below it. */
+.module-build-card { margin-bottom: 24px; }

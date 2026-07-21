@@ -8038,6 +8038,63 @@ class TestModulesUI:
         assert b"Disable" in r.content
 
     @pytest.mark.asyncio
+    async def test_installed_table_orders_enabled_first(self, ui_client):
+        """Disabled modules sink below enabled ones regardless of server order."""
+        ordered = [
+            {"name": "z-off", "label": "Zeta Off", "version": "1.0", "author": "Celerp",
+             "enabled": False, "running": False},
+            {"name": "a-on", "label": "Alpha On", "version": "1.0", "author": "Celerp",
+             "enabled": True, "running": True},
+        ]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=ordered)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert body.index("Alpha On") < body.index("Zeta Off")   # enabled ahead of disabled
+
+    @pytest.mark.asyncio
+    async def test_installed_table_has_sort_and_filter_markup(self, ui_client):
+        """The Installed table opts into the shared sort/filter behavior."""
+        from contextlib import ExitStack
+        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        with ExitStack() as stack:
+            for m in mocks.values():
+                stack.enter_context(m)
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        assert b"data-table js-table" in r.content   # click-header sorting
+        assert b"sortable-th" in r.content
+        assert b'class="colfilter"' in r.content      # Excel-style column filter
+        assert b"data-row" in r.content
+
+    @pytest.mark.asyncio
+    async def test_installed_import_sits_above_table(self, ui_client):
+        """Import Module and the modules-folder row lead, above the table."""
+        from contextlib import ExitStack
+        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        with ExitStack() as stack:
+            for m in mocks.values():
+                stack.enter_context(m)
+            r = await ui_client.get("/modules", cookies=_authed())
+        body = r.content.decode()
+        assert body.index("module-import") < body.index("data-table js-table")
+
+    @pytest.mark.asyncio
+    async def test_installed_tab_has_no_build_card(self, ui_client):
+        """Build-your-own moved to the Community tab; it is gone from Installed."""
+        from contextlib import ExitStack
+        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        with ExitStack() as stack:
+            for m in mocks.values():
+                stack.enter_context(m)
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert b"module-build-card" not in r.content
+
+    @pytest.mark.asyncio
     async def test_modules_page_empty_shows_onboarding(self, ui_client):
         from contextlib import ExitStack
         mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=[])}
@@ -8047,9 +8104,10 @@ class TestModulesUI:
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
         assert b"No modules installed" in r.content
-        # the empty state IS the onboarding: import + build-your-own are present
+        # the empty state still offers the import path; building your own now lives
+        # on the Community tab, so its template link is not on the Installed tab
         assert b"/modules/import" in r.content
-        assert b"celerp-module-template" in r.content
+        assert b"celerp-module-template" not in r.content
 
     @pytest.mark.asyncio
     async def test_modules_page_requires_admin(self, ui_client):
@@ -8250,11 +8308,12 @@ _CATALOG_FIXTURE = [
 
 
 class TestMarketplaceUI:
-    """Marketplace tab, repo-direct catalog: tiers, trust icons, the community
-    collapse with its one-time acknowledgment, cache and failure states."""
+    """Marketplace tab (paid/official listings only) and the separate Community
+    tab: tiers, trust icons, the one-step acknowledgment, cache and failure
+    states."""
 
     @pytest.mark.asyncio
-    async def test_panel_lists_trusted_hides_community(self, ui_client):
+    async def test_panel_lists_trusted_only(self, ui_client):
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -8264,11 +8323,12 @@ class TestMarketplaceUI:
         assert b"Budgeting" in r.content
         assert b"$15/mo" in r.content
         assert b"trust-icon--trusted" in r.content
-        # community entries stay behind the collapsed row
+        # community entries live in their own tab now, never on the marketplace
         assert b"Equipment Maintenance" not in r.content
-        assert b"community modules" in r.content
-        # the one-line legal footer is always present
-        assert b"not an endorsement" in r.content
+        # the marketplace tab carries the paid-listing entry point: the author
+        # dashboard (sign in, connect Stripe, publish), not the free registry
+        assert b"List Your Modules" in r.content
+        assert b'href="https://www.celerp.com/authors"' in r.content
 
     @pytest.mark.asyncio
     async def test_panel_cache_banner(self, ui_client):
@@ -8287,23 +8347,30 @@ class TestMarketplaceUI:
         assert b"could not be loaded" in r.content
 
     @pytest.mark.asyncio
-    async def test_community_reveal_requires_ack(self, ui_client):
+    async def test_community_reveal_is_one_step_no_checkbox(self, ui_client):
         with (
             patch("ui.marketplace_catalog.community_acked", new=lambda: False),
-            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/modules/community-panel", cookies=_authed())
         assert r.status_code == 200
-        assert b"I understand" in r.content
-        assert b"disabled" in r.content          # Continue starts disabled
+        # the single acknowledgment block, its count, and the two buttons
+        assert b"Show Community Modules (1)" in r.content
+        assert b"same access as Celerp itself" in r.content
+        assert b"Cancel" in r.content
+        # one step: no checkbox, and no Continue button gated behind it
+        assert b'type="checkbox"' not in r.content
+        assert b"community-continue" not in r.content
+        # listings stay closed until acknowledged
         assert b"Equipment Maintenance" not in r.content
 
     @pytest.mark.asyncio
-    async def test_community_ack_reveals_with_grey_icon(self, ui_client):
+    async def test_community_ack_reveals_table_no_hide(self, ui_client):
         acks = []
         with (
             patch("ui.marketplace_catalog.set_community_ack", new=lambda: acks.append(1)),
-            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.post("/modules/community-ack", cookies=_authed())
@@ -8311,18 +8378,128 @@ class TestMarketplaceUI:
         assert acks == [1]
         assert b"Equipment Maintenance" in r.content
         assert b"trust-icon--unverified" in r.content
-        assert b"Get it from the author" in r.content
+        # each listing offers a Download button that stages the author's archive
+        assert b"/modules/community-download" in r.content
+        assert b">Download<" in r.content
+        # the "get it from the author" / import links are gone
+        assert b"Get it from the author" not in r.content
+        assert b"/modules?import=1" not in r.content
+        # the self-declared caveat is stated once above the table, not per row
+        assert b"author self-declared and unverified" in r.content
+        assert b"(author self-declared)" not in r.content
+        # same table schema as the Installed Modules table
+        assert b"data-table js-table" in r.content
+        # the Hide button is gone once listings are shown
+        assert b">Hide<" not in r.content
 
     @pytest.mark.asyncio
-    async def test_already_acked_skips_warning(self, ui_client):
+    async def test_already_acked_shows_table_not_prompt(self, ui_client):
         with (
             patch("ui.marketplace_catalog.community_acked", new=lambda: True),
-            patch("ui.marketplace_catalog.read_cached", new=lambda: _CATALOG_FIXTURE),
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/modules/community-panel", cookies=_authed())
         assert b"Equipment Maintenance" in r.content
-        assert b"I understand" not in r.content
+        assert b"same access as Celerp itself" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_prompt(self, ui_client):
+        """Cancel re-requests the panel with ?prompt=1 and gets the acknowledgment
+        block back, never the listings."""
+        with (
+            patch("ui.marketplace_catalog.community_acked", new=lambda: True),
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/community-panel?prompt=1", cookies=_authed())
+        assert b"Show Community Modules (1)" in r.content
+        assert b"Equipment Maintenance" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_tab_shows_build_card_first(self, ui_client):
+        """The Community tab leads with the build-your-own card, above the
+        listings zone."""
+        r = await ui_client.get("/modules?tab=community", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "module-build-card" in body
+        assert "celerp-module-template" in body
+        assert body.index("module-build-card") < body.index('id="community-zone"')
+
+    @pytest.mark.asyncio
+    async def test_community_download_stages_and_offers_import(self, ui_client):
+        """Download stages the author's archive and swaps the row to a Downloaded
+        state with an Import button carrying the staged path."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b">Downloaded<" in r.content
+        assert b"/modules/community-import" in r.content
+        assert b"equipment-maintenance.zip" in r.content   # path passed to the importer
+        assert b">Import<" in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_download_failure_keeps_download_button(self, ui_client):
+        """A failed download degrades to the row's error note, Download still offered."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(side_effect=OSError("offline"))),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/community-download" in r.content   # Download button still there
+        assert b"/modules/community-import" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_import_installs_staged_archive(self, ui_client):
+        """Import reads the staged archive, installs it, and the row reflects
+        Installed once the module appears in get_modules."""
+        installed_after = [{"name": "equipment-maintenance", "label": "Equipment Maintenance",
+                            "version": "1.0", "author": "Celerp", "enabled": False, "running": False}]
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=installed_after)),
+            patch("ui.marketplace_catalog.read_staged_archive", new=lambda p: b"zip-bytes"),
+            patch("ui.api_client.import_module_zip",
+                  new=AsyncMock(return_value={"name": "equipment-maintenance", "display_name": "Equipment Maintenance"})),
+        ):
+            r = await ui_client.post("/modules/community-import",
+                                     data={"id": "equipment-maintenance",
+                                           "path": "/data/community-downloads/equipment-maintenance.zip"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"badge--active" in r.content            # Installed badge
+        assert b">Import<" not in r.content             # no Import button once installed
+
+    @pytest.mark.asyncio
+    async def test_community_import_failure_keeps_import_button(self, ui_client):
+        """A failed install keeps the row in the Downloaded state with an error,
+        so a retry is still one click away."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.marketplace_catalog.read_staged_archive", new=lambda p: b"zip-bytes"),
+            patch("ui.api_client.import_module_zip",
+                  new=AsyncMock(side_effect=APIError(400, "A module named 'equipment-maintenance' already exists."))),
+        ):
+            r = await ui_client.post("/modules/community-import",
+                                     data={"id": "equipment-maintenance",
+                                           "path": "/data/community-downloads/equipment-maintenance.zip"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"already exists" in r.content
+        assert b"/modules/community-import" in r.content   # Import still offered for retry
 
     @pytest.mark.asyncio
     async def test_panel_requires_admin(self, ui_client):

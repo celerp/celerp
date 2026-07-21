@@ -1,17 +1,21 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Modules — top-level admin surface (owner/admin only).
+"""Modules - top-level admin surface (owner/admin only).
 
-Two tabs:
-  - Local Modules: what is on this machine — enable/disable, Import Module
-    (zip upload or desktop folder picker), Open Modules Folder, a working
-    Restart button, load-error surfacing, and a build-your-own card.
-  - Marketplace: the catalog (community-modules index.json, public data),
-    served via the relay with repo-direct and local-cache fallbacks; see
-    ui.marketplace_catalog for why the relay endpoint is the one baked-in URL.
-    Official and verified modules show first; community listings sit behind a
-    one-time trust acknowledgment and always carry the grey unverified icon.
+Three tabs:
+  - Installed Modules: what is on this machine - Import Module (zip upload or
+    desktop folder picker) and the modules-folder row lead, above a sortable,
+    filterable table (enabled first, disabled last) with enable/disable, a
+    working Restart button, and load-error surfacing.
+  - Community Modules: leads with the build-your-own card, then the community
+    listings from the catalog. They sit behind a one-step trust acknowledgment
+    and always carry the grey unverified icon; the table uses the same schema
+    as Installed Modules.
+  - Marketplace: the official and verified catalog (community-modules
+    index.json, public data), served via the relay with repo-direct and
+    local-cache fallbacks; see ui.marketplace_catalog for why the relay
+    endpoint is the one baked-in URL. Carries the List Your Modules entry point.
 
 Restart is ONE endpoint for both modes: POST /system/restart writes the
 sentinel and SIGTERMs. In desktop mode Electron's restart manager respawns
@@ -21,6 +25,9 @@ and the page's poll-and-reload script recovers the browser.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
@@ -29,6 +36,7 @@ import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
+from ui.components.table import sortable_th, filter_th, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -37,6 +45,26 @@ from ui.routes.settings import _token
 
 _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
+# Where a seller lists a PAID module: the author dashboard (GitHub sign-in,
+# Stripe Connect, publish with a price). Distinct from the free community
+# registry, which only takes an index.json PR and carries no price.
+_AUTHORS_URL = "https://www.celerp.com/authors"
+
+
+def _build_card(lang: str) -> FT:
+    """Build-your-own card: how to make a module and where the template lives.
+    Sits at the top of the Community Modules tab (community modules are the
+    author-built ones, so 'build your own' belongs with them)."""
+    return Div(
+        H3(t("modules.build_title", lang), cls="section-title"),
+        P(t("modules.build_body", lang), cls="text-muted mb-sm"),
+        Div(
+            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
+            cls="mf-btns",
+        ),
+        cls="module-build-card",
+    )
 
 
 def _is_admin(request: Request) -> bool:
@@ -86,6 +114,7 @@ def _restart_pending(modules: list[dict]) -> bool:
 def _tabs(active: str, lang: str) -> FT:
     items = [
         ("local", t("modules.tab_local", lang)),
+        ("community", t("modules.tab_community", lang)),
         ("marketplace", t("modules.tab_marketplace", lang)),
     ]
     return Div(
@@ -108,6 +137,12 @@ def _local_panel(modules: list[dict], lang: str = "en",
         for dep in (m.get("depends_on") or []):
             required_by.setdefault(dep, []).append(m.get("label") or m["name"])
 
+    # Enabled and running modules first, disabled ones after, so the user sees
+    # what is live before what is off. Stable, so within each group the server
+    # order is preserved; the shared table JS keeps this order until a header is
+    # clicked to sort.
+    modules = sorted(modules, key=lambda m: 0 if (m.get("enabled") or m.get("running")) else 1)
+
     rows = []
     for m in modules:
         name = m["name"]
@@ -122,21 +157,26 @@ def _local_panel(modules: list[dict], lang: str = "en",
 
         status_parts = []
         if running:
-            status_parts.append(Span(t("modules.badge_running", lang), cls="badge badge--active"))
+            status_filter = t("modules.badge_running", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--active"))
         elif enabled and load_error and "license" in load_error.lower():
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
-            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
+            status_filter = t("settings.restart_needed", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
             # A broken module fails loudly, not silently.
-            status_parts.append(Span(t("modules.badge_failed", lang), cls="badge badge--danger"))
+            status_filter = t("modules.badge_failed", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--danger"))
             status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
         elif enabled:
-            status_parts.append(Span(t("settings.restart_needed", lang), cls="badge badge--warning"))
+            status_filter = t("settings.restart_needed", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--warning"))
         else:
-            status_parts.append(Span(t("modules.badge_disabled", lang), cls="badge badge--inactive"))
+            status_filter = t("modules.badge_disabled", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--inactive"))
 
         dependents = required_by.get(name, [])
         if effectively_enabled:
@@ -164,11 +204,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
             )
 
         rows.append(Tr(
-            Td(Div(Strong(label), Div(description, cls="text-muted small") if description else "", cls="module-name-cell")),
-            Td(f"v{version}" if version and version != "unknown" else ""),
-            Td(author),
-            Td(*status_parts),
+            Td(Div(Strong(label), Div(description, cls="text-muted small") if description else "", cls="module-name-cell"),
+               data_filter_value=label),
+            Td(f"v{version}" if version and version != "unknown" else "--"),
+            Td(author or "--"),
+            Td(*status_parts, data_filter_value=status_filter),
             Td(toggle_btn),
+            cls="data-row",
         ))
 
     # Derived restart banner, with a button that actually restarts.
@@ -193,29 +235,30 @@ def _local_panel(modules: list[dict], lang: str = "en",
 
     mdir = _modules_dir_display()
 
-    import_section = Details(
-        Summary(t("btn.import_module", lang), cls="btn btn--sm btn--secondary", id="import-module-summary"),
-        Div(
-            P(t("modules.import_warning", lang), cls="text-muted small"),
-            Form(
-                Input(type="file", name="file", accept=".zip", required=True),
-                Button(t("btn.import_module", lang), type="submit", hx_disabled_elt="this", cls="btn btn--sm btn--primary"),
-                hx_post="/modules/import",
-                hx_encoding="multipart/form-data",
-                hx_target="#local-modules-panel",
-                hx_swap="outerHTML",
-                cls="module-import-form",
-            ),
-            Button(t("btn.choose_folder", lang),
-                id="import-folder-btn",
-                type="button",
-                cls="btn btn--sm btn--secondary",
-                style="display:none;margin-top:6px;",
-            ),
-            cls="module-import-body",
+    # Warning and file chooser are always visible (no drawer). Selecting a file
+    # imports it immediately - the change event submits the form, so there is no
+    # separate confirm button.
+    import_section = Div(
+        H3(t("btn.import_module", lang), cls="section-title"),
+        P(t("modules.import_warning", lang), cls="text-muted small"),
+        Form(
+            Input(type="file", name="file", accept=".zip", required=True),
+            hx_post="/modules/import",
+            hx_encoding="multipart/form-data",
+            hx_trigger="change",
+            hx_target="#local-modules-panel",
+            hx_swap="outerHTML",
+            hx_disabled_elt="find input[type=file]",
+            cls="module-import-form",
+        ),
+        Button(t("btn.choose_folder", lang),
+            id="import-folder-btn",
+            type="button",
+            cls="btn btn--sm btn--secondary",
+            style="display:none;margin-top:6px;",
         ),
         id="module-import",
-        cls="module-import mt-md",
+        cls="module-import",
     )
 
     folder_row = Div(
@@ -227,7 +270,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             cls="btn btn--sm btn--secondary",
             style="display:none;margin-left:10px;",
         ),
-        cls="mt-md",
+        cls="mb-md",
     ) if mdir else Div()
 
     if not rows:
@@ -238,23 +281,20 @@ def _local_panel(modules: list[dict], lang: str = "en",
     else:
         content = Div(
             Table(
-                Thead(Tr(Th(t("th.module", lang)), Th(t("th.version", lang)), Th(t("th.author", lang)), Th(t("th.status", lang)), Th(""))),
+                Thead(Tr(
+                    sortable_th(t("th.module", lang), 0),
+                    sortable_th(t("th.version", lang), 1),
+                    filter_th(t("th.author", lang), 2, sortable=True),
+                    filter_th(t("th.status", lang), 3, sortable=True),
+                    Th(""),
+                )),
                 Tbody(*rows),
-                cls="data-table",
+                cls="data-table js-table",
             ),
+            Script(COLUMN_FILTER_JS),
+            Script(ENHANCED_TABLE_JS),
             cls="table-scroll-wrap",
         )
-
-    build_card = Div(
-        H3(t("modules.build_title", lang), cls="section-title mt-lg"),
-        P(t("modules.build_body", lang), cls="text-muted mb-sm"),
-        Div(
-            A(t("modules.build_template_link", lang), href=_TEMPLATE_REPO, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
-            A(t("modules.build_docs_link", lang), href=_DOCS_URL, target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary", style="margin-left:8px;"),
-            cls="mf-btns",
-        ),
-        cls="module-build-card",
-    )
 
     # Desktop-only affordances light up when the Electron bridge is present.
     desktop_js = Script("""
@@ -281,20 +321,15 @@ def _local_panel(modules: list[dict], lang: str = "en",
           });
         };
       }
-      if (new URLSearchParams(window.location.search).get('import') === '1') {
-        var d = document.getElementById('module-import');
-        if (d) { d.open = true; d.scrollIntoView(); }
-      }
     })();
     """)
 
     return Div(
+        folder_row,
         banner,
         flash_div,
-        content,
         import_section,
-        folder_row,
-        build_card,
+        content,
         desktop_js,
         id="local-modules-panel",
         cls="settings-card",
@@ -452,15 +487,16 @@ async def _build_marketplace_panel(token: str, lang: str) -> FT:
     except APIError:
         pass
     trusted = [m for m in modules_list if m["tier"] in ("official", "verified")]
-    community = [m for m in modules_list if m["tier"] == "community"]
-    children = []
+    children = [Div(
+        A(t("btn.list_your_modules", lang), href=_AUTHORS_URL,
+          target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
+        style="margin-bottom:12px;",
+    )]
     if from_cache:
         children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
-    if not modules_list:
+    if not trusted:
         children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
     children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
-    children.append(_community_zone(len(community), lang))
-    children.append(P(t("marketplace.footer_disclaimer", lang), cls="text-muted small", style="margin-top:12px;"))
     return Div(*children, id="marketplace-panel")
 
 
@@ -482,13 +518,12 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
     tier = m["tier"]
     body = []
     body.append(P(m["description"], cls="text-muted small", style="margin-top:8px;"))
-    # Disclosures first (what it touches, what it calls), labeled self-declared
-    # for community listings - the index copy is the author's own statement.
-    declared = f' ({t("marketplace.self_declared", lang)})' if tier == "community" else ""
+    # Disclosures first: what it touches, what it calls. The Marketplace tab lists
+    # only official and verified modules, so these are vetted, not self-declared.
     if m.get("data_access"):
-        body.append(P(Strong(t("marketplace.data_access", lang)), f"{declared}: ", m["data_access"], cls="small"))
+        body.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="small"))
     if m.get("network_calls"):
-        body.append(P(Strong(t("marketplace.network_calls", lang)), f"{declared}: ", m["network_calls"], cls="small"))
+        body.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="small"))
     body.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="small"))
     # Catalog URLs are author-controlled (community listings); every external
     # link opens with rel=noopener noreferrer so the opened tab cannot reach
@@ -506,14 +541,6 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
     is_paid = bool(m.get("price_monthly") or m.get("price_once"))
     if m["id"] in installed:
         body.append(Span(t("settings.installed", lang), cls="badge badge--active"))
-    elif tier == "community":
-        body.append(Div(
-            A(t("marketplace.get_from_author", lang), href=m.get("repo", "#"),
-              target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
-            A(t("btn.import_module", lang), href="/modules?import=1",
-              cls="btn btn--sm btn--secondary"),
-            style="display:flex;gap:8px;",
-        ))
     elif is_paid and m["id"] not in licensed:
         # Official/verified PAID module, not yet owned: Buy button(s). The one-time
         # purchase copy states plainly it is not a Connect subscription.
@@ -561,22 +588,143 @@ def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | 
     )
 
 
-def _community_zone(n: int, lang: str):
-    """The collapsed community row. The grey world stays one click away."""
-    if not n:
-        return Div(id="community-zone")
+def _community_reveal_prompt(n: int, lang: str) -> FT:
+    """One-step acknowledgment before community listings are shown: the trust
+    warning and the two buttons, no checkbox. 'Show Community Modules' both
+    acknowledges and reveals; 'Cancel' leaves the listings closed."""
     return Div(
-        Button(t("marketplace.show_community", lang, n=n),
-            hx_get="/modules/community-panel",
-            hx_target="#community-zone", hx_swap="outerHTML",
-            cls="btn btn--sm btn--secondary", style="margin-top:12px;"),
+        P(t("marketplace.community_ack", lang, n=n), cls="small"),
+        Div(
+            Button(t("btn.show_community", lang),
+                hx_post="/modules/community-ack",
+                hx_target="#community-zone", hx_swap="outerHTML",
+                hx_disabled_elt="this",
+                cls="btn btn--sm btn--primary"),
+            Button(t("btn.cancel", lang), id="community-cancel",
+                hx_get="/modules/community-panel?prompt=1",
+                hx_target="#community-zone", hx_swap="outerHTML",
+                cls="btn btn--sm btn--secondary"),
+            style="display:flex;gap:8px;margin-top:8px;",
+        ),
+        Script("""
+        (function () {
+          function esc(e) {
+            if (e.key === 'Escape') {
+              var b = document.getElementById('community-cancel');
+              if (b) { b.click(); }
+              document.removeEventListener('keydown', esc);
+            }
+          }
+          document.addEventListener('keydown', esc);
+        })();
+        """),
+        cls="marketplace-community-warning",
         id="community-zone",
     )
 
 
-def _cached_community() -> list[dict]:
-    cached = catalog.read_cached() or []
-    return [m for m in cached if m["tier"] == "community"]
+def _community_module_cell(m: dict, lang: str) -> FT:
+    """Module column for a community listing: name, description, and the
+    disclosures and source links, so the trust information sits inline in the
+    table rather than behind a drawer. That the disclosures are author
+    self-declared is stated once, above the table, not repeated per row."""
+    parts = [Div(_trust_icon("community", lang), Strong(m["name"]), cls="module-name-cell")]
+    if m.get("description"):
+        parts.append(Div(m["description"], cls="text-muted small"))
+    if m.get("data_access"):
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
+    if m.get("network_calls"):
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+    links = []
+    if m.get("repo"):
+        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
+    links.append(A(t("marketplace.feedback", lang),
+                   href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
+                   target="_blank", rel="noopener noreferrer"))
+    parts.append(Div(*links, cls="marketplace-card__links"))
+    return Td(*parts, data_filter_value=m["name"])
+
+
+def _community_row(m: dict, lang: str, installed: set[str], *,
+                   downloaded_path: str | None = None, error: str | None = None) -> FT:
+    """One community listing. Three states drive the Status and action cells:
+    installed (nothing to do), downloaded (offer Import), or fresh (offer
+    Download). Download fetches the author's repo archive; Import installs it -
+    two deliberate clicks, each swapping this row in place."""
+    row_id = f"community-row-{m['id']}"
+    err_note = Div(error, cls="text-muted small module-load-error") if error else ""
+    if m["id"] in installed:
+        status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
+                       data_filter_value=t("settings.installed", lang))
+        action_td = Td("--")
+    elif downloaded_path:
+        status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"), err_note,
+                       data_filter_value=t("marketplace.downloaded", lang))
+        action_td = Td(Button(t("btn.import", lang),
+            hx_post="/modules/community-import",
+            hx_vals=json.dumps({"id": m["id"], "path": downloaded_path}),
+            hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
+            cls="btn btn--sm btn--primary"))
+    else:
+        status_td = Td("--", err_note, data_filter_value="--")
+        action_td = Td(Button(t("btn.download", lang),
+            hx_post="/modules/community-download",
+            hx_vals=json.dumps({"id": m["id"]}),
+            hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
+            cls="btn btn--sm btn--secondary"))
+    version = m.get("version")
+    return Tr(
+        _community_module_cell(m, lang),
+        Td(f"v{version}" if version and version != "unknown" else "--"),
+        Td(m.get("author") or "--"),
+        status_td,
+        action_td,
+        id=row_id,
+        cls="data-row",
+    )
+
+
+def _community_table(community: list[dict], installed: set[str], lang: str) -> FT:
+    """Community listings, same table schema as the Installed Modules table."""
+    if not community:
+        return Div(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"),
+                   id="community-zone")
+    return Div(
+        P(t("marketplace.community_unverified_note", lang), cls="text-muted small community-unverified-note"),
+        Div(
+            Table(
+                Thead(Tr(
+                    sortable_th(t("th.module", lang), 0),
+                    sortable_th(t("th.version", lang), 1),
+                    filter_th(t("th.author", lang), 2, sortable=True),
+                    filter_th(t("th.status", lang), 3, sortable=True),
+                    Th(""),
+                )),
+                Tbody(*(_community_row(m, lang, installed) for m in community)),
+                cls="data-table js-table",
+            ),
+            Script(COLUMN_FILTER_JS),
+            Script(ENHANCED_TABLE_JS),
+            cls="table-scroll-wrap",
+        ),
+        id="community-zone",
+    )
+
+
+async def _community_and_installed(token: str) -> tuple[list[dict], set[str]]:
+    """Fetch the catalog's community listings and the set of installed module
+    names. Fetching listing metadata carries no trust risk; only installing a
+    community module runs its code, and that stays behind the acknowledgment."""
+    modules_list, _ = await catalog.fetch_catalog()
+    community = [m for m in modules_list if m["tier"] == "community"]
+    installed: set[str] = set()
+    try:
+        installed = {m["name"] for m in await api.get_modules(token)}
+    except APIError:
+        pass
+    return community, installed
 
 
 def setup_routes(app):
@@ -607,6 +755,18 @@ def setup_routes(app):
                     hx_trigger="load",
                     hx_swap="outerHTML",
                     id="marketplace-panel",
+                ),
+                cls="settings-card",
+            )
+        elif tab == "community":
+            content = Div(
+                _build_card(lang),
+                Div(
+                    Span(t("modules.loading_catalog", lang), cls="text-muted small"),
+                    hx_get="/modules/community-panel",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
+                    id="community-zone",
                 ),
                 cls="settings-card",
             )
@@ -712,6 +872,56 @@ def setup_routes(app):
         # Return the panel fragment (not JSON) so the desktop folder-pick swaps
         # in place, matching the zip upload path - no full page reload.
         return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
+
+    async def _community_entry(token: str, module_id: str) -> tuple[dict, set[str]]:
+        """Resolve a community listing by id plus the current installed set.
+        Falls back to a minimal record so an unknown id still renders a row."""
+        community, installed = await _community_and_installed(token)
+        m = next((x for x in community if x["id"] == module_id), None)
+        return (m or {"id": module_id, "name": module_id, "license": "-"}), installed
+
+    @app.post("/modules/community-download")
+    async def community_download(request: Request):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        form = await request.form()
+        module_id = str(form.get("id", ""))
+        m, installed = await _community_entry(token, module_id)
+        try:
+            path = await catalog.download_community_archive(m.get("repo", ""), module_id)
+        except Exception:
+            return _community_row(m, lang, installed, error=t("marketplace.download_failed", lang))
+        return _community_row(m, lang, installed, downloaded_path=path)
+
+    @app.post("/modules/community-import")
+    async def community_import(request: Request):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        form = await request.form()
+        module_id = str(form.get("id", ""))
+        path = str(form.get("path", ""))
+        m, installed = await _community_entry(token, module_id)
+        try:
+            data = catalog.read_staged_archive(path)
+            await api.import_module_zip(token, f"{module_id}.zip", data)
+        except APIError as e:
+            return _community_row(m, lang, installed, downloaded_path=path,
+                                  error=e.detail or str(e))
+        except (ValueError, OSError):
+            return _community_row(m, lang, installed, downloaded_path=path,
+                                  error=t("marketplace.download_failed", lang))
+        # Installed: drop the staged archive and re-read the installed set so the
+        # row reflects reality (the module now appears in get_modules).
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        _, installed = await _community_and_installed(token)
+        return _community_row(m, lang, installed)
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
@@ -826,74 +1036,32 @@ def setup_routes(app):
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):
-        """HTMX fragment: reveal community listings (after the one-time ack)."""
+        """HTMX fragment for the Community tab: the acknowledgment prompt, or the
+        listings table once acknowledged. `?prompt=1` forces the prompt (Cancel)."""
         token = _token(request)
         if not token or not _is_admin(request):
             return Div(id="community-zone")
         lang = get_lang(request)
-        community = _cached_community()
-        if request.query_params.get("hide"):
-            return _community_zone(len(community), lang)
-        if not catalog.community_acked():
-            # First reveal: the trust warning, acknowledged explicitly.
-            return Div(
-                P(t("modules.import_warning", lang), cls="small"),
-                Label(
-                    Input(type="checkbox", id="community-ack-box",
-                        onchange="document.getElementById('community-continue').disabled=!this.checked;"),
-                    " " + t("marketplace.ack_label", lang),
-                    cls="small",
-                ),
-                Div(
-                    Button(t("btn.continue", lang), id="community-continue", disabled=True,
-                        hx_post="/modules/community-ack",
-                        hx_target="#community-zone", hx_swap="outerHTML",
-                        hx_disabled_elt="this",
-                        cls="btn btn--sm btn--primary"),
-                    Button(t("btn.cancel", lang), id="community-cancel",
-                        hx_get="/modules/community-panel?hide=1",
-                        hx_target="#community-zone", hx_swap="outerHTML",
-                        cls="btn btn--sm btn--secondary"),
-                    style="display:flex;gap:8px;margin-top:8px;",
-                ),
-                Script("""
-                (function () {
-                  function esc(e) {
-                    if (e.key === 'Escape') {
-                      var b = document.getElementById('community-cancel');
-                      if (b) { b.click(); }
-                      document.removeEventListener('keydown', esc);
-                    }
-                  }
-                  document.addEventListener('keydown', esc);
-                })();
-                """),
-                cls="marketplace-community-warning",
-                id="community-zone",
-            )
-        return await _community_open(request, lang)
+        try:
+            community, installed = await _community_and_installed(token)
+        except Exception:
+            return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"), id="community-zone")
+        if not community:
+            return Div(P(t("settings.no_modules_available_in_the_marketplace_yet", lang),
+                         cls="text-muted"), id="community-zone")
+        if catalog.community_acked() and not request.query_params.get("prompt"):
+            return _community_table(community, installed, lang)
+        return _community_reveal_prompt(len(community), lang)
 
     @app.post("/modules/community-ack")
     async def community_ack(request: Request):
         token = _token(request)
         if not token or not _is_admin(request):
             return Div(id="community-zone")
+        lang = get_lang(request)
         catalog.set_community_ack()
-        return await _community_open(request, get_lang(request))
-
-    async def _community_open(request: Request, lang: str):
-        token = _token(request)
-        installed = set()
         try:
-            installed = {m["name"] for m in await api.get_modules(token)}
-        except APIError:
-            pass
-        community = _cached_community()
-        return Div(
-            Button(t("btn.hide", lang),
-                hx_get="/modules/community-panel?hide=1",
-                hx_target="#community-zone", hx_swap="outerHTML",
-                cls="btn btn--sm btn--secondary"),
-            *(_catalog_card(m, lang, installed) for m in community),
-            id="community-zone",
-        )
+            community, installed = await _community_and_installed(token)
+        except Exception:
+            return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"), id="community-zone")
+        return _community_table(community, installed, lang)

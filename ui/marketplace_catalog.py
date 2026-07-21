@@ -147,3 +147,53 @@ def community_acked() -> bool:
 def set_community_ack() -> None:
     _ack_path().parent.mkdir(parents=True, exist_ok=True)
     _ack_path().write_text(json.dumps({"acked_at": time.time()}), encoding="utf-8")
+
+
+# ── community module download (author repo archive, staged for import) ────────
+
+MAX_MODULE_ARCHIVE_BYTES = 50 * 1024 * 1024
+
+
+def _staging_dir() -> Path:
+    d = _data_dir() / "community-downloads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _valid_id(module_id: str) -> bool:
+    return bool(module_id) and all(
+        c.isascii() and (c.isalnum() or c in "-_") for c in module_id
+    )
+
+
+async def download_community_archive(repo_url: str, module_id: str) -> str:
+    """Download a community module's repo archive to a staged .zip and return
+    its path. The repo is public, author-controlled source; the bytes stay
+    untrusted - only the module importer installs them, behind its zip-slip,
+    symlink, size, manifest, and reserved-prefix guards."""
+    if not _valid_id(module_id):
+        raise ValueError("Invalid module id.")
+    if not repo_url.startswith("https://"):
+        raise ValueError("Module repository URL is not https.")
+    archive_url = repo_url.rstrip("/") + "/archive/HEAD.zip"
+    buf = bytearray()
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+        async with c.stream("GET", archive_url) as r:
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) > MAX_MODULE_ARCHIVE_BYTES:
+                    raise ValueError("Module archive is too large.")
+    dest = _staging_dir() / f"{module_id}.zip"
+    dest.write_bytes(bytes(buf))
+    return str(dest)
+
+
+def read_staged_archive(path: str) -> bytes:
+    """Read a previously staged archive, refusing any path outside the staging
+    directory so a client-supplied path cannot read arbitrary files."""
+    p = Path(path).resolve()
+    base = _staging_dir().resolve()
+    if p != base and base not in p.parents:
+        raise ValueError("Staged archive path is outside the staging directory.")
+    return p.read_bytes()

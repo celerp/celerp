@@ -94,3 +94,31 @@ class TestLocalState:
         assert mc.community_acked() is False
         mc.set_community_ack()
         assert mc.community_acked() is True
+
+
+class TestCommunityDownload:
+    @pytest.fixture(autouse=True)
+    def _data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        return tmp_path
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_bad_id(self):
+        with pytest.raises(ValueError):
+            await mc.download_community_archive("https://github.com/a/b", "bad id!")
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_non_https_repo(self):
+        with pytest.raises(ValueError):
+            await mc.download_community_archive("http://github.com/a/b", "ok")
+
+    def test_read_staged_rejects_path_outside_staging(self, _data_dir):
+        outside = _data_dir / "secret.zip"
+        outside.write_bytes(b"nope")
+        with pytest.raises(ValueError):
+            mc.read_staged_archive(str(outside))
+
+    def test_read_staged_reads_inside_staging(self, _data_dir):
+        staged = mc._staging_dir() / "ok.zip"
+        staged.write_bytes(b"payload")
+        assert mc.read_staged_archive(str(staged)) == b"payload"
