@@ -630,7 +630,9 @@ def test_barcode_text_type_renders_number_only():
     item = {"sku": "TEST123", "name": "Test"}
     template = {"fields": [{"key": "sku", "type": "barcode_text", "label": "SKU"}]}
     html = _printable_label_sheet([item], template).body.decode()
-    assert '<span class="bc-human">TEST123</span>' in html
+    # The caption span carries a small default size (a scanner fallback, not body copy).
+    assert 'class="bc-human"' in html
+    assert '>TEST123</span>' in html
     # No barcode image for text-only field
     assert "label-field--barcode\"" not in html
 
@@ -647,7 +649,7 @@ def test_barcode_and_barcode_text_together():
     html = _printable_label_sheet([item], template).body.decode()
     assert "label-field--barcode\"" in html          # bars rendered
     assert "label-field--barcode-text" in html        # number rendered separately
-    assert '<span class="bc-human">9876543210</span>' in html
+    assert '>9876543210</span>' in html
 
 
 def test_extract_fields_barcode_text_type_preserved():
