@@ -130,6 +130,11 @@ from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
 # on the field still wins.
 BARCODE_TEXT_DEFAULT_PT = 6.0
 
+# The point size a freshly added designer field starts at, so its size box shows the
+# value it will print at rather than sitting blank. Matches the small end of the
+# preset text sizes; the user changes it in place.
+FIELD_DEFAULT_PT = 6
+
 _LABELS_CSS = """
 <style id="labels-css">
 /* -- Settings page: template list (left) + editor (right) -- */
@@ -699,7 +704,7 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="number" name="fields[' + idx + '][fontSize]" value="" class="form-input form-input--sm fld-fs"' +
+        '<input type="number" name="fields[' + idx + '][fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' +
         ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
         ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
         '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +

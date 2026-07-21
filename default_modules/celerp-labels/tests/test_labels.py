@@ -1101,6 +1101,15 @@ def test_measurements_sample_preview():
     assert _SAMPLE_DATA.get("measurements") == "6.51 x 6.54 x 4.01"
 
 
+def test_new_field_seeds_default_font_size():
+    """A field added in the designer starts at the default point size, so its size
+    box shows what it will print at instead of sitting blank."""
+    from fasthtml.common import to_xml
+    from celerp_labels.ui_routes import _editor_panel, FIELD_DEFAULT_PT
+    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
+    assert f'[fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' in html
+
+
 def test_measurements_in_field_picker():
     """The searchable field select offers one Measurements option (builtin group)."""
     import json
