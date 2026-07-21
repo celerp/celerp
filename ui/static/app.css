@@ -2004,13 +2004,14 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .print-label-dropdown .dropdown-link { display: block; padding: 6px 14px; font-size: 12px; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
 
-/* Role permissions reference table */
+/* Role permissions matrix */
 .role-ref-details { border: 1px solid var(--c-border); border-radius: 8px; padding: 0; }
 .role-ref-details[open] { padding: 0 16px 16px; }
 .role-ref-summary { padding: 12px 16px; font-weight: 600; font-size: 14px; cursor: pointer; color: var(--c-text2); }
 .role-ref-summary:hover { color: var(--c-text); }
 .role-ref-table { font-size: 13px; }
 .role-ref-table th, .role-ref-table td { padding: 6px 10px; }
+.role-ref-reason { display: block; font-size: 11px; color: var(--c-text2); margin-top: 2px; }
 .role-ref-note { font-size: 12px; color: var(--c-text2); margin-top: 8px; }
 
 /* ── AI Page ─────────────────────────────────────────────────────────────── */

@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "リレー URL は HTTPS を使用する必要があります。開発環境では CELERP_ALLOW_HTTP_RELAY=1 を設定してください。",
   "settings.restart_needed": "再起動が必要です",
   "settings.retail_price_list_cannot_be_deleted": "小売価格表は削除できません。",
-  "settings.role_permissions_reference": "役割権限のリファレンス",
+  "settings.role_permissions_reference": "役割権限",
   "settings.running": "ランニング",
   "settings.scheduler": "スケジューラ",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "ワンクリックで業種のすべてのカテゴリ スキーマをシードします。",

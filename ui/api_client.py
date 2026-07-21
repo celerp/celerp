@@ -284,6 +284,15 @@ async def create_company(token: str, company_name: str) -> str:
         return r.json()["access_token"]
 
 
+async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:
+    """Toggle one permission's minimum role. Owner-gated by the backing endpoint."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch(
+            "/companies/me/role-permissions",
+            json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
+        )).json()
+
+
 async def get_item_schema(token: str) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/item-schema")).json()

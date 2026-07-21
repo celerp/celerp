@@ -17,7 +17,13 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
-from celerp.services.permissions import get_current_company_settings, role_has_permission
+from celerp.services.permissions import (
+    PERMISSIONS,
+    ROLES,
+    get_current_company_settings,
+    require_permission,
+    role_has_permission,
+)
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -61,6 +67,12 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
 class CompanyPatch(BaseModel):
     name: str | None = None
     settings: dict = Field(default_factory=dict)
+
+
+class RolePermissionPatch(BaseModel):
+    perm_key: str
+    role_key: str
+    granted: bool
 
 
 class LocationCreate(BaseModel):
@@ -288,6 +300,55 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         company.settings = merged
     await session.commit()
     return {"ok": True}
+
+
+@router.patch("/me/role-permissions")
+async def patch_role_permissions(
+    payload: RolePermissionPatch,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_permissions"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set one permission's minimum role from a matrix checkbox toggle.
+
+    Owner-only (manage_permissions is a fixed owner row, so no owner can revoke
+    their own ability to edit permissions). A toggle names a (permission, role)
+    cell and whether that role should now hold the permission; the stored
+    override is the resulting threshold role, and every higher role inherits it.
+    """
+    perm = next((p for p in PERMISSIONS if p.key == payload.perm_key), None)
+    if perm is None:
+        raise HTTPException(status_code=422, detail=f"Unknown permission '{payload.perm_key}'")
+    if payload.role_key not in ROLE_LEVELS:
+        raise HTTPException(status_code=422, detail=f"Unknown role '{payload.role_key}'")
+    if not perm.grantable:
+        raise HTTPException(status_code=403, detail=f"The {perm.key} permission is fixed and cannot be reassigned")
+
+    # Checking a role's box lowers the threshold to that role; unchecking raises it
+    # to the next role up, since every role at or above the threshold inherits.
+    if payload.granted:
+        new_min_role = payload.role_key
+    else:
+        higher = sorted((r for r in ROLES if r.level > ROLE_LEVELS[payload.role_key]), key=lambda r: r.level)
+        # The owner column is always granted and never rendered as an unchecked box,
+        # so there is always a higher role to raise the threshold to here.
+        new_min_role = higher[0].key
+    if ROLE_LEVELS[new_min_role] < ROLE_LEVELS[perm.floor_role]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
+        )
+
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    overrides = dict(settings.get("role_permissions") or {})
+    overrides[perm.key] = new_min_role
+    settings["role_permissions"] = overrides
+    company.settings = settings
+    await session.commit()
+    return {"ok": True, "perm_key": perm.key, "min_role": new_min_role}
 
 
 # ---------------------------------------------------------------------------

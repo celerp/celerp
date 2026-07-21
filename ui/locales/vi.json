@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "URL relay phải dùng HTTPS. Đặt CELERP_ALLOW_HTTP_RELAY=1 cho môi trường phát triển.",
   "settings.restart_needed": "cần khởi động lại",
   "settings.retail_price_list_cannot_be_deleted": "Bảng giá bán lẻ không thể bị xóa.",
-  "settings.role_permissions_reference": "Tham chiếu quyền vai trò",
+  "settings.role_permissions_reference": "Quyền vai trò",
   "settings.running": "Đang chạy",
   "settings.scheduler": "Người lập lịch trình",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "Tạo tất cả các lược đồ danh mục cho ngành dọc chỉ bằng một cú nhấp chuột.",

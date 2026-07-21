@@ -1035,6 +1035,25 @@ def setup_routes(app):
         user = next((u for u in users if u.get("id") == user_id), {})
         return _user_display_cell(user_id, field, user.get(field))
 
+    # ── Role permission matrix ───────────────────────────────────────
+    @app.patch("/settings/roles/{perm_key}/{role_key}")
+    async def role_permission_patch(request: Request, perm_key: str, role_key: str):
+        from celerp.services.permissions import PERMISSIONS
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        granted = str(form.get("granted", "")).lower() == "true"
+        perm = next((p for p in PERMISSIONS if p.key == perm_key), None)
+        if perm is None:
+            return P(f"Unknown permission '{perm_key}'", cls="cell-error")
+        try:
+            await api.patch_role_permission(token, perm_key, role_key, granted)
+            company = await api.get_company(token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _role_matrix_row(perm, company.get("settings"), is_owner=True)
+
     # ── Invite user ──────────────────────────────────────────────────
     @app.get("/settings/users/new")
     async def invite_user_page(request: Request):
@@ -3112,7 +3131,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _users_tab(users: list[dict], lang: str = "en") -> FT:
+def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False) -> FT:
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
         return Tr(
@@ -3123,7 +3142,7 @@ def _users_tab(users: list[dict], lang: str = "en") -> FT:
             cls="data-row",
         )
 
-    role_ref = _role_permissions_table(lang)
+    role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
         Table(
@@ -3132,60 +3151,73 @@ def _users_tab(users: list[dict], lang: str = "en") -> FT:
             cls="data-table",
         ),
         A(t("btn.create_user", lang), href="/settings/users/new", cls="btn btn--primary mt-md"),
-        role_ref,
+        role_matrix,
         cls="settings-card",
     )
 
 
-def _role_permissions_table(lang: str = "en") -> FT:
-    """Collapsible reference table explaining what each role can do."""
-    _CHECKS = "\u2713"  # checkmark
-    _CROSS = "\u2013"   # en-dash (blank/no)
+# The fixed permissions carry no checkboxes; each states in one line why it cannot move.
+_FIXED_ROW_REASON = {
+    "manage_permissions": "Owner only, so no owner can remove their own access to this screen.",
+    "manage_company_lifecycle": "Owner only.",
+    "manage_billing": "Handled by the account owner through billing.",
+}
 
-    # (label, viewer, operator, manager, admin, owner)
-    rows: list[tuple[str, str, str, str, str, str]] = [
-        ("View dashboards & reports",        _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View documents & contacts",         _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View inventory",                    _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create & edit drafts",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create contacts",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Finalize & void docs",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Record payments",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("See margins & markups",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Delete docs",                       _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("See cost prices",                   _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Import / export data",              _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Run financial reports",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Manage users & company settings",   _CROSS,  _CROSS,  _CROSS,  _CHECKS, _CHECKS),
-        ("Billing & subscription",            _CROSS,  _CROSS,  _CROSS,  _CROSS,  _CHECKS),
-    ]
+
+def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
+    """One permission row: a label plus a checkbox per registry role.
+
+    A cell is interactive only for the owner, on a grantable permission, and never
+    for the always-granted owner column; every other cell renders disabled. Toggling
+    a cell saves through the per-toggle route and swaps this whole row, so the higher
+    roles that inherit the change light up at once."""
+    from celerp.services.permissions import ROLES, role_has_permission
+
+    reason = _FIXED_ROW_REASON.get(perm.key) if not perm.grantable else None
+    label = Td(
+        perm.label,
+        Span(reason, cls="role-ref-reason") if reason else "",
+        cls="text-left",
+    )
+    cells = [label]
+    for r in ROLES:
+        checked = role_has_permission(settings, r.key, perm.key)
+        interactive = is_owner and perm.grantable and r.key != "owner"
+        attrs = {"type": "checkbox", "id": f"perm-{perm.key}-{r.key}", "checked": checked, "cls": "cell-input"}
+        if interactive:
+            # An unchecked checkbox is omitted from the request by the browser, so a
+            # toggle-off simply sends no granted value; the route reads that as revoke.
+            attrs.update({
+                "name": "granted",
+                "value": "true",
+                "hx_patch": f"/settings/roles/{perm.key}/{r.key}",
+                "hx_target": "closest tr",
+                "hx_swap": "outerHTML",
+                "hx_trigger": "change",
+            })
+        else:
+            attrs["disabled"] = True
+        cells.append(Td(Input(**attrs), cls="text-center"))
+    return Tr(*cells, id=f"role-row-{perm.key}")
+
+
+def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = "en") -> FT:
+    """Owner-editable permission matrix built from the registry: a column per role,
+    a row per permission, each cell the resolved grant for that pair."""
+    from celerp.services.permissions import PERMISSIONS, ROLES
 
     return Details(
         Summary(t("settings.role_permissions_reference"), cls="role-ref-summary"),
         Table(
             Thead(Tr(
                 Th(t("th.permission"), cls="text-left"),
-                Th(t("settings.viewer"), cls="text-center"),
-                Th(t("settings.operator"), cls="text-center"),
-                Th(t("settings.manager"), cls="text-center"),
-                Th(t("settings.admin"), cls="text-center"),
-                Th(t("settings.owner"), cls="text-center"),
+                *[Th(t(r.label_key), cls="text-center") for r in ROLES],
             )),
-            Tbody(*[
-                Tr(
-                    Td(label, cls="text-left"),
-                    Td(v, cls="text-center"),
-                    Td(o, cls="text-center"),
-                    Td(m, cls="text-center"),
-                    Td(a, cls="text-center"),
-                    Td(ow, cls="text-center"),
-                )
-                for label, v, o, m, a, ow in rows
-            ]),
+            Tbody(*[_role_matrix_row(p, settings, is_owner) for p in PERMISSIONS]),
             cls="data-table role-ref-table",
         ),
         P(
-            "Roles are hierarchical - each role inherits all permissions from the roles below it. "
+            "Roles are hierarchical - each role inherits every permission from the roles below it. "
             "There must always be at least one Owner.",
             cls="role-ref-note",
         ),

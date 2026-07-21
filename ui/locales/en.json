@@ -1241,7 +1241,7 @@
   "settings.restarting_automatically": "Restarting automatically to load the restored modules. This page reloads when the server is back.",
   "settings.restarting_the_application": "Restarting. This page reloads when the server is back.",
   "settings.retail_price_list_cannot_be_deleted": "Retail price list cannot be deleted.",
-  "settings.role_permissions_reference": "Role permissions reference",
+  "settings.role_permissions_reference": "Role permissions",
   "settings.rounding_tooltip": "Rounds computed prices to the nearest increment, so derived prices stay clean.",
   "settings.running": "Running",
   "settings.scheduler": "Scheduler",

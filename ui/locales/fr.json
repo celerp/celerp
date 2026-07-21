@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "L'URL du relais doit utiliser HTTPS. Définissez CELERP_ALLOW_HTTP_RELAY=1 pour le développement.",
   "settings.restart_needed": "redémarrage nécessaire",
   "settings.retail_price_list_cannot_be_deleted": "La liste des prix de détail ne peut pas être supprimée.",
-  "settings.role_permissions_reference": "Référence sur les autorisations de rôle",
+  "settings.role_permissions_reference": "Autorisations de rôle",
   "settings.running": "Courir",
   "settings.scheduler": "Planificateur",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "Génère tous les schémas de catégories pour une verticale en un seul clic.",

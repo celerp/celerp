@@ -114,7 +114,7 @@ def setup_routes(app):
             if tab == "company":
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
             elif tab == "users":
-                content = _users_tab(users, lang=lang)
+                content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
             elif tab == "modules":
                 content = _modules_tab(modules, restart_pending=False)
             elif tab == "backup":

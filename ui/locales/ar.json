@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "يجب أن يستخدم عنوان URL للترحيل بروتوكول HTTPS. اضبط CELERP_ALLOW_HTTP_RELAY=1 للتطوير.",
   "settings.restart_needed": "إعادة التشغيل اللازمة",
   "settings.retail_price_list_cannot_be_deleted": "لا يمكن حذف قائمة أسعار التجزئة.",
-  "settings.role_permissions_reference": "مرجع أذونات الدور",
+  "settings.role_permissions_reference": "أذونات الدور",
   "settings.running": "جري",
   "settings.scheduler": "مجدول",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "بذور جميع مخططات الفئات للعمودي بنقرة واحدة.",

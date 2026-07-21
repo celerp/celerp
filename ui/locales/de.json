@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "Relay-URL muss HTTPS verwenden. Für die Entwicklung CELERP_ALLOW_HTTP_RELAY=1 setzen.",
   "settings.restart_needed": "Neustart erforderlich",
   "settings.retail_price_list_cannot_be_deleted": "Einzelhandelspreisliste kann nicht gelöscht werden.",
-  "settings.role_permissions_reference": "Rollenberechtigung – Referenz",
+  "settings.role_permissions_reference": "Rollenberechtigungen",
   "settings.running": "Läuft",
   "settings.scheduler": "Planer",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "Lädt alle Kategorieschemata für eine Branche mit einem Klick.",

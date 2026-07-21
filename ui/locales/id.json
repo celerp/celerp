@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "URL relay harus menggunakan HTTPS. Atur CELERP_ALLOW_HTTP_RELAY=1 untuk pengembangan.",
   "settings.restart_needed": "diperlukan restart",
   "settings.retail_price_list_cannot_be_deleted": "Daftar harga eceran tidak dapat dihapus.",
-  "settings.role_permissions_reference": "Referensi izin peran",
+  "settings.role_permissions_reference": "Izin peran",
   "settings.running": "Berlari",
   "settings.scheduler": "Penjadwal",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "Menyemai semua skema kategori untuk vertikal dalam satu klik.",

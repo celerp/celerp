@@ -471,6 +471,206 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
     assert "set_sales_doc_prices" in r.json()["error"]
 
 
+# ── Matrix save API: PATCH /companies/me/role-permissions (J3) ─────────────────
+
+from test_helpers import invite_user  # noqa: E402
+
+_ROLE_PERM_URL = "/companies/me/role-permissions"
+
+
+async def test_patch_role_permissions_owner_only(client, session):
+    """Editing permissions is owner-only: an admin is refused, the owner accepts."""
+    ctx = await perm_setup(client, session)
+    admin_tok = await invite_user(client, session, ctx["admin_h"], "adm@perm.com", "admin")
+    admin_h = {"Authorization": f"Bearer {admin_tok}"}
+    body = {"perm_key": "set_inventory_prices", "role_key": "operator", "granted": True}
+
+    r = await client.patch(_ROLE_PERM_URL, json=body, headers=admin_h)
+    assert r.status_code == 403, r.text
+
+    r2 = await client.patch(_ROLE_PERM_URL, json=body, headers=ctx["admin_h"])
+    assert r2.status_code == 200, r2.text
+
+
+async def test_patch_role_permissions_unknown_perm_422(client, session):
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "not_a_permission", "role_key": "operator", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_patch_role_permissions_non_grantable_403(client, session):
+    """A fixed row (manage_billing) cannot be reassigned even by the owner."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "manage_billing", "role_key": "admin", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 403, r.text
+
+
+async def test_patch_role_permissions_unknown_role_422(client, session):
+    """An unknown role, including a retired legacy alias, is refused."""
+    ctx = await perm_setup(client, session)
+    for bad in ("wizard", "salesperson"):  # salesperson is a migrated legacy alias, not a role key
+        r = await client.patch(
+            _ROLE_PERM_URL,
+            json={"perm_key": "set_inventory_prices", "role_key": bad, "granted": True},
+            headers=ctx["admin_h"],
+        )
+        assert r.status_code == 422, (bad, r.text)
+
+
+async def test_patch_role_permissions_persists(client, session):
+    """A granted override survives a fresh settings read."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "set_inventory_prices", "role_key": "operator", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text
+
+    r2 = await client.get("/companies/me", headers=ctx["admin_h"])
+    assert r2.status_code == 200, r2.text
+    overrides = (r2.json()["settings"] or {}).get("role_permissions") or {}
+    assert overrides.get("set_inventory_prices") == "operator"
+
+
+async def test_patch_role_permissions_malformed_boolean_422(client, session):
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "set_inventory_prices", "role_key": "operator", "granted": "banana"},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_patch_role_permissions_below_floor_422(client, session):
+    """Granting set_sales_doc_prices to viewer sits below its operator floor: 422
+    naming the floor, never an accidental sub-floor grant."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "set_sales_doc_prices", "role_key": "viewer", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+    assert "operator" in r.json()["detail"]
+
+
+# ── Matrix render + per-toggle UI route (J3) ──────────────────────────────────
+
+def _settings_patches(settings: dict, users: list | None = None):
+    from unittest.mock import AsyncMock, patch
+
+    company = {"name": "Perm Co", "settings": settings}
+    return [
+        patch("ui.api_client.get_company", AsyncMock(return_value=company)),
+        patch("ui.api_client.get_users", AsyncMock(return_value={"items": users or []})),
+        patch("ui.api_client.get_modules", AsyncMock(return_value=[])),
+    ]
+
+
+async def _render_users_tab(ui, role: str, settings: dict) -> str:
+    from contextlib import ExitStack
+
+    from test_helpers import authed_cookies
+
+    with ExitStack() as stack:
+        for p in _settings_patches(settings):
+            stack.enter_context(p)
+        r = await ui.get("/settings/general", params={"tab": "users"},
+                         cookies=authed_cookies(role=role))
+    assert r.status_code == 200, r.text
+    return r.text
+
+
+def _cell(html: str, perm: str, role: str) -> str:
+    import re
+
+    m = re.search(rf'<input[^>]*id="perm-{perm}-{role}"[^>]*>', html)
+    assert m, f"no matrix cell rendered for {perm}/{role}"
+    return m.group(0)
+
+
+async def test_matrix_renders_checkboxes_for_owner(ui):
+    """The owner sees interactive checkbox cells wired to the per-toggle route."""
+    html = await _render_users_tab(ui, "owner", {})
+    assert 'type="checkbox"' in html
+    # A default-granted, grantable cell is interactive for the owner.
+    assert 'hx-patch="/settings/roles/edit_documents/operator"' in html
+    assert "checked" in _cell(html, "edit_documents", "operator")
+
+
+async def test_matrix_disabled_for_admin(ui):
+    """An admin sees the same matrix, every cell disabled and none wired to save."""
+    html = await _render_users_tab(ui, "admin", {})
+    assert 'type="checkbox"' in html
+    assert 'hx-patch="/settings/roles/' not in html
+    assert "disabled" in _cell(html, "edit_documents", "operator")
+
+
+async def test_matrix_reflects_overrides(ui):
+    """A stored override checks the lower role's column that the default leaves clear."""
+    assert "checked" not in _cell(await _render_users_tab(ui, "owner", {}),
+                                  "set_inventory_prices", "operator")
+    html = await _render_users_tab(ui, "owner", {"role_permissions": {"set_inventory_prices": "operator"}})
+    assert "checked" in _cell(html, "set_inventory_prices", "operator")
+
+
+async def test_matrix_role_columns_from_registry(ui):
+    """Columns come from the ROLES registry, not hardcoded role literals."""
+    from ui.i18n import t
+    from celerp.services.permissions import ROLES
+
+    html = await _render_users_tab(ui, "owner", {})
+    for role in ROLES:
+        assert t(role.label_key) in html, role.key
+        # every registry role is a real column: it has a cell in a grantable row
+        _cell(html, "edit_documents", role.key)
+
+
+async def test_matrix_row_swap_shows_threshold_fill(client, session):
+    """Toggling a cell returns the full re-rendered row with the higher roles that
+    inherit the permission also checked (the unmissable threshold feedback)."""
+    from unittest.mock import patch
+
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.main import app as api_app
+
+    ctx = await perm_setup(client, session)
+    owner_token = ctx["admin_h"]["Authorization"].split()[1]
+
+    def _bridged_client(token, timeout=10.0):
+        return AsyncClient(
+            transport=ASGITransport(app=api_app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+            follow_redirects=True,
+        )
+
+    from ui.app import app as ui_app
+    with patch("ui.api_client._client", _bridged_client):
+        async with AsyncClient(transport=ASGITransport(app=ui_app),
+                               base_url="http://ui", follow_redirects=False) as ui_c:
+            r = await ui_c.patch(
+                "/settings/roles/set_inventory_prices/operator",
+                cookies={"celerp_token": owner_token},
+                data={"granted": "true"},
+            )
+    assert r.status_code == 200, r.text
+    # operator now granted, so manager and admin (higher) inherit and show checked too.
+    for role in ("operator", "manager", "admin"):
+        assert "checked" in _cell(r.text, "set_inventory_prices", role), role
+
+
 # ── Dashboard UI follows the permission ───────────────────────────────────────
 
 @pytest_asyncio.fixture

@@ -1180,7 +1180,7 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "URL ของ relay ต้องใช้ HTTPS ตั้งค่า CELERP_ALLOW_HTTP_RELAY=1 สำหรับการพัฒนา",
   "settings.restart_needed": "จำเป็นต้องรีสตาร์ท",
   "settings.retail_price_list_cannot_be_deleted": "รายการราคาขายปลีกไม่สามารถลบได้",
-  "settings.role_permissions_reference": "การอ้างอิงสิทธิ์ของบทบาท",
+  "settings.role_permissions_reference": "สิทธิ์ของบทบาท",
   "settings.running": "วิ่ง",
   "settings.scheduler": "ผู้จัดกำหนดการ",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "เริ่มต้นสคีมาหมวดหมู่ทั้งหมดสำหรับประเภทธุรกิจได้ในคลิกเดียว",
