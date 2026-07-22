@@ -14,7 +14,7 @@
   "account.plan": "Paket: {tier}",
   "account.plan_free": "Akun gratis",
   "account.signed_in_as": "Masuk sebagai {email}",
-  "account.signup_notice": "Kami menggunakan email Anda untuk membuat dan menjalankan akun serta mengirim pesan layanan. Kami juga bermaksud menggunakannya untuk mengirim pembaruan dan penawaran produk dan layanan Celerp, tetapi tidak dapat melakukannya tanpa persetujuan Anda. Dengan membuat akun, Anda menyatakan tidak keberatan. Anda dapat menolak sekarang atau nanti, tanpa biaya, melalui unsubscribe@celerp.com. Lihat Kebijakan Privasi.",
+  "account.signup_notice": "Kami menggunakan email Anda untuk membuat dan menjalankan akun serta mengirim pesan layanan. Kami juga bermaksud menggunakannya untuk mengirim pembaruan dan penawaran produk dan layanan Celerp, tetapi tidak dapat melakukannya tanpa persetujuan Anda. Dengan membuat akun, Anda menyatakan tidak keberatan. Anda dapat menolak sekarang atau nanti, tanpa biaya, melalui unsubscribe@celerp.com.",
   "account.status_unreachable": "Tidak dapat memeriksa akun Celerp Anda. Periksa koneksi Anda dan coba lagi.",
   "account.title": "Akun Celerp",
   "account.waiting_email": "Periksa kotak masuk Anda dan klik tautan masuk - layar ini diperbarui otomatis.",

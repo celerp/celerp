@@ -30,7 +30,7 @@ from starlette.responses import HTMLResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.config import get_role as _get_role
+from ui.config import PRIVACY_POLICY_URL, get_role as _get_role
 from ui.i18n import t, get_lang
 from ui.routes.settings import _token
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -51,12 +51,9 @@ _NEXT_RES = (
     re.compile(r"^doc-send$"),
 )
 
-# Where the gate's Cancel returns to, per host panel. The settings-page panels
-# are embedded in their page and need no way-back button.
-_CANCEL_URLS = {
-    "marketplace-panel": "/modules/marketplace-panel",
-    "community-zone": "/modules/community-panel",
-}
+# Every gate delivers its panel inside the shared modal dialog, floating over
+# the intact page; the settings-page panels stay embedded in their page.
+GATE_PANEL_ID = "account-gate-panel"
 
 _GATE_BENEFIT_KEYS = {
     "buy": "account.gate_buy_benefit",
@@ -88,44 +85,54 @@ def _with_next(url: str, next_action: str | None) -> str:
     return f"{url}&next={next_action}" if next_action else url
 
 
-_GATE_ESC_SCRIPT = """
-(function () {
-  if (window.__celerpGateEsc) {
-    document.removeEventListener('keydown', window.__celerpGateEsc);
-  }
-  window.__celerpGateEsc = function (e) {
-    if (e.key === 'Escape') {
-      var b = document.getElementById('account-gate-cancel');
-      if (b) { b.click(); }
-      document.removeEventListener('keydown', window.__celerpGateEsc);
-      window.__celerpGateEsc = null;
-    }
-  };
-  document.addEventListener('keydown', window.__celerpGateEsc);
-})();
-"""
+# Dismissal removes the dialog from the DOM, not just visually: the waiting
+# state polls on an element inside it, and a hidden closed dialog must not
+# keep polling (and later fire a resume with nothing on screen). The resume
+# path instead only close()s - its trigger element rides inside the dialog
+# and must stay in the DOM while the staged request goes out.
+_DISMISS_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
+                       "if(d){d.close();d.remove();}")
+_CLOSE_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
+                     "if(d){d.close();}")
 
 
-def _cancel_parts(lang: str, panel_id: str, cancel_url: str | None) -> list:
-    """The gate's way back: a Cancel button returning to the host panel, or -
-    for the inline document-send offer, which has no panel to return to - a
-    button that collapses the offer slot. Esc triggers the same button."""
-    if cancel_url:
-        btn = Button(t("btn.cancel", lang), id="account-gate-cancel", type="button",
-                     hx_get=cancel_url, **_panel_target(panel_id),
-                     cls="btn btn--sm btn--secondary")
-    elif panel_id == "doc-send-offer":
-        btn = Button(t("btn.cancel", lang), id="account-gate-cancel", type="button",
-                     onclick=("var p=document.getElementById('doc-send-offer');"
-                              "if(p){p.outerHTML='<div id=\"doc-send-offer\"></div>';}"),
-                     cls="btn btn--sm btn--secondary")
-    else:
+def _cancel_parts(lang: str, panel_id: str) -> list:
+    """The gate's way back: the panel rides in a modal over the intact page,
+    so Cancel simply closes the dialog (the dialog's native Esc handling does
+    the same). Settings-page panels are embedded and need no way-back button."""
+    if panel_id != GATE_PANEL_ID:
         return []
-    return [Div(btn, style="margin-top:8px;"), Script(_GATE_ESC_SCRIPT)]
+    return [Div(Button(t("btn.cancel", lang), id="account-gate-cancel",
+                       type="button", onclick=_DISMISS_GATE_MODAL,
+                       cls="btn btn--sm btn--secondary"),
+                style="margin-top:8px;")]
+
+
+def gate_modal(panel: FT) -> FT:
+    """The shared delivery for every account gate: the panel inside a modal
+    dialog swapped into the shell's #account-gate-host, leaving the page under
+    it intact. The host div is re-rendered with each gate so a dismissed
+    dialog never blocks the next one."""
+    return Div(
+        Dialog(panel, id="account-gate-modal", cls="modal-dialog account-gate-modal"),
+        # The cancel event only fires on user-initiated closes (Esc), so a
+        # programmatic close() during resume never tears the dialog down.
+        Script("(function(){"
+               "var d=document.getElementById('account-gate-modal');"
+               "d.addEventListener('cancel',function(){d.remove();});"
+               "d.showModal();})();"),
+        id="account-gate-host")
+
+
+def gate_modal_response(panel: FT) -> HTMLResponse:
+    """gate_modal as an HTMX response: retargets the swap at the modal host
+    regardless of which control triggered it."""
+    return HTMLResponse(to_xml(gate_modal(panel)), headers={
+        "HX-Retarget": "#account-gate-host", "HX-Reswap": "outerHTML"})
 
 
 def _signup_body(lang: str, panel_id: str, google: bool,
-                 next_action: str | None = None, cancel_url: str | None = None,
+                 next_action: str | None = None,
                  free_quota: int = 0) -> list:
     parts = [
         H4(t("account.title", lang), style="margin:0 0 4px;"),
@@ -145,8 +152,10 @@ def _signup_body(lang: str, panel_id: str, google: bool,
         # The privacy/marketing notice beside the account-creation action
         # (counsel review 2026-07-19, D.6.3): states the service use, the
         # intended future updates, and the free opt-out channel.
-        P(t("account.signup_notice", lang), cls="settings-hint",
-          style="margin:0 0 12px;font-size:12px;"),
+        P(t("account.signup_notice", lang), " ",
+          A(t("settings.privacy_policy", lang), href=PRIVACY_POLICY_URL,
+            target="_blank"),
+          cls="settings-hint", style="margin:0 0 12px;font-size:11px;"),
     ]
     if next_action:
         parts[2].children = (Input(type="hidden", name="next", value=next_action),
@@ -172,7 +181,7 @@ def _signup_body(lang: str, panel_id: str, google: bool,
           **_panel_target(panel_id), href="#", cls="settings-hint"),
         style="margin-top:4px;",
     ))
-    parts.extend(_cancel_parts(lang, panel_id, cancel_url))
+    parts.extend(_cancel_parts(lang, panel_id))
     return parts
 
 
@@ -223,21 +232,21 @@ def _claim_body(lang: str, panel_id: str) -> list:
 def account_panel(lang: str, *, intent: str = "signup",
                   panel_id: str = "celerp-account-panel",
                   google: bool = False, error: str | None = None,
-                  next_action: str | None = None, cancel_url: str | None = None,
+                  next_action: str | None = None,
                   free_quota: int = 0) -> FT:
     """The one account surface. `panel_id` lets a host page keep its own swap
     target (the Settings Connect page uses cloud-relay-tab so the shipped
     claim endpoints keep replacing the same element)."""
     body = _claim_body(lang, panel_id) if intent == "claim" \
         else _signup_body(lang, panel_id, google, next_action=next_action,
-                          cancel_url=cancel_url, free_quota=free_quota)
+                          free_quota=free_quota)
     if error:
         body.insert(1, Div(error, cls="flash flash--error"))
     return Div(*body, id=panel_id, cls="cloud-connect-section")
 
 
-async def account_gate(token: str, lang: str, next_action: str | None,
-                       panel_id: str, cancel_url: str | None) -> FT | object | None:
+async def account_gate(token: str, lang: str,
+                       next_action: str | None) -> FT | object | None:
     """The account check in front of an action that needs a verified email.
 
     Returns None when the bound account is verified (proceed with the action),
@@ -260,9 +269,9 @@ async def account_gate(token: str, lang: str, next_action: str | None,
         quota = int(methods.get("free_email_quota") or 0)
     except APIError:
         pass
-    return account_panel(lang, intent="signup", panel_id=panel_id, google=google,
-                         next_action=_next_from(next_action),
-                         cancel_url=cancel_url, free_quota=quota)
+    return account_panel(lang, intent="signup", panel_id=GATE_PANEL_ID,
+                         google=google, next_action=_next_from(next_action),
+                         free_quota=quota)
 
 
 def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
@@ -339,7 +348,7 @@ def _resume_guard_script(next_action: str, body: str) -> Script:
         f"{body}}});}})();")
 
 
-def _resume_parts(next_action: str, panel_id: str) -> list:
+def _resume_parts(next_action: str) -> list:
     """The continuation fired after sign-in completes: re-issue the staged
     action exactly as the original control would have."""
     if next_action == "doc-send":
@@ -360,10 +369,11 @@ def _resume_parts(next_action: str, panel_id: str) -> list:
         fire = Div(id="account-resume",
                    hx_post="/modules/community-download",
                    hx_vals=json.dumps({"id": module_id, "zone": "1"}),
-                   hx_target=f"#{panel_id}", hx_swap="outerHTML",
+                   hx_target="#community-zone", hx_swap="outerHTML",
                    hx_trigger="celerp-resume")
     return [fire, _resume_guard_script(
         next_action,
+        _CLOSE_GATE_MODAL +
         "var el=document.getElementById('account-resume');"
         "if(el){htmx.trigger(el,'celerp-resume');}")]
 
@@ -371,8 +381,7 @@ def _resume_parts(next_action: str, panel_id: str) -> list:
 def _panel_id_from(request: Request) -> str:
     pid = request.query_params.get("panel", "celerp-account-panel")
     # The id lands in HTML attributes; keep it to known targets.
-    allowed = ("celerp-account-panel", "cloud-relay-tab",
-               "marketplace-panel", "community-zone", "doc-send-offer")
+    allowed = ("celerp-account-panel", "cloud-relay-tab", GATE_PANEL_ID)
     return pid if pid in allowed else "celerp-account-panel"
 
 
@@ -401,10 +410,12 @@ def setup_routes(app):
                 quota = int(methods.get("free_email_quota") or 0)
             except APIError:
                 pass
-        return account_panel(lang, intent=intent, panel_id=panel_id, google=google,
-                             next_action=next_action,
-                             cancel_url=_CANCEL_URLS.get(panel_id),
-                             free_quota=quota)
+        panel = account_panel(lang, intent=intent, panel_id=panel_id,
+                              google=google, next_action=next_action,
+                              free_quota=quota)
+        if request.query_params.get("modal") == "1":
+            return gate_modal_response(panel)
+        return panel
 
     @app.post("/account/email")
     async def account_email(request: Request):
@@ -430,7 +441,6 @@ def setup_routes(app):
                 pass
             return account_panel(lang, panel_id=panel_id, google=google,
                                  error=str(res["error"]), next_action=next_action,
-                                 cancel_url=_CANCEL_URLS.get(panel_id),
                                  free_quota=quota)
         return _waiting_panel(lang, panel_id, "email", next_action=next_action)
 
@@ -450,8 +460,7 @@ def setup_routes(app):
         if not methods.get("google") or not url:
             return account_panel(lang, panel_id=panel_id, google=False,
                                  error=t("account.google_unavailable", lang),
-                                 next_action=next_action,
-                                 cancel_url=_CANCEL_URLS.get(panel_id))
+                                 next_action=next_action)
         panel = _waiting_panel(lang, panel_id, "google", next_action=next_action)
         # Open the system browser (Google refuses embedded webviews; same
         # pattern as the marketplace checkout).
@@ -512,6 +521,6 @@ def setup_routes(app):
                 # THIS install; with a claim step still open it stays deferred
                 # on the claim links instead.
                 panel.children = (*panel.children,
-                                  *_resume_parts(next_action, panel_id))
+                                  *_resume_parts(next_action))
             return panel
         return _waiting_panel(lang, panel_id, mode, n=n, next_action=next_action)

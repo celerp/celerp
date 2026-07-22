@@ -14,7 +14,7 @@
   "account.plan": "Gói: {tier}",
   "account.plan_free": "Tài khoản miễn phí",
   "account.signed_in_as": "Đã đăng nhập là {email}",
-  "account.signup_notice": "Chúng tôi dùng email của bạn để tạo và vận hành tài khoản và gửi thông báo dịch vụ. Chúng tôi cũng dự định dùng nó để gửi cập nhật và ưu đãi về sản phẩm, dịch vụ Celerp, nhưng không thể làm vậy nếu không có sự đồng ý của bạn. Việc tạo tài khoản cho thấy bạn không phản đối. Bạn có thể phản đối bất cứ lúc nào, miễn phí, qua unsubscribe@celerp.com. Xem Chính sách quyền riêng tư.",
+  "account.signup_notice": "Chúng tôi dùng email của bạn để tạo và vận hành tài khoản và gửi thông báo dịch vụ. Chúng tôi cũng dự định dùng nó để gửi cập nhật và ưu đãi về sản phẩm, dịch vụ Celerp, nhưng không thể làm vậy nếu không có sự đồng ý của bạn. Việc tạo tài khoản cho thấy bạn không phản đối. Bạn có thể phản đối bất cứ lúc nào, miễn phí, qua unsubscribe@celerp.com.",
   "account.status_unreachable": "Không thể kiểm tra tài khoản Celerp của bạn. Kiểm tra kết nối và thử lại.",
   "account.title": "Tài khoản Celerp",
   "account.waiting_email": "Kiểm tra hộp thư và nhấp vào liên kết đăng nhập - màn hình này tự cập nhật.",

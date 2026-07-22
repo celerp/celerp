@@ -973,6 +973,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
+                    Div(id="account-gate-host"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),

@@ -8518,6 +8518,8 @@ class TestMarketplaceUI:
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
@@ -8535,6 +8537,8 @@ class TestMarketplaceUI:
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(side_effect=OSError("offline"))),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
@@ -8861,7 +8865,10 @@ class TestMarketplaceUI:
         assert buy.await_count == 0                       # no checkout started
         assert "buy:celerp-budgeting:monthly" in content  # purchase staged for resume
         assert "linked to your email" in content          # states the true benefit
-        assert 'id="marketplace-panel"' in content        # swaps the panel in place
+        # delivered inside the shared gate modal, over the intact catalog
+        assert 'id="account-gate-panel"' in content
+        assert 'id="account-gate-modal"' in content
+        assert r.headers.get("HX-Retarget") == "#account-gate-host"
 
     @pytest.mark.asyncio
     async def test_buy_proceeds_unchanged_when_email_already_verified(self, ui_client):
@@ -8895,7 +8902,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"relay_status": "active"})),
         ):
             r = await ui_client.get(
-                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "/account/poll?panel=account-gate-panel&mode=email&n=3"
                 "&next=buy:celerp-budgeting:monthly", cookies=_authed())
         content = r.content.decode()
         assert "Signed in as" in content
@@ -8913,13 +8920,13 @@ class TestMarketplaceUI:
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get(
-                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "/account/poll?panel=account-gate-panel&mode=email&n=3"
                 "&next=buy:celerp-budgeting:monthly", cookies=_authed())
         content = r.content.decode()
         assert "more than one subscription" in content
         assert 'hx-post="/modules/buy' not in content        # not auto-fired
         # continuation rides the claim link, not dropped
-        assert ('hx-get="/account/panel?intent=claim&amp;panel=marketplace-panel'
+        assert ('hx-get="/account/panel?intent=claim&amp;panel=account-gate-panel'
                 '&amp;next=buy:celerp-budgeting:monthly"') in content
 
     @pytest.mark.asyncio
@@ -8930,12 +8937,12 @@ class TestMarketplaceUI:
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get(
-                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "/account/poll?panel=account-gate-panel&mode=email&n=3"
                 "&next=buy:celerp-budgeting:monthly", cookies=_authed())
         content = r.content.decode()
         assert "another computer" in content
         assert 'hx-post="/modules/buy' not in content
-        assert ('hx-get="/account/panel?intent=claim&amp;panel=marketplace-panel'
+        assert ('hx-get="/account/panel?intent=claim&amp;panel=account-gate-panel'
                 '&amp;next=buy:celerp-budgeting:monthly"') in content
 
     @pytest.mark.asyncio
@@ -8997,9 +9004,10 @@ class TestMarketplaceUI:
         assert "Continue with email" in content
         assert "community:equipment-maintenance" in content     # download staged for resume
         assert "free Celerp account" in content                 # the stated benefit
-        # the row-targeted click retargets to the zone so the panel replaces the
-        # listings, not a single table row
-        assert r.headers.get("HX-Retarget") == "#community-zone"
+        # the row-targeted click retargets to the shell's modal host so the
+        # panel floats over the intact listings
+        assert r.headers.get("HX-Retarget") == "#account-gate-host"
+        assert 'id="account-gate-modal"' in content
 
     @pytest.mark.asyncio
     async def test_community_download_gate_skips_for_signed_in_admin(self, ui_client):
@@ -9010,6 +9018,8 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
@@ -9030,7 +9040,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"relay_status": "active"})),
         ):
             r = await ui_client.get(
-                "/account/poll?panel=community-zone&mode=email&n=3"
+                "/account/poll?panel=account-gate-panel&mode=email&n=3"
                 "&next=community:equipment-maintenance", cookies=_authed())
         content = r.content.decode()
         assert 'hx-post="/modules/community-download"' in content
@@ -9045,6 +9055,8 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r2 = await ui_client.post("/modules/community-download",
                                       data={"id": "equipment-maintenance", "zone": "1"},
@@ -9064,6 +9076,8 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value={"error": "unreachable"})),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
@@ -9083,6 +9097,8 @@ class TestMarketplaceUI:
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.marketplace_catalog.download_community_archive",
                   new=AsyncMock(side_effect=OSError("offline"))),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
@@ -12311,7 +12327,7 @@ class TestDocumentsOverhaul:
     @staticmethod
     def _reset_send_quota_cache():
         from ui.routes import documents
-        documents._free_send_quota_cache.update({"value": 0, "at": None, "pending": False})
+        documents._free_send_quota_cache.update({"value": 0, "fetched": False, "pending": False})
 
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
@@ -12330,7 +12346,9 @@ class TestDocumentsOverhaul:
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" in content
-            assert 'id="doc-send-offer"' in content
+            assert "panel=account-gate-panel" in content
+            assert "modal=1" in content
+            assert 'hx-target="#account-gate-host"' in content
             assert "next=doc-send" in content
         finally:
             self._reset_send_quota_cache()
@@ -12350,34 +12368,38 @@ class TestDocumentsOverhaul:
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" not in content
-            assert 'id="doc-send-offer"' not in content
+            assert "next=doc-send" not in content
         finally:
             self._reset_send_quota_cache()
 
     @pytest.mark.asyncio
     async def test_send_offer_admin_click_opens_signup_panel_with_doc_send_next(self, ui_client):
-        """Clicking the offer swaps the signup panel into the offer slot with
-        the doc-send continuation and the quota named in the benefit line."""
+        """Clicking the offer returns the signup panel inside the gate modal
+        with the doc-send continuation and the quota named in the benefit
+        line."""
         _methods = AsyncMock(return_value={"google": False, "free_email_quota": 10})
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"email_verified": False})), \
              patch("ui.api_client.account_methods", new=_methods):
             r = await ui_client.get(
-                "/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
+                "/account/panel?intent=signup&panel=account-gate-panel"
+                "&next=doc-send&modal=1",
                 cookies=_authed())
         content = r.content.decode()
-        assert 'id="doc-send-offer"' in content
+        assert 'id="account-gate-modal"' in content
+        assert r.headers.get("HX-Retarget") == "#account-gate-host"
         assert "Continue with email" in content
         assert 'value="doc-send"' in content        # continuation staged in the form
         assert "10" in content                      # quota stated in the benefit copy
-        assert "account-gate-cancel" in content     # a way to close the offer
+        assert "account-gate-cancel" in content     # a way to close the modal
 
     @pytest.mark.asyncio
     async def test_send_offer_non_admin_click_returns_explanatory_message(self, ui_client):
         """A non-admin who clicks the offer is told why nothing opens instead
         of getting a silent empty swap."""
         r = await ui_client.get(
-            "/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
+            "/account/panel?intent=signup&panel=account-gate-panel"
+            "&next=doc-send&modal=1",
             cookies=_authed(role="manager"))
         assert r.status_code == 200
         assert b"Continue with email" not in r.content
@@ -12395,7 +12417,7 @@ class TestDocumentsOverhaul:
              patch("ui.api_client.activate_relay",
                    new=AsyncMock(return_value={"relay_status": "active"})):
             r = await ui_client.get(
-                "/account/poll?panel=doc-send-offer&mode=email&n=3&next=doc-send",
+                "/account/poll?panel=account-gate-panel&mode=email&n=3&next=doc-send",
                 cookies=_authed())
         content = r.content.decode()
         assert "celerp_open_send" in content
@@ -16071,8 +16093,7 @@ class TestCelerpAccountSurface:
         verified = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                     "pending_selection": False, "linked_elsewhere": False}
         with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)):
-            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
-                                     "marketplace-panel", "/modules/marketplace-panel")
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly")
         assert out is None
 
     @pytest.mark.asyncio
@@ -16083,16 +16104,15 @@ class TestCelerpAccountSurface:
                    new=AsyncMock(return_value={"email_verified": False})), \
              patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
-            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
-                                     "marketplace-panel", "/modules/marketplace-panel")
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly")
         html = to_xml(out)
-        assert 'id="marketplace-panel"' in html
+        assert 'id="account-gate-panel"' in html
         assert "Continue with email" in html
         assert 'name="next"' in html
         assert "buy:acme-crm:monthly" in html
+        # Cancel closes the gate modal (the dialog's native Esc does the same)
         assert "account-gate-cancel" in html
-        assert "/modules/marketplace-panel" in html    # Cancel goes back to the catalog
-        assert "Escape" in html                        # Esc wired to the cancel action
+        assert "account-gate-modal" in html
 
     @pytest.mark.asyncio
     async def test_account_gate_signals_unreachable_distinctly(self):
@@ -16102,13 +16122,11 @@ class TestCelerpAccountSurface:
         from ui.api_client import APIError
         with patch("ui.api_client.account_status",
                    new=AsyncMock(return_value={"error": "unreachable"})):
-            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
-                                     "marketplace-panel", "/modules/marketplace-panel")
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly")
         assert out is GATE_UNREACHABLE
         with patch("ui.api_client.account_status",
                    new=AsyncMock(side_effect=APIError(502, "down"))):
-            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
-                                     "marketplace-panel", "/modules/marketplace-panel")
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly")
         assert out is GATE_UNREACHABLE
 
     @pytest.mark.asyncio
@@ -16119,8 +16137,7 @@ class TestCelerpAccountSurface:
                    new=AsyncMock(return_value={"email_verified": False})), \
              patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": True})):
-            out = await account_gate("tok", "en", "community:acme-crm",
-                                     "community-zone", "/modules/community-panel")
+            out = await account_gate("tok", "en", "community:acme-crm")
         html = to_xml(out)
         assert "Continue with Google" in html
         assert "next=community" in html                # continuation rides the google link

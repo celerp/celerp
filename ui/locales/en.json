@@ -14,7 +14,7 @@
   "account.plan": "Plan: {tier}",
   "account.plan_free": "Free account",
   "account.signed_in_as": "Signed in as {email}",
-  "account.signup_notice": "We use your email to create and run your account and send service messages. We also intend to use it to send Celerp product and service updates and offers, but cannot do so without your consent. By creating the account, you indicate that you do not object. You may object now or later, at no charge, by emailing unsubscribe@celerp.com. See the Privacy Policy.",
+  "account.signup_notice": "We use your email to create and run your account and send service messages. We also intend to use it to send Celerp product and service updates and offers, but cannot do so without your consent. By creating the account, you indicate that you do not object. You may object now or later, at no charge, by emailing unsubscribe@celerp.com.",
   "account.status_unreachable": "Could not check your Celerp account. Check your connection and try again.",
   "account.title": "Celerp account",
   "account.waiting_email": "Check your inbox and click the sign-in link - this screen updates automatically.",

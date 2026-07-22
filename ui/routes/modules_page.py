@@ -38,7 +38,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
-from ui.routes.account import GATE_UNREACHABLE, account_gate
+from ui.routes.account import GATE_UNREACHABLE, account_gate, gate_modal_response
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -997,13 +997,9 @@ def setup_routes(app):
         # Free downloads ask for the free account (the download itself is the
         # moment the account earns its keep), but a relay outage never blocks
         # one - the gate fails open.
-        gate = await account_gate(token, lang, f"community:{module_id}",
-                                  "community-zone", "/modules/community-panel")
+        gate = await account_gate(token, lang, f"community:{module_id}")
         if gate is not None and gate is not GATE_UNREACHABLE:
-            # The Download button targets its own row; the panel replaces the
-            # zone, so retarget the swap.
-            return HTMLResponse(to_xml(gate), headers={
-                "HX-Retarget": "#community-zone", "HX-Reswap": "outerHTML"})
+            return gate_modal_response(gate)
         m, installed = await _community_entry(token, module_id)
         try:
             path = await catalog.download_community_archive(m.get("repo", ""), module_id)
@@ -1120,12 +1116,11 @@ def setup_routes(app):
         # license would be recoverable only on this machine. Sign in first, and
         # fail closed when the account state cannot be checked - checkout must
         # never start against an unknown account.
-        gate = await account_gate(token, lang, f"buy:{slug}:{kind}",
-                                  "marketplace-panel", "/modules/marketplace-panel")
+        gate = await account_gate(token, lang, f"buy:{slug}:{kind}")
         if gate is GATE_UNREACHABLE:
             return _marketplace_error_panel(t("account.status_unreachable", lang), lang)
         if gate is not None:
-            return gate
+            return gate_modal_response(gate)
         m, _installed, _licensed = await _marketplace_entry(token, slug)
         try:
             res = await api.buy_module(token, slug, kind, _checkout_consent(m, lang))

@@ -18,6 +18,7 @@ from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
+from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -3802,7 +3803,7 @@ def _tos_acceptance_card(required_version: str) -> FT:
             Label(t("label.i_agree_to_the"),
                 A(t("settings.terms_of_service"), href="https://relay.celerp.com/terms", target="_blank"),
                 " and ",
-                A(t("settings.privacy_policy"), href="https://relay.celerp.com/privacy", target="_blank"),
+                A(t("settings.privacy_policy"), href=PRIVACY_POLICY_URL, target="_blank"),
                 **{"for": "tos-agree-checkbox"},
             ),
             style="display:flex;align-items:center;margin-bottom:16px;",

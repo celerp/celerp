@@ -14,7 +14,7 @@
   "account.plan": "Plan: {tier}",
   "account.plan_free": "Cuenta gratuita",
   "account.signed_in_as": "Sesión iniciada como {email}",
-  "account.signup_notice": "Usamos su correo para crear y gestionar su cuenta y enviar mensajes de servicio. También queremos usarlo para enviarle novedades y ofertas de productos y servicios de Celerp, pero no podemos hacerlo sin su consentimiento. Al crear la cuenta, indica que no se opone. Puede oponerse ahora o más tarde, sin coste, escribiendo a unsubscribe@celerp.com. Vea la Política de Privacidad.",
+  "account.signup_notice": "Usamos su correo para crear y gestionar su cuenta y enviar mensajes de servicio. También queremos usarlo para enviarle novedades y ofertas de productos y servicios de Celerp, pero no podemos hacerlo sin su consentimiento. Al crear la cuenta, indica que no se opone. Puede oponerse ahora o más tarde, sin coste, escribiendo a unsubscribe@celerp.com.",
   "account.status_unreachable": "No se pudo comprobar su cuenta de Celerp. Compruebe su conexión e inténtelo de nuevo.",
   "account.title": "Cuenta de Celerp",
   "account.waiting_email": "Revise su bandeja de entrada y haga clic en el enlace - esta pantalla se actualiza automáticamente.",

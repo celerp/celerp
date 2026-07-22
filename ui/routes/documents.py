@@ -31,20 +31,17 @@ from celerp.output.doc_print import (
     render_doc_print_html,
 )
 
-# Free-send quota advertised by the relay's public auth-methods endpoint,
-# cached module-wide with a background refresh so the doc detail page never
-# blocks on the relay. Until a fetch lands (or when the relay is unreachable)
-# the quota reads 0 and the send offer simply does not render.
-_free_send_quota_cache: dict = {"value": 0, "at": None, "pending": False}
-_FREE_SEND_QUOTA_TTL = 300.0
+# Free-send quota advertised by the relay's public auth-methods endpoint.
+# Checked once per process, like the entitlement check at startup, with a
+# non-blocking background fetch; until it lands (or when the relay was
+# unreachable at check time) the quota reads 0 and the send offer simply
+# does not render. A restart picks up relay-side changes.
+_free_send_quota_cache: dict = {"value": 0, "fetched": False, "pending": False}
 
 
 def _free_send_quota(token: str) -> int:
     import asyncio
-    import time
-    now = time.monotonic()
-    at = _free_send_quota_cache["at"]
-    if (at is None or now - at > _FREE_SEND_QUOTA_TTL) and not _free_send_quota_cache["pending"]:
+    if not _free_send_quota_cache["fetched"] and not _free_send_quota_cache["pending"]:
         _free_send_quota_cache["pending"] = True
 
         async def _refresh():
@@ -55,7 +52,7 @@ def _free_send_quota(token: str) -> int:
             except Exception:
                 value = 0
             _free_send_quota_cache.update(
-                {"value": value, "at": time.monotonic(), "pending": False})
+                {"value": value, "fetched": True, "pending": False})
 
         asyncio.create_task(_refresh())
     return int(_free_send_quota_cache["value"])
@@ -5830,16 +5827,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ))
         elif _send_ok and free_send_quota > 0:
             # No relay bound: offer sending through a free Celerp account
-            # instead of hiding the send path. The click swaps the signup
-            # panel into the slot below; after verification the poll reloads
-            # this page with the relay connected and the dialog auto-opens.
+            # instead of hiding the send path. The click opens the shared
+            # account-gate modal; after verification the poll reloads this
+            # page with the relay connected and the dialog auto-opens.
             action_btns_left.append(
                 Button(t("account.doc_send_offer_button"), type="button",
-                       hx_get="/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
-                       hx_target="#doc-send-offer", hx_swap="outerHTML",
+                       hx_get="/account/panel?intent=signup"
+                              "&panel=account-gate-panel&next=doc-send&modal=1",
+                       hx_target="#account-gate-host", hx_swap="outerHTML",
                        cls="btn btn--secondary"),
             )
-            action_btns_left.append(Div(id="doc-send-offer"))
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:

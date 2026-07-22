@@ -2678,6 +2678,21 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   background: rgba(0,0,0,0.5);
   backdrop-filter: blur(2px);
 }
+/* The account-gate panel rides inside the shared modal dialog. The panel is
+   the same .cloud-connect-section used embedded in pages, so drop the
+   embedded chrome (outer margin, border) - the dialog is the frame - and
+   neutralize the modal's stacked-form layout: the panel's inline email form
+   lays itself out. */
+.account-gate-modal .cloud-connect-section {
+  margin-top: 0;
+  border: none;
+}
+.account-gate-modal form {
+  padding: 0;
+  gap: 0;
+  flex-direction: row;
+}
+
 .modal-dialog__header {
   display: flex;
   align-items: center;
