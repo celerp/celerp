@@ -83,10 +83,15 @@ def fresh_db():
             os.environ["DATABASE_URL"] = saved_env
         admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
         with admin.connect() as c:
+            # Only client backends: this sweep exists to kill leaked test
+            # connection pools. Autovacuum workers run as the superuser cluster
+            # owner, which a non-superuser test role cannot signal; DROP
+            # DATABASE evicts them itself.
             c.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :d AND pid <> pg_backend_pid()"
+                    "WHERE datname = :d AND pid <> pg_backend_pid() "
+                    "AND backend_type = 'client backend'"
                 ),
                 {"d": dbname},
             )
