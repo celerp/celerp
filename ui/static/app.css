@@ -435,6 +435,7 @@ a:hover { text-decoration: underline; }
 
 /* ─── Valuation bar ───────────────────────────────────────────────────── */
 .valuation-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.soa-batch-list { max-height: 320px; overflow-y: auto; margin-bottom: var(--spacing-sm); }
 .val-chip {
   padding: 4px 10px; background: var(--c-bg3); border: 1px solid var(--c-border);
   border-radius: var(--radius); font-size: 11px; color: var(--c-text2); white-space: nowrap;

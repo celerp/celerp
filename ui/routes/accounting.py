@@ -198,8 +198,12 @@ def _report_header(company: dict, title: str, subtitle: str = "") -> FT:
     )
 
 
-def _print_shell(company: dict, title: str, subtitle: str, body: FT) -> FT:
-    """Minimal printable page: auto-triggers window.print() on load."""
+def _print_shell(company: dict, title: str, subtitle: str, body: FT,
+                 header: bool = True) -> FT:
+    """Minimal printable page: auto-triggers window.print() on load.
+
+    header=False for the statement batch run, where every page carries its own
+    report header instead of the document carrying one shared header."""
     return Html(
         Head(
             Meta(charset="utf-8"),
@@ -208,7 +212,7 @@ def _print_shell(company: dict, title: str, subtitle: str, body: FT) -> FT:
             Style(_PRINT_CSS),
         ),
         Body(
-            _report_header(company, title, subtitle),
+            _report_header(company, title, subtitle) if header else None,
             body,
             Div(NotStr('Powered by <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
             Script("window.onload = function() { window.print(); }"),
@@ -257,6 +261,9 @@ td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 
 /* Page breaks */
 .report-section { page-break-inside: avoid; }
+/* Statement batch run: one contact per printed page */
+.soa-page { break-after: page; }
+.soa-page:last-child { break-after: auto; }
 
 .report-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 2mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
 .report-footer a { color: #aaa; text-decoration: none; }
@@ -464,8 +471,10 @@ def setup_routes(app):
                 nav_active="accounting",
                 request=request,
             )
+        base_currency = ""
         try:
             accounts = (await api.get_chart(token)).get("items", [])
+            base_currency = (await api.get_company(token)).get("currency") or ""
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -478,7 +487,8 @@ def setup_routes(app):
             _accounting_tabs("journal"),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
                                 date_from=date_from, date_to=date_to,
-                                currency=currency, rate=rate),
+                                currency=currency, rate=rate,
+                                base_currency=base_currency),
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
@@ -726,22 +736,120 @@ def setup_routes(app):
             return _soa_merge_redirect(request, data["merged_into"], "/accounting/print/soa",
                                        requested=contact_id)
 
-        contact = data.get("contact") or {}
-        # An outward document: company block (report header), contact block, period, closing.
-        body = Div(
-            (P(t("acct.soa_merged_notice"), cls="report-section")
-             if request.query_params.get("merged_from") else None),
-            Div(
-                H3(t("label.contact"), cls="report-section-title"),
-                P(contact.get("name", "")),
-                P(contact.get("type", ""), cls="report-company-address") if contact.get("type") else None,
-                cls="report-section",
-            ),
-            _soa_table(data, currency, date_from=d_from, date_to=d_to),
-            P(Strong(f"{t('acct.closing_balance')}: {fmt_money(data.get('closing_balance', 0), currency)}"),
-              cls="report-total"),
-        )
+        body = _soa_print_body(data, currency, d_from, d_to,
+                               merged=bool(request.query_params.get("merged_from")))
         return _print_shell(company, t("acct.soa_title"), _period_subtitle(d_from, d_to), body)
+
+    @app.get("/accounting/soa/batch-panel")
+    async def soa_batch_panel(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        d_from = request.query_params.get("date_from", "")
+        d_to = request.query_params.get("date_to", "")
+        try:
+            company = await api.get_company(token)
+            contacts = (await api.list_contacts(token, {"limit": 1000})).get("items", [])
+            ar = await api.get_ar_aging(token)
+            ap = await api.get_ap_aging(token)
+        except APIError as e:
+            return _plain_error_response(e)
+        currency = company.get("currency")
+        ar_by = {l.get("customer_id"): float(l.get("total") or 0) for l in ar.get("lines", [])}
+        ap_by = {l.get("supplier_id"): float(l.get("total") or 0) for l in ap.get("lines", [])}
+        rows = []
+        for c in contacts:
+            cid = c.get("id")
+            if not cid:
+                continue
+            outstanding = ar_by.get(cid, 0.0) - ap_by.get(cid, 0.0)
+            has_balance = bool(ar_by.get(cid) or ap_by.get(cid))
+            rows.append((c, outstanding, has_balance))
+        # The month-end run is "everyone with a balance": those contacts sort
+        # first and come pre-checked; the rest stay one click away (GDR 2e).
+        rows.sort(key=lambda r: (not r[2], (r[0].get("name") or "").lower()))
+        body_rows = [
+            Tr(
+                Td(Input(type="checkbox", name="contact_ids", value=c["id"],
+                         checked=has_balance)),
+                Td(c.get("name", "")),
+                Td(c.get("contact_type") or "customer"),
+                Td(fmt_money(outstanding, currency), cls="cell--number"),
+            )
+            for c, outstanding, has_balance in rows
+        ]
+        return Form(
+            Div(
+                Table(
+                    Thead(Tr(
+                        Th(Input(
+                            type="checkbox", checked=True,
+                            onclick="this.closest('table').querySelectorAll('tbody input[type=checkbox]').forEach(function(cb) { cb.checked = this.checked; }, this)")),
+                        Th(t("label.contact")),
+                        Th(t("th.type")),
+                        Th(t("th.balance"), cls="cell--number"),
+                    )),
+                    Tbody(*body_rows),
+                    cls="data-table",
+                ),
+                cls="soa-batch-list",
+            ),
+            Button(t("btn.print"), type="submit", cls="btn btn--secondary btn--sm mt-sm"),
+            Input(type="hidden", name="date_from", value=d_from),
+            Input(type="hidden", name="date_to", value=d_to),
+            # POST, not GET: a few hundred contact ids overflow a URL, and this
+            # is an action rather than a filter, so GDR 2m does not apply.
+            method="post", action="/accounting/print/soa/batch", target="_blank",
+        )
+
+    @app.post("/accounting/print/soa/batch")
+    async def soa_batch_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        ids = [str(v) for v in form.getlist("contact_ids") if str(v).strip()]
+        if not ids:
+            return PlainTextResponse(t("acct.soa_batch_none_selected"), status_code=400)
+        d_from = str(form.get("date_from", "")).strip()
+        d_to = str(form.get("date_to", "")).strip()
+        params = _date_params(d_from, d_to)
+        try:
+            company = await api.get_company(token)
+        except APIError as e:
+            return _plain_error_response(e)
+        currency = company.get("currency")
+        subtitle = _period_subtitle(d_from, d_to)
+        pages, seen = [], set()
+        for cid in dict.fromkeys(ids):
+            merged = False
+            try:
+                data = await api.get_soa(token, cid, params)
+                winner = data.get("merged_into")
+                if winner:
+                    # The requested contact was merged: print the winner once,
+                    # saying so on its page (GDR 2d).
+                    if winner in seen or winner in ids:
+                        continue
+                    merged = True
+                    cid = winner
+                    data = await api.get_soa(token, winner, params)
+            except APIError as e:
+                if e.status in (401, 403):
+                    return _plain_error_response(e)
+                # A batch that silently drops one contact's statement
+                # understates the run; abort naming the failed contact.
+                return PlainTextResponse(f"Error ({cid}): {e.detail}", status_code=500)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            pages.append(Div(
+                _report_header(company, t("acct.soa_title"), subtitle),
+                _soa_print_body(data, currency, d_from, d_to, merged=merged),
+                cls="soa-page",
+            ))
+        return _print_shell(company, t("acct.soa_title"), subtitle, Div(*pages),
+                            header=False)
 
     # ── CSV export routes ──────────────────────────────────────────────────
 
@@ -1493,9 +1601,10 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
         Td(Input(type="number", name=f"credit_{idx}", value=line.get("credit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"), cls="cell--number"),
-        # Read-only: the local figure is server-computed and must never be a
-        # request field, or a client could post amounts unrelated to the rate.
-        Td("", cls="cell--number cell--muted je-local", data_idx=idx),
+        # Read-only: the book figures are server-computed and must never be
+        # request fields, or a client could post amounts unrelated to the rate.
+        Td("", cls="cell--number cell--muted je-local-debit"),
+        Td("", cls="cell--number cell--muted je-local-credit"),
         Td(Button("✕", type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
                   onclick="celerpJeRemoveLine(this)")),
     )
@@ -1504,7 +1613,8 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
                         idem_token: str, error: str | None = None,
                         date_from: str = "", date_to: str = "",
-                        currency: str = "", rate: str = "") -> FT:
+                        currency: str = "", rate: str = "",
+                        base_currency: str = "") -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -1516,6 +1626,7 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
 
     js = f"""
 var celerpJeIdx = {len(lines)};
+var celerpJeBase = {_json.dumps(base_currency)};
 function celerpJeAddLine() {{
     var tpl = document.getElementById('je-line-tpl').content.cloneNode(true);
     tpl.querySelectorAll('[name]').forEach(function(el) {{
@@ -1547,8 +1658,12 @@ function celerpJeTotals() {{
     var on = fx.currency !== '' && fx.rate > 0;
     document.querySelectorAll('#je-lines [name^="debit_"]').forEach(function(el) {{ d += Math.round((parseFloat(el.value) || 0) * 100); }});
     document.querySelectorAll('#je-lines [name^="credit_"]').forEach(function(el) {{ c += Math.round((parseFloat(el.value) || 0) * 100); }});
-    document.getElementById('je-total-debit').textContent = {_json.dumps(t("acct.total_debit"))} + ': ' + (d / 100).toFixed(2);
-    document.getElementById('je-total-credit').textContent = {_json.dumps(t("acct.total_credit"))} + ': ' + (c / 100).toFixed(2);
+    // Typed columns are foreign under a rate; say so in the header and totals.
+    var fxTag = on ? ' (' + fx.currency + ')' : '';
+    document.getElementById('je-debit-head').textContent = {_json.dumps(t("th.debit"))} + fxTag;
+    document.getElementById('je-credit-head').textContent = {_json.dumps(t("th.credit"))} + fxTag;
+    document.getElementById('je-total-debit').textContent = {_json.dumps(t("acct.total_debit"))} + fxTag + ': ' + (d / 100).toFixed(2);
+    document.getElementById('je-total-credit').textContent = {_json.dumps(t("acct.total_credit"))} + fxTag + ': ' + (c / 100).toFixed(2);
     var chip = document.getElementById('je-balance-chip');
     // Balance is judged on the amounts the user typed, which under a rate are
     // the foreign ones. The server applies the same rule.
@@ -1556,21 +1671,35 @@ function celerpJeTotals() {{
     chip.textContent = balanced ? {_json.dumps(t("acct.balanced"))} : {_json.dumps(t("acct.out_of_balance"))};
     chip.className = balanced ? 'val-chip' : 'val-chip val-chip--alert';
 
-    var head = document.getElementById('je-local-head');
-    head.textContent = on ? {_json.dumps(t("acct.local_amount"))} : '';
+    // The book side reads like a journal: computed debit and credit columns in
+    // the company currency, labelled with its code when known.
+    var baseTag = celerpJeBase ? ' (' + celerpJeBase + ')' : '';
+    document.getElementById('je-local-debit-head').textContent = on ? {_json.dumps(t("th.debit"))} + baseTag : '';
+    document.getElementById('je-local-credit-head').textContent = on ? {_json.dumps(t("th.credit"))} + baseTag : '';
     var localDebit = 0, localCredit = 0;
     document.querySelectorAll('#je-lines tr').forEach(function(row) {{
-        var cell = row.querySelector('.je-local');
-        if (!cell) return;
-        if (!on) {{ cell.textContent = ''; return; }}
+        var dCell = row.querySelector('.je-local-debit');
+        var cCell = row.querySelector('.je-local-credit');
+        if (!dCell || !cCell) return;
+        if (!on) {{ dCell.textContent = ''; cCell.textContent = ''; return; }}
         var dv = parseFloat((row.querySelector('[name^="debit_"]') || {{}}).value) || 0;
         var cv = parseFloat((row.querySelector('[name^="credit_"]') || {{}}).value) || 0;
         // Each line converts and rounds on its own, exactly as the server does,
         // so the preview cannot disagree with what gets posted.
         var ld = Math.round(dv * fx.rate * 100), lc = Math.round(cv * fx.rate * 100);
         localDebit += ld; localCredit += lc;
-        cell.textContent = ((ld || lc) / 100).toFixed(2);
+        dCell.textContent = ld ? (ld / 100).toFixed(2) : '';
+        cCell.textContent = lc ? (lc / 100).toFixed(2) : '';
     }});
+    // Book totals are the column sums; the rounding preview names the 6960
+    // line that reconciles any residual between them.
+    var tld = document.getElementById('je-total-local-debit');
+    var tlc = document.getElementById('je-total-local-credit');
+    tld.hidden = !on; tlc.hidden = !on;
+    if (on) {{
+        tld.textContent = {_json.dumps(t("acct.total_debit"))} + baseTag + ': ' + (localDebit / 100).toFixed(2);
+        tlc.textContent = {_json.dumps(t("acct.total_credit"))} + baseTag + ': ' + (localCredit / 100).toFixed(2);
+    }}
 
     var preview = document.getElementById('je-rounding-preview');
     var residual = localCredit - localDebit;
@@ -1635,9 +1764,10 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
             Table(
                 Thead(Tr(
                     Th(t("th.account")),
-                    Th(t("th.debit"), cls="cell--number"),
-                    Th(t("th.credit"), cls="cell--number"),
-                    Th("", id="je-local-head", cls="cell--number"),
+                    Th(t("th.debit"), id="je-debit-head", cls="cell--number"),
+                    Th(t("th.credit"), id="je-credit-head", cls="cell--number"),
+                    Th("", id="je-local-debit-head", cls="cell--number"),
+                    Th("", id="je-local-credit-head", cls="cell--number"),
                     Th(""),
                 )),
                 Tbody(*rows, id="je-lines"),
@@ -1649,6 +1779,8 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 Div(
                     Span("", id="je-total-debit", cls="val-chip"),
                     Span("", id="je-total-credit", cls="val-chip"),
+                    Span("", id="je-total-local-debit", cls="val-chip", hidden=True),
+                    Span("", id="je-total-local-credit", cls="val-chip", hidden=True),
                     Span("", id="je-balance-chip", cls="val-chip"),
                     cls="valuation-bar",
                 ),
@@ -1792,6 +1924,36 @@ def _soa_table(data: dict, currency: str | None = None,
     )
 
 
+def _soa_print_body(data: dict, currency: str | None, d_from: str, d_to: str,
+                    merged: bool = False) -> FT:
+    """The printable statement for one contact: contact block, statement table,
+    closing balance. Shared by the single print and the batch run."""
+    contact = data.get("contact") or {}
+    return Div(
+        (P(t("acct.soa_merged_notice"), cls="report-section") if merged else None),
+        Div(
+            H3(t("label.contact"), cls="report-section-title"),
+            P(contact.get("name", "")),
+            P(contact.get("type", ""), cls="report-company-address") if contact.get("type") else None,
+            cls="report-section",
+        ),
+        _soa_table(data, currency, date_from=d_from, date_to=d_to),
+        P(Strong(f"{t('acct.closing_balance')}: {fmt_money(data.get('closing_balance', 0), currency)}"),
+          cls="report-total"),
+    )
+
+
+def _soa_batch_reveal(date_from: str, date_to: str) -> FT:
+    """Collapsed batch-print control: the contact list loads only when opened."""
+    return Details(
+        Summary(t("acct.soa_batch_title"), cls="btn btn--ghost btn--sm"),
+        Div(hx_get=_href("/accounting/soa/batch-panel",
+                         {"date_from": date_from, "date_to": date_to}),
+            hx_trigger="intersect once", hx_swap="innerHTML"),
+        cls="soa-batch-reveal mt-md",
+    )
+
+
 def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
               currency: str | None = None, date_from: str = "", date_to: str = "",
               merged_from: str = "") -> FT:
@@ -1809,10 +1971,11 @@ def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
         method="get", action="/accounting",
         cls="flex-row gap-sm",
     )
+    batch = _soa_batch_reveal(date_from, date_to)
     if not contact_id or data is None:
-        return Div(selector, empty_state_cta(t("acct.soa_pick_contact")))
+        return Div(selector, empty_state_cta(t("acct.soa_pick_contact")), batch)
     # The requested contact was merged into this one, so the figures below are
     # not the contact that was asked for. Say so, on screen and on anything
     # printed from it (GDR 2d).
     notice = (Div(t("acct.soa_merged_notice"), cls="error-banner") if merged_from else None)
-    return Div(selector, notice, _soa_table(data, currency, date_from, date_to))
+    return Div(selector, notice, _soa_table(data, currency, date_from, date_to), batch)

@@ -114,6 +114,11 @@ def _patches(**overrides):
         "get_chart": {"items": _CHART, "total": len(_CHART)},
         "list_contacts": {"items": [{"id": "contact:9", "name": "Acme Ltd",
                                      "contact_type": "customer"}], "total": 1},
+        "get_ar_aging": {"as_of": "2026-07-22", "lines": [
+            {"customer_id": "contact:9", "customer_name": "Acme Ltd",
+             "current": 60.0, "d30": 0.0, "d60": 0.0, "d90": 0.0, "d90plus": 0.0,
+             "total": 60.0}], "buckets": {}},
+        "get_ap_aging": {"as_of": "2026-07-22", "lines": []},
     }
     mocks.update(overrides)
     patchers = [patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val))
@@ -525,8 +530,9 @@ _NEW_KEYS = [
     "acct.closing_balance", "acct.err_amounts_numeric", "acct.memo_hint",
     "acct.void_reason_optional", "acct.soa_kind_payment",
     "acct.no_entries_for_account",
-    "acct.record_foreign_currency", "acct.currency_base_hint", "acct.local_amount",
+    "acct.record_foreign_currency", "acct.currency_base_hint",
     "acct.rounding_line_preview", "acct.err_currency_unknown", "acct.err_rate_positive",
+    "acct.soa_batch_title", "acct.soa_batch_none_selected",
 ]
 
 
@@ -675,3 +681,160 @@ def test_fx_line_amounts_blank_when_currency_missing():
 
     assert _fx_line_amounts(100.0, 0, {"currency": None, "rate": 35.0}) == (None, None)
     assert _fx_line_amounts(100.0, 0, {"rate": 35.0}) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# FX entry form: split book-currency columns
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_je_form_splits_book_columns_and_ids_the_headers(ui_client):
+    """The book side reads like a journal: two computed debit/credit columns,
+    not one merged amount, and every currency-bearing header carries an id the
+    script can label with the currency code."""
+    r = await _get(ui_client, "/accounting/journal/new")
+    assert r.status_code == 200
+    html = r.text
+    for hid in ("je-debit-head", "je-credit-head",
+                "je-local-debit-head", "je-local-credit-head"):
+        assert f'id="{hid}"' in html, hid
+    assert 'id="je-local-head"' not in html
+    assert "je-local-debit" in html and "je-local-credit" in html
+    # The merged cell class is gone entirely.
+    assert 'je-local"' not in html
+
+
+@pytest.mark.asyncio
+async def test_je_form_js_knows_the_book_currency(ui_client):
+    """The book-column labels need the company currency; it is injected
+    server-side, never guessed client-side."""
+    r = await _get(ui_client, "/accounting/journal/new")
+    assert 'celerpJeBase = "THB"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_je_form_renders_hidden_book_total_chips(ui_client):
+    """Book totals exist as chips the script reveals only under a rate, so the
+    plain form shows no empty pills."""
+    import re as _re
+    r = await _get(ui_client, "/accounting/journal/new")
+    for cid in ("je-total-local-debit", "je-total-local-credit"):
+        m = _re.search(rf'<span[^>]*id="{cid}"[^>]*>', r.text)
+        assert m, cid
+        assert "hidden" in m.group(0), m.group(0)
+
+
+# ---------------------------------------------------------------------------
+# Statement batch print run
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_soa_tab_offers_batch_print_reveal(ui_client):
+    """Collapsed by default, lazy-loading its contact list only when opened."""
+    r = await _get(ui_client, "/accounting?tab=soa")
+    assert r.status_code == 200
+    assert "soa-batch-reveal" in r.text
+    assert "/accounting/soa/batch-panel" in r.text
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_panel_prechecks_contacts_with_balance(ui_client):
+    """Contacts with an outstanding balance sort first and come pre-checked;
+    zero-balance contacts are listed unchecked below."""
+    import re as _re
+    contacts = {"items": [
+        {"id": "contact:9", "name": "Acme Ltd", "contact_type": "customer"},
+        {"id": "contact:0", "name": "Zero Co", "contact_type": "customer"},
+    ], "total": 2}
+    r = await _get(ui_client, "/accounting/soa/batch-panel",
+                   list_contacts=contacts)
+    assert r.status_code == 200
+    html = r.text
+
+    def _box(cid):
+        m = _re.search(rf'<input[^>]*value="{cid}"[^>]*>', html)
+        assert m, cid
+        return m.group(0)
+
+    assert "checked" in _box("contact:9")
+    assert "checked" not in _box("contact:0")
+    assert html.index("Acme Ltd") < html.index("Zero Co")
+    assert "60.00" in html
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_print_one_page_per_contact(ui_client):
+    r = await _post(ui_client, "/accounting/print/soa/batch",
+                    {"contact_ids": ["contact:9", "contact:8"],
+                     "date_from": "", "date_to": ""})
+    assert r.status_code == 200
+    html = r.text
+    assert html.count('class="soa-page"') == 2
+    assert "break-after: page" in html
+    # Each page is a full outward document with its own report header.
+    assert html.count("report-header") >= 2
+    assert "Acme Ltd" in html
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_print_rejects_empty_selection(ui_client):
+    """GDR 2e: the action is allowed and the refusal is explained."""
+    r = await _post(ui_client, "/accounting/print/soa/batch",
+                    {"date_from": "", "date_to": ""})
+    assert r.status_code == 400
+    assert "Select at least one contact" in r.text
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_print_dedupes_merged_contacts(ui_client):
+    """A merged contact resolves to its winner and the pair prints once, with
+    the substitution said on the page (GDR 2d)."""
+    async def _soa(token, contact_id, params=None):
+        if contact_id == "contact:old":
+            return {"merged_into": "contact:9"}
+        return _SOA
+
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.get_soa", new=AsyncMock(side_effect=_soa)):
+            r = await ui_client.post(
+                "/accounting/print/soa/batch", cookies=_cookies(),
+                data={"contact_ids": ["contact:old", "contact:9"],
+                      "date_from": "", "date_to": ""})
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert r.text.count('class="soa-page"') == 1
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_print_unauthenticated_redirects_login(ui_client):
+    r = await ui_client.post("/accounting/print/soa/batch",
+                             data={"contact_ids": ["contact:9"]})
+    assert r.status_code == 302
+    assert r.headers.get("location", "").startswith("/login")
+
+
+@pytest.mark.asyncio
+async def test_soa_batch_print_aborts_naming_the_contact_on_error(ui_client):
+    """A batch that silently drops one customer's statement is worse than no
+    batch: any per-contact failure aborts the whole run and says whose fetch
+    failed."""
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.get_soa",
+                   new=AsyncMock(side_effect=APIError(500, "boom"))):
+            r = await ui_client.post(
+                "/accounting/print/soa/batch", cookies=_cookies(),
+                data={"contact_ids": ["contact:9"],
+                      "date_from": "", "date_to": ""})
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 500
+    assert "contact:9" in r.text

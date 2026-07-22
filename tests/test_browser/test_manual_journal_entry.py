@@ -113,9 +113,9 @@ def test_manual_je_fx_journey_posts_converts_and_shows_rounding_line(
     _pick_account(3, "1111")
     page.fill('#je-lines [name="credit_3"]', "100.00")
 
-    # The local column shows what will actually be posted, before posting.
+    # The book columns show what will actually be posted, before posting.
     page.wait_for_function(
-        "Array.from(document.querySelectorAll('.je-local'))"
+        "Array.from(document.querySelectorAll('.je-local-debit, .je-local-credit'))"
         ".some(function(c) { return c.textContent.indexOf('100.07') !== -1; })",
         timeout=3000,
     )
