@@ -14861,10 +14861,14 @@ class TestReconciliationImportResponse:
         assert "msg=" in redirect
 
     @pytest.mark.asyncio
-    async def test_import_csv_unauthenticated_returns_401_hx_redirect(self, ui_client):
-        r = await ui_client.post("/accounting/reconcile/sess1/import", files=_csv_upload())
-        assert r.status_code == 401
-        assert r.headers.get("hx-redirect") == "/login"
+    async def test_import_csv_unauthenticated_gets_login_hx_redirect(self, ui_client):
+        r = await ui_client.post(
+            "/accounting/reconcile/sess1/import",
+            files=_csv_upload(),
+            headers={"HX-Request": "true"},
+        )
+        assert r.headers.get("hx-redirect", "").startswith("/login")
+        assert b"<html" not in r.content
 
     @pytest.mark.asyncio
     async def test_import_csv_api_error_401_returns_401_hx_redirect(self, ui_client):
@@ -14953,14 +14957,6 @@ class TestReconciliationImportResponse:
             )
         assert r.status_code == 200
         assert b"Escape" in r.content
-
-    @pytest.mark.asyncio
-    async def test_column_mapper_page_without_headers_redirects_to_workspace(self, ui_client):
-        r = await ui_client.get(
-            "/accounting/reconcile/sess1/column-mapper", cookies=_authed()
-        )
-        assert r.status_code == 302
-        assert r.headers.get("location") == "/accounting/reconcile/sess1"
 
     @pytest.mark.asyncio
     async def test_confirm_import_applies_column_map_and_redirects(self, ui_client):

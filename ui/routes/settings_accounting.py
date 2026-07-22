@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, flash, page_header
 from ui.config import COOKIE_NAME
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select
@@ -444,9 +444,11 @@ def setup_routes(app):
             content = _bank_accounts_tab(banks)
             tab = "bank-accounts"
 
+        msg = request.query_params.get("msg", "").strip()
         return base_shell(
             _section_breadcrumb("Accounting"),
             page_header("Finance Settings"),
+            flash(msg) if msg else None,
             _accounting_settings_tabs(tab),
             content,
             title="Finance Settings - Celerp",
