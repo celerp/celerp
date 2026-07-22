@@ -88,7 +88,19 @@ def sql_ascii_db(mig_db):
 
     admin = create_engine(_url_on_db(src, "postgres"), isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
-        c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        # Not WITH (FORCE): FORCE pg_terminates every backend in the database,
+        # and an autovacuum worker runs as the superuser cluster owner, which a
+        # non-superuser test role cannot signal. Sweep only client backends;
+        # DROP DATABASE evicts autovacuum itself.
+        c.execute(
+            text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = :d AND pid <> pg_backend_pid() "
+                "AND backend_type = 'client backend'"
+            ),
+            {"d": name},
+        )
+        c.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
     admin.dispose()
 
 
