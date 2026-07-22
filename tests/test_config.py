@@ -334,3 +334,15 @@ class TestFirstBootSequence:
         cfg = mod.read_config()
         assert "inventory" in cfg["modules"]["enabled"]
         assert cfg["server"]["api_port"] == 8000
+
+
+def test_tomli_declared_for_pre_311():
+    """celerp/config.py falls back to `import tomli as tomllib` on 3.10; the
+    fallback only works if packaging declares tomli for those interpreters."""
+    import tomllib
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    deps = pyproject["project"]["dependencies"]
+    tomli_specs = [d for d in deps if d.split(";")[0].strip().startswith("tomli")]
+    assert tomli_specs, "tomli missing from dependencies; 3.10 config read fails"
+    assert any('python_version < "3.11"' in d for d in tomli_specs)

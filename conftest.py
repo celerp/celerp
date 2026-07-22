@@ -573,8 +573,25 @@ async def client(session: AsyncSession):
     # The concurrent login gate is bypassed in tests because the tracker is
     # cleared at setup/teardown, so each test starts with an empty registry.
     app.dependency_overrides[get_session] = lambda: session
+
+    # Middleware (DrainMiddleware, SlidingTokenRefreshMiddleware) opens its own
+    # session via get_session_ctx() rather than the injected request session. Each
+    # test runs inside one uncommitted outer transaction on a single connection
+    # (the `session` fixture), so a middleware session on a *separate* connection
+    # blocks on that transaction's row locks - e.g. DrainMiddleware's _get_or_create
+    # INSERT of the SystemRuntimeState singleton the request session is already
+    # holding uncommitted - and hangs until the per-test timeout. Route middleware
+    # to the same shared session (the patch point middleware.py imports for this
+    # purpose) so it joins the one transaction instead of deadlocking against it.
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _shared_session_ctx():
+        yield session
+
     with patch("celerp.gateway.client._client", MagicMock()), \
-         patch("celerp.gateway.state.get_session_token", return_value="test-session-token"):
+         patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
+         patch("celerp.middleware.get_session_ctx", _shared_session_ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()

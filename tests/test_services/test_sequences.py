@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -27,7 +27,7 @@ def _company(**kwargs) -> SimpleNamespace:
 def test_default_pattern_produces_prefix_yymm_format():
     """Default {PREFIX}-{YY}{MM}-{####} pattern produces e.g. INV-2603-0001."""
     c = _company()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     yy = f"{now.year % 100:02d}"
     mm = f"{now.month:02d}"
     ref = next_doc_ref(c, "invoice")
@@ -38,7 +38,7 @@ def test_default_pattern_produces_prefix_yymm_format():
 
 def test_custom_pattern_with_prefix():
     c = _company(sequences={"invoice": {"prefix": "INV", "pattern": "{PREFIX}-{YYYY}-{####}"}})
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     ref = next_doc_ref(c, "invoice")
     assert ref == f"INV-{now.year}-0001"
     ref2 = next_doc_ref(c, "invoice")
@@ -50,7 +50,7 @@ def test_monthly_reset():
     c = _company(sequences={"invoice": {
         "pattern": "{YY}{MM}-{##}", "next": 5, "year": 2026, "month": 2,
     }})
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     ref = next_doc_ref(c, "invoice")
     if now.month != 2 or now.year != 2026:
         # Month changed, so counter reset to 1
@@ -64,14 +64,14 @@ def test_yearly_reset():
     c = _company(sequences={"invoice": {
         "pattern": "{YYYY}-{####}", "prefix": "INV", "next": 10, "year": 2025, "month": 12,
     }})
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     ref = next_doc_ref(c, "invoice")
     assert ref == f"{now.year}-0001"  # Year changed from 2025, reset
 
 
 def test_per_doc_type_independent_sequences():
     c = _company()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     yymm = f"{now.year % 100:02d}{now.month:02d}"
     assert next_doc_ref(c, "invoice") == f"INV-{yymm}-0001"
     assert next_doc_ref(c, "purchase_order") == f"PO-{yymm}-0001"
@@ -104,7 +104,7 @@ def test_validate_pattern_accepts_valid():
 
 def test_preview_pattern():
     preview = preview_pattern("{PREFIX}-{YY}{MM}-{##}", "INV", seq_num=42)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     assert preview == f"INV-{now.year % 100:02d}{now.month:02d}-42"
 
 
@@ -152,13 +152,13 @@ def test_update_sequence_min_next_is_1():
 
 
 def test_expand_pattern_with_dd():
-    now = datetime(2026, 3, 23, tzinfo=UTC)
+    now = datetime(2026, 3, 23, tzinfo=timezone.utc)
     result = _expand_pattern("{DD}/{MM}/{YY}-{###}", "X", now, 7)
     assert result == "23/03/26-007"
 
 
 def test_expand_pattern_hash_padding():
-    now = datetime(2026, 1, 1, tzinfo=UTC)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     assert _expand_pattern("{#####}", "X", now, 42) == "00042"
     assert _expand_pattern("{##}", "X", now, 42) == "42"
     assert _expand_pattern("{##}", "X", now, 1) == "01"

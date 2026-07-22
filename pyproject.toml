@@ -47,6 +47,8 @@ dependencies = [
     # IANA timezone database for zoneinfo. Windows ships no system tz database, so
     # zoneinfo.ZoneInfo() fails there without this; also protects minimal Linux.
     "tzdata>=2024.1",
+    # celerp/config.py falls back to tomli where the stdlib has no tomllib (3.10).
+    "tomli>=2.0; python_version < \"3.11\"",
     # Bundled PostgreSQL 17 for zero-setup pip installs: `celerp init` boots a
     # self-contained cluster when no system Postgres is running (an existing server
     # always wins). Marker-guarded to platforms with wheels — Linux x86_64/aarch64

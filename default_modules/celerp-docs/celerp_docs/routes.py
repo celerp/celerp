@@ -7,7 +7,7 @@ import asyncio
 import csv
 import io
 import uuid
-from datetime import UTC, datetime, date as _date
+from datetime import datetime, timezone, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -1927,7 +1927,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     if payload.amount > inv_outstanding + 1e-9:
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
 
-    payment_date = payload.date or datetime.now(UTC).date().isoformat()
+    payment_date = payload.date or datetime.now(timezone.utc).date().isoformat()
 
     # Both docs are locked (sorted order, so two concurrent applications can
     # never deadlock) while indices are allocated and the events land: a
@@ -2389,7 +2389,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             total=po_total,
             unique_suffix=str(uuid.uuid4()),
             base_currency=_rcv_base_currency,
-            receive_date=datetime.now(UTC).date().isoformat(),
+            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
@@ -2398,7 +2398,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             landed_by_kind=landed_drawdown, receive_suffix=str(uuid.uuid4()),
-            receive_date=datetime.now(UTC).date().isoformat(),
+            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()
@@ -2568,7 +2568,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         if state.get("status") in {"void", "converted"}:
             raise HTTPException(status_code=409, detail="Cannot convert quotation in current status")
         valid_until = state.get("valid_until")
-        if valid_until and valid_until < datetime.now(UTC).date().isoformat():
+        if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
         company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
@@ -2727,7 +2727,7 @@ async def add_doc_note(
             "note": payload.note.strip(),
             "author_id": str(user.id),
             "author_name": getattr(user, "name", None) or user.email,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
@@ -2753,7 +2753,7 @@ async def update_doc_note(
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
         event_type="doc.note_updated",
-        data={"doc_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        data={"doc_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(timezone.utc).isoformat()},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -3303,7 +3303,7 @@ async def finalize_list(
         raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     milestone = behavior(lt).finalize_milestone
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     data: dict = {"status": FINALIZED, "finalized_at": now}
     if milestone == "freeze_onhand":
         # An audit counts each inventory item once, so its manifest is a set keyed by item_id. Collapse
@@ -3494,7 +3494,7 @@ async def add_list_note(
             "note": payload.note.strip(),
             "author_id": str(user.id),
             "author_name": getattr(user, "name", None) or user.email,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
@@ -3520,7 +3520,7 @@ async def update_list_note(
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="list_note",
         event_type="list.note_updated",
-        data={"list_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        data={"list_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(timezone.utc).isoformat()},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -3889,7 +3889,7 @@ async def fulfill_lines(
     if not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
 
@@ -4074,7 +4074,7 @@ async def revert_lines(
     if not to_revert:
         raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
 
@@ -4261,7 +4261,7 @@ async def receive_return(
                 )
 
     # --- Create returned inventory items ---
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     total_cogs = 0.0
     received_items = []
 
@@ -4404,7 +4404,7 @@ async def undo_receive_return(
     if not received_items:
         raise HTTPException(status_code=409, detail="No received return to undo")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
     total_cogs = sum(
         float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
@@ -4511,7 +4511,7 @@ async def undo_receive(
     if not received_item_ids:
         raise HTTPException(status_code=409, detail="No received goods to revert")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     # Pre-flight: verify every created item is still "available" before disposing
     rows_result = await session.execute(
@@ -4633,7 +4633,7 @@ async def upload_doc_file(
             "url": meta["url"],
             "document_tag": None,
             "description": None,
-            "uploaded_at": datetime.now(UTC).isoformat(),
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         actor_id=user.id,
         location_id=None,
@@ -4936,7 +4936,7 @@ async def scan_list(
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     if status == DRAFT:
         if lt == "audit":
@@ -5017,7 +5017,7 @@ async def set_scanned(
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
     targets = set(payload.item_ids)
-    stamp = datetime.now(UTC).isoformat() if payload.scanned else None
+    stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     changed = 0
     for l in lines:
@@ -5174,7 +5174,7 @@ async def send_list(
     row = await _get_list(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Issue the list before sending it")
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
                             "sent_to": payload.sent_to})
@@ -5252,6 +5252,6 @@ async def move_transfer(
         moved += 1
     await _set_list_fields(session, company_id, entity_id, user,
                            {"moved_to_location_id": payload.to_location_id,
-                            "moved_at": datetime.now(UTC).isoformat()})
+                            "moved_at": datetime.now(timezone.utc).isoformat()})
     await session.commit()
     return {"moved": moved, "to_location_id": payload.to_location_id}
