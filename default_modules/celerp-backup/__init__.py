@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """celerp-backup — Cloud backup module for Celerp.
 
-Cloud-gated: requires active Celerp Cloud subscription (X-Session-Token).
+Cloud-gated: requires an active Celerp Connect subscription (X-Session-Token).
 """
 
 PLUGIN_MANIFEST = {

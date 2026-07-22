@@ -78,10 +78,15 @@ def fresh_db():
             os.environ["DATABASE_URL"] = saved_env
         admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
         with admin.connect() as c:
+            # Only this role's backends: the sweep exists to close the test's own
+            # leftover connections, and a non-superuser cannot terminate other
+            # roles' processes anyway (a superuser autovacuum worker on this DB
+            # would fail the whole teardown with InsufficientPrivilege).
             c.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :d AND pid <> pg_backend_pid()"
+                    "WHERE datname = :d AND pid <> pg_backend_pid() "
+                    "AND usename = current_user"
                 ),
                 {"d": dbname},
             )

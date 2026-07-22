@@ -82,6 +82,47 @@ async def test_buy_passes_checkout_url_through(client, relay_env):
 
 
 @pytest.mark.asyncio
+async def test_buy_forwards_custom_text_to_relay(client, relay_env):
+    """Buyer-language purchase disclosures ride to the relay checkout call as
+    custom_text; when none are supplied the key is omitted, not sent as null."""
+    headers = await _register(client)
+    seen: dict = {}
+
+    class _Capture:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kw):
+            return _FakeResp(200, {"items": []})
+
+        async def post(self, url, **kw):
+            if url.endswith("/auth/token"):
+                return _FakeResp(200, {"access_token": "relay-jwt-1"})
+            seen["body"] = kw.get("json")
+            return _FakeResp(200, {"url": "https://checkout.stripe.com/pay/cs_1"})
+
+    with patch("httpx.AsyncClient", _Capture):
+        r = await client.post("/companies/me/modules/buy",
+                              json={"slug": "acme-crm", "kind": "monthly",
+                                    "custom_text": "Sold by Acme Ltd."},
+                              headers=headers)
+        assert r.status_code == 200
+        assert seen["body"]["custom_text"] == "Sold by Acme Ltd."
+
+        r = await client.post("/companies/me/modules/buy",
+                              json={"slug": "celerp-budgeting", "kind": "monthly"},
+                              headers=headers)
+        assert r.status_code == 200
+        assert "custom_text" not in seen["body"]
+
+
+@pytest.mark.asyncio
 async def test_buy_relay_error_maps_status_and_detail(client, relay_env):
     """A non-200 from the relay checkout must surface its status + detail, not a
     generic 500."""

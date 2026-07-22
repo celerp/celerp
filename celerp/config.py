@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # When set, share links include ?src= enabling p2p import by recipients.
     # Leave blank on private/LAN installs — bundle download fallback applies.
     celerp_public_url: str = ""
-    # Cloud Relay (opt-in - leave blank to disable entirely).
+    # Web Access relay (opt-in - leave blank to disable entirely).
     # Set GATEWAY_TOKEN to activate the persistent WS connection to relay.celerp.com.
     # No `[gateway_token]` means no gateway connection, no product telemetry, and
     # no cloud dependency, except a startup subscription check.

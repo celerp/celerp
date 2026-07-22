@@ -10,8 +10,7 @@ Three tabs:
     working Restart button, and load-error surfacing.
   - Community Modules: leads with the build-your-own card, then the community
     listings from the catalog. They sit behind a one-step trust acknowledgment
-    and always carry the grey unverified icon; the table uses the same schema
-    as Installed Modules.
+    and carry no badge; the table uses the same schema as Installed Modules.
   - Marketplace: the official and verified catalog (community-modules
     index.json, public data), served via the relay with repo-direct and
     local-cache fallbacks; see ui.marketplace_catalog for why the relay
@@ -30,13 +29,13 @@ from pathlib import Path
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import sortable_th, filter_th, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
+from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -83,7 +82,7 @@ def _license_upsell(lang: str) -> FT:
     Connect brings it here + across devices/team), not as a punitive error."""
     from celerp.config import ensure_instance_id
     from celerp.gateway.state import build_subscribe_url
-    url = build_subscribe_url(ensure_instance_id(), "cloud")
+    url = build_subscribe_url(ensure_instance_id(), extra="plan=cloud")
     return Div(
         Strong(t("modules.license_move_title", lang), cls="small"),
         P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),
@@ -112,20 +111,37 @@ def _restart_pending(modules: list[dict]) -> bool:
 # ── tabs chrome ────────────────────────────────────────────────────────────────
 
 def _tabs(active: str, lang: str) -> FT:
+    # The marketplace tab carries a shield badge on the left: its listings are
+    # vetted (official and verified only), so the same trust mark used on the
+    # rows also labels the tab.
+    badge = Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted tab-badge",
+                 aria_hidden="true")
     items = [
-        ("local", t("modules.tab_local", lang)),
-        ("community", t("modules.tab_community", lang)),
-        ("marketplace", t("modules.tab_marketplace", lang)),
+        ("local", (t("modules.tab_local", lang),)),
+        ("community", (t("modules.tab_community", lang),)),
+        ("marketplace", (badge, t("modules.tab_marketplace", lang))),
     ]
     return Div(
-        *[A(label, href=f"/modules?tab={key}",
+        *[A(*children, href=f"/modules?tab={key}",
             cls=f"tab {'tab--active' if key == active else ''}")
-          for key, label in items],
+          for key, children in items],
         cls="settings-tabs",
     )
 
 
 # ── local modules panel ────────────────────────────────────────────────────────
+
+def _deps_cell(m: dict, name_map: dict[str, str] | None = None) -> FT:
+    """The Module Dependencies cell: the other modules a listing needs, so nothing
+    is bought or enabled without its prerequisites. `name_map` translates internal
+    module names to their display labels where known (local modules); catalog
+    listings show the dependency ids as declared. Empty shows "--" (rule 2k.i)."""
+    deps = m.get("depends_on") or []
+    if name_map:
+        deps = [name_map.get(d, d) for d in deps]
+    txt = ", ".join(deps)
+    return Td(txt or "--", data_filter_value=txt)
+
 
 def _local_panel(modules: list[dict], lang: str = "en",
                  flash_text: str | None = None, flash_error: bool = False) -> FT:
@@ -142,6 +158,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # order is preserved; the shared table JS keeps this order until a header is
     # clicked to sort.
     modules = sorted(modules, key=lambda m: 0 if (m.get("enabled") or m.get("running")) else 1)
+    name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 
     rows = []
     for m in modules:
@@ -206,6 +223,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         rows.append(Tr(
             Td(Div(Strong(label), Div(description, cls="text-muted small") if description else "", cls="module-name-cell"),
                data_filter_value=label),
+            _deps_cell(m, name_to_label),
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
             Td(*status_parts, data_filter_value=status_filter),
@@ -240,7 +258,6 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # separate confirm button.
     import_section = Div(
         H3(t("btn.import_module", lang), cls="section-title"),
-        P(t("modules.import_warning", lang), cls="text-muted small"),
         Form(
             Input(type="file", name="file", accept=".zip", required=True),
             hx_post="/modules/import",
@@ -257,6 +274,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             cls="btn btn--sm btn--secondary",
             style="display:none;margin-top:6px;",
         ),
+        P(t("modules.import_warning", lang), cls="text-muted small"),
         id="module-import",
         cls="module-import",
     )
@@ -280,20 +298,26 @@ def _local_panel(modules: list[dict], lang: str = "en",
         )
     else:
         content = Div(
-            Table(
-                Thead(Tr(
-                    sortable_th(t("th.module", lang), 0),
-                    sortable_th(t("th.version", lang), 1),
-                    filter_th(t("th.author", lang), 2, sortable=True),
-                    filter_th(t("th.status", lang), 3, sortable=True),
-                    Th(""),
-                )),
-                Tbody(*rows),
-                cls="data-table js-table",
+            Div(table_search("local-modules-table", t("modules.search_placeholder", lang)),
+                cls="table-toolbar"),
+            Div(
+                Table(
+                    Thead(Tr(
+                        sortable_th(t("th.module", lang), 0),
+                        Th(t("th.dependencies", lang)),
+                        sortable_th(t("th.version", lang), 2),
+                        filter_th(t("th.author", lang), 3, sortable=True),
+                        filter_th(t("th.status", lang), 4, sortable=True),
+                        Th(""),
+                    )),
+                    Tbody(*rows),
+                    id="local-modules-table",
+                    cls="data-table js-table",
+                ),
+                Script(COLUMN_FILTER_JS),
+                Script(ENHANCED_TABLE_JS),
+                cls="table-scroll-wrap",
             ),
-            Script(COLUMN_FILTER_JS),
-            Script(ENHANCED_TABLE_JS),
-            cls="table-scroll-wrap",
         )
 
     # Desktop-only affordances light up when the Electron bridge is present.
@@ -379,13 +403,8 @@ _SHIELD_SVG = (
 
 
 def _trust_icon(tier: str, lang: str):
-    if tier == "community":
-        tip, state = t("marketplace.unverified_tip", lang), "unverified"
-    elif tier == "official":
-        tip, state = t("marketplace.official_tip", lang), "trusted"
-    else:
-        tip, state = t("marketplace.verified_tip", lang), "trusted"
-    return Span(NotStr(_SHIELD_SVG), cls=f"trust-icon trust-icon--{state}",
+    tip = t("marketplace.official_tip", lang) if tier == "official" else t("marketplace.verified_tip", lang)
+    return Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -496,7 +515,8 @@ async def _build_marketplace_panel(token: str, lang: str) -> FT:
         children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
     if not trusted:
         children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
-    children.extend(_catalog_card(m, lang, installed, licensed) for m in trusted)
+    else:
+        children.append(_marketplace_table(trusted, installed, licensed, lang))
     return Div(*children, id="marketplace-panel")
 
 
@@ -513,78 +533,132 @@ def _marketplace_error_panel(message: str, lang: str):
     )
 
 
-def _catalog_card(m: dict, lang: str, installed: set[str], licensed: set[str] | None = None):
-    """One catalog entry: summary row, detail drawer with disclosures first."""
-    tier = m["tier"]
-    body = []
-    body.append(P(m["description"], cls="text-muted small", style="margin-top:8px;"))
-    # Disclosures first: what it touches, what it calls. The Marketplace tab lists
-    # only official and verified modules, so these are vetted, not self-declared.
+def _marketplace_module_cell(m: dict, lang: str) -> FT:
+    """Module column for a marketplace listing: name, the vetted disclosures, and
+    a link to the module's page. Marketplace modules are distributed through the
+    relay and are generally closed-source, so the cell links to the listing page,
+    not a public repo. External links open with rel=noopener noreferrer so the
+    opened tab cannot reach back through window.opener."""
+    parts = [Div(_trust_icon(m["tier"], lang), Strong(m["name"]), cls="module-name-cell")]
+    if m.get("description"):
+        parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
-        body.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="small"))
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
     if m.get("network_calls"):
-        body.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="small"))
-    body.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="small"))
-    # Catalog URLs are author-controlled (community listings); every external
-    # link opens with rel=noopener noreferrer so the opened tab cannot reach
-    # back through window.opener.
-    links = []
-    if m.get("repo"):
-        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
-    links.append(A(t("marketplace.feedback", lang),
-                   href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
-                   target="_blank", rel="noopener noreferrer"))
-    body.append(Div(*links, cls="marketplace-card__links"))
-    # CTA per tier.
-    licensed = licensed or set()
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+    links = [A(t("marketplace.view_page", lang),
+               href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
+               target="_blank", rel="noopener noreferrer")]
+    if m.get("feedback"):
+        links.append(A(t("marketplace.feedback", lang), href=m["feedback"],
+                       target="_blank", rel="noopener noreferrer"))
+    parts.append(Div(*links, cls="marketplace-card__links"))
+    return Td(*parts, data_filter_value=m["name"])
+
+
+def _checkout_consent(m: dict, lang: str) -> str:
+    """Purchase disclosures for the Stripe Checkout page, in the buyer's language:
+    for a third-party sale, the seller and the platform's data-sharing note; for
+    every paid module, the licensing terms. Rendered here and passed to the relay
+    to sit as the checkout's custom text, on the screen where the buyer consents
+    and pays. The relay holds no translations, so the language is resolved here."""
+    lines: list[str] = []
+    if m.get("tier") != "official" and m.get("author"):
+        lines.append(t("marketplace.sold_by", lang, author=m["author"]) + " "
+                     + t("marketplace.third_party_data_note", lang, author=m["author"]))
+    lines.append(t("marketplace.buy_note", lang))
+    return "\n\n".join(lines)
+
+
+def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str], *,
+                     downloaded_path: str | None = None) -> FT:
+    """One marketplace listing. The action cell follows ownership, matching the
+    Community tab's Download then Install flow with a Buy step in front of paid
+    modules: installed (nothing to do), paid-and-unowned (Buy), then - once free
+    or owned - Download, then Install. Each Download/Install click swaps this row
+    in place; a failure surfaces as a corner toast. The Price cell always states
+    the catalog price."""
+    row_id = f"marketplace-row-{m['id']}"
     is_paid = bool(m.get("price_monthly") or m.get("price_once"))
+    owned = m["id"] in licensed
     if m["id"] in installed:
-        body.append(Span(t("settings.installed", lang), cls="badge badge--active"))
-    elif is_paid and m["id"] not in licensed:
-        # Official/verified PAID module, not yet owned: Buy button(s). The one-time
-        # purchase copy states plainly it is not a Connect subscription.
+        status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
+                       data_filter_value=t("settings.installed", lang))
+        action_td = Td("--")
+    elif is_paid and not owned:
+        # Paid, not yet owned: Buy button(s). The purchase disclosures (seller,
+        # data-sharing, and licensing terms) sit on the Checkout page, where the
+        # buyer consents and pays - see _checkout_consent - not in this table.
         buys = []
         if m.get("price_monthly"):
             buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
         if m.get("price_once"):
             buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
-        body.append(Div(*buys, cls="marketplace-card__buys",
-                        style="display:flex;gap:8px;flex-wrap:wrap;"))
-        # Third-party (non-official) paid module: the sale is made by the author,
-        # who processes the payment and receives the buyer's order details.
-        # Disclose that before purchase.
-        if tier != "official":
-            body.append(P(Strong(t("marketplace.sold_by", lang, author=m["author"])), " ",
-                          t("marketplace.third_party_data_note", lang, author=m["author"]),
-                          cls="text-muted small"))
-        body.append(P(t("marketplace.buy_note", lang), cls="text-muted small"))
-    elif is_paid:
-        # Owned (licensed): one-click vault install - download, import, enable;
-        # restart activates. Failures re-render with the error and the button
-        # stays, so a failed download is never a dead end.
-        body.append(Div(
-            Span(t("marketplace.owned", lang), cls="badge badge--active"),
-            Button(t("btn.install", lang),
-                   hx_post=f"/modules/marketplace-install?slug={m['id']}",
-                   hx_target="#marketplace-panel", hx_swap="outerHTML",
-                   hx_disabled_elt="this",
-                   cls="btn btn--sm btn--primary"),
-            style="display:flex;gap:8px;align-items:center;",
-        ))
+        status_td = Td("--", data_filter_value="--")
+        action_td = Td(Div(*buys, style="display:flex;gap:8px;flex-wrap:wrap;"))
     else:
-        body.append(A(t("settings.view_install", lang),
-                      href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
-                      target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--primary"))
-    return Details(
-        Summary(
-            _trust_icon(tier, lang),
-            Strong(m["name"]),
-            Span(m["author"], cls="text-muted small"),
-            Span(_catalog_price(m, lang), cls="marketplace-card__price"),
+        # Free, or paid and owned: the same two-step as a community module.
+        # Owned paid modules keep an ownership badge so the buyer sees they hold
+        # the licence; free modules show no status until installed.
+        if owned:
+            status_td = Td(Span(t("marketplace.owned", lang), cls="badge badge--active"),
+                           data_filter_value=t("marketplace.owned", lang))
+        else:
+            status_td = Td("--", data_filter_value="--")
+        if downloaded_path:
+            action_td = Td(Button(t("btn.install", lang),
+                hx_post="/modules/marketplace-install",
+                hx_vals=json.dumps({"slug": m["id"], "path": downloaded_path}),
+                hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
+                cls="btn btn--sm btn--primary"))
+        else:
+            action_td = Td(Button(t("btn.download", lang),
+                hx_post="/modules/marketplace-download",
+                hx_vals=json.dumps({"slug": m["id"]}),
+                hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
+                cls="btn btn--sm btn--secondary"))
+    version = m.get("version")
+    return Tr(
+        _marketplace_module_cell(m, lang),
+        _deps_cell(m),
+        Td(f"v{version}" if version and version != "unknown" else "--"),
+        Td(m.get("author") or "--"),
+        status_td,
+        Td(_catalog_price(m, lang), cls="cell--number"),
+        action_td,
+        id=row_id,
+        cls="data-row",
+    )
+
+
+def _marketplace_table(trusted: list[dict], installed: set[str],
+                       licensed: set[str], lang: str) -> FT:
+    """Marketplace listings, the same table schema as Installed Modules and the
+    Community tab, with a Price column after Status (right-aligned over its
+    figures, per the financial-statement convention)."""
+    return Div(
+        Div(table_search("marketplace-table", t("modules.search_placeholder", lang)),
+            cls="table-toolbar"),
+        Div(
+            Table(
+                Thead(Tr(
+                    sortable_th(t("th.module", lang), 0),
+                    Th(t("th.dependencies", lang)),
+                    sortable_th(t("th.version", lang), 2),
+                    filter_th(t("th.author", lang), 3, sortable=True),
+                    filter_th(t("th.status", lang), 4, sortable=True),
+                    sortable_th(t("th.price", lang), 5, right=True),
+                    Th(""),
+                )),
+                Tbody(*(_marketplace_row(m, lang, installed, licensed) for m in trusted)),
+                id="marketplace-table",
+                cls="data-table js-table",
+            ),
+            Script(COLUMN_FILTER_JS),
+            Script(ENHANCED_TABLE_JS),
+            cls="table-scroll-wrap",
         ),
-        Div(*body, cls="marketplace-card__body"),
-        cls="marketplace-card",
     )
 
 
@@ -626,9 +700,10 @@ def _community_reveal_prompt(n: int, lang: str) -> FT:
 def _community_module_cell(m: dict, lang: str) -> FT:
     """Module column for a community listing: name, description, and the
     disclosures and source links, so the trust information sits inline in the
-    table rather than behind a drawer. That the disclosures are author
-    self-declared is stated once, above the table, not repeated per row."""
-    parts = [Div(_trust_icon("community", lang), Strong(m["name"]), cls="module-name-cell")]
+    table rather than behind a drawer. Community rows carry no badge; that the
+    disclosures are author self-declared is stated once, above the table, not
+    repeated per row."""
+    parts = [Div(Strong(m["name"]), cls="module-name-cell")]
     if m.get("description"):
         parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
@@ -648,19 +723,19 @@ def _community_module_cell(m: dict, lang: str) -> FT:
 
 
 def _community_row(m: dict, lang: str, installed: set[str], *,
-                   downloaded_path: str | None = None, error: str | None = None) -> FT:
+                   downloaded_path: str | None = None) -> FT:
     """One community listing. Three states drive the Status and action cells:
     installed (nothing to do), downloaded (offer Import), or fresh (offer
     Download). Download fetches the author's repo archive; Import installs it -
-    two deliberate clicks, each swapping this row in place."""
+    two deliberate clicks, each swapping this row in place. A failed download or
+    import surfaces as a corner toast (see the routes), not inside the row."""
     row_id = f"community-row-{m['id']}"
-    err_note = Div(error, cls="text-muted small module-load-error") if error else ""
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
                        data_filter_value=t("settings.installed", lang))
         action_td = Td("--")
     elif downloaded_path:
-        status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"), err_note,
+        status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"),
                        data_filter_value=t("marketplace.downloaded", lang))
         action_td = Td(Button(t("btn.import", lang),
             hx_post="/modules/community-import",
@@ -668,7 +743,7 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
             hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
             cls="btn btn--sm btn--primary"))
     else:
-        status_td = Td("--", err_note, data_filter_value="--")
+        status_td = Td("--", data_filter_value="--")
         action_td = Td(Button(t("btn.download", lang),
             hx_post="/modules/community-download",
             hx_vals=json.dumps({"id": m["id"]}),
@@ -677,12 +752,23 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
     version = m.get("version")
     return Tr(
         _community_module_cell(m, lang),
+        _deps_cell(m),
         Td(f"v{version}" if version and version != "unknown" else "--"),
         Td(m.get("author") or "--"),
         status_td,
         action_td,
         id=row_id,
         cls="data-row",
+    )
+
+
+def _row_with_error_toast(row: FT, message: str) -> HTMLResponse:
+    """Swap the row back in place and raise the failure as a corner toast, the
+    app-wide error surface, rather than crowding the status cell."""
+    return HTMLResponse(
+        to_xml(row),
+        headers={"HX-Trigger": json.dumps(
+            {"celerpToast": {"message": message, "type": "error"}})},
     )
 
 
@@ -693,16 +779,20 @@ def _community_table(community: list[dict], installed: set[str], lang: str) -> F
                    id="community-zone")
     return Div(
         P(t("marketplace.community_unverified_note", lang), cls="text-muted small community-unverified-note"),
+        Div(table_search("community-table", t("modules.search_placeholder", lang)),
+            cls="table-toolbar"),
         Div(
             Table(
                 Thead(Tr(
                     sortable_th(t("th.module", lang), 0),
-                    sortable_th(t("th.version", lang), 1),
-                    filter_th(t("th.author", lang), 2, sortable=True),
-                    filter_th(t("th.status", lang), 3, sortable=True),
+                    Th(t("th.dependencies", lang)),
+                    sortable_th(t("th.version", lang), 2),
+                    filter_th(t("th.author", lang), 3, sortable=True),
+                    filter_th(t("th.status", lang), 4, sortable=True),
                     Th(""),
                 )),
                 Tbody(*(_community_row(m, lang, installed) for m in community)),
+                id="community-table",
                 cls="data-table js-table",
             ),
             Script(COLUMN_FILTER_JS),
@@ -892,7 +982,8 @@ def setup_routes(app):
         try:
             path = await catalog.download_community_archive(m.get("repo", ""), module_id)
         except Exception:
-            return _community_row(m, lang, installed, error=t("marketplace.download_failed", lang))
+            return _row_with_error_toast(_community_row(m, lang, installed),
+                                         t("marketplace.download_failed", lang))
         return _community_row(m, lang, installed, downloaded_path=path)
 
     @app.post("/modules/community-import")
@@ -909,11 +1000,13 @@ def setup_routes(app):
             data = catalog.read_staged_archive(path)
             await api.import_module_zip(token, f"{module_id}.zip", data)
         except APIError as e:
-            return _community_row(m, lang, installed, downloaded_path=path,
-                                  error=e.detail or str(e))
+            return _row_with_error_toast(
+                _community_row(m, lang, installed, downloaded_path=path),
+                e.detail or str(e))
         except (ValueError, OSError):
-            return _community_row(m, lang, installed, downloaded_path=path,
-                                  error=t("marketplace.download_failed", lang))
+            return _row_with_error_toast(
+                _community_row(m, lang, installed, downloaded_path=path),
+                t("marketplace.import_failed", lang))
         # Installed: drop the staged archive and re-read the installed set so the
         # row reflects reality (the module now appears in get_modules).
         try:
@@ -929,22 +1022,18 @@ def setup_routes(app):
         if redirect:
             return redirect
         lang = get_lang(request)
-        # The restart button lives in two panels (local-modules and marketplace);
-        # each targets its own id, so echo it back to keep the swap in place.
-        panel = request.query_params.get("panel", "local-modules-panel")
-        marketplace = panel == "marketplace-panel"
+        # Enabling and restarting a module - however it was installed - happen in
+        # the Installed tab, so the restart banner always swaps that panel.
         try:
             await api.restart_system(token)
         except APIError as e:
-            if marketplace:
-                return _marketplace_error_panel(e.detail or str(e), lang)
             modules = []
             try:
                 modules = await api.get_modules(token)
             except APIError:
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
-        return _restarting_panel(lang, panel_id=panel)
+        return _restarting_panel(lang, panel_id="local-modules-panel")
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):
@@ -993,46 +1082,83 @@ def setup_routes(app):
         lang = get_lang(request)
         slug = request.query_params.get("slug", "")
         kind = request.query_params.get("kind", "monthly")
+        m, _installed, _licensed = await _marketplace_entry(token, slug)
         try:
-            res = await api.buy_module(token, slug, kind)
+            res = await api.buy_module(token, slug, kind, _checkout_consent(m, lang))
         except APIError as e:
             return _marketplace_error_panel(e.detail or str(e), lang)
         return _buy_waiting_panel(res.get("url", ""), slug, lang)
 
-    @app.post("/modules/marketplace-install")
-    async def modules_marketplace_install(request: Request):
-        """One-click install of an owned (or free) marketplace module: the local
-        API downloads from the relay, imports, and enables; restart activates.
-        Errors stay on screen with a way back - the Install button re-renders
-        with the catalog, so retrying is always possible."""
+    async def _marketplace_entry(token: str, slug: str):
+        """Resolve a marketplace listing by slug plus the current installed and
+        licensed sets. Falls back to a minimal record so an unknown slug still
+        renders a row."""
+        try:
+            modules_list, _ = await catalog.fetch_catalog()
+        except Exception:
+            modules_list = []
+        m = next((x for x in modules_list if x["id"] == slug), None) \
+            or {"id": slug, "name": slug, "tier": "verified", "license": "-"}
+        installed = set()
+        try:
+            installed = {x["name"] for x in await api.get_modules(token)}
+        except APIError:
+            pass
+        licensed = set()
+        try:
+            licensed = set(await api.module_licenses(token))
+        except APIError:
+            pass
+        return m, installed, licensed
+
+    @app.post("/modules/marketplace-download")
+    async def modules_marketplace_download(request: Request):
+        """Step one of installing a marketplace module: the local API fetches it
+        from the relay and stages it. On success the row offers Install; a failure
+        returns the row with a corner toast, so retrying is always possible."""
         token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
-        slug = request.query_params.get("slug", "")
+        form = await request.form()
+        slug = str(form.get("slug", ""))
+        m, installed, licensed = await _marketplace_entry(token, slug)
         try:
-            info = await api.marketplace_install(token, slug)
+            res = await api.marketplace_download(token, slug)
         except APIError as e:
-            return _marketplace_error_panel(e.detail or str(e), lang)
-        return Div(
-            Div(t("marketplace.install_success", lang,
-                  name=info.get("display_name") or info.get("name", slug)),
-                cls="flash flash--success"),
-            P(t("settings._a_restart_is_required_for_module_changes_to_take", lang),
-              cls="text-muted small"),
-            Div(
-                Button(t("btn.restart_now", lang),
-                       hx_post="/modules/restart?panel=marketplace-panel",
-                       hx_target="#marketplace-panel", hx_swap="outerHTML",
-                       cls="btn btn--sm btn--primary"),
-                Button(t("btn.back", lang),
-                       hx_get="/modules/marketplace-panel",
-                       hx_target="#marketplace-panel", hx_swap="outerHTML",
-                       cls="btn btn--sm btn--secondary"),
-                style="display:flex;gap:8px;",
-            ),
-            id="marketplace-panel", cls="settings-card",
-        )
+            return _row_with_error_toast(
+                _marketplace_row(m, lang, installed, licensed), e.detail or str(e))
+        return _marketplace_row(m, lang, installed, licensed,
+                                downloaded_path=res.get("path"))
+
+    @app.post("/modules/marketplace-install")
+    async def modules_marketplace_install(request: Request):
+        """Step two: install the staged archive. The module lands disabled, the
+        same as a community import - enabling and restarting are the deliberate
+        steps in the Installed tab. A failure surfaces as a corner toast with the
+        row intact."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        form = await request.form()
+        slug = str(form.get("slug", ""))
+        path = str(form.get("path", ""))
+        m, installed, licensed = await _marketplace_entry(token, slug)
+        try:
+            await api.marketplace_install(token, path)
+        except APIError as e:
+            return _row_with_error_toast(
+                _marketplace_row(m, lang, installed, licensed, downloaded_path=path),
+                e.detail or str(e))
+        # Installed: re-read the installed set so the row reflects reality (the
+        # module now appears in get_modules).
+        installed = set()
+        try:
+            installed = {x["name"] for x in await api.get_modules(token)}
+        except APIError:
+            pass
+        return _marketplace_row(m, lang, installed, licensed)
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):

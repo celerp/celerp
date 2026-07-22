@@ -778,7 +778,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     try:
         from celerp.config import ensure_instance_id
         from celerp.gateway.state import build_subscribe_url
-        subscribe_url = build_subscribe_url(ensure_instance_id(), "cloud")
+        subscribe_url = build_subscribe_url(ensure_instance_id(), extra="plan=cloud")
     except Exception:
         pass
 

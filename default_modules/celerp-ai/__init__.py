@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """celerp-ai — AI query module for Celerp.
 
-Cloud-gated: requires active Celerp Cloud+AI subscription (X-Session-Token).
+Cloud-gated: requires an active Connect + AI subscription (X-Session-Token).
 """
 
 PLUGIN_MANIFEST = {

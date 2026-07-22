@@ -2034,11 +2034,15 @@ async def import_module_path(token: str, path: str) -> dict:
         return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
 
 
-async def buy_module(token: str, slug: str, kind: str) -> dict:
-    """POST /companies/me/modules/buy - get a Stripe Checkout URL for a paid module."""
+async def buy_module(token: str, slug: str, kind: str, custom_text: str = "") -> dict:
+    """POST /companies/me/modules/buy - get a Stripe Checkout URL for a paid module.
+    custom_text carries the buyer-language purchase disclosures shown on the
+    Checkout page."""
+    payload: dict = {"slug": slug, "kind": kind}
+    if custom_text:
+        payload["custom_text"] = custom_text
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/modules/buy",
-                                   json={"slug": slug, "kind": kind})).json()
+        return _raise(await c.post("/companies/me/modules/buy", json=payload)).json()
 
 
 async def module_licenses(token: str) -> list[str]:
@@ -2048,12 +2052,21 @@ async def module_licenses(token: str) -> list[str]:
         return (r.json().get("licensed", []) or []) if r.status_code == 200 else []
 
 
-async def marketplace_install(token: str, slug: str) -> dict:
-    """POST /companies/me/modules/marketplace-install - download a marketplace
-    module from the relay and install + enable it (the download can take a while)."""
+async def marketplace_download(token: str, slug: str) -> dict:
+    """POST /companies/me/modules/marketplace-download - fetch a marketplace
+    module from the relay and stage it for install (the download can take a
+    while). Returns the staged path the following Install reads."""
     async with _api_client(token, timeout=90.0) as c:
-        return _raise(await c.post("/companies/me/modules/marketplace-install",
+        return _raise(await c.post("/companies/me/modules/marketplace-download",
                                    json={"slug": slug})).json()
+
+
+async def marketplace_install(token: str, path: str) -> dict:
+    """POST /companies/me/modules/marketplace-install - install a previously
+    staged marketplace archive. The module lands disabled, ready to enable."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/marketplace-install",
+                                   json={"path": path})).json()
 
 
 async def restart_system(token: str) -> dict:
@@ -2142,6 +2155,13 @@ async def get_relay_status(token: str) -> dict:
     """GET /settings/cloud-status — returns {connected, relay_status, ...}."""
     async with _api_client(token) as c:
         return _raise(await c.get("/settings/cloud-status")).json()
+
+
+async def get_billing_portal_url(token: str) -> str:
+    """POST /settings/cloud/billing-portal - Stripe portal URL for managing the
+    Celerp subscription (cancel, change card, invoices)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/cloud/billing-portal")).json()["portal_url"]
 
 
 async def get_backup_status(token: str) -> dict:

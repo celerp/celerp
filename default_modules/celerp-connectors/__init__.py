@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """celerp-connectors — External platform sync connectors for Celerp.
 
-Cloud-gated via X-Session-Token (Celerp Cloud subscription required).
+Cloud-gated via X-Session-Token (Celerp Connect subscription required).
 
 Bundled connectors
 ------------------
@@ -23,7 +23,7 @@ PLUGIN_MANIFEST = {
     "display_name": "Connectors",
     "description": (
         "Sync products, orders, and contacts from Shopify, QuickBooks, and "
-        "Xero. Requires Celerp Cloud subscription."
+        "Xero. Requires Celerp Connect subscription."
     ),
     "license": "LicenseRef-Proprietary",
     "author": "Celerp",

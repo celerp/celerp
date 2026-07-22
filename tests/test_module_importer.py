@@ -63,6 +63,33 @@ def test_nested_zip_installs_under_manifest_name(module_dir):
     assert (module_dir / "my-module" / "__init__.py").exists()
 
 
+def test_repo_archive_with_module_in_subfolder_installs(module_dir):
+    # A repo (like the module template) keeps the module in a subfolder beside a
+    # README, lint, and tests. The importer finds the PLUGIN_MANIFEST folder and
+    # installs only that, under the manifest name.
+    data = _zip_bytes({
+        "acme-maintenance/__init__.py": MANIFEST,
+        "acme-maintenance/inner/__init__.py": "x = 1",
+        "README.md": "how to use",
+        "tests/test_it.py": "y = 1",
+    }, root="celerp-module-template-abc123/")
+    info = install_from_zip(data)
+    assert info["name"] == "my-module"
+    assert (module_dir / "my-module" / "__init__.py").exists()
+    assert (module_dir / "my-module" / "inner" / "__init__.py").exists()
+    # Only the module folder lands; the repo's README and tests do not.
+    assert not (module_dir / "my-module" / "README.md").exists()
+
+
+def test_repo_archive_with_two_modules_refused(module_dir):
+    data = _zip_bytes({
+        "mod-a/__init__.py": MANIFEST,
+        "mod-b/__init__.py": MANIFEST.replace("my-module", "other-mod"),
+    }, root="wrap/")
+    with pytest.raises(ModuleImportError, match="more than one module"):
+        install_from_zip(data)
+
+
 # ── zip: refusals ──────────────────────────────────────────────────────────────
 
 def test_zip_slip_refused(module_dir):

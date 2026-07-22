@@ -447,6 +447,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px;
 }
 .search-input:focus { outline: none; border-color: var(--c-accent); }
+.table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .filter-select {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
   border-radius: var(--radius); padding: 5px 10px; font-size: 12px; cursor: pointer;
@@ -2642,15 +2643,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 .connector-action-area { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
-.connector-section-title {
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  margin: 24px 0 10px;
-}
-
 /* --- Form hints --- */
 .form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
 
@@ -2966,16 +2958,13 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .reprice-refresh:hover { color: var(--c-text); background: var(--c-bg2); }
 
 /* ── Marketplace catalog (repo-direct) ─────────────────────────────────── */
-/* One trust icon, two states: black = verified/official, grey = unverified.
-   Luminance difference, safe for color blindness; tooltips get aria-labels. */
+/* The trust icon marks a verified or official marketplace listing; community
+   rows carry no badge. Tooltips get aria-labels. */
 .trust-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; cursor: help; }
 .trust-icon--trusted { color: var(--c-text); }
-.trust-icon--unverified { color: #9aa0a6; }
-.marketplace-card { margin-top: 8px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg); }
-.marketplace-card > summary { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; list-style: none; }
-.marketplace-card > summary::-webkit-details-marker { display: none; }
-.marketplace-card__price { margin-left: auto; color: var(--c-text2); font-size: 12px; white-space: nowrap; }
-.marketplace-card__body { padding: 0 14px 12px; border-top: 1px solid var(--c-border); }
+/* The shield badge on the Verified Marketplace tab: no help cursor, sits on the
+   tab baseline next to the label. */
+.tab-badge { margin-right: 6px; vertical-align: -2px; cursor: inherit; }
 .marketplace-card__links { display: flex; gap: 14px; margin: 8px 0; font-size: 12px; }
 .marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }
 .module-license-upsell { margin-top: 6px; padding: 10px 12px; max-width: 360px; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
@@ -2984,10 +2973,19 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
    they need vertical breathing room the fixed-height app tables do not. Scoped
    to the two modules panels; the global .data-table rule is untouched. */
 #local-modules-panel .data-table td,
-#community-zone .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+#community-zone .data-table td,
+#marketplace-panel .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+/* Standard module column: bound the name/description column so long copy wraps at
+   a readable measure instead of stretching the table off-screen. Same on all
+   three module lists. */
+#local-modules-panel .data-table td:first-child,
+#community-zone .data-table td:first-child,
+#marketplace-panel .data-table td:first-child { max-width: 34rem; }
 /* Community disclosures sit below the description and read quieter than it. */
 .community-disclosure { margin: 2px 0; font-size: 11px; font-style: italic; color: var(--c-text2); }
 /* The self-declared caveat, stated once above the community table. */
 .community-unverified-note { margin-bottom: 12px; }
 /* Gap between the build-your-own card and the community listings below it. */
 .module-build-card { margin-bottom: 24px; }
+/* Keep the file chooser clear of the installed-modules table below it. */
+.module-import { margin-bottom: 20px; }

@@ -9,7 +9,7 @@ any other celerp.* internal. The loader will reject modules that do so.
 Current public API
 ------------------
 ai_query(query, company_id, session_token, db_session)
-    Run an AI query through the Celerp Cloud AI service.
+    Run an AI query through the Celerp Connect AI service.
     Requires an active Cloud+AI subscription.
     Raises HTTPException(401) if not subscribed.
     Raises HTTPException(402) if quota exceeded.
@@ -30,7 +30,7 @@ async def ai_query(
     session_token: str,
     db_session: "AsyncSession",
 ) -> dict:
-    """Run an AI query through the Celerp Cloud AI service.
+    """Run an AI query through the Celerp Connect AI service.
 
     Routes through session_gate + quota check. Quota is decremented from
     the Cloud+AI subscription associated with this instance.
@@ -78,8 +78,8 @@ async def ai_query(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
-                "AI queries require an active Celerp Cloud+AI subscription. "
-                f"Subscribe at {relay_subscribe_url(anchor='ai')}"
+                "AI queries require an active Connect + AI subscription. "
+                f"Subscribe at {relay_subscribe_url(plan='ai')}"
             ),
         )
 
@@ -89,7 +89,7 @@ async def ai_query(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
                 "Session token is invalid or expired. "
-                "Ensure Cloud Relay is enabled in Settings > Cloud Relay."
+                "Reconnect web access under Settings > Web Access."
             ),
         )
 

@@ -1442,7 +1442,7 @@ async def put_units(
 
 
 # ---------------------------------------------------------------------------
-# Cloud Relay toggle
+# Web access relay toggle
 # ---------------------------------------------------------------------------
 
 class RelayEnablePayload(BaseModel):
@@ -1455,7 +1455,7 @@ async def enable_relay(
     payload: RelayEnablePayload,
     _company_id=Depends(get_current_company_id),
 ) -> dict:
-    """Activate the Cloud Relay for this instance.
+    """Activate the relay for this instance.
 
     Stores the gateway token in runtime settings and starts the WS connection
     immediately (no restart required). Admin-only.
@@ -1479,12 +1479,12 @@ async def enable_relay(
         _gw.set_client(gw)
         asyncio.create_task(gw.run())
 
-    return {"ok": True, "message": "Cloud Relay activated."}
+    return {"ok": True, "message": "Web access activated."}
 
 
 @router.post("/me/relay/disable", dependencies=[Depends(require_admin)])
 async def disable_relay(_company_id=Depends(get_current_company_id)) -> dict:
-    """Deactivate the Cloud Relay. Stops cloudflared and closes the WS connection. Admin-only."""
+    """Deactivate the relay. Stops cloudflared and closes the WS connection. Admin-only."""
     from celerp.config import settings as _cfg
     from celerp.gateway import client as _gw
     from celerp.gateway.state import set_session_token
@@ -1495,7 +1495,7 @@ async def disable_relay(_company_id=Depends(get_current_company_id)) -> dict:
         _gw.set_client(None)
     _cfg.gateway_token = ""
     set_session_token("")
-    return {"ok": True, "message": "Cloud Relay deactivated."}
+    return {"ok": True, "message": "Web access deactivated."}
 
 
 # ── Module management ──────────────────────────────────────────────────────────
@@ -1714,6 +1714,7 @@ async def _relay_creds() -> tuple[str, str]:
 class _BuyBody(BaseModel):
     slug: str
     kind: str = "monthly"   # monthly | once
+    custom_text: str | None = None   # buyer-language purchase disclosures for the Checkout page
 
 
 @router.post("/me/modules/buy", dependencies=[Depends(require_admin)])
@@ -1722,9 +1723,12 @@ async def buy_module(body: _BuyBody) -> dict:
     The UI opens it in the browser, then polls the license. Admin only."""
     import httpx
     url, jwt = await _relay_creds()
+    payload: dict = {"slug": body.slug, "kind": body.kind}
+    if body.custom_text:
+        payload["custom_text"] = body.custom_text
     async with httpx.AsyncClient(timeout=10.0) as c:
         r = await c.post(f"{url}/marketplace/checkout",
-                         json={"slug": body.slug, "kind": body.kind},
+                         json=payload,
                          headers={"Authorization": f"Bearer {jwt}"})
     if r.status_code != 200:
         raise HTTPException(status_code=r.status_code,
@@ -1764,64 +1768,70 @@ def _relay_error_detail(resp, fallback: str) -> str:
         return fallback
 
 
-class _MarketplaceInstallBody(BaseModel):
+class _MarketplaceDownloadBody(BaseModel):
     slug: str
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_admin)])
-async def marketplace_install(
-    body: _MarketplaceInstallBody,
-    company_id=Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Download a marketplace module from the relay, install it through the shared
-    importer, and enable it (restart activates it). Admin only.
+class _MarketplaceInstallBody(BaseModel):
+    path: str
+
+
+def _marketplace_staging_dir() -> "Path":
+    """Where a licensed marketplace archive waits between Download and Install.
+    Server-owned; the client only ever sees an opaque path into it."""
+    from pathlib import Path
+
+    from celerp.config import settings as _s
+
+    d = Path(_s.data_dir) / "marketplace-downloads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
+    """Read a staged archive and the trust flags the server recorded beside it,
+    refusing any path outside the staging directory so a client-supplied path
+    cannot read arbitrary files. official/premium come from the server-written
+    sidecar, never from the client: the client only hands back the opaque path,
+    so it cannot promote a third-party module to official or a paid one to free.
+    """
+    import json
+    from pathlib import Path
+
+    base = _marketplace_staging_dir().resolve()
+    p = Path(path).resolve()
+    if base not in p.parents:
+        raise HTTPException(status_code=400, detail="Staged archive path is invalid.")
+    sidecar = p.with_suffix(".json")
+    if not p.is_file() or not sidecar.is_file():
+        raise HTTPException(status_code=410,
+                            detail="This download has expired. Download it again.")
+    try:
+        flags = json.loads(sidecar.read_text())
+    except (ValueError, OSError):
+        raise HTTPException(status_code=410,
+                            detail="This download is unreadable. Download it again.")
+    flags = flags if isinstance(flags, dict) else {}
+    return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
+
+
+@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_admin)])
+async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
+    """Stage a marketplace module for install: fetch it from the relay and hold
+    the archive on disk, ready for a following Install. Admin only.
 
     The relay enforces the gates at token issuance: a paid module needs an active
     license, third-party code needs a passed security scan. Never-stuck by design:
-    every attempt requests a FRESH one-time download token, so any failure - relay
-    down, download interrupted, bad archive - is fully recoverable by fixing the
-    cause and clicking Install again; nothing is half-committed.
+    every Download requests a FRESH one-time token, so any failure - relay down,
+    download interrupted - is fully recoverable by clicking Download again. The
+    bytes land in the staging area only; nothing is installed until Install.
     """
-    import asyncio
     import json
-    import os
-    import shutil
     from pathlib import Path
 
     import httpx
 
-    from celerp.modules.importer import (
-        MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
-    )
-    from celerp.modules.loader import read_manifest_metadata
-
-    module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
-
-    # Idempotent retry: if a PRIOR attempt already landed this exact module on
-    # disk (e.g. install succeeded but the enable step below failed), don't
-    # re-download - just make sure it's enabled. Without this, retrying after
-    # that specific partial failure hits the importer's "already exists,
-    # remove it first" collision with no recovery path (never-stuck, in fact).
-    if module_dir and (Path(module_dir) / body.slug).is_dir():
-        existing_meta = read_manifest_metadata(Path(module_dir) / body.slug)
-        # Require the on-disk manifest to actually parse to THIS slug (no default):
-        # read_manifest_metadata returns {} for a missing/unparseable/half-written
-        # __init__.py, and a bare `.get("name", body.slug)` would then treat any
-        # leftover or foreign directory of the same name as a valid prior install,
-        # silently enabling it. Fall through to the normal download path instead,
-        # where the importer's collision check gives a clear, actionable error.
-        if existing_meta.get("name") == body.slug:
-            from celerp.modules.registry import enable
-            from celerp.config import set_enabled_modules
-            company = await session.get(Company, company_id)
-            if company is None:
-                raise HTTPException(status_code=404, detail="Company not found")
-            company.settings = enable(company.settings or {}, body.slug)
-            await session.commit()
-            set_enabled_modules([body.slug])
-            return {"ok": True, "restart_required": True, "name": body.slug,
-                   "display_name": existing_meta.get("display_name", body.slug)}
+    from celerp.modules.importer import MAX_ARCHIVE_BYTES
 
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
@@ -1873,36 +1883,58 @@ async def marketplace_install(
 
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
+
+    # Stage the bytes plus a server-owned sidecar carrying the relay's trust
+    # verdict, so Install imports with the right official/paid flags without
+    # trusting the client or re-contacting the relay.
+    dest = _marketplace_staging_dir() / f"{body.slug}.zip"
+    dest.write_bytes(data)
+    dest.with_suffix(".json").write_text(
+        json.dumps({"is_official": is_official, "is_paid": is_paid}))
+    return {"ok": True, "path": str(dest)}
+
+
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_admin)])
+async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
+    """Install a staged marketplace module through the shared importer. Admin only.
+
+    Reads the archive Download staged (and the trust flags the server recorded
+    beside it) and installs it exactly like every other module package. The
+    module lands DISABLED; enabling and restarting are the same deliberate steps
+    in the Installed tab that a community module uses - the two tabs behave the
+    same way once the package is on disk. A name mismatch is rejected and nothing
+    is left behind, so Install can always be retried.
+    """
+    import asyncio
+    import os
+    import shutil
+    from pathlib import Path
+
+    from celerp.modules.importer import ModuleImportError, install_from_zip
+
+    data, is_official, is_paid = _read_staged_marketplace(body.path)
     try:
         info = await asyncio.to_thread(
             install_from_zip, data, official=is_official, premium=is_paid)
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    if info["name"] != body.slug:
+    staged = Path(body.path).resolve()
+    slug = staged.stem
+    if info["name"] != slug:
         # A package whose manifest name differs from the catalog slug must not
         # stay installed (it would dodge the slug's license/scan identity).
+        module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
         if module_dir:
             shutil.rmtree(Path(module_dir) / info["name"], ignore_errors=True)
         raise HTTPException(
             status_code=422,
             detail="The downloaded package does not match the requested module.")
 
-    # Enable so the next restart activates it - same path as the enable endpoint.
-    from celerp.modules.registry import enable
-    from celerp.config import set_enabled_modules
-
-    company = await session.get(Company, company_id)
-    if company is None:
-        # The module IS on disk at this point (install_from_zip already landed
-        # it). Report the real failure rather than a false "ok": a silent skip
-        # here would claim success while leaving the module un-enabled with no
-        # company row to retry against.
-        raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = enable(company.settings or {}, body.slug)
-    await session.commit()
-    set_enabled_modules([body.slug])
-    return {"ok": True, "restart_required": True, **info}
+    # Landed on disk: drop the staged archive and its sidecar.
+    staged.unlink(missing_ok=True)
+    staged.with_suffix(".json").unlink(missing_ok=True)
+    return {"ok": True, **info}
 
 
 @router.delete("/me", dependencies=[Depends(require_admin)])

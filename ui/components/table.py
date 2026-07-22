@@ -252,6 +252,9 @@ COLUMN_FILTER_JS = """
           if(!ok){show=false;break;}
           if(s.from&&cv<s.from){show=false;break;}
           if(s.to&&cv>s.to){show=false;break;}
+        } else if(key==='_search_'){
+          // Free-text search box (table_search): match the row's whole text.
+          if(s&&r.textContent.toLowerCase().indexOf(s)<0){show=false;break;}
         } else if(s&&!s.has(cellText(r,+key))){show=false;break;}
       }
       r.classList.toggle('dp-row-hidden',!show);
@@ -325,6 +328,17 @@ COLUMN_FILTER_JS = """
     if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
   });
   document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  // Free-text search box (table_search): filters its table's rows in place, ANDing
+  // with any active column funnels since both funnel state and search live in the
+  // same per-table state object.
+  document.addEventListener('input',function(e){
+    var inp=e.target;
+    if(!(inp.classList&&inp.classList.contains('js-table-search')))return;
+    var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;
+    var a=active(t),q=inp.value.trim().toLowerCase();
+    if(q)a['_search_']=q;else delete a['_search_'];
+    apply(t);
+  });
   // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.
   document.addEventListener('change',function(e){
     var inp=e.target;
@@ -2008,6 +2022,22 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         id="search-input",
         onkeydown=enter_js,
         title="Use a comma (or Enter) for OR — e.g. scan multiple barcodes one after another",
+    )
+
+
+def table_search(table_id: str, placeholder: str = "Search…") -> FT:
+    """A client-side free-text filter for a bounded `js-table` (all rows already on
+    the page). Typing hides non-matching rows in place and composes with the column
+    funnels; ESC clears it. `table_id` is the id of the table it filters. Pair with
+    COLUMN_FILTER_JS on the page (which owns the `.js-table-search` handler)."""
+    return Input(
+        type="search",
+        placeholder=placeholder,
+        aria_label=placeholder,
+        cls="search-input js-table-search",
+        onkeydown="if(event.key==='Escape'){this.value='';"
+                  "this.dispatchEvent(new Event('input',{bubbles:true}));}",
+        **{"data-search-for": table_id},
     )
 
 

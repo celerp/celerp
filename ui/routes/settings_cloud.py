@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Settings - Web Access: Cloud Relay connection, TOS, Team infrastructure."""
+"""Settings - Web Access: Celerp Connect connection, TOS, Team infrastructure."""
 
 from __future__ import annotations
 
@@ -28,10 +28,13 @@ def _has_team_features() -> bool:
 
 
 def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") -> FT:
-    tabs = [("status", t("cloud.tab_connection", lang))]
+    tabs = [("status", t("settings.team_url", lang))]
     if has_team_features:
         tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
-    tabs.append(("connectors", t("cloud.tab_connectors", lang, default="Connectors")))
+    # One tab per connector category, labelled by what the sync does for the
+    # customer (same keys as the old in-tab section headings).
+    tabs.append(("website", t("connectors.group_website", lang)))
+    tabs.append(("accounting", t("connectors.group_accounting", lang)))
     # Payments lives with Web Access: it only works cloud-connected, and a
     # not-yet-connected visitor lands amid the plans/features pitch instead of
     # a dead Connect button. Links to its own page (needs live status).
@@ -71,7 +74,6 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 def _value_prop_page(iid: str, lang: str = "en") -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
     from celerp.gateway.state import build_subscribe_url
-    subscribe_base = build_subscribe_url(iid)
 
     return Div(
         # Hero - explain the relay concept simply
@@ -138,7 +140,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b3", lang),
                     t("cloud.plan_cloud_b4", lang),
                 ],
-                subscribe_base + "#cloud",
+                build_subscribe_url(iid, extra="plan=cloud"),
                 lang=lang,
             ),
             _plan_card(
@@ -148,9 +150,8 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b1", lang),
                     t("cloud.plan_ai_b2", lang),
                     t("cloud.plan_ai_b3", lang),
-                    t("cloud.plan_ai_b4", lang),
                 ],
-                subscribe_base + "#cloud-ai",
+                build_subscribe_url(iid, extra="plan=ai"),
                 featured=True,
                 lang=lang,
             ),
@@ -163,7 +164,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_team_b3", lang),
                     t("cloud.plan_team_b4", lang),
                 ],
-                subscribe_base + "#team",
+                build_subscribe_url(iid, extra="plan=team"),
                 lang=lang,
             ),
             cls="cloud-plans",
@@ -467,9 +468,9 @@ def setup_routes(app):
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab()
-        elif tab == "connectors":
+        elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
-            content = await connectors_tab_content(lang, token=token)
+            content = await connectors_tab_content(lang, token=token, category=tab)
         else:
             backup_data: dict | None = None
             try:

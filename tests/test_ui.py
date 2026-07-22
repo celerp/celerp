@@ -2805,6 +2805,17 @@ class TestCollapsibleSidebar:
         assert "/settings/inventory" in html
         assert "/settings/accounting" in html
 
+    def test_sidebar_footer_links_carry_tooltips(self):
+        """The four kernel footer links explain themselves before the click:
+        each carries a title tooltip describing what the page is for."""
+        from fasthtml.common import to_xml
+        from ui.components.shell import _sidebar
+        html = to_xml(_sidebar("dashboard", lang="en", role="owner"))
+        assert 'title="Your company name, address, tax and bank details' in html
+        assert 'title="Company-wide preferences, user accounts, backups' in html
+        assert 'title="Install, update, or remove the modules' in html
+        assert 'title="Let your team use Celerp from other devices' in html
+
     @pytest.mark.asyncio
     async def test_sidebar_no_duplicate_settings_links(self, ui_client):
         """Settings nav links are deduplicated - each key appears exactly once."""
@@ -8084,6 +8095,45 @@ class TestModulesUI:
         assert body.index("module-import") < body.index("data-table js-table")
 
     @pytest.mark.asyncio
+    async def test_import_warning_sits_below_chooser(self, ui_client):
+        """The third-party warning follows the file chooser, so the Choose File
+        control comes directly after the Import Module heading."""
+        from contextlib import ExitStack
+        mocks = {k: patch(k, new=v) for k, v in _SETTINGS_MOCKS_MODULES.items()}
+        with ExitStack() as stack:
+            for m in mocks.values():
+                stack.enter_context(m)
+            r = await ui_client.get("/modules", cookies=_authed())
+        body = r.content.decode()
+        assert body.index("module-import-form") < body.index("same access as Celerp itself")
+
+    @pytest.mark.asyncio
+    async def test_installed_table_has_dependencies_column_and_search(self, ui_client):
+        """Dependencies sit right of Module (labels, not internal names; '--' when
+        none), and the tab carries the client-side search box."""
+        mods = [
+            {"name": "celerp-base", "label": "Celerp Base", "version": "1.0",
+             "author": "Celerp", "enabled": True, "running": True},
+            {"name": "celerp-ext", "label": "Celerp Ext", "version": "1.0",
+             "author": "Celerp", "enabled": True, "running": True,
+             "depends_on": ["celerp-base"]},
+        ]
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES,
+                 "ui.api_client.get_modules": AsyncMock(return_value=mods)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        body = r.content.decode()
+        assert ">Dependencies<" in body
+        assert body.index(">Module<") < body.index(">Dependencies<") < body.index(">Version<")
+        # the dependency shows its display label, mapped from the internal name
+        assert 'data-filter-value="Celerp Base">Celerp Base</td>' in body
+        assert "js-table-search" in body
+        assert 'data-search-for="local-modules-table"' in body
+
+    @pytest.mark.asyncio
     async def test_installed_tab_has_no_build_card(self, ui_client):
         """Build-your-own moved to the Community tab; it is gone from Installed."""
         from contextlib import ExitStack
@@ -8323,12 +8373,39 @@ class TestMarketplaceUI:
         assert b"Budgeting" in r.content
         assert b"$15/mo" in r.content
         assert b"trust-icon--trusted" in r.content
+        # the marketplace uses the same table schema as the other module lists,
+        # with a Price column
+        assert b"data-table js-table" in r.content
+        assert b">Price<" in r.content
+        # Dependencies sit right of Module ('--' here: the fixture declares
+        # none), and the tab carries the client-side search box
+        body = r.content.decode()
+        assert body.index(">Module<") < body.index(">Dependencies<") < body.index(">Version<")
+        assert b'data-search-for="marketplace-table"' in r.content
+        # marketplace modules are relay-distributed and generally closed-source,
+        # so the row links to the listing page, not a public repo
+        assert b"View page" in r.content
+        assert b"View source" not in r.content
         # community entries live in their own tab now, never on the marketplace
         assert b"Equipment Maintenance" not in r.content
         # the marketplace tab carries the paid-listing entry point: the author
         # dashboard (sign in, connect Stripe, publish), not the free registry
         assert b"List Your Modules" in r.content
         assert b'href="https://www.celerp.com/authors"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_panel_lists_declared_dependencies(self, ui_client):
+        """A listing that declares depends_on shows them in the Dependencies
+        cell, so nothing is bought without its prerequisites in view."""
+        cat = [{**_CATALOG_FIXTURE[0],
+                "depends_on": ["celerp-accounting", "celerp-inventory"]}]
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert r.status_code == 200
+        assert b"celerp-accounting, celerp-inventory" in r.content
 
     @pytest.mark.asyncio
     async def test_panel_cache_banner(self, ui_client):
@@ -8377,7 +8454,8 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert acks == [1]
         assert b"Equipment Maintenance" in r.content
-        assert b"trust-icon--unverified" in r.content
+        # community rows carry no trust badge; only the marketplace does
+        assert b"trust-icon" not in r.content
         # each listing offers a Download button that stages the author's archive
         assert b"/modules/community-download" in r.content
         assert b">Download<" in r.content
@@ -8386,6 +8464,10 @@ class TestMarketplaceUI:
         assert b"/modules?import=1" not in r.content
         # the self-declared caveat is stated once above the table, not per row
         assert b"author self-declared and unverified" in r.content
+        # Dependencies sit right of Module, and the tab carries the search box
+        body = r.content.decode()
+        assert body.index(">Module<") < body.index(">Dependencies<") < body.index(">Version<")
+        assert b'data-search-for="community-table"' in r.content
         assert b"(author self-declared)" not in r.content
         # same table schema as the Installed Modules table
         assert b"data-table js-table" in r.content
@@ -8447,7 +8529,7 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_community_download_failure_keeps_download_button(self, ui_client):
-        """A failed download degrades to the row's error note, Download still offered."""
+        """A failed download raises a corner toast and keeps the Download button."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -8459,6 +8541,7 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert b"/modules/community-download" in r.content   # Download button still there
         assert b"/modules/community-import" not in r.content
+        assert "celerpToast" in r.headers.get("HX-Trigger", "")   # error goes to the toast
 
     @pytest.mark.asyncio
     async def test_community_import_installs_staged_archive(self, ui_client):
@@ -8483,8 +8566,8 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_community_import_failure_keeps_import_button(self, ui_client):
-        """A failed install keeps the row in the Downloaded state with an error,
-        so a retry is still one click away."""
+        """A failed install keeps the row in the Downloaded state and raises the
+        real error as a corner toast, so a retry is still one click away."""
         from ui.api_client import APIError
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
@@ -8498,8 +8581,9 @@ class TestMarketplaceUI:
                                            "path": "/data/community-downloads/equipment-maintenance.zip"},
                                      cookies=_authed())
         assert r.status_code == 200
-        assert b"already exists" in r.content
         assert b"/modules/community-import" in r.content   # Import still offered for retry
+        trigger = r.headers.get("HX-Trigger", "")
+        assert "celerpToast" in trigger and "already exists" in trigger   # error in the toast
 
     @pytest.mark.asyncio
     async def test_panel_requires_admin(self, ui_client):
@@ -8517,16 +8601,14 @@ class TestMarketplaceUI:
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
         assert b"/modules/buy?slug=celerp-budgeting" in r.content
         assert b"$15/mo" in r.content
-        assert b"doesn't include Celerp Connect" in r.content   # the no-double-charge note
-        # An OFFICIAL (first-party) module is sold by us - no third-party
-        # "Sold by" data-sharing disclosure.
+        # Purchase disclosures moved to the Checkout page; the listing stays clean.
+        assert b"doesn't include Celerp Connect" not in r.content
         assert b"Sold by" not in r.content
 
     @pytest.mark.asyncio
-    async def test_third_party_paid_module_discloses_seller_and_data_sharing(self, ui_client):
-        """A third-party (verified/community) paid module is sold by its author,
-        so the buyer's details go to the seller. Disclose that before purchase
-        (GDPR transparency)."""
+    async def test_third_party_paid_table_has_no_inline_disclosure(self, ui_client):
+        """The seller and data-sharing disclosures render on the Checkout page, so
+        a third-party listing row stays clean - just the Buy step."""
         third_party = [{
             "id": "acme-crm", "name": "Acme CRM", "description": "CRM by Acme.",
             "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
@@ -8538,9 +8620,31 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
         assert b"/modules/buy?slug=acme-crm" in r.content
-        assert b"Sold by" in r.content and b"Acme Ltd" in r.content
-        # Counsel-approved wording: names the seller as independent controller.
-        assert b"controls that data independently" in r.content
+        assert b"Sold by" not in r.content
+        assert b"controls that data independently" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_third_party_checkout_carries_seller_and_data_sharing(self, ui_client):
+        """Buying a third-party module sends the seller, data-sharing, and licensing
+        disclosures to the relay as the Checkout page's custom text, in the buyer's
+        language - the point where they consent and pay (GDPR transparency)."""
+        third_party = [{
+            "id": "acme-crm", "name": "Acme CRM", "description": "CRM by Acme.",
+            "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
+            "price_monthly": 9.0}]
+        buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_acme"})
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(third_party, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.buy_module", new=buy),
+        ):
+            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
+        assert r.status_code == 200
+        consent = buy.call_args.args[3]
+        assert "Sold by Acme Ltd" in consent
+        assert "controls that data independently" in consent
+        assert "doesn't include Celerp Connect" in consent
 
     @pytest.mark.asyncio
     async def test_paid_module_shows_owned_when_licensed(self, ui_client):
@@ -8554,8 +8658,13 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_buy_returns_waiting_panel_with_checkout_url(self, ui_client):
-        with patch("ui.api_client.buy_module",
-                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.buy_module",
+                  new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})),
+        ):
             r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
                                      cookies=_authed())
         assert r.status_code == 200
@@ -8610,8 +8719,13 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_buy_error_stays_on_screen(self, ui_client):
         from ui.api_client import APIError
-        with patch("ui.api_client.buy_module",
-                   new=AsyncMock(side_effect=APIError(409, "This module's author is not able to accept payments right now."))):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.buy_module",
+                  new=AsyncMock(side_effect=APIError(409, "This module's author is not able to accept payments right now."))),
+        ):
             r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
                                      cookies=_authed())
         assert r.status_code == 200
@@ -8620,38 +8734,100 @@ class TestMarketplaceUI:
         assert b'hx-trigger="load"' not in r.content
 
     @pytest.mark.asyncio
-    async def test_owned_module_shows_install_button(self, ui_client):
+    async def test_owned_module_shows_download_button(self, ui_client):
+        """An owned paid module drops the Buy step: it shows an ownership badge
+        and offers Download, the same first step a free or community module has."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
         ):
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
-        assert b"/modules/marketplace-install?slug=celerp-budgeting" in r.content
+        assert b"/modules/marketplace-download" in r.content
+        assert b">Download<" in r.content
+        assert b">Owned<" in r.content                       # ownership still shown
+        assert b"/modules/buy" not in r.content              # no Buy step once owned
 
     @pytest.mark.asyncio
-    async def test_marketplace_install_success_offers_restart(self, ui_client):
-        with patch("ui.api_client.marketplace_install",
-                   new=AsyncMock(return_value={"ok": True, "restart_required": True,
-                                               "name": "celerp-budgeting",
-                                               "display_name": "Budgeting"})):
-            r = await ui_client.post("/modules/marketplace-install?slug=celerp-budgeting",
-                                     cookies=_authed())
+    async def test_marketplace_download_stages_and_offers_install(self, ui_client):
+        """Download stages the licensed archive and swaps the row to an Install
+        button carrying the staged path."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.marketplace_download",
+                  new=AsyncMock(return_value={"ok": True,
+                                              "path": "/data/marketplace-downloads/celerp-budgeting.zip"})),
+        ):
+            r = await ui_client.post("/modules/marketplace-download",
+                                     data={"slug": "celerp-budgeting"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"Budgeting" in r.content
-        assert b"/modules/restart" in r.content
+        assert b"/modules/marketplace-install" in r.content
+        assert b"celerp-budgeting.zip" in r.content          # path passed to install
+        assert b">Install<" in r.content
 
     @pytest.mark.asyncio
-    async def test_marketplace_install_error_stays_with_way_back(self, ui_client):
+    async def test_marketplace_download_failure_keeps_download_button(self, ui_client):
+        """A failed download raises a corner toast and keeps the Download button."""
         from ui.api_client import APIError
-        with patch("ui.api_client.marketplace_install",
-                   new=AsyncMock(side_effect=APIError(502, "The module download failed. Try again."))):
-            r = await ui_client.post("/modules/marketplace-install?slug=celerp-budgeting",
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.marketplace_download",
+                  new=AsyncMock(side_effect=APIError(502, "The module download failed. Try again."))),
+        ):
+            r = await ui_client.post("/modules/marketplace-download",
+                                     data={"slug": "celerp-budgeting"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/marketplace-download" in r.content   # Download button still there
+        assert b"/modules/marketplace-install" not in r.content
+        assert "celerpToast" in r.headers.get("HX-Trigger", "")   # error goes to the toast
+
+    @pytest.mark.asyncio
+    async def test_marketplace_install_lands_installed(self, ui_client):
+        """Install lands the staged archive; once it appears in get_modules the
+        row shows Installed, the same terminal state a community import reaches."""
+        installed_after = [{"name": "celerp-budgeting", "label": "Budgeting",
+                            "version": "1.0", "author": "Celerp", "enabled": False, "running": False}]
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=installed_after)),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.marketplace_install",
+                  new=AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
+                                              "display_name": "Budgeting"})),
+        ):
+            r = await ui_client.post("/modules/marketplace-install",
+                                     data={"slug": "celerp-budgeting",
+                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
                                      cookies=_authed())
         assert r.status_code == 200
-        assert b"download failed" in r.content
-        assert b"/modules/marketplace-panel" in r.content   # explicit way back
-        assert b'hx-trigger="load"' not in r.content        # error is not auto-wiped
+        assert b"badge--active" in r.content            # Installed badge
+        assert b">Install<" not in r.content            # no Install button once installed
+
+    @pytest.mark.asyncio
+    async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
+        """A failed install keeps the row in the Downloaded state (Install still
+        offered) and raises the real error as a corner toast, so a retry is one
+        click away and the error is never auto-wiped."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.marketplace_install",
+                  new=AsyncMock(side_effect=APIError(422, "The downloaded package does not match the requested module."))),
+        ):
+            r = await ui_client.post("/modules/marketplace-install",
+                                     data={"slug": "celerp-budgeting",
+                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/marketplace-install" in r.content   # Install button still there
+        assert "celerpToast" in r.headers.get("HX-Trigger", "")
+        assert b'hx-trigger="load"' not in r.content          # error is not auto-wiped
 
 
 # ---------------------------------------------------------------------------
@@ -15286,6 +15462,75 @@ class TestCelerpAccountSurface:
         assert b"intent=claim" in r.content
 
     @pytest.mark.asyncio
+    async def test_activate_success_reloads_the_web_access_page(self, ui_client):
+        """A successful connect changes the whole page chrome (value-prop
+        landing -> connected tabs), so the response reloads the page instead
+        of swapping a panel inside the stale landing page."""
+        with patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"connected": True, "relay_status": "active",
+                                               "public_url": "https://co.celerp.app",
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_activate_error_stays_inline(self, ui_client):
+        """A failed connect keeps the inline error - no page reload."""
+        with patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"error": "No subscription found.",
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert b"No subscription found." in r.content
+
+    @pytest.mark.asyncio
+    async def test_claim_connected_reloads_the_web_access_page(self, ui_client):
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"connected": True, "relay_status": "active",
+                                               "public_url": "https://co.celerp.app",
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.com", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_poll_reloads_web_access_page_once_relay_connects(self, ui_client):
+        """The signup/poll flow hosted on the Web Access page also lands on
+        the connected page once activation brings the relay up."""
+        status = {"email": "o@shop.com", "email_verified": True, "tier": "cloud",
+                  "pending_selection": False, "linked_elsewhere": False}
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
+        ):
+            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
+                                    cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_poll_keeps_signed_in_panel_when_relay_not_up(self, ui_client):
+        """A verified account whose activation does not bring the relay up
+        (e.g. free tier) keeps the signed-in panel - reloading would re-show
+        the landing page and hide the account state."""
+        status = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+                  "pending_selection": False, "linked_elsewhere": False}
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"error": "no subscription"})),
+        ):
+            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
+                                    cookies=_authed())
+        assert r.status_code == 200
+        assert b"Signed in as" in r.content
+
+    @pytest.mark.asyncio
     async def test_google_button_opens_browser_and_waits(self, ui_client):
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={
@@ -15382,15 +15627,21 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_third_party_disclosure_names_seller_in_data_note(self, ui_client):
         """The checkout data-sharing note names the seller as the independent
-        controller (counsel D.6.4 wording)."""
+        controller (counsel D.6.4 wording). The note rides on the Stripe Checkout
+        page as custom text, where the buyer consents and pays."""
         cat = [{"id": "acme-crm", "name": "Acme CRM", "description": "d",
                 "tier": "verified", "author": "Acme Ltd", "license": "Proprietary",
                 "price_monthly": 9.0}]
+        buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_acme"})
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.buy_module", new=buy),
         ):
-            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
-        assert b"share your email address and purchase record with Acme Ltd" in r.content
-        assert b"controls that data independently" in r.content
+            r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
+        assert r.status_code == 200
+        consent = buy.call_args.args[3]
+        assert "share your email address and purchase record with Acme Ltd" in consent
+        assert "controls that data independently" in consent
+        assert "international-transfer safeguards" in consent

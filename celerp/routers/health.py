@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,6 +124,19 @@ async def cloud_status() -> dict:
         "public_url": settings.celerp_public_url,
         "gateway_token_set": bool(settings.gateway_token),
     }
+
+
+@router.post("/settings/cloud/billing-portal")
+async def cloud_billing_portal() -> dict:
+    """Create a Stripe Billing Portal session via the relay so the merchant can
+    manage their subscription (cancel, change card, download invoices)."""
+    from celerp.services.payments import billing_portal_url
+    url = await billing_portal_url()
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not open subscription management. Check that web access is connected, then try again.")
+    return {"portal_url": url}
 
 
 @router.get("/settings/backup-status")

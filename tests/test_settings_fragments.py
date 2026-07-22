@@ -161,6 +161,30 @@ async def test_cloud_status_connected_relay_ok(client):
 
 
 # ---------------------------------------------------------------------------
+# /settings/cloud/billing-portal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_billing_portal_returns_relay_url(client):
+    """Proxies the relay's Stripe Billing Portal session URL to the UI."""
+    with patch("celerp.services.payments.billing_portal_url",
+               AsyncMock(return_value="https://billing.stripe.com/p/session_x")):
+        r = await client.post("/settings/cloud/billing-portal")
+    assert r.status_code == 200
+    assert r.json()["portal_url"] == "https://billing.stripe.com/p/session_x"
+
+
+@pytest.mark.asyncio
+async def test_billing_portal_unavailable_is_an_error(client):
+    """Relay unreachable or no billing account: an explanatory 502, never a
+    fabricated URL."""
+    with patch("celerp.services.payments.billing_portal_url", AsyncMock(return_value=None)):
+        r = await client.post("/settings/cloud/billing-portal")
+    assert r.status_code == 502
+    assert "subscription management" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
 # /settings/cloud — value-prop page (unconnected state)
 # ---------------------------------------------------------------------------
 

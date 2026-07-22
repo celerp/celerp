@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Online invoice payment via Stripe Connect, brokered by Celerp Cloud (mocked).
+"""Online invoice payment via Stripe Connect, brokered by Celerp Connect (mocked).
 
 The instance holds no Stripe credentials - checkout creation, session status and
 Connect onboarding are all cloud calls, mocked here at the payments-service boundary.

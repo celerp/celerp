@@ -1422,20 +1422,27 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
     if user_level >= ROLE_LEVELS["admin"]:
         settings_link.append(
             A(t("nav.company_details", lang), href="/finance/company-details",
+              title=t("nav.company_details_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'company-details' else ''}"),
         )
     settings_link.append(
-        A(t("nav.settings", lang), href="/settings/general", cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
+        A(t("nav.settings", lang), href="/settings/general",
+          title=t("nav.settings_tip", lang),
+          cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
     )
     # Modules is a top-level surface, not a settings tab: it sits between
     # Global Config and Web Access, visible to owner/admin only.
     if user_level >= ROLE_LEVELS["admin"]:
         settings_link.append(
-            A(t("nav.modules", lang), href="/modules", cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
+            A(t("nav.modules", lang), href="/modules",
+              title=t("nav.modules_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
         )
     if user_level >= ROLE_LEVELS["manager"]:
         settings_link.append(
-            A(t("msg._web_access"), href="/settings/cloud", cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),
+            A(t("msg._web_access", lang), href="/settings/cloud",
+              title=t("nav.web_access_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),
         )
     return Nav(
         Div(

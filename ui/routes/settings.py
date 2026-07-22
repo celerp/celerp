@@ -1657,13 +1657,6 @@ def setup_routes(app):
         connected = data.get("connected", False)
 
         iid = ensure_instance_id()
-        # Include local app URL so Stripe success page can offer a direct return link
-        local_url = str(request.base_url).rstrip("/")
-        from celerp.gateway.state import build_subscribe_url
-        subscribe_url = build_subscribe_url(iid, extra=f"local_url={local_url}")
-
-        billing_portal_url = f"{subscribe_url}#manage"
-
         if connected:
             tier = data.get("tier") or "unknown"
             last_backup = data.get("last_backup")
@@ -1676,10 +1669,26 @@ def setup_routes(app):
                 Br(),
                 Span(f"Email: {email_used} / {email_quota} sent this period", cls="settings-hint"),
                 Br(),
-                A(t("settings.manage_subscription"), href=billing_portal_url, target="_blank", cls="auth-link"),
+                A(t("settings.manage_subscription"), href="/settings/billing-portal", target="_blank", cls="auth-link"),
                 cls="cloud-status-connected",
             )
         return _cloud_relay_unconnected(iid)
+
+    @app.get("/settings/billing-portal")
+    async def billing_portal_redirect(request: Request):
+        """Open the Stripe Billing Portal for the Celerp subscription (cancel,
+        change card, invoices). Linked from the Web Access connected-status card."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        redir = _check_role(request, "admin")
+        if redir:
+            return redir
+        try:
+            url = await api.get_billing_portal_url(token)
+        except APIError as e:
+            return base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
+        return RedirectResponse(url, status_code=302)
 
     def _relay_base() -> str:
         from celerp.config import settings as _s
@@ -1720,10 +1729,10 @@ def setup_routes(app):
                 data.get("tos_version"),
             )
 
-        return _cloud_relay_tab(
-            relay_status=data.get("relay_status", "connecting"),
-            public_url=data.get("public_url", ""),
-        )
+        # Connected: the page chrome changes with the relay state (value-prop
+        # landing vs connected tabs), so load the page fresh instead of
+        # swapping only the panel.
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
     @app.get("/topbar-company-switcher")
     async def topbar_company_switcher(request: Request):
@@ -1846,10 +1855,8 @@ def setup_routes(app):
             return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
-        return _cloud_relay_tab(
-            relay_status=data.get("relay_status", "connecting"),
-            public_url=data.get("public_url", ""),
-        )
+        # Same as cloud_activate: connecting changes the whole page, reload it.
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
     def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
         """Render the subscription selection UI when multiple subs match an email.
@@ -1860,7 +1867,7 @@ def setup_routes(app):
         chosen subscription_id and the original email.
         """
         def _tier_label(tier: str) -> str:
-            return {"cloud": "Connect", "ai": "AI + Connect", "team": "Team"}.get(tier, tier.title())
+            return {"cloud": "Connect", "ai": "Connect + AI", "team": "Team"}.get(tier, tier.title())
 
         def _match_row(m: dict, idx: int) -> FT:
             slug = m.get("slug")
@@ -2070,10 +2077,8 @@ def setup_routes(app):
             return _cloud_relay_unconnected(iid, error=err)
 
         if data.get("connected"):
-            return _cloud_relay_tab(
-                relay_status=data.get("relay_status", "connecting"),
-                public_url=data.get("public_url", ""),
-            )
+            # Same as cloud_activate: connecting changes the whole page, reload it.
+            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
         # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
         return _cloud_relay_unconnected(
@@ -3653,7 +3658,7 @@ def _cloud_relay_unconnected(
     show_email_form: bool = True,
     show_header: bool = True,
 ) -> FT:
-    """Render the unconnected state of the Cloud Relay tab (used by HTMX responses too).
+    """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
     Args:
         show_header: When False, suppress the H3 title, description, and Subscribe button.
@@ -3771,7 +3776,7 @@ def _tos_acceptance_card(required_version: str) -> FT:
 
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
-    """Cloud Relay settings tab.
+    """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
@@ -3829,7 +3834,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                     hx_post="/settings/cloud-disconnect",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
-                    hx_confirm="Disconnect from Cloud Relay? You can reconnect anytime.",
+                    hx_confirm="Disconnect web access? You can reconnect anytime.",
                 ),
                 style="margin-top:12px;",
             ),
@@ -3860,7 +3865,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
                 t("cloud.backup_feature_name", lang),
                 t("cloud.backup_desc", lang),
                 price="USD $29/mo",
-                anchor="cloud",
+                plan="cloud",
                 lang=lang,
             ),
             # Local export/import always available
@@ -4019,7 +4024,7 @@ def _connectors_tab() -> FT:
                 "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
                 "OAuth is handled by Celerp Connect - no API keys to manage.",
                 price="USD $29/mo",
-                anchor="cloud",
+                plan="cloud",
             ),
             cls="settings-card",
         )

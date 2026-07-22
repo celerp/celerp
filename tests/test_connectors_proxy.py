@@ -51,7 +51,7 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
     with patch("ui.routes.settings_connectors._fetch_catalog",
                AsyncMock(return_value=([], "Connectors need an active plan.", True))), \
          patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok")
+        panel = await connectors_tab_content("en", token="tok", category="website")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
@@ -69,9 +69,50 @@ async def test_connectors_tab_shows_fetch_error_detail():
     with patch("ui.routes.settings_connectors._fetch_catalog",
                AsyncMock(return_value=([], "Relay timed out.", False))), \
          patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok")
+        panel = await connectors_tab_content("en", token="tok", category="website")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
     assert "Relay timed out." in html
     assert "connector-entitlement-cta" not in html
+
+@pytest.mark.asyncio
+async def test_connectors_tab_renders_single_category():
+    """Each Web Access tab shows only its own category's connectors; the tab
+    label names the category, so no in-panel section heading renders."""
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    catalog = [
+        {"id": "shopify", "name": "Shopify", "category": "website"},
+        {"id": "xero", "name": "Xero", "category": "accounting"},
+    ]
+    with patch("ui.routes.settings_connectors._fetch_catalog",
+               AsyncMock(return_value=(catalog, None, False))), \
+         patch("ui.routes.settings_connectors._get_last_runs",
+               AsyncMock(return_value={})), \
+         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
+        panel = await connectors_tab_content("en", token="tok", category="website")
+
+    from fasthtml.common import to_xml
+    html = to_xml(panel)
+    assert "Shopify" in html
+    assert "Xero" not in html
+    assert "connector-section-title" not in html
+
+
+@pytest.mark.asyncio
+async def test_connectors_tab_empty_category_degrades_honestly():
+    """A category with no catalog entries shows a neutral hint, not an error
+    and not another category's cards."""
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    catalog = [{"id": "shopify", "name": "Shopify", "category": "website"}]
+    with patch("ui.routes.settings_connectors._fetch_catalog",
+               AsyncMock(return_value=(catalog, None, False))), \
+         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
+        panel = await connectors_tab_content("en", token="tok", category="accounting")
+
+    from fasthtml.common import to_xml
+    html = to_xml(panel)
+    assert "No connectors available here yet." in html
+    assert "Shopify" not in html

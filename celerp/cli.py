@@ -734,7 +734,7 @@ def main() -> None:
 @click.option("--db-url", default=None, help="PostgreSQL connection URL.")
 @click.option("--api-port", default=None, type=int, help="API server port (default 8000).")
 @click.option("--ui-port", default=None, type=int, help="UI server port (default 8080).")
-@click.option("--cloud-token", default=None, help="Celerp Cloud token (optional).")
+@click.option("--cloud-token", default=None, help="Celerp Connect token (optional).")
 @click.option("--force", is_flag=True, help="Reconfigure: WIPES the database and all attached files.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the --force wipe confirmation (non-interactive use).")
 @click.option(

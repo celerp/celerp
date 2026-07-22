@@ -69,6 +69,16 @@ class TestParse:
         mods = mc._parse(_doc({**GOOD, "tier": "official", "price_monthly": True}))
         assert "price_monthly" not in mods[0]
 
+    def test_depends_on_passes_valid_ids_only(self):
+        mods = mc._parse(_doc({**GOOD, "depends_on":
+                               ["celerp-accounting", "bad id!", 7, "  ", "ok_2"]}))
+        assert mods[0]["depends_on"] == ["celerp-accounting", "ok_2"]
+
+    def test_depends_on_absent_or_empty_drops_field(self):
+        assert "depends_on" not in mc._parse(_doc(GOOD))[0]
+        assert "depends_on" not in mc._parse(_doc({**GOOD, "depends_on": []}))[0]
+        assert "depends_on" not in mc._parse(_doc({**GOOD, "depends_on": "not-a-list"}))[0]
+
 
 class TestLocalState:
     @pytest.fixture(autouse=True)

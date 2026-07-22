@@ -700,13 +700,12 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
-async def connectors_tab_content(lang: str, token: str) -> FT:
-    """Render the full connectors tab (catalog grouped by category)."""
+async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
+    """Render one connectors tab: the catalog entries of a single category
+    ("website" or "accounting" - each has its own tab on the Web Access page)."""
     from celerp.config import ensure_instance_id
-    from celerp.gateway.client import get_client
     from ui.config import RELAY_URL
 
-    gw = get_client()
     relay_url = RELAY_URL
     iid = ensure_instance_id()
 
@@ -721,6 +720,13 @@ async def connectors_tab_content(lang: str, token: str) -> FT:
             P(fetch_err or t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
               cls="flash flash--warning"),
+            cls="settings-card",
+        )
+
+    catalog = [c for c in catalog if c.get("category", "website") == category]
+    if not catalog:
+        return Div(
+            P(t("connectors.none_in_category", lang), cls="settings-hint"),
             cls="settings-card",
         )
 
@@ -741,55 +747,20 @@ async def connectors_tab_content(lang: str, token: str) -> FT:
         if c.get("connected") and last_runs.get(c["id"]) is None:
             _spawn(_autosync_once(iid, c["id"], token))
 
-    # Group by category, labelled by what the sync does for the customer
-    group_labels = {
-        "website": t("connectors.group_website", lang, default="Website Sync"),
-        "accounting": t("connectors.group_accounting", lang, default="Accounting Sync"),
-    }
-    categories: dict[str, list[dict]] = {}
-    for c in catalog:
-        categories.setdefault(c.get("category", "other"), []).append(c)
-
-    # Stable order: website first, then accounting, then anything else
-    order = ["website", "accounting"]
-    ordered_cats = sorted(
-        categories, key=lambda k: (order.index(k) if k in order else len(order), k)
-    )
-
-    sections: list[FT] = []
-    for cat in ordered_cats:
-        label = group_labels.get(cat, cat.title())
-        cards = [
-            _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
-                          config=configs.get(c["id"]), lang=lang)
-            for c in categories[cat]
-        ]
-        sections.append(
-            Div(
-                P(label, cls="connector-section-title"),
-                *cards,
-            )
-        )
+    # The tab label already names the category, so the cards render directly.
+    cards = [
+        _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
+                      config=configs.get(c["id"]), lang=lang)
+        for c in catalog
+    ]
 
     return Div(
-        *sections,
+        *cards,
         cls="settings-card",
     )
 
 
 def setup_routes(app):
-
-    @app.get("/settings/connectors/tab")
-    async def connectors_tab_htmx(request: Request):
-        """HTMX partial: render connectors tab content."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
-            return r
-        from ui.i18n import get_lang
-        lang = get_lang(request)
-        return await connectors_tab_content(lang, token=token)
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):

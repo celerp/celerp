@@ -79,6 +79,19 @@ def _clean(entry) -> dict | None:
         # "price_monthly": true does not render as "$1/mo".
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
             out[field] = float(v)
+    # Module dependencies: the ids of other modules this one needs. Same id
+    # grammar as the module's own id, so a buyer sees what else a listing pulls
+    # in before purchasing. Absent or empty drops the field (rendered "--").
+    deps = entry.get("depends_on")
+    if isinstance(deps, list):
+        clean_deps = [
+            d.strip()[: _STR_LIMITS["id"]]
+            for d in deps
+            if isinstance(d, str) and d.strip()
+            and all(c.isascii() and (c.isalnum() or c in "-_") for c in d.strip())
+        ]
+        if clean_deps:
+            out["depends_on"] = clean_deps[:50]
     return out
 
 

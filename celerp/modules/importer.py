@@ -70,27 +70,66 @@ def _validate_name(name: str, *, official: bool = False) -> None:
         )
 
 
+def _manifest_node(tree: ast.AST):
+    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
+                return node
+    return None
+
+
 def _read_manifest(init_py_text: str) -> dict:
     """Extract PLUGIN_MANIFEST literals without importing anything."""
     try:
         tree = ast.parse(init_py_text)
     except Exception:
         raise ModuleImportError("__init__.py does not parse as Python.")
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
-                try:
-                    manifest = ast.literal_eval(node.value)
-                except Exception:
-                    raise ModuleImportError(
-                        "PLUGIN_MANIFEST must contain only literal values."
-                    )
-                if not isinstance(manifest, dict):
-                    raise ModuleImportError("PLUGIN_MANIFEST must be a dict.")
-                return manifest
-    raise ModuleImportError("No PLUGIN_MANIFEST found in __init__.py.")
+    node = _manifest_node(tree)
+    if node is None:
+        raise ModuleImportError("No PLUGIN_MANIFEST found in __init__.py.")
+    try:
+        manifest = ast.literal_eval(node.value)
+    except Exception:
+        raise ModuleImportError("PLUGIN_MANIFEST must contain only literal values.")
+    if not isinstance(manifest, dict):
+        raise ModuleImportError("PLUGIN_MANIFEST must be a dict.")
+    return manifest
+
+
+def _has_manifest(init_py: Path) -> bool:
+    """True if an __init__.py declares a PLUGIN_MANIFEST, without executing it."""
+    try:
+        tree = ast.parse(init_py.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return False
+    return _manifest_node(tree) is not None
+
+
+def _locate_module(tree: Path) -> tuple[Path, dict]:
+    """Find the module package inside an already-extracted archive.
+
+    The archive root is tried first (a bare module zip); otherwise the single
+    subfolder whose __init__.py declares a PLUGIN_MANIFEST is the module - so a
+    repo that keeps its module in a subdirectory (the module template ships the
+    example module beside its README, lint, and tests) still installs. More than
+    one candidate is refused so the install target is never ambiguous."""
+    root_init = tree / "__init__.py"
+    if root_init.exists() and _has_manifest(root_init):
+        return tree, _read_manifest(root_init.read_text(encoding="utf-8", errors="replace"))
+    candidates = sorted(p.parent for p in tree.rglob("__init__.py") if _has_manifest(p))
+    if len(candidates) == 1:
+        init = candidates[0] / "__init__.py"
+        return candidates[0], _read_manifest(init.read_text(encoding="utf-8", errors="replace"))
+    if not candidates:
+        raise ModuleImportError(
+            "No __init__.py with a PLUGIN_MANIFEST found; not a Celerp module package."
+        )
+    raise ModuleImportError(
+        "The archive contains more than one module; import a single-module package."
+    )
 
 
 def _version_tuple(v: str) -> tuple:
@@ -263,13 +302,8 @@ def install_from_zip(data: bytes, *, official: bool = False,
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(dest, "wb") as f:
                     shutil.copyfileobj(src, f, length=1024 * 256)
-            init_py = out / "__init__.py"
-            if not init_py.exists():
-                raise ModuleImportError(
-                    "No __init__.py at the module root; not a Celerp module package."
-                )
-            manifest = _read_manifest(init_py.read_text(encoding="utf-8", errors="replace"))
-            return _finish(out, manifest, official=official, premium=premium)
+            module_root, manifest = _locate_module(out)
+            return _finish(module_root, manifest, official=official, premium=premium)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

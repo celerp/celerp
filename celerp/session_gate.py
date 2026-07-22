@@ -41,9 +41,9 @@ def require_session_token(request: Request) -> None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
-                    "This instance is not connected to Celerp Cloud. "
+                    "This instance is not connected to Celerp Connect. "
                     "Set GATEWAY_TOKEN in your environment and restart, "
-                    "or enable Cloud in Settings > Cloud Relay."
+                    "or connect web access under Settings > Web Access."
                 ),
             )
         if header_token != current:
@@ -52,7 +52,7 @@ def require_session_token(request: Request) -> None:
                 detail=(
                     "Session token is invalid or has expired (tokens rotate every 2 hours). "
                     "Your Celerp app reconnects automatically - if this persists, "
-                    "go to Settings > Cloud Relay and click Reconnect."
+                    "go to Settings > Web Access and click Reconnect."
                 ),
             )
         return  # Valid header token
@@ -66,8 +66,8 @@ def require_session_token(request: Request) -> None:
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(
-            f"This endpoint requires an active Celerp Cloud subscription. "
-            f"Subscribe at {url} then enable Cloud in Settings > Cloud Relay. "
+            f"This endpoint requires an active Celerp Connect subscription. "
+            f"Subscribe at {url} then connect web access under Settings > Web Access. "
             f"The core ERP API (/inventory, /docs, /crm, etc.) is always free."
         ),
     )

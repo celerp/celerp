@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -295,9 +296,16 @@ def setup_routes(app):
             # 3s poll interval can, on a slow response, fire twice before the
             # panel swaps - activation is idempotent, so the accepted worst
             # case is one redundant call.)
+            act: dict = {}
             try:
-                await api.activate_relay(token)
+                act = await api.activate_relay(token)
             except Exception:
                 pass
+            # On the Web Access page the whole chrome changes once the relay
+            # comes up (value-prop landing -> connected tabs), so load the
+            # connected page instead of swapping only the panel.
+            if panel_id == "cloud-relay-tab" and act.get("connected"):
+                return Response(status_code=204,
+                                headers={"HX-Redirect": "/settings/cloud"})
             return _signed_in_panel(lang, panel_id, status)
         return _waiting_panel(lang, panel_id, mode, n=n)

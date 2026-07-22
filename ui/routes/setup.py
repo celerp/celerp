@@ -600,14 +600,14 @@ def _cloud_form() -> FT:
     from celerp.config import settings
     from celerp.gateway.state import build_subscribe_url
     iid = settings.gateway_instance_id
-    subscribe_url = build_subscribe_url(iid, "cloud")
+    subscribe_url = build_subscribe_url(iid, extra="plan=cloud")
 
     pricing_url = "https://celerp.com/pricing"
 
     _features = [
         ("🔗", "All connectors", "Shopify, QuickBooks, and Xero - auto-synced on a schedule."),
         ("☁", "Encrypted cloud backup", "Daily DB + weekly file backup, auto-pruned, 20 GB. Export/import for easy migration."),
-        ("🌐", "Cloud Relay", "A stable public URL for your instance. No static IP, no config."),
+        ("🌐", "Web Access", "A stable public URL for your instance. No static IP, no config."),
         ("✨", "Bonus: 100 AI queries", "Auto-draft POs, reconcile invoices, run natural language reports."),
     ]
     return Div(
