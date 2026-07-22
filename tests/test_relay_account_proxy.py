@@ -20,7 +20,7 @@ def _mock_httpx(account_payload=None, auth_status=200):
     """AsyncClient factory mock: /auth/token exchange plus GET /auth/account."""
     get_resp = MagicMock()
     get_resp.status_code = 200
-    get_resp.json = MagicMock(return_value=account_payload or {"email": "o@shop.com"})
+    get_resp.json = MagicMock(return_value=account_payload or {"email": "o@shop.example"})
     auth_resp = MagicMock()
     auth_resp.status_code = auth_status
     auth_resp.json = MagicMock(return_value={"access_token": "jwt-abc"})
@@ -41,7 +41,7 @@ def _mock_httpx(account_payload=None, auth_status=200):
 async def test_account_status_proxy_sends_bearer_when_activated():
     """With a gateway token, the proxy exchanges it and sends the JWT on the
     account GET, so the relay can serve the unmasked record."""
-    factory, client = _mock_httpx({"email": "o@shop.com", "email_verified": True})
+    factory, client = _mock_httpx({"email": "o@shop.example", "email_verified": True})
     with (
         patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
@@ -50,7 +50,7 @@ async def test_account_status_proxy_sends_bearer_when_activated():
         from celerp.routers.health import account_status_api
         data = await account_status_api()
 
-    assert data["email"] == "o@shop.com"
+    assert data["email"] == "o@shop.example"
     auth_call = client.post.call_args_list[0]
     assert auth_call[0][0] == "https://relay.test/auth/token"
     assert auth_call[1]["json"] == {"api_key": "api-key-123"}
@@ -63,7 +63,7 @@ async def test_account_status_proxy_sends_bearer_when_activated():
 async def test_account_status_proxy_falls_back_when_exchange_fails():
     """A failed token exchange degrades to the unauthenticated GET - polling
     keeps working on the masked record instead of erroring."""
-    factory, client = _mock_httpx({"email": "o***@shop.com"}, auth_status=401)
+    factory, client = _mock_httpx({"email": "o***@shop.example"}, auth_status=401)
     with (
         patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
@@ -73,7 +73,7 @@ async def test_account_status_proxy_falls_back_when_exchange_fails():
         data = await account_status_api()
 
     assert "error" not in data
-    assert data["email"] == "o***@shop.com"
+    assert data["email"] == "o***@shop.example"
     get_call = client.get.call_args_list[0]
     assert "headers" not in get_call[1] or "Authorization" not in (get_call[1].get("headers") or {})
 

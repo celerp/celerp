@@ -8837,7 +8837,7 @@ class TestMarketplaceUI:
 
     # ── Account check before Buy ─────────────────────────────────────────────
 
-    _VERIFIED_STATUS = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+    _VERIFIED_STATUS = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                         "pending_selection": False, "linked_elsewhere": False}
 
     @pytest.mark.asyncio
@@ -9104,7 +9104,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
         assert b"Signed in as" in r.content
-        assert b"o@shop.com" in r.content
+        assert b"o@shop.example" in r.content
 
     @pytest.mark.asyncio
     async def test_marketplace_heading_omits_line_when_no_account(self, ui_client):
@@ -12318,7 +12318,7 @@ class TestDocumentsOverhaul:
         through a free Celerp account instead of hiding the send path."""
         self._reset_send_quota_cache()
         try:
-            doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+            doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
             _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
             _methods = AsyncMock(return_value={"google": False, "free_email_quota": 10})
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
@@ -12339,7 +12339,7 @@ class TestDocumentsOverhaul:
         """No free quota advertised → the offer never renders (no dead end)."""
         self._reset_send_quota_cache()
         try:
-            doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+            doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
             _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
             _methods = AsyncMock(return_value={"google": False, "free_email_quota": 0})
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
@@ -12388,7 +12388,7 @@ class TestDocumentsOverhaul:
     async def test_send_offer_resume_opens_dialog_prefilled_after_verify(self, ui_client):
         """After signup completes the poll reloads the page with a one-shot
         marker, and the connected page auto-opens the send dialog prefilled."""
-        verified = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+        verified = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                     "pending_selection": False, "linked_elsewhere": False}
         with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)), \
              patch("ui.api_client.activate_relay",
@@ -12400,7 +12400,7 @@ class TestDocumentsOverhaul:
         assert "celerp_open_send" in content
         assert "location.reload" in content
 
-        doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+        doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
@@ -12408,7 +12408,7 @@ class TestDocumentsOverhaul:
         content2 = r2.content.decode()
         assert "celerp_open_send" in content2
         assert "showModal" in content2
-        assert "c@acme.com" in content2
+        assert "c@acme.example" in content2
 
 
 class TestProformaNumbering:
@@ -16050,7 +16050,7 @@ class TestCelerpAccountSurface:
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.account_status",
-                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                  new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
                                               "tier": "free", "pending_selection": False,
                                               "linked_elsewhere": False})),
             patch("ui.api_client.buy_module", new=buy),
@@ -16067,7 +16067,7 @@ class TestCelerpAccountSurface:
     @pytest.mark.asyncio
     async def test_account_gate_returns_none_when_email_verified(self):
         from ui.routes.account import account_gate
-        verified = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+        verified = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                     "pending_selection": False, "linked_elsewhere": False}
         with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)):
             out = await account_gate("tok", "en", "buy:acme-crm:monthly",
@@ -16147,7 +16147,7 @@ class TestCelerpAccountSurface:
              patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             r = await ui_client.post("/account/email?panel=celerp-account-panel",
-                                     data={"email": "x@mailinator.com"}, cookies=_authed())
+                                     data={"email": "x@mailinator.example"}, cookies=_authed())
         content = r.content.decode()
         assert "Disposable email addresses cannot hold purchases" in content
         assert 'name="email"' in content            # form returned, still editable
@@ -16185,9 +16185,9 @@ class TestCelerpAccountSurface:
     async def test_poll_refetches_status_after_activation(self, ui_client):
         """Activation binds the instance; the panel then shows the account as
         the relay sees it post-bind, not the pre-bind snapshot."""
-        masked = {"email": "o***@shop.com", "email_verified": True, "tier": "free",
+        masked = {"email": "o***@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
-        full = dict(masked, email="o@shop.com")
+        full = dict(masked, email="o@shop.example")
         status = AsyncMock(side_effect=[masked, full])
         with patch("ui.api_client.account_status", new=status), \
              patch("ui.api_client.activate_relay",
@@ -16195,4 +16195,4 @@ class TestCelerpAccountSurface:
             r = await ui_client.get("/account/poll?panel=celerp-account-panel&mode=email&n=3",
                                     cookies=_authed())
         assert status.await_count == 2
-        assert b"o@shop.com" in r.content
+        assert b"o@shop.example" in r.content
