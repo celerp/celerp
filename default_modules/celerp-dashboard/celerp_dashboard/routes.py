@@ -13,13 +13,14 @@ from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
+from celerp.services.permissions import get_current_company_settings
 from celerp.services.reorder import is_below_reorder
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/kpis")
-async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(Projection).where(Projection.company_id == company_id))).scalars().all()
     items = [r for r in rows if r.entity_type == "item"]
     docs = [r for r in rows if r.entity_type == "doc"]
@@ -42,7 +43,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     # Inventory: delegate entirely to the canonical valuation endpoint.
     # This is the single source of truth for item counts and price totals.
     from celerp_inventory.routes import get_valuation as _get_valuation
-    valuation = await _get_valuation(company_id=company_id, role=role, session=session)
+    valuation = await _get_valuation(company_id=company_id, role=role, settings=settings, session=session)
     total_value_cost = valuation.get("cost_total", 0.0)
     total_value_retail = valuation.get("retail_total", 0.0)
     active_item_count_inv = valuation.get("active_item_count", 0)
@@ -130,9 +131,9 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
 
 
 @router.get("/activity")
-async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
-    return {"activities": await _hydrate_entries(rows, company_id, session, role)}
+    return {"activities": await _hydrate_entries(rows, company_id, session, settings, role)}
 
 
 @router.get("/activity/search")
@@ -144,6 +145,7 @@ async def search_activity(
     per_page: int = Query(default=50, ge=1, le=200),
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from sqlalchemy import and_, func
@@ -182,7 +184,7 @@ async def search_activity(
     )).scalars().all()
 
     return {
-        "activities": await _hydrate_entries(rows, company_id, session, role),
+        "activities": await _hydrate_entries(rows, company_id, session, settings, role),
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -190,7 +192,7 @@ async def search_activity(
     }
 
 
-async def _hydrate_entries(rows, company_id: str, session, role: str | None = None) -> list[dict]:
+async def _hydrate_entries(rows, company_id: str, session, settings: dict | None = None, role: str | None = None) -> list[dict]:
     """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
     entity_ids = list({e.entity_id for e in rows})
     proj_rows = (await session.execute(
@@ -208,7 +210,7 @@ async def _hydrate_entries(rows, company_id: str, session, role: str | None = No
         actor_map = {str(uid): uname for uid, uname in user_rows}
 
     from celerp.services.activity_redaction import can_see_costs, redact_event_costs
-    show_costs = can_see_costs(role)
+    show_costs = can_see_costs(settings, role)
 
     activities = []
     for e in rows:

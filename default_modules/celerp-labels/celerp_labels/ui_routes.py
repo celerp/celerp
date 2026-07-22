@@ -78,6 +78,7 @@ _COMMON_FIELDS = [
     ("weight", "Weight", "text"),
     ("pieces", "Pieces", "text"),
     ("unit", "Unit", "text"),
+    ("measurements", "Measurements", "text"),
     ("cost_price", "Cost Price", "text"),
     ("sale_price", "Sale Price", "text"),
     ("description", "Description", "text"),
@@ -108,6 +109,7 @@ _SAMPLE_DATA = {
     "weight": "2.5",
     "pieces": "3",
     "unit": "pcs",
+    "measurements": "6.51 x 6.54 x 4.01",
     "cost_price": "150.00",
     "sale_price": "299.00",
     "retail_price": "299.00",
@@ -120,7 +122,19 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
+from .service import BARCODE_HEIGHT_DEFAULT
+from .service import display_label as _svc_display_label
 from .presets import PRESET_TEMPLATES as _PRESET_TEMPLATES
+
+# The human-readable barcode number is a fallback for keying the code by hand, so it
+# defaults small and leaves the label's vertical space for actual content. A size set
+# on the field still wins.
+BARCODE_TEXT_DEFAULT_PT = 6.0
+
+# The point size a freshly added designer field starts at, so its size box shows the
+# value it will print at rather than sitting blank. Matches the small end of the
+# preset text sizes; the user changes it in place.
+FIELD_DEFAULT_PT = 6
 
 _LABELS_CSS = """
 <style id="labels-css">
@@ -170,9 +184,13 @@ _LABELS_CSS = """
   min-height: 80px;
 }
 .label-field-block {
-  position: absolute; font-size: 9px; line-height: 1.2;
+  /* A field block must occupy exactly the text it prints. A border and vertical
+     padding make the block taller than its own line, so fields get dragged apart
+     to stop them looking overlapped - and those inflated positions are what gets
+     saved and printed. outline draws the dashed guide without taking up space. */
+  position: absolute; font-size: 9px; line-height: 1;
   white-space: nowrap; overflow: hidden; color: #111;
-  border: 1px dashed rgba(0,0,0,0.25); padding: 1px 3px;
+  outline: 1px dashed rgba(0,0,0,0.25); padding: 0 1px;
   background: rgba(255,255,255,0.9); cursor: move;
   user-select: none; box-sizing: border-box;
 }
@@ -180,13 +198,16 @@ _LABELS_CSS = """
 /* Barcode preview image block */
 .label-field-block--barcode {
   display: flex; flex-direction: column; align-items: flex-start;
-  white-space: normal; padding: 1px 2px;
+  white-space: normal; padding: 0;
 }
 .label-field-block--barcode img { display: block; width: 100%; height: auto; }
 .label-field-block--barcode .bc-text { font-size: 60%; color: #333; margin-top: 1px; }
+.fld-bold-wrap { display: inline-flex; align-items: center; gap: 3px; font-size: 12px;
+                 color: var(--c-text2); cursor: pointer; user-select: none; }
+.fld-bold-wrap input { margin: 0; cursor: pointer; }
 /* QR preview image block */
 .label-field-block--qr {
-  padding: 1px; overflow: visible;
+  padding: 0; overflow: visible;
 }
 .label-field-block--qr img { display: block; width: 100%; height: 100%; }
 
@@ -366,7 +387,8 @@ def _field_row_compact(
     Div, Button, NotStr = ft["Div"], ft["Button"], ft["NotStr"]
 
     key = field.get("key", "")
-    label_val = str(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
+    # Show the leaf of a "Category > Field" path so the editor matches what prints.
+    label_val = _svc_display_label(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
     ftype = field.get("type", "text")
     x_val = field.get("x", "")
     y_val = field.get("y", "")
@@ -414,6 +436,14 @@ def _field_row_compact(
             f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
             f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
             f' oninput="labelEditorUpdatePreview()">'
+            # Bold has always been stored on the field and honoured by the renderers;
+            # there was simply no way to set it. An unchecked box submits nothing,
+            # which is exactly what the parser expects.
+            f'<label class="fld-bold-wrap" title="Bold this field"'
+            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};">'
+            f'<input type="checkbox" name="fields[{idx}][bold]" value="true" class="fld-bold"'
+            f'{" checked" if field.get("bold") else ""}'
+            f' onchange="labelEditorUpdatePreview()"><b>B</b></label>'
         ),
         cls="field-row-compact",
         data_idx=str(idx),
@@ -595,11 +625,14 @@ def _editor_panel(
         var ft = fieldType(k);
         if (typeIn) typeIn.value = ft;
         var labelIn = row.querySelector('.fld-label');
-        if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
+        // Default to the leaf of a 'Category \u203a Field' option, not the whole path.
+        if (labelIn && !labelIn._userEdited) labelIn.value = String(v || k).split('\u203a').pop().trim();
         var fsIn = row.querySelector('.fld-fs');
         if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
         var bhIn = row.querySelector('.fld-bh');
         if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
+        var boldIn = row.querySelector('.fld-bold-wrap');
+        if (boldIn) boldIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';
       }}
       closeDropdown();
       labelEditorUpdatePreview();
@@ -672,12 +705,15 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="number" name="fields[' + idx + '][fontSize]" value="" class="form-input form-input--sm fld-fs"' +
+        '<input type="number" name="fields[' + idx + '][fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' +
         ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
         ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
+        '<input type="number" name="fields[' + idx + '][barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
-        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
+        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
+        '<label class="fld-bold-wrap" title="Bold this field">' +
+        '<input type="checkbox" name="fields[' + idx + '][bold]" value="true" class="fld-bold"' +
+        ' onchange="labelEditorUpdatePreview()"><b>B</b></label>';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
@@ -820,6 +856,13 @@ def _editor_panel(
         block.textContent = fieldLabel ? (fieldLabel + ': ' + sample) : sample;
       }}
 
+      // Bold applies to text and the barcode number, and must show in the preview
+      // so what the designer shows is what the printer produces.
+      var boldEl = row.querySelector('.fld-bold');
+      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {{
+        block.style.fontWeight = boldEl.checked ? '700' : '';
+      }}
+
       setupBlockDrag(block, i, dims.scale);
       canvas.appendChild(block);
     }});
@@ -954,7 +997,7 @@ def _label_settings_root(
     )
 
 
-def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
+async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
     """Show template picker + confirm Print button for bulk label printing."""
     ft = _ft()
     Div, H2, Form, Label, Select, Option, Button, P, Input = (
@@ -966,9 +1009,9 @@ def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_b
     hidden_ids = [Input(type="hidden", name="selected", value=eid) for eid in entity_ids]
     template_opts = [Option(tpl["name"], value=tpl["id"]) for tpl in templates]
 
-    return base_shell(
+    return await base_shell(
         Div(
-            H2(f"Print Labels — {len(entity_ids)} item(s)"),
+            H2(f"Print Labels - {len(entity_ids)} item(s)"),
             P(f"Selected: {', '.join(entity_ids[:5])}{'...' if len(entity_ids) > 5 else ''}"),
             Form(
                 *hidden_ids,
@@ -1032,7 +1075,8 @@ def _printable_label_sheet(
         )
 
     from starlette.responses import HTMLResponse
-    from celerp_labels.service import QR_SIZE_MM, _make_barcode_svg, _make_qr_svg, resolve_field_value
+    from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
+                                       display_label, resolve_field_value)
 
     def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float) -> str:
         res = _make_barcode_svg(val, module_height=module_height, stretch=True)
@@ -1060,7 +1104,22 @@ def _printable_label_sheet(
         return f'<div class="label-field label-field--qr" style="{qr_style}">{safe_val}</div>'
 
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
-    _auto_step_mm = {"text": 4.0, "barcode_text": 4.0, "barcode": 8.0, "qr": 11.0}
+    # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
+    # Text steps with its own size instead of a flat 4mm: at 6pt a line is ~2.1mm tall,
+    # so a fixed 4mm was nearly double leading and burned the vertical space a dense
+    # label needs. Barcode/QR keep fixed steps (they are sized in mm, not points).
+    _PT_MM = 25.4 / 72.0            # 1pt in mm
+    _AUTO_LEAD = 1.25               # same leading multiplier the PDF renderer uses
+
+    def _auto_step(ftype: str, fs) -> float:
+        if ftype == "barcode":
+            return 8.0
+        if ftype == "qr":
+            return 11.0
+        pt = float(fs) if fs not in (None, "") else 7.0
+        if ftype == "barcode_text" and fs in (None, ""):
+            pt = BARCODE_TEXT_DEFAULT_PT
+        return max(1.6, pt * _PT_MM * _AUTO_LEAD)
 
     label_rows = []
     for item in items:
@@ -1069,7 +1128,9 @@ def _printable_label_sheet(
         for f in fields:
             key = f.get("key", "")
             ftype = f.get("type", "text")
-            field_label = str(f.get("label", "") or key).strip()
+            # Print the leaf of a "Category > Field" picker path (see display_label):
+            # the repeated category prefix costs about a third of the line on a sticker.
+            field_label = display_label(f.get("label", "") or key)
             val = resolve_field_value(item, key, unit_map)
             if not val:
                 continue
@@ -1081,15 +1142,21 @@ def _printable_label_sheet(
                 left_mm, top_mm = float(x), float(y)
             else:
                 left_mm, top_mm = 2.0, auto_y
-                auto_y += _auto_step_mm.get(ftype, 4.0)
+                auto_y += _auto_step(ftype, f.get("fontSize"))
             pos = f"left:{left_mm}mm;top:{top_mm}mm;"
             if ftype == "barcode":
-                bc_height = int(f.get("barcode_height") or 8)
+                bc_height = int(f.get("barcode_height") or BARCODE_HEIGHT_DEFAULT)
                 field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")
-                span_style = f' style="font-size:{float(fs)}pt;"' if fs not in (None, "") else ""
-                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{val}</span></div>')
+                # The human-readable number is a caption, not body copy: it exists so a
+                # human can key the code when a scanner fails. Inheriting the label's
+                # default size made it as large as the data lines and ate the vertical
+                # space the label needs for actual content. Default small; an explicit
+                # per-field size still wins.
+                fs_pt = float(fs) if fs not in (None, "") else BARCODE_TEXT_DEFAULT_PT
+                span_style = f' style="font-size:{fs_pt}pt;"'
+                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{html_escape(str(val))}</span></div>')
             elif ftype == "qr":
                 field_lines.append(_qr_tag(val, wrap_style=pos))
             else:
@@ -1097,8 +1164,13 @@ def _printable_label_sheet(
                 # label-item default applies, so existing labels look exactly as before.
                 fs = f.get("fontSize")
                 fs_style = f"font-size:{float(fs)}pt;" if fs not in (None, "") else ""
+                # The field model and the PDF renderer have always honoured `bold`;
+                # the printed sheet dropped it, so a field marked bold in the designer
+                # still printed regular. Emit it here too.
+                bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(f'<div class="label-field" style="{pos}{fs_style}">{display}</div>')
+                field_lines.append(
+                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{html_escape(str(display))}</div>')
         label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
 
     html = f"""<!DOCTYPE html>
@@ -1313,7 +1385,7 @@ def setup_ui_routes(app) -> None:
         # Auto-redirect to first template if any exist
         if templates:
             return RedirectResponse(f"/settings/labels/{templates[0]['id']}", status_code=302)
-        return base_shell(
+        return await base_shell(
             _label_settings_root(templates),
             title="Label Templates - Celerp",
             nav_active="labels",
@@ -1327,14 +1399,14 @@ def setup_ui_routes(app) -> None:
         templates = await _seed_presets_if_empty(request)
         tpl = next((x for x in templates if x["id"] == tmpl_id), None)
         if not tpl:
-            return base_shell(
+            return await base_shell(
                 _label_settings_root(templates, flash="Template not found.", flash_kind="error"),
                 title="Label Templates - Celerp",
                 nav_active="labels",
                 request=request,
             )
         global_extra, category_attrs = await _fetch_extra_fields(request)
-        return base_shell(
+        return await base_shell(
             _label_settings_root(templates, active_id=tmpl_id, editor=_editor_panel(tpl, global_extra, category_attrs)),
             title=f"Edit: {tpl['name']} - Celerp",
             nav_active="labels",
@@ -1580,7 +1652,7 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+        return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
     @app.get("/labels/print-list")
     async def labels_print_list(request: Request):
@@ -1614,7 +1686,7 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+        return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
 
 

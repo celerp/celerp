@@ -9,7 +9,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -18,6 +18,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
+from celerp.services.permissions import role_has_permission
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -871,6 +872,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
         status = request.query_params.get("status", "")
@@ -970,7 +975,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             docs, summary, draft_count = [], {}, 0
 
-        extra = f"&q={q}&type={doc_type}&status={status}&view={view}".strip("&")
+        extra = f"&q={quote_plus(q)}&type={quote_plus(doc_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
         total_count = summary.get("total_count", len(docs))
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
@@ -986,9 +991,9 @@ def setup_routes(app):
         new_label = _doc_type_new_label(doc_type, lang)
         search_url = f"/docs/search?type={doc_type}" if doc_type else "/docs/search"
         create_type = doc_type or "invoice"
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        _lvl = _RLV.get(_get_role(request), 0)
-        return base_shell(
+        _role = _get_role(request)
+        _settings = company.get("settings") or {}
+        return await base_shell(
             page_header(
                 page_title,
                 _drafts_tab(draft_count, is_drafts_view, doc_type, status=status, lang=lang),
@@ -1002,9 +1007,9 @@ def setup_routes(app):
                     hx_post=f"/docs/create-blank?type={create_type}",
                     hx_swap="none",
                     cls="btn btn--primary",
-                ) if _lvl >= _RLV["operator"] else "",
-                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
-                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                ) if role_has_permission(_settings, _role, "edit_documents") else "",
+                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
@@ -1685,8 +1690,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
-        from celerp.services.auth import ROLE_LEVELS as _BPR
-        if _BPR.get(_get_role(request), 0) < _BPR["operator"]:
+        _settings = (await api.get_company(token)).get("settings") or {}
+        if not role_has_permission(_settings, _get_role(request), "record_payments"):
             return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
         doc_ids_raw = request.query_params.get("doc_ids", "")
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
@@ -1808,6 +1813,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         try:
             doc = await api.get_doc(token, entity_id)
         except (APIError, Exception) as e:
@@ -1935,11 +1944,13 @@ celerpUpdateBulkAlloc();
         tz: str = "UTC"
         company_currency: str = "USD"
         _ident_mode = "sku"
+        _co_settings: dict = {}
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
             company_currency = _co.get("currency") or "USD"
             _ident_mode = _ident_mode_from(_co)
+            _co_settings = _co.get("settings") or {}
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -2040,10 +2051,10 @@ celerpUpdateBulkAlloc();
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
             line_suggestions = await _po_line_suggestions(token, doc)
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, free_send_quota=(0 if _relay_connected else _free_send_quota(token)), share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, free_send_quota=(0 if _relay_connected else _free_send_quota(token)), share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2072,8 +2083,8 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+        _settings = (await api.get_company(token)).get("settings") or {}
+        if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             # Viewers are read-only: return the display state instead of an input.
             return await doc_field_display(request, entity_id, field)
         try:
@@ -2448,8 +2459,8 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+        _settings = (await api.get_company(token)).get("settings") or {}
+        if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             return await doc_li_field_display(request, entity_id, li_index, field)
         try:
             doc = await api.get_doc(token, entity_id)
@@ -3130,6 +3141,8 @@ celerpUpdateBulkAlloc();
         except Exception:
             company = {}
         currency = company.get("currency") or None
+        if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
+            return RedirectResponse("/dashboard", status_code=302)
 
         # Fetch all docs and extract payments
         try:
@@ -3150,6 +3163,8 @@ celerpUpdateBulkAlloc();
             contact_id = d.get("contact_id") or ""
             doc_currency = d.get("currency") or currency
             for p in (d.get("payments") or []):
+                if p.get("status") == "deleted":
+                    continue
                 payments_list.append({
                     "doc_id": eid,
                     "doc_number": doc_number,
@@ -3197,7 +3212,8 @@ celerpUpdateBulkAlloc();
 
         # Build tabs
         tab_cls = lambda t: f"category-tab {'category-tab--active' if tab == t else ''}"
-        extra_params = f"&q={q}&method={method_filter}&contact={contact_filter}" if any([q, method_filter, contact_filter]) else ""
+        extra_params = (f"&q={quote_plus(q)}&method={quote_plus(method_filter)}&contact={quote_plus(contact_filter)}"
+                        if any([q, method_filter, contact_filter]) else "")
         tabs = Div(
             A(t("doc.all"), href=f"/payments?tab=all{extra_params}", cls=tab_cls("all")),
             A(t("doc.received"), href=f"/payments?tab=received{extra_params}", cls=tab_cls("received")),
@@ -3219,16 +3235,18 @@ celerpUpdateBulkAlloc();
                          Option(t("btn.transfer"), value="transfer"), Option(t("doc.card"), value="card"),
                          Option(t("doc.check"), value="check"), Option(t("doc.credit_note"), value="credit_note"),
                          Option(t("doc.other"), value="other")]
+        _tab_enc, _q_enc = quote_plus(tab), quote_plus(q)
+        _method_enc, _contact_enc = quote_plus(method_filter), quote_plus(contact_filter)
         filter_bar = Div(
             Input(type="search", name="q", value=q, placeholder="Search doc# or reference...",
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={tab}&q='+this.value+'&method={method_filter}&contact={contact_filter}'"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}'"),
             Input(type="text", name="contact", value=contact_filter, placeholder="Contact...",
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={tab}&q={q}&method={method_filter}&contact='+this.value"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}&contact='+encodeURIComponent(this.value)"),
             Select(*_methods_opts, name="method",
                    cls="form-input form-input--sm", style="max-width:150px;",
-                   onchange=f"window.location='/payments?tab={tab}&q={q}&method='+this.value+'&contact={contact_filter}'"),
+                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method='+encodeURIComponent(this.value)+'&contact={_contact_enc}'"),
             cls="filter-bar",
             style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;",
         )
@@ -3258,11 +3276,11 @@ celerpUpdateBulkAlloc();
         )
 
         lang = get_lang(request)
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Payments", None)]),
             page_header("Payments"),
             tabs,
-            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={tab}{extra_params}", lang=lang),
+            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={quote_plus(tab)}{extra_params}", lang=lang),
             summary_bar,
             filter_bar,
             payment_table,
@@ -3690,6 +3708,10 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from ui.routes.settings import _check_permission
+        denied = await _check_permission(request, "view_documents")
+        if denied:
+            return denied
         q = request.query_params.get("q", "")
         list_type = request.query_params.get("type", "")
         status = request.query_params.get("status", "")
@@ -3756,9 +3778,9 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
-        _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        _lvl = _RLV.get(_get_role(request), 0)
+        _lists_extra = f"q={quote_plus(q)}&type={quote_plus(list_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
+        _role = _get_role(request)
+        _settings = (await api.get_company(token)).get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
         if list_type == "audit":
             _new_btn = A("New audit", href="/lists/new-audit", cls="btn btn--primary")
@@ -3767,14 +3789,14 @@ celerpUpdateBulkAlloc();
                               hx_swap="none", cls="btn btn--primary", title="Create a blank draft shipping document")
         else:
             _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft")
-        return base_shell(
+        return await base_shell(
             page_header(
                 t("page.lists", lang),
                 _list_drafts_tab(draft_count, is_drafts_view, list_type),
                 search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search"),
-                _new_btn if _lvl >= _RLV["operator"] else "",
-                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if _lvl >= _RLV["manager"] else "",
+                _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
+                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             _date_filter_bar("/lists", date_from, date_to, preset,
                              extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
@@ -3954,7 +3976,7 @@ celerpUpdateBulkAlloc();
         except APIError:
             locations = []
         if not locations:
-            return base_shell(
+            return await base_shell(
                 page_header("New Audit"),
                 P("Create a location first (Settings > Inventory > Locations) to audit it.", cls="hint"),
                 title="New Audit - Celerp", nav_active="lists", request=request,
@@ -3970,7 +3992,7 @@ celerpUpdateBulkAlloc();
             Button("Start audit", type="submit", cls="btn btn--primary"),
             method="post", action="/lists/new-audit", cls="form-card",
         )
-        return base_shell(
+        return await base_shell(
             page_header("New Audit",
                         A("All audits", href="/lists?type=audit", cls="btn btn--sm btn--secondary")),
             P("Pick a location to count. Then scan barcodes to confirm stock and adjust it.", cls="hint"),
@@ -4034,10 +4056,12 @@ celerpUpdateBulkAlloc();
         # Fetch company timezone for notes display
         tz: str = "UTC"
         _ident_mode = "sku"
+        _co_settings: dict = {}
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
             _ident_mode = _ident_mode_from(_co)
+            _co_settings = _co.get("settings") or {}
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -4111,10 +4135,10 @@ celerpUpdateBulkAlloc();
                 _list_share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
             except Exception:
                 pass
-        return base_shell(
+        return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
-            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request),
+            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
                         relay_connected=_list_relay, share_enabled=_list_share, share_active=_list_share_active,
                         line_identifier_mode=_ident_mode),
@@ -4128,8 +4152,8 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        from celerp.services.auth import ROLE_LEVELS as _RLV
-        if _RLV.get(_get_role(request), 0) < _RLV["operator"]:
+        _settings = (await api.get_company(token)).get("settings") or {}
+        if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             return await list_field_display(request, entity_id, field)
         try:
             lst = await api.get_list(token, entity_id)
@@ -4876,7 +4900,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     section_icon = "\U0001f4b3" if is_credit_note else "\U0001f4b0"
     add_label = "Apply to Invoice" if is_credit_note else ("Record Payment" if is_bill else "Receive Payment")
 
-    payments = doc.get("payments") or []
+    # Deleted payments are tombstoned in the doc, not removed; only voided ones
+    # stay visible (struck through).
+    payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
     outstanding = float(doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0)
@@ -4886,7 +4912,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
 
     # --- Payment history table ---
     history_rows = []
-    for i, p in enumerate(payments):
+    for p in payments:
         voided = p.get("status") == "voided"
         p_date = p.get("payment_date") or p.get("recorded_at", "")[:10]
         p_method = p.get("method", "")
@@ -4914,7 +4940,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title="Void this payment"),
                     Form(
-                        Input(type="hidden", name="payment_index", value=str(i)),
+                        Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
                         Input(type="text", name="void_reason", placeholder="Reason...", cls="form-input form-input--sm"),
                         Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--xs"),
                         hx_post=f"/docs/{entity_id}/void-payment", hx_swap="none",
@@ -5408,7 +5434,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, free_send_quota: int = 0, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, free_send_quota: int = 0, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5428,15 +5454,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _pay_due = 0.0
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
-    from celerp.services.auth import ROLE_LEVELS as _RL
-    _user_level = _RL.get(role, _RL["owner"])
-    _is_manager = _user_level >= _RL["manager"]
-    _is_operator = _user_level >= _RL["operator"]
+    _s = settings or {}
+    _can_edit = role_has_permission(_s, role, "edit_documents")
+    _can_finalize = role_has_permission(_s, role, "finalize_documents")
+    _can_delete = role_has_permission(_s, role, "delete_documents")
+    _can_pay = role_has_permission(_s, role, "record_payments")
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
     # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
     # audit only gates the Counted cells open (pol["counted_editable"]). Viewers are read-only
     # everywhere (the API enforces it; the UI must not offer controls that would 403).
-    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _is_operator
+    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _can_edit
 
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
@@ -5527,7 +5554,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Invoices and consignment-out memos ship: one step to a prefilled shipping
     # document (Delivery Note / Commercial Invoice printouts). Issued documents
     # only - a draft's lines are still moving, so its paperwork would go stale.
-    if doc_type in ("invoice", "memo") and status not in ("draft", "void") and not suppress_doc_actions and _is_operator:
+    if doc_type in ("invoice", "memo") and status not in ("draft", "void") and not suppress_doc_actions and _can_edit:
         action_btns_left.append(
             Button(t("btn.create_shipping_doc"),
                    hx_post=f"/docs/{entity_id}/action/create-shipment",
@@ -5617,13 +5644,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
         finalize_tip = _finalize_tips.get(doc_type, "Finalize this document and lock its contents so it can be sent and acted on.")
-        if _is_operator and not suppress_doc_actions:
+        if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        title=finalize_tip, cls="btn btn--primary")
             )
-    if status not in ("void", "draft") and _is_operator and not suppress_doc_actions:
+    if status not in ("void", "draft") and _can_finalize and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger",
@@ -5648,7 +5675,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _is_inbound_doc
         else {"final", "sent"}
     )
-    if status in _revertable_statuses and amount_paid_for_revert == 0 and _is_operator and not suppress_doc_actions:
+    if status in _revertable_statuses and amount_paid_for_revert == 0 and _can_finalize and not suppress_doc_actions:
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary",
@@ -5663,7 +5690,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     # "Unvoid" button - only from void with pre_void_status set
-    if status == "void" and doc.get("pre_void_status") and _is_operator and not suppress_doc_actions:
+    if status == "void" and doc.get("pre_void_status") and _can_finalize and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
@@ -5675,7 +5702,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="void-section",
             )
         )
-    if status == "draft" and _is_manager:
+    if status == "draft" and _can_delete:
         action_btns_right.append(
             Details(
                 Summary(t("btn.delete"), cls="btn btn--danger"),
@@ -5982,22 +6009,32 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # The visible line under the SKU input exists only when barcodes are shown.
             barcode_display = (
                 Div(barcode, cls="li-ident-2nd", data_name="barcode_display",
+                    title=barcode,
                     style="" if barcode else "display:none")
                 if line_identifier_mode != "sku" else None
             )
+            # The barcode sits BELOW the input row, never inside it. As a flex item
+            # of .catalog-ac-wrap it had to share a 70px column with the eye and the
+            # SKU box, which squeezed it to 1-2 digits + an ellipsis (#234). The
+            # finalized view already stacks it as a block on its own full-width line;
+            # the editable view now matches, so the "barcode is never truncated"
+            # invariant (line_measures.line_identifier) holds in every renderer.
             return Div(
-                eye,
-                Input(type="text", value=val, data_name="sku", placeholder="SKU...",
-                      cls="cell-input cell-input--sm catalog-ac-input",
-                      autocomplete="off",
-                      title="Type to search catalog or enter custom description",
-                      oninput="celerpAcSearch(this,'sku')",
-                      onblur="celerpAcBlur(this)",
-                      onkeydown="celerpAcKey(event,this)"),
-                Div(cls="catalog-ac-list", style="display:none"),
-                Input(type="hidden", value=barcode, data_name="barcode"),
+                Div(
+                    eye,
+                    Input(type="text", value=val, data_name="sku", placeholder="SKU...",
+                          cls="cell-input cell-input--sm catalog-ac-input",
+                          autocomplete="off",
+                          title="Type to search catalog or enter custom description",
+                          oninput="celerpAcSearch(this,'sku')",
+                          onblur="celerpAcBlur(this)",
+                          onkeydown="celerpAcKey(event,this)"),
+                    Div(cls="catalog-ac-list", style="display:none"),
+                    Input(type="hidden", value=barcode, data_name="barcode"),
+                    cls="catalog-ac-wrap",
+                ),
                 barcode_display,
-                cls="catalog-ac-wrap",
+                cls="li-ident-edit",
             )
 
         def _desc_input(val: str = "") -> FT:
@@ -8005,7 +8042,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_is_operator),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

@@ -13,7 +13,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.cloud_gate import _subscribe_url
 from ui.components.shell import base_shell
-from ui.config import get_token as _token
+from ui.config import get_token as _token, get_role
 from ui.i18n import t, get_lang
 
 
@@ -75,6 +75,14 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
 
+        from celerp.services.permissions import role_has_permission
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            settings = {}
+        if not role_has_permission(settings, get_role(request), "use_ai_assistant"):
+            return RedirectResponse("/dashboard", status_code=302)
+
         # Check if AI is available by querying the API (which has the gateway state)
         try:
             status = await api.ai_quota_status(token)
@@ -84,7 +92,7 @@ def setup_ui_routes(app) -> None:
 
         content = _chat_view() if has_cloud else _showcase_view(lang=get_lang(request))
 
-        return base_shell(
+        return await base_shell(
             content,
             title="AI Assistant - Celerp",
             nav_active="ai",
@@ -96,7 +104,7 @@ def setup_ui_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        return base_shell(
+        return await base_shell(
             Div(
                 id="ai-settings-content",
                 hx_get="/ai/settings-content",

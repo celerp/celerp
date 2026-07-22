@@ -149,7 +149,12 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
         ).first()
         if row is None:
             raise
-        return await session.get(LedgerEntry, row[0])
+        original = await session.get(LedgerEntry, row[0])
+        # Callers that must distinguish a replay from a fresh insert (e.g. to
+        # reject a stale form resubmitted with edited values) read this flag
+        # instead of inferring from entity ids.
+        original.was_deduped = True
+        return original
 
     await ProjectionEngine.apply_event(session, entry)
 

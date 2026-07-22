@@ -52,6 +52,7 @@ from celerp.ai.service import AIResponse, run_query
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.session_gate import require_session_token
 
 def _upgrade_url() -> str:
@@ -66,7 +67,7 @@ _limiter = Limiter(key_func=get_remote_address)
 
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user), Depends(require_session_token)],
+    dependencies=[Depends(get_current_user), Depends(require_session_token), require_permission("use_ai_assistant")],
 )
 
 # Settings endpoints (quota, usage) - user auth only, no session token required.

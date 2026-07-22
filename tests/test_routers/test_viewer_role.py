@@ -1,15 +1,15 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Viewer role contract (the roles reference table in Settings > Users):
+"""Viewer role contract (the default permission matrix in Settings > Users):
 
 - a viewer can VIEW documents, contacts, and inventory;
 - a viewer can EDIT nothing.
 
-The API enforces the write side with a router-level guard (viewer_read_only in
-celerp.services.auth) so every mutation endpoint, present and future, is
-covered without per-endpoint checks. These tests pin the contract per module:
-one representative mutation 403s for a viewer (and still works for an
-operator), while the corresponding reads stay open.
+Every write endpoint carries its own require_permission gate, and every write
+permission has an operator floor, so no owner override can grant a write
+capability to a viewer. These tests pin the default contract per module: one
+representative mutation 403s for a viewer (and still works for an operator),
+while the corresponding reads stay open.
 """
 from __future__ import annotations
 
@@ -128,16 +128,18 @@ async def test_viewer_blocked_on_lists_and_label_templates(client, session):
 
 
 def test_nav_lets_viewers_see_documents_and_contacts():
-    """The sidebar must show document and contact sections to viewers - the roles
-    table promises 'View documents & contacts' at viewer level. (Payments stays
-    manager; it is a Finance entry, not a document list.)"""
+    """The sidebar must show document and contact sections to viewers - the matrix
+    promises 'View documents & contacts' at viewer level. Document and contact nav
+    slots gate on the view_* permissions, which default to viewer. (Payments gates
+    on view_payments, which defaults to manager; it is a Finance entry, not a
+    document list.)"""
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     docs = (root / "default_modules/celerp-docs/__init__.py").read_text()
     for line in docs.splitlines():
         if '"group": "Sales Documents"' in line or '"group": "Purchasing Documents"' in line:
-            assert '"min_role": "viewer"' in line, line
+            assert '"permission": "view_documents"' in line, line
     contacts = (root / "default_modules/celerp-contacts/__init__.py").read_text()
     for line in contacts.splitlines():
         if '"group": "Contacts"' in line:
-            assert '"min_role": "viewer"' in line, line
+            assert '"permission": "view_contacts"' in line, line

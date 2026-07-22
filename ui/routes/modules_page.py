@@ -883,7 +883,7 @@ def setup_routes(app):
                 modules = []
             content = _local_panel(modules, lang=lang)
 
-        return base_shell(
+        return await base_shell(
             page_header(t("modules.title", lang)),
             _tabs(tab, lang),
             content,

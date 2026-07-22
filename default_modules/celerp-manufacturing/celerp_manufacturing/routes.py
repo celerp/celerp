@@ -28,7 +28,8 @@ from celerp.events.schemas import (
 from celerp.models.company import Company, WorkCenter
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
@@ -38,7 +39,7 @@ DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
 
-router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user), Depends(viewer_read_only)], tags=["manufacturing"])
+router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +173,7 @@ async def set_item_recipe(
     payload: RecipeSpec,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set (full-replace) the manufacturing recipe on an inventory item.
@@ -238,6 +240,7 @@ async def set_item_workflow(
     payload: WorkflowSpec,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set (full-replace) the production workflow on an inventory item.
@@ -330,6 +333,7 @@ async def build_item(
     payload: BuildBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a production run to build N of a manufacturable item — inputs expand from its recipe.
@@ -426,6 +430,7 @@ async def recost_dependents(
     item_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Re-cost every item whose recipe uses this one — mark-to-market.
@@ -658,6 +663,7 @@ async def make_work_orders(
     payload: MakeWorkOrdersBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create one work order per selected demand line, linked 1:1 to its source order, for the
@@ -728,6 +734,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
 async def bulk_requirements(
     payload: BulkBuildBody,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Aggregated, recursively-exploded raw-material + sub-assembly requirements to make the net
@@ -779,6 +786,7 @@ async def bulk_run_action(
     payload: BulkRunActionBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once.
@@ -928,6 +936,7 @@ async def batch_import_manufacturing(
     body: MfgBatchImportRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     from sqlalchemy import select as _select
@@ -1050,6 +1059,7 @@ async def list_work_centers(
 async def create_work_center(
     payload: WorkCenterCreate,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.name.strip():
@@ -1072,6 +1082,7 @@ async def patch_work_center(
     wc_id: str,
     payload: WorkCenterPatch,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
@@ -1100,6 +1111,7 @@ async def patch_work_center(
 async def delete_work_center(
     wc_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
@@ -1340,6 +1352,7 @@ async def create_order(
     payload: MfgOrderCreate,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.description.strip():
@@ -1379,6 +1392,7 @@ async def start_order(
     order_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_order(session, company_id, order_id)
@@ -1407,6 +1421,7 @@ async def hold_order(
     payload: CancelBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Put an active run on hold (paused). Reversible via /resume."""
@@ -1427,6 +1442,7 @@ async def resume_order(
     order_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Resume an on-hold run (back to In Progress)."""
@@ -1448,6 +1464,7 @@ async def schedule_order(
     payload: ScheduleBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set scheduling fields (due date / planned start / priority) on a run. Only provided keys are
@@ -1489,6 +1506,7 @@ async def issue_order(
     payload: IssueBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Issue components from stock into a run (decrements them). Partial issues are allowed; omitting
@@ -1510,6 +1528,7 @@ async def receive_order(
     payload: ReceiveBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Receive finished goods from a run — restocks the output per `allow_splitting`. Omitting
@@ -1537,6 +1556,7 @@ async def complete_order(
     payload: CompleteBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Finish a run now: issue any outstanding components, receive all outstanding output, and close.
@@ -1571,6 +1591,7 @@ async def cancel_order(
     payload: CancelBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_order(session, company_id, order_id)

@@ -284,6 +284,15 @@ async def create_company(token: str, company_name: str) -> str:
         return r.json()["access_token"]
 
 
+async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:
+    """Toggle one permission's minimum role. Owner-gated by the backing endpoint."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch(
+            "/companies/me/role-permissions",
+            json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
+        )).json()
+
+
 async def get_item_schema(token: str) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/item-schema")).json()
@@ -855,6 +864,31 @@ async def get_pnl(token: str, params: dict | None = None) -> dict:
 async def get_balance_sheet(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/balance-sheet", params=params or {})).json()
+
+
+async def get_journal(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/journal", params=params or {})).json()
+
+
+async def get_general_ledger(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()
+
+
+async def get_soa(token: str, contact_id: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/soa/{contact_id}", params=params or {})).json()
+
+
+async def create_journal_entry(token: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/journal-entries", json=data)).json()
+
+
+async def void_journal_entry(token: str, entity_id: str, reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal-entries/{entity_id}/void", json={"reason": reason})).json()
 
 
 async def get_bank_accounts(token: str, include_inactive: bool = False) -> dict:

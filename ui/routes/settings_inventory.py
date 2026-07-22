@@ -40,7 +40,7 @@ from ui.i18n import t, get_lang
 
 from ui.routes.settings import (
     _token,
-    _check_role,
+    _check_permission,
     _category_row,
     _locations_tab,
     _import_history_tab,
@@ -464,7 +464,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "manage_module_settings")):
             return r
         tab = request.query_params.get("tab", "locations")
         cat = request.query_params.get("cat", "")
@@ -522,7 +522,7 @@ def setup_routes(app):
             content = _locations_tab(locations, lang=lang)
             tab = "locations"
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Inventory"),
             page_header("Inventory Settings"),
             _inventory_tabs(tab, lang=lang),
@@ -540,7 +540,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "manage_module_settings")):
             return r
         form = await request.form()
         enabled = str(form.get("reorder_alerts_enabled") or "") in ("1", "on", "true")

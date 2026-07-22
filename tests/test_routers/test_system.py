@@ -99,6 +99,7 @@ def _mock_session():
     cm.__aexit__ = AsyncMock(return_value=None)
     sess.begin.return_value = cm
     sess.execute = AsyncMock(return_value=MagicMock())
+    sess.get = AsyncMock(return_value=None)
     return sess
 
 

@@ -12,22 +12,20 @@ router and the dashboard activity endpoints.
 
 from __future__ import annotations
 
-from celerp.services.auth import ROLE_LEVELS
+from celerp.services.permissions import role_has_permission
 
-# The cost fields gated at manager+ (mirrors the inventory item-visibility rule).
+# The cost fields gated by view_inventory_costs (mirrors the inventory item-visibility rule).
 COST_FIELD_KEYS = frozenset({"cost_price", "cost_total"})
 
 # Every cost-bearing key that can appear in event data (top-level or in fields_changed):
 # item cost, COGS on fulfillment, manufacturing unit cost. Sell prices (retail_price etc.)
-# are deliberately excluded — they are visible to all roles, matching item-level visibility.
+# are deliberately excluded - they are visible to all roles, matching item-level visibility.
 COST_DATA_KEYS = frozenset({"cost_price", "cost_total", "total_cogs", "cogs", "unit_cost"})
 
-_MANAGER_LEVEL = ROLE_LEVELS["manager"]
 
-
-def can_see_costs(role: str | None) -> bool:
-    """True when the role may see cost (manager and above)."""
-    return ROLE_LEVELS.get(role or "", 0) >= _MANAGER_LEVEL
+def can_see_costs(settings: dict | None, role: str | None) -> bool:
+    """True when the role holds view_inventory_costs for this company."""
+    return role_has_permission(settings, role or "", "view_inventory_costs")
 
 
 def redact_event_costs(event_type: str, data: dict) -> dict:
@@ -76,10 +74,10 @@ def redact_event_costs(event_type: str, data: dict) -> dict:
     return out
 
 
-def redact_entries_for_role(entries: list[dict], role: str | None) -> list[dict]:
+def redact_entries_for_role(entries: list[dict], settings: dict | None, role: str | None) -> list[dict]:
     """Apply :func:`redact_event_costs` to a list of serialized ledger entries unless the
     role may see costs. Entry dicts must carry ``event_type`` and ``data``."""
-    if can_see_costs(role):
+    if can_see_costs(settings, role):
         return entries
     for e in entries:
         e["data"] = redact_event_costs(str(e.get("event_type") or ""), e.get("data") or {})

@@ -12,7 +12,6 @@ from fasthtml.common import *
 
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang
-from celerp.services.auth import ROLE_LEVELS
 from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
@@ -927,11 +926,20 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     )
 
 
-def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
+async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
-    from ui.config import get_user_email, get_relay_info
+    from ui.config import get_user_email, get_relay_info, get_token
     role = get_role(request) if request is not None else "owner"
     user_email = get_user_email(request) if request is not None else None
+    if company_settings is None:
+        company_settings = {}
+        if request is not None and (_tok := get_token(request)):
+            try:
+                import ui.api_client as _api
+                _co = await _api.get_company(_tok)
+                company_settings = (_co.get("settings") if isinstance(_co, dict) else {}) or {}
+            except Exception:
+                company_settings = {}
     relay_info: dict = {}
     if request is not None:
         lang = get_lang(request)
@@ -957,7 +965,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Head(*head_items),
         Body(
             Div(
-                _sidebar(nav_active, lang=lang, role=role, request=request),
+                _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings),
                 Div(
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
@@ -1309,17 +1317,18 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
     return str(best_match.get("key") or active) if best_match else active
 
 
-def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -> FT:
+def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from ui.config import get_enabled_modules
+    from celerp.services.permissions import role_has_permission
 
-    user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    settings = settings or {}
     enabled_modules = get_enabled_modules(request) if request else set()
 
     def _allowed(item: dict) -> bool:
-        min_role = item.get("min_role", "viewer")
-        return user_level >= ROLE_LEVELS.get(min_role, 1)
+        perm = item.get("permission")
+        return role_has_permission(settings, role, perm) if perm else True
 
     def _module_enabled(item: dict) -> bool:
         """Kernel entries (no _module key) always show. Module entries only show
@@ -1419,7 +1428,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
     # company is the tenant, not a Finance feature), so it lives with the kernel bottom links rather than
     # in a module group. (Company files are a tab inside it, not a separate entry.) Admin+ only.
     settings_link = []
-    if user_level >= ROLE_LEVELS["admin"]:
+    if role_has_permission(settings, role, "manage_company_settings"):
         settings_link.append(
             A(t("nav.company_details", lang), href="/finance/company-details",
               title=t("nav.company_details_tip", lang),
@@ -1431,14 +1440,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
           cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
     )
     # Modules is a top-level surface, not a settings tab: it sits between
-    # Global Config and Web Access, visible to owner/admin only.
-    if user_level >= ROLE_LEVELS["admin"]:
+    # Global Config and Web Access.
+    if role_has_permission(settings, role, "manage_company_settings"):
         settings_link.append(
             A(t("nav.modules", lang), href="/modules",
               title=t("nav.modules_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
         )
-    if user_level >= ROLE_LEVELS["manager"]:
+    if role_has_permission(settings, role, "manage_integrations"):
         settings_link.append(
             A(t("msg._web_access", lang), href="/settings/cloud",
               title=t("nav.web_access_tip", lang),

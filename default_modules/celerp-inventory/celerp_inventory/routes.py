@@ -19,8 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, viewer_read_only, ROLE_LEVELS
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
+from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
+from celerp.services.permissions import (
+    assert_role_permission,
+    get_current_company_settings,
+    require_permission,
+    role_has_permission,
+)
 from celerp.services.pricing import (
     coerce_price,
     derived_price_keys,
@@ -33,7 +40,7 @@ from celerp.services.pricing import (
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp_inventory.projections import is_item_available
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +152,7 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields.
 
     When ``price_config`` (``(price_lists, base_price_list, currency)`` from
@@ -182,28 +189,6 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     if price_config is not None:
         inject_derived_prices(flat, *price_config)
     return flat
-
-
-def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dict]) -> list[dict]:
-    """Strip fields from item dicts that the caller's role is not allowed to see.
-
-    Two sources of restrictions:
-    1. Schema-driven: field has visible_to_roles set and caller level is below minimum.
-    2. Hardcoded: cost fields (cost_price, cost_total) require manager+.
-    """
-    caller_level = ROLE_LEVELS.get(role, 0)
-    restricted = {
-        f["key"]
-        for f in field_schema
-        if f.get("visible_to_roles") and caller_level < min(
-            ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
-        )
-    }
-    if caller_level < ROLE_LEVELS["manager"]:
-        restricted |= _COST_ITEM_KEYS
-    if not restricted:
-        return items
-    return [{k: v for k, v in item.items() if k not in restricted} for item in items]
 
 
 class ItemCreate(BaseModel):
@@ -314,10 +299,6 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
-# Fields stripped from item responses for roles below manager.
-_COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
-
-
 @router.get("")
 async def list_items(
     request: Request,
@@ -359,7 +340,7 @@ async def list_items(
 
     price_config = await get_price_config(session, company_id)
     result = [
-        _flatten_item(r.state, r.entity_id,
+        flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
                       created_at=r.created_at,
@@ -464,11 +445,13 @@ async def list_items(
 
     # Apply visible_to_roles filtering from company field schema
     field_schema = await get_effective_field_schema(session, company_id, category=None)
-    result = _apply_field_visibility(result, role, field_schema)
+    company = await session.get(Company, company_id)
+    settings = (company.settings if company else {}) or {}
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    result = apply_field_visibility(result, role, field_schema, can_see_costs)
 
     # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
     # so staff always see the items that need to be picked/sold first at the top.
-    company = await session.get(Company, company_id)
     if company and (company.settings or {}).get("inventory_method") == "fefo":
         def _fefo_key(item: dict):
             exp = item.get("expires_at")
@@ -510,6 +493,7 @@ async def get_valuation(
     status: str | None = None,
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Aggregate inventory valuation from projections.
@@ -587,7 +571,7 @@ async def get_valuation(
         qty = float(state.get("quantity") or 0)
         # Value from the flattened item so cost (recipe standard / lot total) and derived
         # lists price identically to every other consumer of item state.
-        flat = _flatten_item(state, row.entity_id, price_config=_price_config)
+        flat = flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
             pl_name = pl.get("name", "")
             try:
@@ -605,7 +589,7 @@ async def get_valuation(
                 pass
 
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
-    show_cost = ROLE_LEVELS.get(role, 0) >= ROLE_LEVELS["manager"]
+    show_cost = role_has_permission(settings, role, "view_inventory_costs")
 
     price_totals_out = {
         k: float(v) for k, v in price_totals.items()
@@ -682,7 +666,7 @@ async def get_field_values(
     for row in rows:
         if row.entity_id in demo_eids:
             continue
-        flat = _flatten_item(row.state, row.entity_id, price_config=_price_config)
+        flat = flatten_item(row.state, row.entity_id, price_config=_price_config)
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -728,7 +712,7 @@ async def list_item_categories(
 
 
 @router.get("/{entity_id}")
-async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
@@ -738,14 +722,15 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     if row.location_id:
         loc = await session.get(Location, row.location_id)
         loc_name = loc.name if loc else None
-    flat = _flatten_item(row.state, row.entity_id,
+    flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
                          created_at=row.created_at,
                          updated_at=row.updated_at,
                          price_config=await get_price_config(session, company_id))
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
-    filtered = _apply_field_visibility([flat], role, field_schema)
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    filtered = apply_field_visibility([flat], role, field_schema, can_see_costs)
     return filtered[0]
 
 
@@ -844,10 +829,10 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
 
 
 @router.post("")
-async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: operator/viewer cannot set cost fields on creation (manager+ required)
-    if (payload.cost_price is not None or payload.cost_total is not None) and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost fields")
+async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    # Guard: setting cost fields on creation requires the set_inventory_prices permission.
+    if payload.cost_price is not None or payload.cost_total is not None:
+        assert_role_permission(settings, role, "set_inventory_prices")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
@@ -979,11 +964,16 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
 
 @router.patch("/{entity_id}")
-async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: restricted fields require manager+ role
+async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    # Guard: restricted fields require a role at the schema-configured floor.
     from celerp.services.field_schema import get_effective_field_schema
     field_schema = await get_effective_field_schema(session, company_id)
     restricted = {f["key"] for f in field_schema if f.get("visible_to_roles") and ROLE_LEVELS.get(role, 0) < min(ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"])}
+    # Cost fields are gated by set_inventory_prices, not by the schema role floor:
+    # a granted operator edits cost, an ungranted manager still cannot.
+    restricted -= COST_ITEM_KEYS
+    if not role_has_permission(settings, role, "set_inventory_prices"):
+        restricted |= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
     blocked = changed_keys & restricted
     if blocked:
@@ -1145,7 +1135,7 @@ class BulkDeleteBody(BaseModel):
 
 
 @router.post("/bulk/status")
-async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     event_ids = []
@@ -1174,7 +1164,7 @@ class BulkShopifySyncBody(BaseModel):
 
 
 @router.post("/bulk/shopify-sync")
-async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Opt the selected items into (or out of) outbound Shopify sync by emitting
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
     if not payload.entity_ids:
@@ -1223,7 +1213,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 
 
 @router.post("/bulk/transfer")
-async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     from celerp.models.company import Location
@@ -1250,7 +1240,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 
 @router.post("/bulk/delete")
-async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     import sqlalchemy as _sa
@@ -1280,7 +1270,7 @@ class BulkExpireBody(BaseModel):
 
 
 @router.post("/bulk/expire")
-async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     for eid in payload.entity_ids:
@@ -1303,7 +1293,7 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
 
 
 @router.post("/{entity_id}/transfer")
-async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -1390,7 +1380,7 @@ async def split_preview(
 
 
 @router.post("/{entity_id}/split")
-async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -1900,7 +1890,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
 
 @router.post("/{entity_id}/transform")
-async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -2076,7 +2066,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 
 @router.post("/merge")
-async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
 
@@ -2414,7 +2404,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
 
 @router.post("/{entity_id}/adjust")
-async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Validate new_qty against item's sell_by unit decimals
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row:
@@ -2441,7 +2431,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 
 @router.post("/{entity_id}/price")
-async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = require_permission("set_inventory_prices"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.
@@ -2469,7 +2459,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
 
 
 @router.post("/{entity_id}/status")
-async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2488,7 +2478,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
 
 
 @router.post("/{entity_id}/reserve")
-async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2507,7 +2497,7 @@ async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(
 
 
 @router.post("/{entity_id}/unreserve")
-async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2526,7 +2516,7 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
 
 
 @router.post("/{entity_id}/expire")
-async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2573,6 +2563,7 @@ class BatchImportRequest(BaseModel):
 async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -2791,7 +2782,7 @@ async def undo_import_batch(
     batch_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Undo an import batch: soft-delete all created items, purge idempotency keys."""
@@ -2874,7 +2865,7 @@ async def export_items_csv(
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     price_config = await get_price_config(session, company_id)
-    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
+    items = [flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:

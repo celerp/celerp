@@ -435,6 +435,7 @@ a:hover { text-decoration: underline; }
 
 /* ─── Valuation bar ───────────────────────────────────────────────────── */
 .valuation-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.soa-batch-list { max-height: 320px; overflow-y: auto; margin-bottom: var(--spacing-sm); }
 .val-chip {
   padding: 4px 10px; background: var(--c-bg3); border: 1px solid var(--c-border);
   border-radius: var(--radius); font-size: 11px; color: var(--c-text2); white-space: nowrap;
@@ -1755,6 +1756,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table th.cell--number { text-align: right !important; }
 /* col-total header alignment: right-aligned (consolidated in doc-lines block above) */
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
+/* Editable line identifier: the SKU input row, with the barcode stacked BELOW it on
+   its own full-width line — the same shape the finalized view uses. Keeping the
+   barcode out of the flex row is what stops it being squeezed to 1-2 digits (#234). */
+.li-ident-edit { display: block; min-width: 0; }
+.li-ident-edit .li-ident-2nd { display: block; width: 100%; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
 .item-link--active:hover { opacity: 0.7; }
@@ -1999,13 +2005,16 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .print-label-dropdown .dropdown-link { display: block; padding: 6px 14px; font-size: 12px; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
 
-/* Role permissions reference table */
+/* Role permissions matrix */
 .role-ref-details { border: 1px solid var(--c-border); border-radius: 8px; padding: 0; }
 .role-ref-details[open] { padding: 0 16px 16px; }
 .role-ref-summary { padding: 12px 16px; font-weight: 600; font-size: 14px; cursor: pointer; color: var(--c-text2); }
 .role-ref-summary:hover { color: var(--c-text); }
 .role-ref-table { font-size: 13px; }
 .role-ref-table th, .role-ref-table td { padding: 6px 10px; }
+.role-ref-check { width: 15px; height: 15px; accent-color: var(--c-accent); cursor: pointer; }
+.role-ref-check:disabled { cursor: not-allowed; opacity: 0.45; }
+.role-ref-reason { display: block; font-size: 11px; color: var(--c-text2); margin-top: 2px; }
 .role-ref-note { font-size: 12px; color: var(--c-text2); margin-top: 8px; }
 
 /* ── AI Page ─────────────────────────────────────────────────────────────── */

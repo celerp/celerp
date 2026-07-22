@@ -31,10 +31,27 @@ def _wait(api, item, pred, timeout=8.0):
     raise AssertionError(f"workflow never satisfied predicate; last = {_steps(api, item)}")
 
 
+def _settled(page):
+    """Wait until no cell editor is open in the workflow table.
+
+    Committing a cell fires an HTMX post and a row swap. The API confirms the
+    new value before that swap lands, so opening the next editor immediately can
+    double-click a row that is being replaced, and the `.last` editor lookup can
+    then find the previous cell's input instead of the new one. The edit goes to
+    a detached node, nothing is saved, and the next wait times out. Settling
+    between edits removes the window rather than widening a timeout.
+    """
+    page.wait_for_function(
+        "!document.querySelector('#workflow-section [name=\"value\"]')",
+        timeout=8000,
+    )
+
+
 def _set_cell(page, col, value, is_select=False, is_textarea=False):
     """Double-click a workflow cell, edit it, commit (input/select named 'value')."""
     for attempt in range(2):
         try:
+            _settled(page)
             page.dblclick(f'td[data-col="{col}"]')
             if is_select:
                 sel = page.locator('#workflow-section select[name=value]').last
@@ -50,6 +67,7 @@ def _set_cell(page, col, value, is_select=False, is_textarea=False):
                 inp.wait_for(state="visible", timeout=4000)
                 inp.fill(str(value))
                 inp.press("Enter")
+            _settled(page)
             return
         except Exception:
             if attempt:
@@ -59,6 +77,7 @@ def _set_cell(page, col, value, is_select=False, is_textarea=False):
 
 def _pick_station(page, col, value):
     """Double-click the station cell and choose a work center from the combobox."""
+    _settled(page)
     page.locator(f'td[data-col="{col}"]').scroll_into_view_if_needed()
     page.dblclick(f'td[data-col="{col}"]')
     box = page.locator("#workflow-section .combobox-input").last
@@ -67,6 +86,7 @@ def _pick_station(page, col, value):
     box.fill(value)
     page.wait_for_selector(".combobox-list.open", timeout=8000)
     page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
+    _settled(page)
 
 
 def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):

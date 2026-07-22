@@ -27,7 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, require_operator
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
 from celerp_labels.models import LabelTemplate
 
 log = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ async def list_templates(
 async def create_template(
     body: TemplateCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     t = LabelTemplate(
@@ -130,7 +131,7 @@ async def update_template(
     template_id: uuid.UUID,
     body: TemplateUpdate,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     t = await _get_or_404(session, company_id, template_id)
@@ -144,7 +145,7 @@ async def update_template(
 async def delete_template(
     template_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
+    _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     t = await _get_or_404(session, company_id, template_id)
@@ -157,6 +158,8 @@ async def print_single(
     entity_id: str,
     request: Request,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Generate a PDF label for a single item."""
@@ -164,7 +167,7 @@ async def print_single(
 
     template_id_str = request.query_params.get("template_id")
     template = await _resolve_template(session, company_id, template_id_str)
-    item = await _fetch_item(session, company_id, entity_id)
+    item = await _fetch_item(session, company_id, entity_id, role, settings)
     pdf = render_label_pdf([item], template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
@@ -177,13 +180,15 @@ async def print_single(
 async def bulk_print(
     body: BulkPrintBody,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Generate a PDF label sheet for multiple items."""
     from celerp_labels.service import render_label_pdf
 
     template = await _resolve_template(session, company_id, body.template_id)
-    items = [await _fetch_item(session, company_id, eid) for eid in body.entity_ids]
+    items = [await _fetch_item(session, company_id, eid, role, settings) for eid in body.entity_ids]
     pdf = render_label_pdf(items, template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
@@ -263,14 +268,19 @@ async def _resolve_template(
     }
 
 
-async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: str) -> dict:
+async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: str,
+                      role: str, settings: dict) -> dict:
     """Fetch item data from projections; fall back to minimal stub if not found.
 
     Flattened through the inventory serializer so labels print the same values every
     other surface shows: recipe-rolled cost and computed derived price lists included.
+    Cost fields are stripped unless the caller holds view_inventory_costs, so a label
+    never leaks cost to a role that cannot see it elsewhere.
     """
+    from celerp.services.cost_visibility import apply_field_visibility
+    from celerp.services.field_schema import get_effective_field_schema
     from celerp.services.pricing import get_price_config
-    from celerp_inventory.routes import _flatten_item
+    from celerp_inventory.routes import flatten_item
 
     proj = (
         await session.execute(
@@ -282,8 +292,11 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
         )
     ).scalar_one_or_none()
     if proj and proj.state:
-        return _flatten_item(proj.state, entity_id,
+        flat = flatten_item(proj.state, entity_id,
                              price_config=await get_price_config(session, company_id))
+        field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
+        can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+        return apply_field_visibility([flat], role, field_schema, can_see_costs)[0]
     return {"entity_id": entity_id, "name": entity_id, "sku": entity_id}
 
 

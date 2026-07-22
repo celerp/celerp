@@ -16,7 +16,14 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, ROLE_LEVELS
+from celerp.services.permissions import (
+    PERMISSIONS,
+    ROLES,
+    get_current_company_settings,
+    require_permission,
+    role_has_permission,
+)
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -60,6 +67,12 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
 class CompanyPatch(BaseModel):
     name: str | None = None
     settings: dict = Field(default_factory=dict)
+
+
+class RolePermissionPatch(BaseModel):
+    perm_key: str
+    role_key: str
+    granted: bool
 
 
 class LocationCreate(BaseModel):
@@ -262,7 +275,7 @@ async def me(company_id=Depends(get_current_company_id), session: AsyncSession =
 
 
 @router.patch("/me")
-async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _=Depends(require_admin), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
@@ -287,6 +300,55 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         company.settings = merged
     await session.commit()
     return {"ok": True}
+
+
+@router.patch("/me/role-permissions")
+async def patch_role_permissions(
+    payload: RolePermissionPatch,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_permissions"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set one permission's minimum role from a matrix checkbox toggle.
+
+    Owner-only (manage_permissions is a fixed owner row, so no owner can revoke
+    their own ability to edit permissions). A toggle names a (permission, role)
+    cell and whether that role should now hold the permission; the stored
+    override is the resulting threshold role, and every higher role inherits it.
+    """
+    perm = next((p for p in PERMISSIONS if p.key == payload.perm_key), None)
+    if perm is None:
+        raise HTTPException(status_code=422, detail=f"Unknown permission '{payload.perm_key}'")
+    if payload.role_key not in ROLE_LEVELS:
+        raise HTTPException(status_code=422, detail=f"Unknown role '{payload.role_key}'")
+    if not perm.grantable:
+        raise HTTPException(status_code=403, detail=f"The {perm.key} permission is fixed and cannot be reassigned")
+
+    # Checking a role's box lowers the threshold to that role; unchecking raises it
+    # to the next role up, since every role at or above the threshold inherits.
+    if payload.granted:
+        new_threshold = payload.role_key
+    else:
+        higher = sorted((r for r in ROLES if r.level > ROLE_LEVELS[payload.role_key]), key=lambda r: r.level)
+        # The owner column is always granted and never rendered as an unchecked box,
+        # so there is always a higher role to raise the threshold to here.
+        new_threshold = higher[0].key
+    if ROLE_LEVELS[new_threshold] < ROLE_LEVELS[perm.floor_role]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
+        )
+
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    overrides = dict(settings.get("role_permissions") or {})
+    overrides[perm.key] = new_threshold
+    settings["role_permissions"] = overrides
+    company.settings = settings
+    await session.commit()
+    return {"ok": True, "perm_key": perm.key, "threshold_role": new_threshold}
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +513,7 @@ async def patch_location(location_id: str, payload: LocationPatch, company_id=De
 async def delete_location(
     location_id: str,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -501,7 +563,7 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
 async def create_user(
     payload: UserCreate,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_users"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.accounting import UserCompany
@@ -553,7 +615,7 @@ async def patch_user(
     user_id: uuid.UUID,
     payload: UserPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_users"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.accounting import UserCompany
@@ -606,9 +668,9 @@ _COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"}
 
 
 @router.get("/me/item-schema")
-async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> list[dict]:
     schema = await get_effective_field_schema(session, company_id)
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+    if not role_has_permission(settings, role, "view_inventory_costs"):
         schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
     return schema
 
@@ -617,7 +679,7 @@ async def get_item_schema(company_id=Depends(get_current_company_id), role: str 
 async def patch_item_schema(
     payload: ItemSchemaPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -656,7 +718,7 @@ async def patch_category_schema(
     category: str,
     payload: CategorySchemaPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -715,7 +777,7 @@ async def get_all_category_schemas(company_id=Depends(get_current_company_id), s
 async def merge_category_schemas(
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Auto-merge attribute keys discovered during import into category schemas.
@@ -774,7 +836,7 @@ def _slugify_category(name: str) -> str:
 async def create_category(
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     name = str(payload.get("name") or "").strip()
@@ -805,7 +867,7 @@ async def rename_category(
     category_key: str,
     payload: dict,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -856,7 +918,7 @@ async def rename_category(
 async def delete_category(
     category_key: str,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from celerp.models.projections import Projection
@@ -944,7 +1006,7 @@ async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSe
 async def patch_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1057,7 +1119,7 @@ async def get_payment_terms(company_id=Depends(get_current_company_id), session:
 async def patch_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1141,7 +1203,7 @@ async def get_contact_tags(company_id=Depends(get_current_company_id), session: 
 async def patch_contact_tags(
     payload: ContactTagsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1171,7 +1233,7 @@ async def get_contact_defaults(company_id=Depends(get_current_company_id), sessi
 async def patch_contact_defaults(
     payload: ContactDefaultsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1221,7 +1283,7 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
 async def patch_terms_conditions(
     payload: TermsConditionsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1270,7 +1332,7 @@ async def get_purchasing_taxes(
 async def patch_purchasing_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1339,7 +1401,7 @@ async def get_purchasing_payment_terms(
 async def patch_purchasing_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -1427,7 +1489,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
 async def put_units(
     payload: UnitsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     _validate_units(payload.units)
@@ -1450,7 +1512,7 @@ class RelayEnablePayload(BaseModel):
     instance_id: str = Field("", description="Optional stable instance identifier.")
 
 
-@router.post("/me/relay/enable", dependencies=[Depends(require_admin)])
+@router.post("/me/relay/enable", dependencies=[require_permission("manage_integrations")])
 async def enable_relay(
     payload: RelayEnablePayload,
     _company_id=Depends(get_current_company_id),
@@ -1482,7 +1544,7 @@ async def enable_relay(
     return {"ok": True, "message": "Web access activated."}
 
 
-@router.post("/me/relay/disable", dependencies=[Depends(require_admin)])
+@router.post("/me/relay/disable", dependencies=[require_permission("manage_integrations")])
 async def disable_relay(_company_id=Depends(get_current_company_id)) -> dict:
     """Deactivate the relay. Stops cloudflared and closes the WS connection. Admin-only."""
     from celerp.config import settings as _cfg
@@ -1569,7 +1631,7 @@ async def list_modules(
     return await asyncio.to_thread(_scan_modules)
 
 
-@router.post("/me/modules/{module_name}/enable", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
 async def enable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
@@ -1589,7 +1651,7 @@ async def enable_module(
     return {"ok": True, "name": module_name, "enabled": True, "restart_required": True, "enabled_modules": enabled_list}
 
 
-@router.post("/me/modules/{module_name}/disable", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")])
 async def disable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
@@ -1618,7 +1680,7 @@ class _ImportPathBody(BaseModel):
     path: str
 
 
-@router.post("/me/modules/import", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/import", dependencies=[require_permission("manage_company_settings")])
 async def import_module_upload(request: Request, file: UploadFile = File(...)) -> dict:
     """Install a module package from an uploaded .zip archive. Admin only.
 
@@ -1645,7 +1707,7 @@ async def import_module_upload(request: Request, file: UploadFile = File(...)) -
     return {"ok": True, **info}
 
 
-@router.post("/me/modules/import-path", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/import-path", dependencies=[require_permission("manage_company_settings")])
 async def import_module_from_path(body: _ImportPathBody) -> dict:
     """Install a module from a local folder path (desktop folder picker). Admin only.
 
@@ -1717,7 +1779,7 @@ class _BuyBody(BaseModel):
     custom_text: str | None = None   # buyer-language purchase disclosures for the Checkout page
 
 
-@router.post("/me/modules/buy", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/buy", dependencies=[require_permission("manage_company_settings")])
 async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
     The UI opens it in the browser, then polls the license. Admin only."""
@@ -1739,7 +1801,7 @@ async def buy_module(body: _BuyBody) -> dict:
     return body_json
 
 
-@router.get("/me/modules/licenses", dependencies=[Depends(require_admin)])
+@router.get("/me/modules/licenses", dependencies=[require_permission("manage_company_settings")])
 async def module_licenses() -> dict:
     """Slugs this instance holds an active license for (for buy/install CTAs)."""
     import httpx
@@ -1815,7 +1877,7 @@ def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
     return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
 
 
-@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/marketplace-download", dependencies=[require_permission("manage_company_settings")])
 async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
     the archive on disk, ready for a following Install. Admin only.
@@ -1894,7 +1956,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     return {"ok": True, "path": str(dest)}
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_admin)])
+@router.post("/me/modules/marketplace-install", dependencies=[require_permission("manage_company_settings")])
 async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     """Install a staged marketplace module through the shared importer. Admin only.
 
@@ -1937,7 +1999,7 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     return {"ok": True, **info}
 
 
-@router.delete("/me", dependencies=[Depends(require_admin)])
+@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])
 async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1961,7 +2023,7 @@ async def deactivate_company(
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
 
-@router.post("/me/reactivate", dependencies=[Depends(require_admin)])
+@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")])
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -2029,9 +2091,10 @@ async def get_price_lists(
         company.settings = settings
         await session.commit()
         price_lists = seeded
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        # Below manager: no cost lists, and names/descriptions only. A derived list's
-        # factor stays manager+ because price ÷ factor would reveal a cost-based base.
+    if not role_has_permission(company.settings, role, "view_inventory_costs"):
+        # Without view_inventory_costs: no cost lists, and names/descriptions only. A
+        # derived list's factor stays gated because price ÷ factor would reveal a
+        # cost-based base.
         price_lists = [
             {"name": pl.get("name", ""), "description": pl.get("description", "")}
             for pl in price_lists
@@ -2044,7 +2107,7 @@ async def get_price_lists(
 async def patch_price_lists(
     payload: PriceListsPatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -2079,7 +2142,7 @@ async def get_base_price_list(
 async def patch_base_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -2116,7 +2179,7 @@ async def get_default_price_list(
 async def patch_default_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     company = await session.get(Company, company_id)
@@ -2129,7 +2192,7 @@ async def patch_default_price_list(
     return {"ok": True}
 
 
-@router.post("/me/demo/reseed", dependencies=[Depends(require_admin)])
+@router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")])
 async def reseed_demo_items(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),

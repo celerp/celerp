@@ -10008,11 +10008,12 @@ _LOCATIONS = [
 
 class TestInventoryItemDetailFixes:
 
-    def test_base_shell_includes_global_htmx_error_surface(self):
+    @pytest.mark.asyncio
+    async def test_base_shell_includes_global_htmx_error_surface(self):
         """Global shell should include a visible surface for HTMX response/send errors."""
         from fasthtml.common import to_xml, Div
         from ui.components.shell import base_shell
-        html = to_xml(base_shell(Div("x"), request=None))
+        html = to_xml(await base_shell(Div("x"), request=None))
         assert 'id="global-ui-error"' in html
         assert 'htmx:responseError' in html
         assert 'htmx:sendError' in html
@@ -13566,7 +13567,7 @@ class TestAIPage:
         assert "ai-input__field--disabled" in html
 
     def test_ai_module_nav_slot_config(self):
-        """celerp-ai manifest declares nav slot with min_role=operator."""
+        """celerp-ai manifest declares nav slot gated on use_ai_assistant."""
         import importlib
         init_path = str(Path(__file__).parent.parent / "default_modules/celerp-ai/__init__.py")
         spec = importlib.util.spec_from_file_location("celerp_ai_init", init_path)
@@ -13574,7 +13575,7 @@ class TestAIPage:
         spec.loader.exec_module(mod)
         manifest = mod.PLUGIN_MANIFEST
         assert manifest["slots"]["nav"]["key"] == "ai"
-        assert manifest["slots"]["nav"]["min_role"] == "operator"
+        assert manifest["slots"]["nav"]["permission"] == "use_ai_assistant"
         assert manifest["slots"]["nav"]["href"] == "/ai"
 
     def test_ai_dropzone_only_on_draft_bills(self):
@@ -16196,3 +16197,441 @@ class TestCelerpAccountSurface:
                                     cookies=_authed())
         assert status.await_count == 2
         assert b"o@shop.example" in r.content
+# ── Chart of accounts: add and edit ───────────────────────────────────────────
+
+from ui.api_client import APIError
+
+
+class TestChartOfAccountsAddEdit:
+    @pytest.mark.asyncio
+    async def test_chart_tab_add_account_link_points_at_new_route(self, ui_client):
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        assert b'href="/settings/accounting/chart/new"' in r.content
+        assert b'href="/accounting/new"' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_add_account_page_renders_form(self, ui_client):
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting/chart/new", cookies=_authed())
+        assert r.status_code == 200
+        assert b'name="code"' in r.content
+        assert b'name="name"' in r.content
+        assert b'name="account_type"' in r.content
+        assert b'name="parent_code"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_add_account_form_has_escape_handler(self, ui_client):
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting/chart/new", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Escape" in r.content
+        assert b"/settings/accounting?tab=chart" in r.content
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_returns_hx_redirect(self, ui_client):
+        create = AsyncMock(return_value={"code": "1999"})
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "Test Clearing", "account_type": "asset", "parent_code": ""},
+            )
+        assert r.status_code == 204
+        assert "/settings/accounting?tab=chart" in r.headers.get("hx-redirect", "")
+        create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_duplicate_code_shows_error_banner(self, ui_client):
+        create = AsyncMock(side_effect=APIError(409, "Account code 1999 already exists"))
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "Test Clearing", "account_type": "asset", "parent_code": ""},
+            )
+        assert r.status_code == 200
+        assert b"Account code 1999 already exists" in r.content
+        # The error swaps into the form's error div only, so the user's entered
+        # values stay in the DOM: the response must be a fragment, not a page.
+        assert b"<form" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_rejects_unknown_type(self, ui_client):
+        create = AsyncMock(return_value={})
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "X", "account_type": "bogus", "parent_code": ""},
+            )
+        assert r.status_code == 200
+        assert b"error-banner" in r.content
+        create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_rejects_unknown_parent(self, ui_client):
+        create = AsyncMock(return_value={})
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": "9999"},
+            )
+        assert r.status_code == 200
+        assert b"error-banner" in r.content
+        create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_rejects_self_parent(self, ui_client):
+        patch_mock = AsyncMock(return_value={})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash", "account_type": "asset", "parent_code": "1000", "is_active": "true"},
+            )
+        assert r.status_code == 200
+        assert b"error-banner" in r.content
+        patch_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_add_account_page_unauthenticated_redirects_login(self, ui_client):
+        r = await ui_client.get("/settings/accounting/chart/new")
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/login")
+
+    @pytest.mark.asyncio
+    async def test_chart_table_row_has_edit_link(self, ui_client):
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        assert b"/settings/accounting/chart/1000/edit" in r.content
+
+    @pytest.mark.asyncio
+    async def test_edit_account_page_prefills_from_chart(self, ui_client):
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting/chart/1000/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b'value="Cash"' in r.content
+        # The account code is the posting identity journal lines reference:
+        # it is displayed, never editable.
+        assert b'name="code"' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(side_effect=APIError(500, "backend down"))):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        assert b"No accounts yet" not in r.content
+        assert b"error-banner" in r.content
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_returns_hx_redirect(self, ui_client):
+        patch_mock = AsyncMock(return_value={"code": "1000"})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash Renamed", "account_type": "asset", "parent_code": "", "is_active": "true"},
+            )
+        assert r.status_code == 204
+        assert "/settings/accounting?tab=chart" in r.headers.get("hx-redirect", "")
+        patch_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_not_found_shows_message(self, ui_client):
+        patch_mock = AsyncMock(side_effect=APIError(404, "Account not found"))
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/9999",
+                cookies=_authed(),
+                data={"name": "Ghost", "account_type": "asset", "parent_code": "", "is_active": "true"},
+            )
+        assert r.status_code == 200
+        assert b"Account not found" in r.content
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_expired_token_shows_error_banner(self, ui_client):
+        create = AsyncMock(side_effect=APIError(401, "Unauthorized"))
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
+            )
+        assert r.status_code == 200
+        assert b"Unauthorized" in r.content
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_unauthenticated_redirects_login(self, ui_client):
+        r = await ui_client.post(
+            "/settings/accounting/chart/new",
+            data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
+        )
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/login")
+
+
+# ── Reconciliation: CSV import responses and column mapping ───────────────────
+
+_RECON_CSV = b"Date,Description,Amount,Balance\n2026-03-01,Wire ACME,-5000,95000\n"
+
+
+def _csv_upload(body: bytes = _RECON_CSV, name: str = "statement.csv"):
+    return {"csv_file": (name, body, "text/csv")}
+
+
+class TestReconciliationImportResponse:
+    @pytest.mark.asyncio
+    async def test_import_csv_success_returns_hx_redirect_not_302(self, ui_client):
+        imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 2})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(),
+            )
+        assert r.status_code == 204
+        assert "/accounting/reconcile/sess1" in r.headers.get("hx-redirect", "")
+        imp.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_import_csv_no_file_returns_hx_redirect_with_message(self, ui_client):
+        r = await ui_client.post(
+            "/accounting/reconcile/sess1/import",
+            cookies=_authed(),
+            data={},
+        )
+        assert r.status_code == 204
+        redirect = r.headers.get("hx-redirect", "")
+        assert "/accounting/reconcile/sess1" in redirect
+        assert "msg=" in redirect
+
+    @pytest.mark.asyncio
+    async def test_import_csv_unauthenticated_gets_login_hx_redirect(self, ui_client):
+        r = await ui_client.post(
+            "/accounting/reconcile/sess1/import",
+            files=_csv_upload(),
+            headers={"HX-Request": "true"},
+        )
+        assert r.headers.get("hx-redirect", "").startswith("/login")
+        assert b"<html" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_import_csv_api_error_401_returns_401_hx_redirect(self, ui_client):
+        imp = AsyncMock(side_effect=APIError(401, "expired"))
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(),
+            )
+        assert r.status_code == 401
+        assert r.headers.get("hx-redirect") == "/login"
+
+    @pytest.mark.asyncio
+    async def test_import_csv_api_error_409_surfaces_flash_toast(self, ui_client):
+        imp = AsyncMock(side_effect=APIError(409, "Session already completed"))
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(),
+            )
+        assert r.status_code == 204
+        redirect = r.headers.get("hx-redirect", "")
+        assert "/accounting/reconcile/sess1" in redirect
+        assert "Session%20already%20completed" in redirect
+
+    @pytest.mark.asyncio
+    async def test_import_csv_oversize_rejected(self, ui_client):
+        imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 0})
+        big = b"Date,Description,Amount\n" + b"x" * (5 * 1024 * 1024 + 1)
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(body=big),
+            )
+        assert r.status_code == 204
+        assert "msg=" in r.headers.get("hx-redirect", "")
+        imp.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_import_csv_zero_rows_shows_toast(self, ui_client):
+        imp = AsyncMock(return_value={"needs_mapping": False, "rows_imported": 0})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(),
+            )
+        assert r.status_code == 204
+        assert "msg=" in r.headers.get("hx-redirect", "")
+
+    @pytest.mark.asyncio
+    async def test_import_csv_needs_mapping_renders_inline_mapper(self, ui_client):
+        imp = AsyncMock(return_value={
+            "needs_mapping": True,
+            "headers": ["Col A", "Col B", "Col C"],
+            "preview": [{"Col A": "2026-03-01", "Col B": "Something", "Col C": "1000"}],
+        })
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(body=b"Col A,Col B,Col C\n2026-03-01,Something,1000\n"),
+            )
+        assert r.status_code == 200
+        assert b'id="recon-workspace"' in r.content
+        assert b'name="map_Col A"' in r.content
+        assert b'name="map_Col B"' in r.content
+        assert b'name="map_Col C"' in r.content
+        assert b'name="csv_b64"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_inline_mapper_has_escape_handler(self, ui_client):
+        imp = AsyncMock(return_value={
+            "needs_mapping": True,
+            "headers": ["Col A", "Col B", "Col C"],
+            "preview": [],
+        })
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/import",
+                cookies=_authed(),
+                files=_csv_upload(body=b"Col A,Col B,Col C\n2026-03-01,Something,1000\n"),
+            )
+        assert r.status_code == 200
+        assert b"Escape" in r.content
+
+    @pytest.mark.asyncio
+    async def test_confirm_import_applies_column_map_and_redirects(self, ui_client):
+        import base64 as _b64
+        csv_body = b"Col A,Col B,Col C\n2026-03-01,Something,1000\n"
+        captured = {}
+
+        async def _capture(token, session_id, content, filename, column_map=None):
+            captured["content"] = content
+            captured["column_map"] = column_map
+            return {"needs_mapping": False, "rows_imported": 1}
+
+        with patch("ui.api_client.import_recon_csv", new=_capture):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/confirm-import",
+                cookies=_authed(),
+                data={
+                    "map_Col A": "date",
+                    "map_Col B": "description",
+                    "map_Col C": "amount",
+                    "csv_b64": _b64.b64encode(csv_body).decode(),
+                    "csv_filename": "statement.csv",
+                },
+            )
+        assert r.status_code == 204
+        assert "/accounting/reconcile/sess1" in r.headers.get("hx-redirect", "")
+        assert captured.get("column_map") == {"date": "Col A", "description": "Col B", "amount": "Col C"}
+        assert captured.get("content") == csv_body
+
+    @pytest.mark.asyncio
+    async def test_confirm_import_incomplete_mapping_shows_inline_error(self, ui_client):
+        import base64 as _b64
+        imp = AsyncMock(return_value={})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/confirm-import",
+                cookies=_authed(),
+                data={
+                    "map_Col A": "date",
+                    "map_Col B": "ignore",
+                    "map_Col C": "ignore",
+                    "csv_b64": _b64.b64encode(b"Col A,Col B,Col C\n2026-03-01,x,1\n").decode(),
+                    "csv_filename": "statement.csv",
+                },
+            )
+        assert r.status_code == 200
+        assert b'id="recon-workspace"' in r.content
+        assert b"error-banner" in r.content
+        # The user's selections are preserved in the re-rendered mapper.
+        assert b'name="map_Col A"' in r.content
+        imp.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_confirm_import_malformed_base64_rejected(self, ui_client):
+        imp = AsyncMock(return_value={})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/confirm-import",
+                cookies=_authed(),
+                data={
+                    "map_Col A": "date",
+                    "map_Col B": "description",
+                    "map_Col C": "amount",
+                    "csv_b64": "!!!not-base64!!!",
+                    "csv_filename": "statement.csv",
+                },
+            )
+        assert r.status_code == 204
+        assert "msg=" in r.headers.get("hx-redirect", "")
+        imp.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_confirm_import_header_mismatch_rejected(self, ui_client):
+        import base64 as _b64
+        imp = AsyncMock(return_value={})
+        with patch("ui.api_client.import_recon_csv", new=imp):
+            r = await ui_client.post(
+                "/accounting/reconcile/sess1/confirm-import",
+                cookies=_authed(),
+                data={
+                    "map_Col A": "date",
+                    "map_Col B": "description",
+                    "map_Col C": "amount",
+                    "csv_b64": _b64.b64encode(b"Other,Headers\n1,2\n").decode(),
+                    "csv_filename": "statement.csv",
+                },
+            )
+        assert r.status_code == 204
+        assert "msg=" in r.headers.get("hx-redirect", "")
+        imp.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recon_start_page_back_link_points_at_settings_accounting(self, ui_client):
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})):
+            r = await ui_client.get("/accounting/reconcile/start", cookies=_authed())
+        assert r.status_code == 200
+        assert b'href="/settings/accounting?tab=bank-accounts"' in r.content
+        assert b'href="/accounting?tab=bank-accounts"' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_recon_workspace_error_fallback_redirects_to_settings_accounting(self, ui_client):
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.get_reconciliation", new=AsyncMock(side_effect=APIError(404, "Session not found"))), \
+             patch("ui.api_client.get_statement_lines", new=AsyncMock(return_value={"items": []})):
+            r = await ui_client.get("/accounting/reconcile/sess1", cookies=_authed())
+        assert r.status_code == 302
+        location = r.headers.get("location", "")
+        assert location.startswith("/settings/accounting?tab=bank-accounts")
+        assert "msg=" in location
+
+    @pytest.mark.asyncio
+    async def test_recon_completion_card_back_link_points_at_settings_accounting(self, ui_client):
+        with patch("ui.api_client.complete_reconciliation", new=AsyncMock(return_value={"statement_date": "2026-03-31"})):
+            r = await ui_client.post("/accounting/reconcile/sess1/complete", cookies=_authed())
+        assert r.status_code == 200
+        assert b'href="/settings/accounting?tab=bank-accounts"' in r.content
+        assert b'href="/accounting?tab=bank-accounts"' not in r.content

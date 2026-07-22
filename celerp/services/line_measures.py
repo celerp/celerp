@@ -36,7 +36,7 @@ def item_measure_meta(item: dict, unit_map: dict) -> dict:
         "quantity": item.get("quantity"),
         "weight": item.get("weight"),
         "weight_unit": item.get("weight_unit"),
-        # _flatten_item lifts attributes.* to the top level, so pieces is here.
+        # flatten_item lifts attributes.* to the top level, so pieces is here.
         "pieces": item.get("pieces"),
         "qty_is_weight": is_weight_unit(sell_by, unit_map),
         "qty_is_pieces": is_pieces_unit(sell_by, unit_map),

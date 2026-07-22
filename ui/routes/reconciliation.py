@@ -4,19 +4,28 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import csv
+import io
 from datetime import date as _date
+from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, flash, page_header
 from ui.components.table import fmt_money, EMPTY, add_new_option
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
+
+
+_MAX_CSV_BYTES = 5 * 1024 * 1024
+_CANONICAL_FIELDS = ["date", "description", "amount", "debit", "credit", "balance", "reference", "ignore"]
 
 
 # ── Status helpers ────────────────────────────────────────────────────────────
@@ -420,6 +429,76 @@ def _workspace_view(
     )
 
 
+# ── CSV import helpers ────────────────────────────────────────────────────────
+
+def _workspace_redirect(session_id: str, msg: str = "") -> Response:
+    """204 + HX-Redirect back to the workspace so htmx navigates the browser
+    instead of swapping a full page into #recon-workspace. The message is
+    carried in the URL and rendered by the workspace as a flash banner."""
+    url = f"/accounting/reconcile/{session_id}"
+    if msg:
+        url += "?msg=" + quote(msg, safe="")
+    return Response("", status_code=204, headers={"HX-Redirect": url})
+
+
+def _mapper_fragment(
+    session_id: str,
+    headers: list[str],
+    csv_b64: str,
+    filename: str,
+    selections: dict[str, str] | None = None,
+    error: str = "",
+) -> FT:
+    """Inline column-mapping step, rendered into #recon-workspace. Carries the
+    uploaded CSV forward as a base64 hidden field so confirm needs no server-side
+    stash. Defaults each select to the canonical field matching the header name."""
+    selections = selections or {}
+
+    def _default(h: str) -> str:
+        low = h.strip().lower()
+        return low if low in _CANONICAL_FIELDS else "ignore"
+
+    rows = [
+        Tr(
+            Td(h),
+            Td(Select(
+                *[Option(f, value=f, selected=(f == selections.get(h, _default(h))))
+                  for f in _CANONICAL_FIELDS],
+                name=f"map_{h}",
+                cls="form-input cell-input--select",
+            )),
+        )
+        for h in headers
+    ]
+
+    return Div(
+        H3("Map CSV Columns", cls="recon-panel-title"),
+        P(t("acct.we_couldnt_autodetect_your_csv_columns_please_map"), cls="text-muted"),
+        P(error, cls="error-banner") if error else None,
+        Form(
+            Table(
+                Thead(Tr(Th(t("th.csv_column")), Th(t("th.maps_to")))),
+                Tbody(*rows),
+                cls="data-table",
+            ),
+            Input(type="hidden", name="csv_b64", value=csv_b64),
+            Input(type="hidden", name="csv_filename", value=filename),
+            Div(
+                Button(t("btn.confirm_mapping"), type="submit", cls="btn btn--primary"),
+                A(t("btn.cancel"), href=f"/accounting/reconcile/{session_id}",
+                  cls="btn btn--secondary ml-sm"),
+                cls="mt-md",
+            ),
+            onkeydown=f"if(event.key==='Escape'){{window.location='/accounting/reconcile/{session_id}'}}",
+            hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
+            hx_target="#recon-workspace",
+            hx_swap="outerHTML",
+        ),
+        id="recon-workspace",
+        cls="recon-workspace settings-card",
+    )
+
+
 # ── Setup routes ─────────────────────────────────────────────────────────────
 
 def setup_routes(app):
@@ -489,9 +568,9 @@ def setup_routes(app):
             cls="settings-card",
         )
 
-        return base_shell(
+        return await base_shell(
             page_header("Start Reconciliation",
-                        A(t("btn.back_to_settings"), href="/accounting?tab=bank-accounts", cls="btn btn--secondary")),
+                        A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
             form,
             title="Start Reconciliation - Celerp",
             nav_active="accounting",
@@ -539,10 +618,15 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return RedirectResponse("/accounting?tab=bank-accounts", status_code=302)
+            return RedirectResponse(
+                "/settings/accounting?tab=bank-accounts&msg=" + quote(str(e.detail), safe=""),
+                status_code=302,
+            )
 
+        msg = request.query_params.get("msg", "").strip()
         workspace = _workspace_view(session_id, recon, bank, lines, book_entries, currency)
-        return base_shell(
+        return await base_shell(
+            flash(msg) if msg else None,
             workspace,
             title="Reconciliation Workspace - Celerp",
             nav_active="accounting",
@@ -553,86 +637,72 @@ def setup_routes(app):
     async def reconcile_import_csv(request: Request, session_id: str):
         token = _token(request)
         if not token:
-            return RedirectResponse("/login", status_code=302)
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         csv_file = form.get("csv_file")
         if not csv_file or not hasattr(csv_file, "read"):
-            return RedirectResponse(f"/accounting/reconcile/{session_id}", status_code=302)
+            return _workspace_redirect(session_id, "Choose a CSV file to import.")
+        content = await csv_file.read()
+        if len(content) > _MAX_CSV_BYTES:
+            return _workspace_redirect(session_id, "CSV file is larger than 5 MB. Split the statement and try again.")
+        filename = csv_file.filename or "upload.csv"
         try:
-            content = await csv_file.read()
-            result = await api.import_recon_csv(token, session_id, content, csv_file.filename or "upload.csv")
-            if result.get("needs_mapping"):
-                return RedirectResponse(
-                    f"/accounting/reconcile/{session_id}/column-mapper", status_code=302
-                )
+            result = await api.import_recon_csv(token, session_id, content, filename)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-        return RedirectResponse(f"/accounting/reconcile/{session_id}", status_code=302)
-
-    @app.get("/accounting/reconcile/{session_id}/column-mapper")
-    async def column_mapper_page(request: Request, session_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        # Headers stored in query params from a prior import attempt
-        headers_raw = request.query_params.get("headers", "")
-        headers = [h.strip() for h in headers_raw.split(",") if h.strip()]
-
-        _CANONICAL = ["date", "description", "amount", "debit", "credit", "balance", "reference", "ignore"]
-        if not headers:
-            return RedirectResponse(f"/accounting/reconcile/{session_id}", status_code=302)
-
-        rows = []
-        for h in headers:
-            rows.append(Tr(
-                Td(h),
-                Td(Select(
-                    *[Option(f, value=f) for f in _CANONICAL],
-                    name=f"map_{h}",
-                    cls="form-input cell-input--select",
-                )),
-            ))
-
-        return base_shell(
-            page_header("Map CSV Columns"),
-            Div(
-                P(t("acct.we_couldnt_autodetect_your_csv_columns_please_map"), cls="text-muted"),
-                Form(
-                    Table(
-                        Thead(Tr(Th(t("th.csv_column")), Th(t("th.maps_to")))),
-                        Tbody(*rows),
-                        cls="data-table",
-                    ),
-                    Button(t("btn.confirm_mapping"), type="submit", cls="btn btn--primary mt-md"),
-                    hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
-                    hx_target="body",
-                    hx_swap="outerHTML",
-                ),
-                cls="settings-card",
-            ),
-            title="Map CSV Columns - Celerp",
-            nav_active="accounting",
-            request=request,
-        )
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _workspace_redirect(session_id, str(e.detail))
+        if result.get("needs_mapping"):
+            csv_b64 = base64.b64encode(content).decode()
+            return _mapper_fragment(session_id, list(result.get("headers") or []), csv_b64, filename)
+        if not int(result.get("rows_imported", 0) or 0):
+            return _workspace_redirect(session_id, "No statement lines were found in the CSV.")
+        return _workspace_redirect(session_id)
 
     @app.post("/accounting/reconcile/{session_id}/confirm-import")
     async def confirm_import(request: Request, session_id: str):
-        """Re-import with explicit column map from user."""
-        import json as _json
+        """Import with the user's explicit column mapping from the inline mapper."""
         token = _token(request)
         if not token:
-            return RedirectResponse("/login", status_code=302)
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
+        filename = str(form.get("csv_filename", "")).strip() or "upload.csv"
+        try:
+            content = base64.b64decode(str(form.get("csv_b64", "")), validate=True)
+        except (binascii.Error, ValueError):
+            return _workspace_redirect(session_id, "The CSV data was corrupted in transit. Please upload the file again.")
+        if len(content) > _MAX_CSV_BYTES:
+            return _workspace_redirect(session_id, "CSV file is larger than 5 MB. Split the statement and try again.")
+        fieldnames = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace"))).fieldnames or [])
+        selections = {k[4:]: str(v) for k, v in form.items() if k.startswith("map_")}
         column_map = {
             canonical: header
-            for header, canonical in (
-                (k[4:], v) for k, v in form.items() if k.startswith("map_")
-            )
+            for header, canonical in selections.items()
             if canonical != "ignore"
         }
-        # We need the original CSV — stored in session or re-uploaded; redirect for now
-        return RedirectResponse(f"/accounting/reconcile/{session_id}", status_code=302)
+        # Mirrors the backend csv_parser requirement: a date, a description, and
+        # at least one amount-like column. Kept in lockstep, not imported, so the
+        # UI never couples to backend internals.
+        missing = [f for f in ("date", "description") if f not in column_map]
+        if not any(f in column_map for f in ("amount", "debit", "credit")):
+            missing.append("amount (or debit/credit)")
+        if missing:
+            csv_b64 = base64.b64encode(content).decode()
+            return _mapper_fragment(
+                session_id, fieldnames, csv_b64, filename, selections=selections,
+                error="Map these required fields before importing: " + ", ".join(missing),
+            )
+        if any(h not in fieldnames for h in column_map.values()):
+            return _workspace_redirect(session_id, "The mapped columns no longer match the CSV. Please upload the file again.")
+        try:
+            result = await api.import_recon_csv(token, session_id, content, filename, column_map=column_map)
+        except APIError as e:
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _workspace_redirect(session_id, str(e.detail))
+        if not int(result.get("rows_imported", 0) or 0):
+            return _workspace_redirect(session_id, "No statement lines were found in the CSV.")
+        return _workspace_redirect(session_id)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/match-picker")
     async def match_picker_partial(request: Request, session_id: str, line_id: str):
@@ -851,12 +921,12 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return P(str(e.detail), cls="error-banner")
-        return base_shell(
+        return await base_shell(
             page_header("Reconciliation Complete ✓"),
             Div(
                 P(f"Reconciliation completed for {result.get('statement_date', '--')}.",
                   cls="success-banner"),
-                A(t("btn._back_to_accounting"), href="/accounting?tab=bank-accounts",
+                A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
                   cls="btn btn--primary"),
                 cls="settings-card",
             ),

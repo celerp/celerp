@@ -13,7 +13,7 @@ from ui.components.shell import base_shell, page_header
 from ui.i18n import t, get_lang
 
 from ui.routes.settings import (
-    _check_role,
+    _check_permission,
     _token,
     _cloud_relay_tab,
 )
@@ -428,7 +428,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
 
         from celerp.gateway.client import get_client as _local_get_client
@@ -452,7 +452,7 @@ def setup_routes(app):
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
-            return base_shell(
+            return await base_shell(
                 _section_breadcrumb("Web Access"),
                 page_header("Web Access"),
                 _value_prop_page(iid, lang=lang),
@@ -480,7 +480,7 @@ def setup_routes(app):
             content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data))
             tab = "status"
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Web Access"),
             page_header("Web Access"),
             _cloud_tabs(tab, has_team_features=has_team, lang=lang),
@@ -497,7 +497,7 @@ def setup_routes(app):
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
-        if _check_role(request, "admin"):
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
@@ -531,7 +531,7 @@ def setup_routes(app):
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
-        if _check_role(request, "admin"):
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
@@ -567,7 +567,7 @@ def setup_routes(app):
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
-        if _check_role(request, "admin"):
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
@@ -630,7 +630,7 @@ def setup_routes(app):
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
-        if _check_role(request, "admin"):
+        if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")

@@ -15,13 +15,12 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.config import COOKIE_NAME, get_role as _get_role
 from ui.i18n import t, get_lang
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.permissions import role_has_permission
 from ui.components.phone import phone_head_items as _phone_head_items
 
 
 # shared helpers imported from settings.py (keep DRY - only ONE copy)
 from ui.routes.settings import (
-    _check_role,
     _token,
     _TIMEZONES,
     _TZ_SEARCH,
@@ -75,7 +74,14 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         role = _get_role(request)
-        is_admin = _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
+        try:
+            company = await api.get_company(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            company = {}
+        settings = company.get("settings") if isinstance(company, dict) else {}
+        is_admin = role_has_permission(settings or {}, role, "manage_company_settings")
         is_owner = role == "owner"
         tab = request.query_params.get("tab", "password" if not is_admin else "company")
 
@@ -91,7 +97,6 @@ def setup_routes(app):
             try:
                 import asyncio as _asyncio
                 results = await _asyncio.gather(
-                    api.get_company(token),
                     api.get_users(token),
                     return_exceptions=True,
                 )
@@ -99,18 +104,17 @@ def setup_routes(app):
                 for r in results:
                     if isinstance(r, APIError) and r.status == 401:
                         return RedirectResponse("/login", status_code=302)
-                company   = results[0] if not isinstance(results[0], Exception) else {}
-                users_resp = results[1] if not isinstance(results[1], Exception) else {}
+                users_resp = results[0] if not isinstance(results[0], Exception) else {}
                 users = users_resp.get("items", []) if isinstance(users_resp, dict) else []
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                company, users = {}, []
+                users = []
 
             if tab == "company":
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
             elif tab == "users":
-                content = _users_tab(users, lang=lang)
+                content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
             elif tab == "backup":
                 backup_data: dict | None = None
                 try:
@@ -131,7 +135,7 @@ def setup_routes(app):
             id="setup-done-banner",
         ) if setup_done else None
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("General"),
             page_header(t("page.settings", lang)),
             *([setup_banner] if setup_banner else []),

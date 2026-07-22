@@ -16,7 +16,8 @@ from celerp.config import ensure_instance_id, settings
 from celerp.db import get_session
 from celerp.gateway.state import relay_http_url
 from celerp.services import supporter_badge as _badge
-from celerp.services.auth import get_current_company_id, get_current_user, require_admin
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.services.runtime_state import dismiss_star_prompt, star_prompt_dismissed
 from celerp.services.star_cta import get_star_cta, neutral_cta
 
@@ -39,7 +40,7 @@ async def star_cta(
 
 @router.post("/dismiss")
 async def dismiss(
-    _=Depends(require_admin),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Dismiss the GitHub-star ask for the whole install (onboarding/milestone cards)."""

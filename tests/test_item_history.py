@@ -395,8 +395,8 @@ def test_transfer_detail_degrades_gracefully():
 
 def test_cost_redaction_helper():
     from celerp.services.activity_redaction import redact_event_costs, can_see_costs
-    assert can_see_costs("manager") and can_see_costs("admin") and can_see_costs("owner")
-    assert not can_see_costs("operator") and not can_see_costs("viewer") and not can_see_costs(None)
+    assert can_see_costs({}, "manager") and can_see_costs({}, "admin") and can_see_costs({}, "owner")
+    assert not can_see_costs({}, "operator") and not can_see_costs({}, "viewer") and not can_see_costs({}, None)
     # cost pricing → amount stripped, marker set
     assert redact_event_costs("item.pricing.set", {"price_type": "cost_total", "new_price": 5.0}) \
         == {"price_type": "cost_total", "cost_redacted": True}

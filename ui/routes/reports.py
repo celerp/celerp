@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+from urllib.parse import parse_qsl, quote_plus
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -16,29 +17,35 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.permissions import role_has_permission
 
 
-def _show_margin(request) -> bool:
-    """Return True only if the current user has manager role or above."""
-    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["manager"]
+def _show_margin(request, settings: dict | None) -> bool:
+    """Return True only if the current role may see cost/margin figures.
+
+    Gated on view_inventory_costs, the same key the dashboard margin strip uses,
+    so cost visibility stays coherent across surfaces.
+    """
+    return role_has_permission(settings or {}, _get_role(request), "view_inventory_costs")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_fiscal_and_currency(token: str) -> tuple[str, str | None]:
-    """Fetch company fiscal_year_start and currency; defaults on any error."""
+async def _get_fiscal_and_currency(token: str) -> tuple[str, str | None, dict]:
+    """Fetch company fiscal_year_start, currency, and settings; defaults on any error."""
     try:
         company = await api.get_company(token)
-        return (company.get("fiscal_year_start") or "01-01", company.get("currency") or None)
+        return (company.get("fiscal_year_start") or "01-01",
+                company.get("currency") or None,
+                company.get("settings") or {})
     except Exception:
-        return ("01-01", None)
+        return ("01-01", None, {})
 
 
 async def _get_fiscal(token: str) -> str:
-    fy, _ = await _get_fiscal_and_currency(token)
+    fy, _, _ = await _get_fiscal_and_currency(token)
     return fy
 
 
@@ -46,11 +53,11 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
 
-def _page_or_fragment(request: Request, *content, title: str, nav_active: str) -> FT:
+async def _page_or_fragment(request: Request, *content, title: str, nav_active: str) -> FT:
     """Return full shell or HTMX fragment depending on request type."""
     if _is_htmx(request):
         return Div(*content, id="main-content", cls="main-content")
-    return base_shell(*content, title=title, nav_active=nav_active, request=request)
+    return await base_shell(*content, title=title, nav_active=nav_active, request=request)
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +71,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        return base_shell(
+        return await base_shell(
             page_header(t("page.reports", get_lang(request))),
             _report_index(lang=get_lang(request)),
             title="Reports - Celerp",
@@ -77,7 +84,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        fy, currency = await _get_fiscal_and_currency(token)
+        fy, currency, _ = await _get_fiscal_and_currency(token)
         date_from, date_to, preset = _parse_dates(request, fy)
         sort = request.query_params.get("sort", "outstanding")
         sort_dir = request.query_params.get("dir", "desc")
@@ -92,14 +99,14 @@ def setup_routes(app):
             _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
-        return _page_or_fragment(request, *content, title="AR Aging - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title="AR Aging - Celerp", nav_active="reports")
 
     @app.get("/reports/ap-aging")
     async def ap_aging(request: Request):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        fy, currency = await _get_fiscal_and_currency(token)
+        fy, currency, _ = await _get_fiscal_and_currency(token)
         date_from, date_to, preset = _parse_dates(request, fy)
         sort = request.query_params.get("sort", "outstanding")
         sort_dir = request.query_params.get("dir", "desc")
@@ -114,7 +121,7 @@ def setup_routes(app):
             _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
-        return _page_or_fragment(request, *content, title="AP Aging - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title="AP Aging - Celerp", nav_active="reports")
 
     @app.get("/reports/sales")
     async def sales_report(request: Request):
@@ -124,7 +131,7 @@ def setup_routes(app):
         group_by = request.query_params.get("group_by", "customer")
         sort = request.query_params.get("sort", "amount")
         sort_dir = request.query_params.get("dir", "desc")
-        fy, currency = await _get_fiscal_and_currency(token)
+        fy, currency, settings = await _get_fiscal_and_currency(token)
         date_from, date_to, preset = _parse_dates(request, fy)
         params = {"group_by": group_by}
         if date_from:
@@ -146,11 +153,11 @@ def setup_routes(app):
             ),
             _date_filter_bar("/reports/sales", date_from, date_to, preset,
                              settings_link="/settings/sales?tab=terms",
-                             extra_params=f"&group_by={group_by}",
+                             extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
-            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
+            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
         ]
-        return _page_or_fragment(request, *content, title="Sales Report - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title="Sales Report - Celerp", nav_active="reports")
 
     @app.get("/reports/purchases")
     async def purchases_report(request: Request):
@@ -160,7 +167,7 @@ def setup_routes(app):
         group_by = request.query_params.get("group_by", "supplier")
         sort = request.query_params.get("sort", "amount")
         sort_dir = request.query_params.get("dir", "desc")
-        fy, currency = await _get_fiscal_and_currency(token)
+        fy, currency, settings = await _get_fiscal_and_currency(token)
         date_from, date_to, preset = _parse_dates(request, fy)
         params = {"group_by": group_by}
         if date_from:
@@ -182,11 +189,11 @@ def setup_routes(app):
             ),
             _date_filter_bar("/reports/purchases", date_from, date_to, preset,
                              settings_link="/settings/sales?tab=terms",
-                             extra_params=f"&group_by={group_by}",
+                             extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
-            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
+            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
         ]
-        return _page_or_fragment(request, *content, title="Purchases Report - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title="Purchases Report - Celerp", nav_active="reports")
 
     @app.get("/reports/expiring")
     async def expiring_report(request: Request):
@@ -194,7 +201,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         days = int(request.query_params.get("days", 30))
-        fy, currency = await _get_fiscal_and_currency(token)
+        fy, currency, _ = await _get_fiscal_and_currency(token)
         date_from, date_to, preset = _parse_dates(request, fy)
         try:
             data = await api.get_expiring(token, days)
@@ -207,7 +214,7 @@ def setup_routes(app):
             page_header("Expiring Items", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _expiring_view(data, days=days),
         ]
-        return _page_or_fragment(request, *content, title="Expiring Items - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title="Expiring Items - Celerp", nav_active="reports")
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +292,19 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
+    # Carry the non-date params (tab, group_by, contact_id, ...) through the custom-range
+    # submit as hidden fields; otherwise the GET form drops them and the page falls back to
+    # its default view. The form's own field names (from/to/preset) cannot be duplicated.
+    # Callers URL-encode their extra_params values, so decode here; the browser re-encodes
+    # the hidden values on submit.
+    hidden_params = [
+        Input(type="hidden", name=k, value=v)
+        for k, v in parse_qsl(extra_params.lstrip("&"), keep_blank_values=True)
+        if k and k not in ("from", "to", "preset")
+    ]
+
     custom_form = Form(
+        *hidden_params,
         Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input", id="dfb-from"),
         Span("--", cls="date-sep"),
         Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input", id="dfb-to"),

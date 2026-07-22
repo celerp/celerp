@@ -29,11 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.gateway.state import get_session_token
-from celerp.services.auth import get_current_user, viewer_read_only
+from celerp.services.auth import get_current_user
+from celerp.services.permissions import require_permission
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,7 @@ def _backup_table(items: list[dict]):
 # ---------------------------------------------------------------------------
 
 @router.post("/trigger")
-async def trigger_backup():
+async def trigger_backup(_: None = require_permission("run_backups")):
     """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
     from celerp.services import backup_repo, backup_scheduler
     result: BackupResult = await backup_repo.run_snapshot(label="manual")
@@ -195,7 +196,7 @@ async def list_backups(request: Request):
 
 
 @router.post("/restore/{backup_id}")
-async def restore_backup(backup_id: str):
+async def restore_backup(backup_id: str, _: None = require_permission("run_backups")):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
     result = await backup_repo.restore_snapshot(backup_id)
@@ -231,7 +232,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
 
 
 @router.post("/import")
-async def import_backup(request: Request, file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
+async def import_backup(request: Request, file: UploadFile = File(...), session: AsyncSession = Depends(get_session), _: None = require_permission("run_backups")):
     """Import a .celerp-backup file."""
     from celerp.services.backup_import import run_import, validate_archive
 

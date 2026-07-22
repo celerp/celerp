@@ -38,7 +38,7 @@ PLUGIN_MANIFEST = {
             "label_key": "nav.labels",
             "href": "/settings/labels",
             "order": 32,
-            "min_role": "operator",
+            "permission": "manage_labels",
         },
         "bulk_action": {
             "label": "Print Labels",
