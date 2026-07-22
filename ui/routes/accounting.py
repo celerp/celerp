@@ -48,23 +48,27 @@ _ICON_PRINT = (
 
 
 def _action_bar(tab: str, params: dict) -> FT:
-    """Print + CSV icon buttons shown in the top-right corner of each accounting tab."""
+    """CSV + print icon buttons shown in the top-right corner of each accounting tab.
+
+    Export before print, matching the document-list action order (creative,
+    destructive, import/export, print).
+    """
     qs = "".join(f"&{k}={v}" for k, v in params.items() if v)
     print_href = f"/accounting/print/{tab}?{qs.lstrip('&')}"
     csv_href = f"/accounting/export/{tab}/csv?{qs.lstrip('&')}"
     return Div(
+        A(
+            NotStr(_ICON_CSV_EXPORT),
+            href=csv_href,
+            cls="btn btn--ghost btn--icon",
+            title=t("btn.export_csv"),
+        ),
         A(
             NotStr(_ICON_PRINT),
             href=print_href,
             target="_blank",
             cls="btn btn--ghost btn--icon",
             title=t("btn.print"),
-        ),
-        A(
-            NotStr(_ICON_CSV_EXPORT),
-            href=csv_href,
-            cls="btn btn--ghost btn--icon",
-            title=t("btn.export_csv"),
         ),
         cls="page-actions flex-row gap-sm ml-auto",
     )
@@ -342,21 +346,20 @@ def setup_routes(app):
                 params = _date_params(d_from, d_to)
                 data = await api.get_journal(token, params)
                 content = Div(
-                    Div(
-                        _date_filter_bar("/accounting", d_from, d_to, preset,
-                                         settings_link="/settings/general?tab=company",
-                                         extra_params="&tab=journal"),
-                        Div(
-                            A(t("btn.new_entry"),
-                              href=_href("/accounting/journal/new",
-                                         _date_params(d_from or "", d_to or "")),
-                              cls="btn btn--primary"),
-                            _action_bar("journal", {"date_from": d_from or "", "date_to": d_to or ""}),
-                            cls="flex-row gap-sm ml-auto",
-                        ),
-                        cls="flex-row flex-between",
-                    ),
+                    _date_filter_bar("/accounting", d_from, d_to, preset,
+                                     settings_link="/settings/general?tab=company",
+                                     extra_params="&tab=journal"),
                     _journal_totals(data, currency),
+                    # Toolbar over the table, following the document-list pattern:
+                    # creative actions left, export/print right.
+                    Div(
+                        A(t("btn.new_entry"),
+                          href=_href("/accounting/journal/new",
+                                     _date_params(d_from or "", d_to or "")),
+                          cls="btn btn--primary"),
+                        _action_bar("journal", {"date_from": d_from or "", "date_to": d_to or ""}),
+                        cls="flex-row flex-between mt-md mb-md",
+                    ),
                     _journal_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
             elif tab == "general-ledger":
@@ -1649,7 +1652,7 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                     Span("", id="je-balance-chip", cls="val-chip"),
                     cls="valuation-bar",
                 ),
-                cls="flex-row flex-between",
+                cls="flex-row flex-between mt-md",
             ),
             Input(type="hidden", name="idempotency_token", value=idem_token),
             Input(type="hidden", name="date_from", value=date_from),
