@@ -325,13 +325,18 @@ def _resume_guard_script(next_action: str, body: str) -> Script:
     """One-shot guard: the poll can render the signed-in panel more than once
     (slow response, back navigation); the staged action must fire once. The
     marker is per-continuation and expires so a later identical action still
-    resumes."""
+    resumes. The body runs on htmx:afterSettle, not inline: htmx executes this
+    script while inserting the swapped panel, before it wires hx-trigger
+    listeners on the sibling resume element, so an event fired inline (or on a
+    0ms timeout) is dropped."""
     return Script(
         f"(function(){{var k='celerp_resume::'+{json.dumps(next_action)};"
         "var last=parseInt(sessionStorage.getItem(k)||'0',10);"
         "if(Date.now()-last<30000){return;}"
         "sessionStorage.setItem(k,String(Date.now()));"
-        f"{body}}})();")
+        "document.body.addEventListener('htmx:afterSettle',function h(){"
+        "document.body.removeEventListener('htmx:afterSettle',h);"
+        f"{body}}});}})();")
 
 
 def _resume_parts(next_action: str, panel_id: str) -> list:
