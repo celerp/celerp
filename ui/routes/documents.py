@@ -30,6 +30,35 @@ from celerp.output.doc_print import (
     render_doc_print_html,
 )
 
+# Free-send quota advertised by the relay's public auth-methods endpoint,
+# cached module-wide with a background refresh so the doc detail page never
+# blocks on the relay. Until a fetch lands (or when the relay is unreachable)
+# the quota reads 0 and the send offer simply does not render.
+_free_send_quota_cache: dict = {"value": 0, "at": None, "pending": False}
+_FREE_SEND_QUOTA_TTL = 300.0
+
+
+def _free_send_quota(token: str) -> int:
+    import asyncio
+    import time
+    now = time.monotonic()
+    at = _free_send_quota_cache["at"]
+    if (at is None or now - at > _FREE_SEND_QUOTA_TTL) and not _free_send_quota_cache["pending"]:
+        _free_send_quota_cache["pending"] = True
+
+        async def _refresh():
+            value = 0
+            try:
+                methods = await api.account_methods(token)
+                value = int(methods.get("free_email_quota") or 0)
+            except Exception:
+                value = 0
+            _free_send_quota_cache.update(
+                {"value": value, "at": time.monotonic(), "pending": False})
+
+        asyncio.create_task(_refresh())
+    return int(_free_send_quota_cache["value"])
+
 
 async def _company_letterhead(token: str) -> dict:
     """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
@@ -2014,7 +2043,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, free_send_quota=(0 if _relay_connected else _free_send_quota(token)), share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -5379,7 +5408,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, free_send_quota: int = 0, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5764,6 +5793,26 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cls="modal-dialog",
                 )
             )
+            # One-shot continuation from the send-offer signup: the poll page
+            # reloads with a sessionStorage marker; consume it and open the
+            # dialog the user originally asked for, prefilled as usual.
+            action_btns_left.append(Script(
+                "(function(){if(sessionStorage.getItem('celerp_open_send')){"
+                "sessionStorage.removeItem('celerp_open_send');"
+                f"document.getElementById('{modal_id}').showModal();}}}})();"
+            ))
+        elif _send_ok and free_send_quota > 0:
+            # No relay bound: offer sending through a free Celerp account
+            # instead of hiding the send path. The click swaps the signup
+            # panel into the slot below; after verification the poll reloads
+            # this page with the relay connected and the dialog auto-opens.
+            action_btns_left.append(
+                Button(t("account.doc_send_offer_button"), type="button",
+                       hx_get="/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
+                       hx_target="#doc-send-offer", hx_swap="outerHTML",
+                       cls="btn btn--secondary"),
+            )
+            action_btns_left.append(Div(id="doc-send-offer"))
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:
