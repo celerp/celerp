@@ -838,25 +838,39 @@ def test_nav_visibility_follows_permissions():
     entry's permission: a granted lower role gains an entry, a revoked higher role
     loses one."""
     import os
+    from celerp.modules import slots
     from celerp.modules.loader import load_all
-    # Register the docs nav slots deterministically: the global slot registry's
-    # state depends on process-wide import order, so load the module directly.
-    load_all(os.environ.get("MODULE_DIR") or "default_modules", {"celerp-docs"})
     from fasthtml.common import to_xml
 
     from ui.components.shell import _sidebar
 
-    # Payments gates on view_payments (manager default): operator cannot see it...
-    assert "/payments" not in to_xml(_sidebar("dashboard", role="operator", settings={}))
-    # ...until it is granted down to operator.
-    granted = {"role_permissions": {"view_payments": "operator"}}
-    assert "/payments" in to_xml(_sidebar("dashboard", role="operator", settings=granted))
+    # Register the docs nav slots deterministically: the global slot registry's
+    # contents depend on which tests ran earlier in this worker, so rebuild it
+    # from the real manifests. load_all refuses a module whose depends_on chain
+    # is not enabled, so celerp-docs needs its dependencies alongside it.
+    saved = slots.all_slots()
+    slots.clear()
+    load_all(
+        os.environ.get("MODULE_DIR") or "default_modules",
+        {"celerp-inventory", "celerp-contacts", "celerp-docs"},
+    )
+    try:
+        # Payments gates on view_payments (manager default): operator cannot see it...
+        assert "/payments" not in to_xml(_sidebar("dashboard", role="operator", settings={}))
+        # ...until it is granted down to operator.
+        granted = {"role_permissions": {"view_payments": "operator"}}
+        assert "/payments" in to_xml(_sidebar("dashboard", role="operator", settings=granted))
 
-    # Sales Documents gate on view_documents (viewer default): a manager sees them,
-    # but not once the key is raised to admin.
-    assert "/docs?type=invoice" in to_xml(_sidebar("dashboard", role="manager", settings={}))
-    revoked = {"role_permissions": {"view_documents": "admin"}}
-    assert "/docs?type=invoice" not in to_xml(_sidebar("dashboard", role="manager", settings=revoked))
+        # Sales Documents gate on view_documents (viewer default): a manager sees them,
+        # but not once the key is raised to admin.
+        assert "/docs?type=invoice" in to_xml(_sidebar("dashboard", role="manager", settings={}))
+        revoked = {"role_permissions": {"view_documents": "admin"}}
+        assert "/docs?type=invoice" not in to_xml(_sidebar("dashboard", role="manager", settings=revoked))
+    finally:
+        slots.clear()
+        for slot_name, contributions in saved.items():
+            for contribution in contributions:
+                slots.register(slot_name, contribution)
 
 
 def test_kpi_specs_follow_permissions():
