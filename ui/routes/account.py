@@ -134,47 +134,84 @@ def gate_modal_response(panel: FT) -> HTMLResponse:
 def _signup_body(lang: str, panel_id: str, google: bool,
                  next_action: str | None = None,
                  free_quota: int = 0) -> list:
+    email_form = Form(
+        Input(type="email", name="email", required=True,
+              placeholder=t("account.email_placeholder", lang),
+              cls="input input--sm account-panel__email"),
+        Button(t("btn.continue_with_email", lang), type="submit",
+               cls="btn btn--xs btn--primary account-panel__email-btn"),
+        hx_post=f"/account/email?panel={panel_id}",
+        **_panel_target(panel_id),
+        cls="account-panel__form",
+    )
+    if next_action:
+        email_form.children = (Input(type="hidden", name="next", value=next_action),
+                               *email_form.children)
+
+    email_path = Div(
+        email_form,
+        P(t("account.email_hint", lang),
+          cls="settings-hint account-panel__email-hint"),
+        id="gate-email-path",
+    )
+
+    # When Google is available the two paths are mutually exclusive: a radio
+    # picks one and hides the other, so only the chosen affordance is on screen.
+    method_toggle = google_path = None
+    if google:
+        google_path = Div(
+            Button(t("btn.continue_with_google", lang),
+                   hx_get=_with_next(f"/account/google?panel={panel_id}", next_action),
+                   **_panel_target(panel_id),
+                   hx_disabled_elt="this",
+                   cls="btn btn--sm btn--secondary btn--full"),
+            id="gate-google-path",
+            style="display:none;",
+            cls="account-panel__google",
+        )
+        show_email = ("document.getElementById('gate-email-path').style.display='';"
+                      "document.getElementById('gate-google-path').style.display='none';")
+        show_google = ("document.getElementById('gate-email-path').style.display='none';"
+                       "document.getElementById('gate-google-path').style.display='';")
+        method_toggle = Div(
+            Label(Input(type="radio", name="gate_method", value="email",
+                        checked=True, onchange=show_email),
+                  Span(t("account.method_email", lang)),
+                  cls="account-panel__method"),
+            Label(Input(type="radio", name="gate_method", value="google",
+                        onchange=show_google),
+                  Span("Google"),
+                  cls="account-panel__method"),
+            cls="account-panel__methods", role="radiogroup",
+        )
+
+    # The consent notice sits under the sign-in choices (counsel review
+    # 2026-07-19). {privacy} marks where the Privacy Policy link belongs so
+    # each locale can place it grammatically within its own sentence.
+    pre, _, post = t("account.signup_notice", lang).partition("{privacy}")
+    notice = P(pre,
+               A(t("settings.privacy_policy", lang), href=PRIVACY_POLICY_URL,
+                 target="_blank"),
+               post,
+               cls="settings-hint account-panel__notice")
+
     parts = [
         H4(t("account.title", lang), cls="account-panel__title"),
         P(t("account.hint", lang), cls="settings-hint account-panel__lead"),
-        Form(
-            Input(type="email", name="email", required=True,
-                  placeholder=t("account.email_placeholder", lang),
-                  cls="input input--sm account-panel__email"),
-            Button(t("btn.continue_with_email", lang), type="submit",
-                   cls="btn btn--sm btn--primary"),
-            hx_post=f"/account/email?panel={panel_id}",
-            **_panel_target(panel_id),
-            cls="account-panel__form",
-        ),
-        P(t("account.email_hint", lang),
-          cls="settings-hint account-panel__email-hint"),
-        # The privacy/marketing notice beside the account-creation action
-        # (counsel review 2026-07-19, D.6.3): states the service use, the
-        # intended future updates, and the free opt-out channel.
-        P(t("account.signup_notice", lang), " ",
-          A(t("settings.privacy_policy", lang), href=PRIVACY_POLICY_URL,
-            target="_blank"),
-          cls="settings-hint account-panel__notice"),
     ]
     if next_action:
-        parts[2].children = (Input(type="hidden", name="next", value=next_action),
-                             *parts[2].children)
         # State the concrete reason the sign-in stands between the user and the
         # action they clicked, above the generic hint.
         kind = next_action.split(":", 1)[0]
         benefit = (t(_GATE_BENEFIT_KEYS[kind], lang, n=free_quota)
                    if kind == "doc-send" else t(_GATE_BENEFIT_KEYS[kind], lang))
         parts.insert(1, P(benefit, cls="settings-hint account-panel__benefit"))
-    if google:
-        parts.append(Div(
-            Button(t("btn.continue_with_google", lang),
-                   hx_get=_with_next(f"/account/google?panel={panel_id}", next_action),
-                   **_panel_target(panel_id),
-                   hx_disabled_elt="this",
-                   cls="btn btn--sm btn--secondary"),
-            cls="account-panel__google",
-        ))
+    if method_toggle is not None:
+        parts.append(method_toggle)
+    parts.append(email_path)
+    if google_path is not None:
+        parts.append(google_path)
+    parts.append(notice)
     parts.append(P(
         A(t("page.already_subscribed", lang),
           hx_get=_with_next(f"/account/panel?intent=claim&panel={panel_id}", next_action),

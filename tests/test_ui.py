@@ -16128,13 +16128,47 @@ class TestCelerpAccountSurface:
 
     @pytest.mark.asyncio
     async def test_signup_panel_carries_privacy_notice(self, ui_client):
-        """The account-creation action carries the notice with the opt-out
-        channel (stated at first contact)."""
+        """The account-creation action carries the consent notice with the
+        opt-out channel and an inline Privacy Policy link (stated at first
+        contact)."""
+        from ui.config import PRIVACY_POLICY_URL
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={"google": False})):
             r = await ui_client.get("/account/panel", cookies=_authed())
         assert b"unsubscribe@celerp.com" in r.content
-        assert b"you indicate that you do not object" in r.content
+        assert b"By registering you consent to" in r.content
+        assert f'href="{PRIVACY_POLICY_URL}"'.encode() in r.content
+        assert b"account-panel__notice" in r.content
+
+    @pytest.mark.asyncio
+    async def test_signup_panel_radio_toggles_email_and_google(self, ui_client):
+        """When Google is available the two sign-in paths are mutually
+        exclusive: a radio picks one and hides the other so both are never on
+        screen at once. Email is the default-shown path."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": True})):
+            r = await ui_client.get("/account/panel", cookies=_authed())
+        html = r.content.decode()
+        assert 'name="gate_method"' in html
+        assert "Email link" in html
+        assert 'id="gate-email-path"' in html
+        assert 'id="gate-google-path"' in html
+        # Google path starts hidden; the email radio is checked by default.
+        google_tag = re.search(r'<div id="gate-google-path"[^>]*>', html).group(0)
+        assert "display:none" in google_tag
+        assert 'value="email" checked' in html
+
+    @pytest.mark.asyncio
+    async def test_signup_panel_no_radio_without_google(self, ui_client):
+        """No Google means one path only - the email row shows with no radio
+        toggle cluttering it."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get("/account/panel", cookies=_authed())
+        html = r.content.decode()
+        assert 'name="gate_method"' not in html
+        assert 'id="gate-google-path"' not in html
+        assert 'id="gate-email-path"' in html
 
     @pytest.mark.asyncio
     async def test_third_party_disclosure_names_seller_in_data_note(self, ui_client):

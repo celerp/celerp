@@ -2684,7 +2684,27 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .account-panel__benefit { margin-bottom: 8px; }
 .account-panel__lead { margin-bottom: 12px; }
 .account-panel__form { display: flex; align-items: center; gap: 8px; }
-.account-panel__email { width: 260px; }
+/* The email field has no shared .input base to inherit from, so give it its own
+   frame and interior padding - without it the typed text sits flush against the
+   left edge. */
+.account-panel__email {
+  width: 260px;
+  padding: 8px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: 0.9rem;
+}
+.account-panel__methods { display: flex; gap: 18px; margin: 0 0 14px; }
+.account-panel__method {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.account-panel__method input { accent-color: var(--c-accent); cursor: pointer; }
 .account-panel__email-hint { margin: 6px 0 12px; }
 .account-panel__notice { margin: 0 0 12px; }
 .account-panel__google { margin-bottom: 12px; }
@@ -2730,19 +2750,23 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   margin: 0 0 18px;
 }
 .account-gate-modal .account-panel__form {
-  gap: 8px;
+  gap: 10px;
   width: 100%;
 }
 .account-gate-modal .account-panel__email {
   flex: 1;
   width: auto;
-  height: 38px;
+  height: 40px;
+  padding: 0 14px;
   font-size: 0.9rem;
 }
+/* Smaller than the field it sits beside, so the button reads as the action and
+   leaves breathing room inside the row. */
 .account-gate-modal .account-panel__form .btn {
-  height: 38px;
-  padding: 0 18px;
-  font-size: 0.9rem;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 .account-gate-modal .account-panel__email-hint { margin: 8px 0 14px; }
 .account-gate-modal .account-panel__notice {
