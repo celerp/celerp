@@ -367,16 +367,20 @@ async def account_methods_api() -> dict:
     relay_base = _rhu()
     iid = ensure_instance_id()
     google = False
+    free_email_quota = 0
     try:
         async with httpx.AsyncClient(timeout=6.0) as c:
             r = await c.get(f"{relay_base}/auth/methods")
         if r.status_code == 200:
             data = r.json()
-            google = bool(data.get("google")) if isinstance(data, dict) else False
+            if isinstance(data, dict):
+                google = bool(data.get("google"))
+                free_email_quota = int(data.get("free_email_quota") or 0)
     except Exception:
         pass
     return {
         "google": google,
+        "free_email_quota": free_email_quota,
         "google_start_url": f"{relay_base}/auth/google/start?instance_id={iid}",
     }
 
@@ -408,15 +412,33 @@ async def account_signup_api(payload: dict) -> dict:
 
 @router.get("/settings/account-status")
 async def account_status_api() -> dict:
-    """Proxy the relay account status for the app's post-sign-in polling."""
+    """Proxy the relay account status for the app's post-sign-in polling.
+
+    Once the instance is activated it holds a permanent API key; exchange it
+    for a short-lived JWT (the connectors-catalog idiom) so the relay can
+    return the full record to the instance that owns it. Without a key, or
+    when the exchange fails, fall back to the unauthenticated GET and its
+    masked record - polling keeps working either way."""
     import httpx
-    from celerp.config import ensure_instance_id
+    from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import relay_http_url as _rhu
     relay_base = _rhu()
     try:
         async with httpx.AsyncClient(timeout=6.0) as c:
-            r = await c.get(f"{relay_base}/auth/account",
-                            params={"instance_id": ensure_instance_id()})
+            headers = {}
+            api_key = _s.gateway_token
+            if api_key:
+                tok_r = await c.post(f"{relay_base}/auth/token",
+                                     json={"api_key": api_key})
+                if tok_r.status_code == 200:
+                    headers = {"Authorization": f"Bearer {tok_r.json()['access_token']}"}
+            if headers:
+                r = await c.get(f"{relay_base}/auth/account",
+                                params={"instance_id": ensure_instance_id()},
+                                headers=headers)
+            else:
+                r = await c.get(f"{relay_base}/auth/account",
+                                params={"instance_id": ensure_instance_id()})
     except httpx.HTTPError:
         return {"error": "unreachable"}
     if r.status_code != 200:
