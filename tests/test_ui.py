@@ -14824,6 +14824,15 @@ class TestChartOfAccountsAddEdit:
         assert r.status_code == 200
         assert b"Unauthorized" in r.content
 
+    @pytest.mark.asyncio
+    async def test_create_account_submit_unauthenticated_redirects_login(self, ui_client):
+        r = await ui_client.post(
+            "/settings/accounting/chart/new",
+            data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
+        )
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/login")
+
 
 # ── Reconciliation: CSV import responses and column mapping ───────────────────
 
