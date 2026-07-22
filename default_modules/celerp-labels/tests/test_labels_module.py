@@ -44,9 +44,12 @@ def _import_service() -> ModuleType:
     import importlib as _il
     if "celerp_labels" in sys.modules:
         _il.invalidate_caches()
-    # Force fresh import from correct path
+    # Force fresh import from correct path. celerp_labels.models must stay
+    # cached: LabelTemplate remains registered in the shared Base metadata, so
+    # evicting the module makes any later import re-execute the class body and
+    # fail with "Table 'label_templates' is already defined".
     for key in list(sys.modules):
-        if key.startswith("celerp_labels"):
+        if key.startswith("celerp_labels") and key != "celerp_labels.models":
             sys.modules.pop(key)
     return _il.import_module("celerp_labels.service")
 
@@ -226,7 +229,8 @@ class TestLabelsLoaderIntegration:
         slots.clear()
         loader._loaded.clear()
         for key in list(sys.modules):
-            if key.startswith("celerp-labels") or key.startswith("celerp_labels"):
+            if (key.startswith("celerp-labels") or key.startswith("celerp_labels")) \
+                    and key != "celerp_labels.models":
                 sys.modules.pop(key)
 
     def test_labels_module_loads_via_loader(self, tmp_path):
@@ -307,7 +311,7 @@ def _import_ui_routes():
     """Import celerp_labels.ui_routes with correct sys.path."""
     _add_to_path()
     for key in list(sys.modules):
-        if key.startswith("celerp_labels"):
+        if key.startswith("celerp_labels") and key != "celerp_labels.models":
             sys.modules.pop(key)
     import importlib as _il
     return _il.import_module("celerp_labels.ui_routes")

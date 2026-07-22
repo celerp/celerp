@@ -34,7 +34,10 @@ from celerp.modules.loader import (
 @pytest.fixture(autouse=True)
 def _clear_loader_state():
     """This file runs with --noconftest on the 3.10 CI leg, so it cannot rely
-    on the repo conftest's loader cleanup; clear both registries itself."""
+    on the repo conftest's loader cleanup; clear both registries itself, before
+    each test too so earlier suite tests cannot leak loader state in."""
+    loader._loaded.clear()
+    loader._load_errors.clear()
     yield
     loader._loaded.clear()
     loader._load_errors.clear()
