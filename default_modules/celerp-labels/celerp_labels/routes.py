@@ -274,7 +274,7 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
 
     Flattened through the inventory serializer so labels print the same values every
     other surface shows: recipe-rolled cost and computed derived price lists included.
-    Cost fields are stripped unless the caller holds set_inventory_prices, so a label
+    Cost fields are stripped unless the caller holds view_inventory_costs, so a label
     never leaks cost to a role that cannot see it elsewhere.
     """
     from celerp.services.cost_visibility import apply_field_visibility
@@ -295,8 +295,8 @@ async def _fetch_item(session: AsyncSession, company_id: uuid.UUID, entity_id: s
         flat = flatten_item(proj.state, entity_id,
                              price_config=await get_price_config(session, company_id))
         field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
-        can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
-        return apply_field_visibility([flat], role, field_schema, can_set_prices)[0]
+        can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+        return apply_field_visibility([flat], role, field_schema, can_see_costs)[0]
     return {"entity_id": entity_id, "name": entity_id, "sku": entity_id}
 
 

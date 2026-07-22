@@ -1187,7 +1187,7 @@ def test_printable_label_sheet_escapes_values():
 
 @pytest.mark.asyncio
 async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, session):
-    """PDF label printing honors the set_inventory_prices permission: an
+    """PDF label printing honors the view_inventory_costs permission: an
     ungranted operator's print carries no cost value, a granted operator's does."""
     from test_helpers import grant_permission, invite_user
 
@@ -1225,7 +1225,7 @@ async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, 
     assert r_ungranted.status_code == 200
     assert b"123.45" not in _pdf_text(r_ungranted.content)
 
-    await grant_permission(client, headers, "set_inventory_prices", "operator")
+    await grant_permission(client, headers, "view_inventory_costs", "operator")
     r_granted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
     assert r_granted.status_code == 200
     assert b"123.45" in _pdf_text(r_granted.content)

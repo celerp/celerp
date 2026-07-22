@@ -23,10 +23,10 @@ from celerp.services.permissions import role_has_permission
 def _show_margin(request, settings: dict | None) -> bool:
     """Return True only if the current role may see cost/margin figures.
 
-    Gated on set_inventory_prices, the same key the dashboard margin strip uses,
+    Gated on view_inventory_costs, the same key the dashboard margin strip uses,
     so cost visibility stays coherent across surfaces.
     """
-    return role_has_permission(settings or {}, _get_role(request), "set_inventory_prices")
+    return role_has_permission(settings or {}, _get_role(request), "view_inventory_costs")
 
 
 # ---------------------------------------------------------------------------

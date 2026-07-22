@@ -14,18 +14,18 @@ from __future__ import annotations
 
 from celerp.services.permissions import role_has_permission
 
-# The cost fields gated by set_inventory_prices (mirrors the inventory item-visibility rule).
+# The cost fields gated by view_inventory_costs (mirrors the inventory item-visibility rule).
 COST_FIELD_KEYS = frozenset({"cost_price", "cost_total"})
 
 # Every cost-bearing key that can appear in event data (top-level or in fields_changed):
 # item cost, COGS on fulfillment, manufacturing unit cost. Sell prices (retail_price etc.)
-# are deliberately excluded — they are visible to all roles, matching item-level visibility.
+# are deliberately excluded - they are visible to all roles, matching item-level visibility.
 COST_DATA_KEYS = frozenset({"cost_price", "cost_total", "total_cogs", "cogs", "unit_cost"})
 
 
 def can_see_costs(settings: dict | None, role: str | None) -> bool:
-    """True when the role holds set_inventory_prices for this company."""
-    return role_has_permission(settings, role or "", "set_inventory_prices")
+    """True when the role holds view_inventory_costs for this company."""
+    return role_has_permission(settings, role or "", "view_inventory_costs")
 
 
 def redact_event_costs(event_type: str, data: dict) -> dict:

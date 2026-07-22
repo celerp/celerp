@@ -670,7 +670,7 @@ _COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"}
 @router.get("/me/item-schema")
 async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> list[dict]:
     schema = await get_effective_field_schema(session, company_id)
-    if not role_has_permission(settings, role, "set_inventory_prices"):
+    if not role_has_permission(settings, role, "view_inventory_costs"):
         schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
     return schema
 
@@ -1758,8 +1758,8 @@ async def get_price_lists(
         company.settings = settings
         await session.commit()
         price_lists = seeded
-    if not role_has_permission(company.settings, role, "set_inventory_prices"):
-        # Without set_inventory_prices: no cost lists, and names/descriptions only. A
+    if not role_has_permission(company.settings, role, "view_inventory_costs"):
+        # Without view_inventory_costs: no cost lists, and names/descriptions only. A
         # derived list's factor stays gated because price ÷ factor would reveal a
         # cost-based base.
         price_lists = [

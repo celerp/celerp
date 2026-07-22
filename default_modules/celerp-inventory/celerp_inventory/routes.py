@@ -447,8 +447,8 @@ async def list_items(
     field_schema = await get_effective_field_schema(session, company_id, category=None)
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
-    can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
-    result = apply_field_visibility(result, role, field_schema, can_set_prices)
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    result = apply_field_visibility(result, role, field_schema, can_see_costs)
 
     # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
     # so staff always see the items that need to be picked/sold first at the top.
@@ -589,7 +589,7 @@ async def get_valuation(
                 pass
 
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
-    show_cost = role_has_permission(settings, role, "set_inventory_prices")
+    show_cost = role_has_permission(settings, role, "view_inventory_costs")
 
     price_totals_out = {
         k: float(v) for k, v in price_totals.items()
@@ -729,8 +729,8 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          updated_at=row.updated_at,
                          price_config=await get_price_config(session, company_id))
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
-    can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
-    filtered = apply_field_visibility([flat], role, field_schema, can_set_prices)
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    filtered = apply_field_visibility([flat], role, field_schema, can_see_costs)
     return filtered[0]
 
 

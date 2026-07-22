@@ -50,6 +50,7 @@ EXPECTED_CATALOGUE = {
     "run_backups": ("operator", True, "operator"),
     "view_subscriptions": ("operator", True, "operator"),
     # manager defaults
+    "view_inventory_costs": ("manager", True, "operator"),
     "set_inventory_prices": ("manager", True, "operator"),
     "delete_documents": ("manager", True, "operator"),
     "adjust_inventory": ("manager", True, "operator"),
@@ -182,16 +183,16 @@ def test_defaults_match_current_behavior():
         assert permission_min_level({}, p.key) == ROLE_LEVELS[expected_role], p.key
 
 
-# ── Gate 1: set_inventory_prices (cost visibility and price writes) ───────────
+# ── Gate 1: inventory cost visibility and price writes ───────────
 
 from test_helpers import grant_permission, perm_setup  # noqa: E402
 
-_GRANTED = {"role_permissions": {"set_inventory_prices": "operator"}}
+_GRANTED = {"role_permissions": {"view_inventory_costs": "operator"}}
 
 
 async def test_operator_granted_sees_cost_fields(client, session):
     ctx = await perm_setup(client, session)
-    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
     r = await client.get("/items", headers=ctx["operator_h"])
     assert r.status_code == 200
     items = r.json()["items"]
@@ -201,7 +202,7 @@ async def test_operator_granted_sees_cost_fields(client, session):
 
 async def test_operator_granted_item_schema_costs(client, session):
     ctx = await perm_setup(client, session)
-    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
     r = await client.get("/companies/me/item-schema", headers=ctx["operator_h"])
     assert r.status_code == 200
     keys = {f.get("key") for f in r.json()}
@@ -253,6 +254,22 @@ async def test_operator_granted_patch_with_costs(client, session):
     assert r.status_code == 200, r.text
 
 
+async def test_price_grant_does_not_reveal_costs(client, session):
+    """The split keys are independent: set_inventory_prices alone allows the
+    price write but leaves cost fields stripped from reads."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    r = await client.post(
+        f"/items/{ctx['item_id']}/price",
+        json={"price_type": "retail_price", "new_price": 150.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+    r = await client.get("/items", headers=ctx["operator_h"])
+    target = next(i for i in r.json()["items"] if i["id"] == ctx["item_id"])
+    assert "cost_price" not in target and "cost_total" not in target
+
+
 async def test_manager_default_unchanged(client, session):
     """Confirmatory: with no overrides, manager keeps cost visibility and price
     writes, operator keeps neither."""
@@ -298,7 +315,7 @@ def test_redact_entries_granted_operator():
 async def test_ledger_route_passes_overrides(client, session):
     """The ledger routes resolve cost visibility from company settings."""
     ctx = await perm_setup(client, session)
-    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
 
     def _cost_pricing(entries):
         return [e for e in entries
@@ -322,7 +339,7 @@ async def test_ledger_route_passes_overrides(client, session):
 
 async def test_dashboard_activity_granted_operator(client, session):
     ctx = await perm_setup(client, session)
-    await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
+    await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
 
     r = await client.get("/dashboard/activity", headers=ctx["operator_h"])
     assert r.status_code == 200
@@ -714,7 +731,7 @@ async def _render_dashboard(ui, role: str, settings: dict, vertical: str) -> byt
 
 
 async def test_margin_redaction_follows_permission(ui):
-    """The margin sub-text renders exactly when set_inventory_prices is held.
+    """The margin sub-text renders exactly when view_inventory_costs is held.
 
     Uses the coins vertical, whose operator-visible Stock Value (Retail) card
     carries the margin sub-label, so the assertion isolates the value strip
@@ -734,7 +751,7 @@ async def test_margin_redaction_follows_permission(ui):
 
 
 async def test_cost_basis_kpi_follows_permission(ui):
-    """The cost KPI card shows exactly for roles holding set_inventory_prices."""
+    """The cost KPI card shows exactly for roles holding view_inventory_costs."""
     vertical = "gemstones"
     content = await _render_dashboard(ui, "operator", {}, vertical)
     assert b"Cost Basis" not in content
@@ -881,7 +898,7 @@ def test_kpi_specs_follow_permissions():
     from ui.routes.dashboard import _kpi_grid
 
     cfg = {"kpis": [
-        {"label": "Cost Basis", "value_fn": "cost_total", "permission": "set_inventory_prices"},
+        {"label": "Cost Basis", "value_fn": "cost_total", "permission": "view_inventory_costs"},
         {"label": "Item Count", "value_fn": "item_count"},
     ]}
     values = {"cost_total": "400", "item_count": "3"}
@@ -889,7 +906,7 @@ def test_kpi_specs_follow_permissions():
     op = to_xml(_kpi_grid(cfg, values, role="operator", settings={}))
     assert "Cost Basis" not in op and "Item Count" in op
 
-    granted = {"role_permissions": {"set_inventory_prices": "operator"}}
+    granted = {"role_permissions": {"view_inventory_costs": "operator"}}
     assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="operator", settings=granted))
     assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="manager", settings={}))
 

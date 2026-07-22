@@ -43,7 +43,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_exposure_high"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub", "href": "/docs?type=invoice&status=outstanding",         "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -88,7 +88,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "watches": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_pieces_sub",     "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
@@ -153,7 +153,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "fashion": {
         "kpis": [
             {"key": "active_stock",   "label": "Active Stock",     "value_fn": "active_items_count","sub_fn": "retail_total_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Value",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Value",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
@@ -174,7 +174,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "electronics": {
         "kpis": [
             {"key": "inv_value",      "label": "Inventory Value",  "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low / Out of Stock","value_fn": "low_stock_items",  "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
@@ -267,7 +267,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "wine_spirits": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -330,7 +330,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "furniture": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -372,7 +372,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "books_media": {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_titles_sub",     "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "memo_out",       "label": "Consignment",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
@@ -394,7 +394,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "set_inventory_prices"},
+            {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
             {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
@@ -417,7 +417,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
 _DEFAULT_CONFIG: dict = {
     "kpis": [
         {"key": "inv_value",      "label": "Inventory (active)",  "value_fn": "active_items_count","sub_fn": "total_items_sub",      "href": "/inventory"},
-        {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "permission": "set_inventory_prices"},
+        {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "permission": "view_inventory_costs"},
         {"key": "retail_value",   "label": "Retail Value",        "value_fn": "retail_total",      "sub_fn": "at_retail_sub",        "href": "/inventory"},
         {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status_in=final,sent,awaiting_payment,partial", "alert_fn": "ar_positive"},
         {"key": "revenue_mtd",    "label": "Revenue MTD",         "value_fn": "revenue_mtd",       "sub_fn": None,                   "href": "/reports/sales?preset=this_month&group_by=customer"},
@@ -614,7 +614,7 @@ def setup_routes(app):
                              crm_data, mfg_data, purchasing_data, currency)
 
         # Strip margin sub-text unless the caller may see costs.
-        if not _role_has_permission(settings, role, "set_inventory_prices"):
+        if not _role_has_permission(settings, role, "view_inventory_costs"):
             values.pop("margin_pct_sub", None)
         return await base_shell(
             page_header(t("page.dashboard", lang)),
