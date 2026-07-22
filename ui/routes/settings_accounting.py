@@ -365,8 +365,8 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
     )
 
 
-def _account_error_page(request: Request, message: str) -> FT:
-    return base_shell(
+async def _account_error_page(request: Request, message: str) -> FT:
+    return await base_shell(
         _section_breadcrumb("Accounting"),
         page_header(
             "Chart of Accounts",
@@ -765,8 +765,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _account_error_page(request, str(e.detail))
-        return base_shell(
+            return await _account_error_page(request, str(e.detail))
+        return await base_shell(
             _section_breadcrumb("Accounting"),
             page_header(
                 "Add Account",
@@ -818,11 +818,11 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _account_error_page(request, str(e.detail))
+            return await _account_error_page(request, str(e.detail))
         acct = next((a for a in chart if a.get("code") == code), None)
         if acct is None:
-            return _account_error_page(request, "Account not found")
-        return base_shell(
+            return await _account_error_page(request, "Account not found")
+        return await base_shell(
             _section_breadcrumb("Accounting"),
             page_header(
                 f"Edit {acct.get('name', code)}",
