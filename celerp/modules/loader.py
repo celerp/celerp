@@ -406,6 +406,13 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
         try:
             manifest = _load_one(pkg_path, pkg_name, trusted=trusted)
         except ModuleLoadError as exc:
+            # A default module IS the product (a boot without documents is not
+            # a working app): fail startup naming the module and error.
+            # Third-party modules keep load-and-continue; their failure shows
+            # as the failed badge in the Modules UI.
+            if pkg_name in trusted_names:
+                raise ModuleLoadError(
+                    f"Default module {pkg_name!r} failed to load: {exc}") from exc
             _load_errors[pkg_name] = str(exc)
             manifest = None
         if manifest is not None:
@@ -554,6 +561,18 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     return manifest
 
 
+def _route_failure(name: str, kind: str, exc: Exception) -> None:
+    """Route-registration failure policy: a default module fails boot loudly
+    (a boot without it is not a working product); a third-party module keeps
+    load-and-continue, with the failure recorded for the Modules UI badge."""
+    if name in _trusted_default_names():
+        raise ModuleLoadError(
+            f"Default module {name!r} {kind} failed to register "
+            f"({type(exc).__name__}: {exc})") from exc
+    log.error("Module %r %s failed (%s: %s)", name, kind, type(exc).__name__, exc)
+    _load_errors[name] = f"{kind} failed ({type(exc).__name__}: {exc})"
+
+
 def register_api_routes(app, loaded: list[dict]) -> None:
     """Register API routes from all loaded modules into the FastAPI app."""
     for manifest in loaded:
@@ -565,7 +584,7 @@ def register_api_routes(app, loaded: list[dict]) -> None:
             mod.setup_api_routes(app)
             log.info("Module %r: API routes registered", manifest["name"])
         except Exception as exc:
-            log.error("Module %r api_routes failed (%s: %s)", manifest["name"], type(exc).__name__, exc)
+            _route_failure(manifest["name"], "api_routes", exc)
 
 
 def register_ui_routes(app, loaded: list[dict]) -> None:
@@ -579,7 +598,7 @@ def register_ui_routes(app, loaded: list[dict]) -> None:
             mod.setup_ui_routes(app)
             log.info("Module %r: UI routes registered", manifest["name"])
         except Exception as exc:
-            log.error("Module %r ui_routes failed (%s: %s)", manifest["name"], type(exc).__name__, exc)
+            _route_failure(manifest["name"], "ui_routes", exc)
 
 
 def _protected_hit(name: str) -> str | None:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 
 from celerp.models.company import Company
 
@@ -84,7 +84,7 @@ def validate_pattern(pattern: str) -> str | None:
 
 def preview_pattern(pattern: str, prefix: str, seq_num: int = 1) -> str:
     """Generate a preview of what the pattern produces right now."""
-    return _expand_pattern(pattern, prefix, datetime.now(UTC), seq_num)
+    return _expand_pattern(pattern, prefix, datetime.now(timezone.utc), seq_num)
 
 
 def next_doc_ref(company: Company, doc_type: str) -> str:
@@ -92,7 +92,7 @@ def next_doc_ref(company: Company, doc_type: str) -> str:
     if doc_type not in _PREFIX_BY_DOC_TYPE:
         raise ValueError(f"Unsupported doc_type for sequence: {doc_type}")
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
     seq = dict(sequences.get(doc_type) or {})
@@ -124,7 +124,7 @@ def get_all_sequences(company: Company) -> list[dict]:
     """Return the numbering config for all doc types."""
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     result = []
     for doc_type, default_prefix in _PREFIX_BY_DOC_TYPE.items():
         seq = dict(sequences.get(doc_type) or {})
@@ -165,7 +165,7 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
     settings["sequences"] = sequences
     company.settings = settings
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     pfx = str(seq.get("prefix") or _PREFIX_BY_DOC_TYPE[doc_type])
     pat = str(seq.get("pattern") or DEFAULT_PATTERN)
     n = int(seq.get("next", 1))

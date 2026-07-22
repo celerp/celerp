@@ -164,7 +164,7 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
         run: >
           pytest tests/test_embedded_pg_modes.py tests/test_embedded_pg_manager.py
-          tests/test_embedded_pg_integration.py
+          tests/test_embedded_pg_integration.py tests/test_default_modules_boot.py
           --noconftest -o addopts="" -p no:cacheprovider --timeout=300 -q
 
   # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in

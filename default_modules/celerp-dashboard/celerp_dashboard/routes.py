@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -28,7 +28,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     deals = [r for r in rows if r.entity_type == "deal"]
     subscriptions = [r for r in rows if r.entity_type == "doc" and r.state.get("doc_type") in {"subscription_invoice", "subscription_po"}]
 
-    now = datetime.now(UTC).date().isoformat()
+    now = datetime.now(timezone.utc).date().isoformat()
     month_prefix = now[:7]  # "YYYY-MM"
     year_prefix = now[:4]   # "YYYY"
 
@@ -153,13 +153,13 @@ async def search_activity(
 
     if date_from:
         try:
-            dt_from = datetime.fromisoformat(date_from).replace(tzinfo=UTC)
+            dt_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
             stmt = stmt.where(LedgerEntry.ts >= dt_from)
         except ValueError:
             pass
     if date_to:
         try:
-            dt_to = datetime.fromisoformat(date_to).replace(tzinfo=UTC)
+            dt_to = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
             # Advance by one day so a date-only value includes the full chosen day.
             if "T" not in date_to and " " not in date_to:
                 dt_to += timedelta(days=1)
