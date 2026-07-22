@@ -99,7 +99,7 @@ _loaded: list[dict] = []
 
 # Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
 # ui/app.py), never loaded as pluggable/replaceable modules.
-_CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-connectors"})
+CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-connectors"})
 
 
 class ModuleLoadError(Exception):
@@ -232,7 +232,7 @@ def is_core_folded(pkg_name: str) -> bool:
     """True if a module is a proprietary cloud component folded into core (ai/backup/
     connectors). These are wired directly into the app at construction, so they never
     appear in ``loaded_modules()`` — yet they ARE running whenever the app is up."""
-    return pkg_name in _CORE_FOLDED
+    return pkg_name in CORE_FOLDED
 
 
 def is_running(pkg_name: str) -> bool:
@@ -328,7 +328,7 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 continue
             if p.name not in enabled:
                 continue
-            if p.name in _CORE_FOLDED:
+            if p.name in CORE_FOLDED:
                 # Proprietary cloud core (ai/backup/connectors) is wired directly at app construction
                 # (see celerp/main.py and ui/app.py), never as a pluggable module. Skip it here so it is
                 # not double-registered and cannot be replaced by a user-supplied module of the same name.

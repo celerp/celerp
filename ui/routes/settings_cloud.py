@@ -73,8 +73,6 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 def _value_prop_page(iid: str, lang: str = "en") -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
-    from celerp.gateway.state import build_subscribe_url
-
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -86,6 +84,20 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-hero",
         ),
+        _plans_ad(iid, lang=lang),
+        # Already subscribed / connect section
+        _connect_section(iid, lang=lang),
+        cls="content-area",
+    )
+
+
+def _plans_ad(iid: str, lang: str = "en") -> FT:
+    """The paid-plan advertisement: feature cards, trial banner, plan cards.
+    Shown on the not-connected landing page and, below the status tab, to
+    connected free-tier accounts (the plans are what they are missing)."""
+    from celerp.gateway.state import build_subscribe_url
+
+    return Div(
         # Feature cards - three platform features on top...
         Div(
             _feature_card(
@@ -169,9 +181,6 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-plans",
         ),
-        # Already subscribed / connect section
-        _connect_section(iid, lang=lang),
-        cls="content-area",
     )
 
 
@@ -439,10 +448,12 @@ def setup_routes(app):
         # Fetch relay status from the API process (the gateway client lives there)
         relay_status = "inactive"
         public_url = ""
+        tier = ""
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
             public_url = rs.get("public_url", "")
+            tier = rs.get("tier") or ""
         except (_APIError, Exception):
             lc = _local_get_client()
             relay_status = lc.relay_status if lc else "inactive"
@@ -477,7 +488,17 @@ def setup_routes(app):
                 backup_data = await _api.get_backup_status(token)
             except Exception:
                 pass
-            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data))
+            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url),
+                     _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data)]
+            # A connected free-tier account keeps its free tabs but still sees
+            # the paid-plan advertisement the not-connected page carries - the
+            # plans are exactly what the free tier is missing. Only on the
+            # relay's affirmative "free" (an unknown tier degrades to no ad,
+            # never an upsell shown to a paying customer).
+            if tier == "free":
+                from celerp.config import ensure_instance_id
+                parts.append(_plans_ad(ensure_instance_id(), lang=lang))
+            content = Div(*parts)
             tab = "status"
 
         return await base_shell(

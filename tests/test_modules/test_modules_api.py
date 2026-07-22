@@ -230,7 +230,7 @@ class TestModulesAPIEndpoints:
         appear in loaded_modules(). list_modules must still report them running=True —
         otherwise the setup /activating page waits forever and shows "Some modules
         failed to start" (the AI/Cloud-Backup-spin-forever bug)."""
-        from celerp.modules.loader import _CORE_FOLDED
+        from celerp.modules.loader import CORE_FOLDED
 
         token = await _register(client)
         default_modules = Path(__file__).parent.parent.parent / "default_modules"
@@ -240,7 +240,7 @@ class TestModulesAPIEndpoints:
         by_name = {m["name"]: m for m in r.json()}
 
         # Every folded module present on disk must be reported running.
-        on_disk_folded = [n for n in _CORE_FOLDED if (default_modules / n).is_dir()]
+        on_disk_folded = [n for n in CORE_FOLDED if (default_modules / n).is_dir()]
         assert "celerp-ai" in on_disk_folded and "celerp-backup" in on_disk_folded, \
             "AI + Backup must be on disk for this regression test to be meaningful"
         for name in on_disk_folded:

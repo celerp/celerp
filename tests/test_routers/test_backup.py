@@ -233,7 +233,7 @@ def test_backup_routes_are_registered():
 
     `celerp/main.py` puts default_modules/celerp-backup on sys.path at import time and calls
     `celerp_backup.setup.setup_api_routes(app)` directly (backup is "core-folded": wired at app
-    construction, not via the module loader — see celerp.modules.loader._CORE_FOLDED). So importing
+    construction, not via the module loader - see celerp.modules.loader.CORE_FOLDED). So importing
     `celerp.main.app` exercises the real registration path.
 
     Enumerate registered paths via the OpenAPI schema — FastAPI's own route walker — NOT by crawling

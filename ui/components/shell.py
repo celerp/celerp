@@ -1322,6 +1322,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from ui.config import get_enabled_modules
+    from celerp.modules.loader import CORE_FOLDED
     from celerp.services.permissions import role_has_permission
 
     settings = settings or {}
@@ -1332,11 +1333,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         return role_has_permission(settings, role, perm) if perm else True
 
     def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show. Module entries only show
-        if their module is in the company's enabled set, or if enabled set is empty
-        (old JWT without modules claim - show everything as safe fallback)."""
+        """Kernel entries (no _module key) always show, as do core-folded
+        components (wired at app construction, never subject to per-company
+        enablement - their pages do their own plan gating). Other module
+        entries only show if their module is in the company's enabled set, or
+        if enabled set is empty (old JWT without modules claim - show
+        everything as safe fallback)."""
         mod = item.get("_module")
-        if mod is None:
+        if mod is None or mod in CORE_FOLDED:
             return True
         if not enabled_modules:
             return True

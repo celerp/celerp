@@ -105,7 +105,7 @@ def _cancel_parts(lang: str, panel_id: str) -> list:
     return [Div(Button(t("btn.cancel", lang), id="account-gate-cancel",
                        type="button", onclick=_DISMISS_GATE_MODAL,
                        cls="btn btn--sm btn--secondary"),
-                style="margin-top:8px;")]
+                cls="account-panel__cancel")]
 
 
 def gate_modal(panel: FT) -> FT:
@@ -135,27 +135,27 @@ def _signup_body(lang: str, panel_id: str, google: bool,
                  next_action: str | None = None,
                  free_quota: int = 0) -> list:
     parts = [
-        H4(t("account.title", lang), style="margin:0 0 4px;"),
-        P(t("account.hint", lang), cls="settings-hint", style="margin-bottom:12px;"),
+        H4(t("account.title", lang), cls="account-panel__title"),
+        P(t("account.hint", lang), cls="settings-hint account-panel__lead"),
         Form(
             Input(type="email", name="email", required=True,
                   placeholder=t("account.email_placeholder", lang),
-                  cls="input input--sm", style="width:260px;"),
+                  cls="input input--sm account-panel__email"),
             Button(t("btn.continue_with_email", lang), type="submit",
-                   cls="btn btn--sm btn--primary", style="margin-left:8px;"),
+                   cls="btn btn--sm btn--primary"),
             hx_post=f"/account/email?panel={panel_id}",
             **_panel_target(panel_id),
-            style="display:flex;align-items:center;",
+            cls="account-panel__form",
         ),
-        P(t("account.email_hint", lang), cls="settings-hint",
-          style="margin:6px 0 12px;"),
+        P(t("account.email_hint", lang),
+          cls="settings-hint account-panel__email-hint"),
         # The privacy/marketing notice beside the account-creation action
         # (counsel review 2026-07-19, D.6.3): states the service use, the
         # intended future updates, and the free opt-out channel.
         P(t("account.signup_notice", lang), " ",
           A(t("settings.privacy_policy", lang), href=PRIVACY_POLICY_URL,
             target="_blank"),
-          cls="settings-hint", style="margin:0 0 12px;font-size:11px;"),
+          cls="settings-hint account-panel__notice"),
     ]
     if next_action:
         parts[2].children = (Input(type="hidden", name="next", value=next_action),
@@ -165,7 +165,7 @@ def _signup_body(lang: str, panel_id: str, google: bool,
         kind = next_action.split(":", 1)[0]
         benefit = (t(_GATE_BENEFIT_KEYS[kind], lang, n=free_quota)
                    if kind == "doc-send" else t(_GATE_BENEFIT_KEYS[kind], lang))
-        parts.insert(1, P(benefit, cls="settings-hint", style="margin-bottom:8px;"))
+        parts.insert(1, P(benefit, cls="settings-hint account-panel__benefit"))
     if google:
         parts.append(Div(
             Button(t("btn.continue_with_google", lang),
@@ -173,13 +173,13 @@ def _signup_body(lang: str, panel_id: str, google: bool,
                    **_panel_target(panel_id),
                    hx_disabled_elt="this",
                    cls="btn btn--sm btn--secondary"),
-            style="margin-bottom:12px;",
+            cls="account-panel__google",
         ))
     parts.append(P(
         A(t("page.already_subscribed", lang),
           hx_get=_with_next(f"/account/panel?intent=claim&panel={panel_id}", next_action),
           **_panel_target(panel_id), href="#", cls="settings-hint"),
-        style="margin-top:4px;",
+        cls="account-panel__alt",
     ))
     parts.extend(_cancel_parts(lang, panel_id))
     return parts
@@ -189,7 +189,7 @@ def _claim_body(lang: str, panel_id: str) -> list:
     """The linking flow for an existing subscriber - the shipped auto-connect +
     email-claim block, with the signup entry de-emphasized beneath it."""
     return [
-        H4(t("page.already_subscribed", lang), style="margin:0 0 4px;"),
+        H4(t("page.already_subscribed", lang), cls="account-panel__title"),
         P(t("settings.if_you_already_subscribed_on_the_website_we_can_li", lang),
           cls="settings-hint", style="margin-bottom:12px;"),
         # Auto-connect button (tries to match by instance_id)
@@ -279,7 +279,7 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
     """Bounded-poll waiting state while the browser round-trip is pending."""
     text_key = "account.waiting_google" if mode == "google" else "account.waiting_email"
     parts = [
-        H4(t("account.title", lang), style="margin:0 0 4px;"),
+        H4(t("account.title", lang), cls="account-panel__title"),
         P(t(text_key, lang), cls="text-muted"),
         Div(
             Button(t("btn.cancel", lang),
@@ -307,7 +307,7 @@ def _signed_in_panel(lang: str, panel_id: str, status: dict,
     email = status.get("email") or ""
     tier = status.get("tier") or "free"
     parts = [
-        H4(t("account.title", lang), style="margin:0 0 4px;"),
+        H4(t("account.title", lang), cls="account-panel__title"),
         P(t("account.signed_in_as", lang, email=email)),
     ]
     claim_url = _with_next(f"/account/panel?intent=claim&panel={panel_id}", next_action)

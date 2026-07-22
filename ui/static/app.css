@@ -2678,19 +2678,91 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   background: rgba(0,0,0,0.5);
   backdrop-filter: blur(2px);
 }
+/* ── Account panel (ui/routes/account.py) ─────────────────────────────
+   Base layout for the one account surface, as embedded in settings pages. */
+.account-panel__title { margin: 0 0 4px; }
+.account-panel__benefit { margin-bottom: 8px; }
+.account-panel__lead { margin-bottom: 12px; }
+.account-panel__form { display: flex; align-items: center; gap: 8px; }
+.account-panel__email { width: 260px; }
+.account-panel__email-hint { margin: 6px 0 12px; }
+.account-panel__notice { margin: 0 0 12px; }
+.account-panel__google { margin-bottom: 12px; }
+.account-panel__alt { margin-top: 4px; }
+.account-panel__cancel { margin-top: 8px; }
+
 /* The account-gate panel rides inside the shared modal dialog. The panel is
    the same .cloud-connect-section used embedded in pages, so drop the
    embedded chrome (outer margin, border) - the dialog is the frame - and
-   neutralize the modal's stacked-form layout: the panel's inline email form
-   lays itself out. */
+   neutralize the modal's stacked-form layout: the panel's own form rules
+   lay it out. */
 .account-gate-modal .cloud-connect-section {
   margin-top: 0;
   border: none;
+  padding: 28px 28px 20px;
 }
-.account-gate-modal form {
+/* Compound selector: outranks the later `.modal-dialog form` stacked-form
+   rule (a bare `.account-gate-modal form` would tie on specificity and lose
+   to source order). */
+.account-gate-modal.modal-dialog form {
   padding: 0;
   gap: 0;
   flex-direction: row;
+}
+/* Gate-modal hierarchy: the headline sells, the benefit line states what the
+   click unlocks, the email row is the single full-width action, and the
+   compliance/footer text steps down out of the way. */
+.account-gate-modal .account-panel__title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+.account-gate-modal .account-panel__benefit {
+  font-size: 0.95rem;
+  color: var(--c-text);
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+.account-gate-modal .account-panel__lead {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.account-gate-modal .account-panel__form {
+  gap: 8px;
+  width: 100%;
+}
+.account-gate-modal .account-panel__email {
+  flex: 1;
+  width: auto;
+  height: 38px;
+  font-size: 0.9rem;
+}
+.account-gate-modal .account-panel__form .btn {
+  height: 38px;
+  padding: 0 18px;
+  font-size: 0.9rem;
+}
+.account-gate-modal .account-panel__email-hint { margin: 8px 0 14px; }
+.account-gate-modal .account-panel__notice {
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+.account-gate-modal .account-panel__google { margin-bottom: 14px; }
+.account-gate-modal .account-panel__google .btn {
+  width: 100%;
+  height: 36px;
+  font-size: 0.85rem;
+}
+.account-gate-modal .account-panel__alt { margin: 0; }
+.account-gate-modal .account-panel__alt a { font-size: 12px; }
+.account-gate-modal .account-panel__cancel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--c-border);
+  display: flex;
+  justify-content: flex-end;
 }
 
 .modal-dialog__header {

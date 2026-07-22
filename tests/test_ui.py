@@ -2721,6 +2721,27 @@ class TestModuleAwareSidebar:
         finally:
             slots.clear()
 
+    def test_sidebar_core_folded_nav_ignores_modules_claim(self):
+        """Core-folded components (AI) stay in the sidebar even when the JWT
+        modules claim lists other modules only: they are wired at app
+        construction, never per-company enabled, and their pages do their own
+        plan gating (the AI page shows the showcase ad until a paid plan)."""
+        from ui.components.shell import _sidebar
+        from celerp.modules import slots
+
+        slots.clear()
+        slots.register("nav", {"key": "ai", "label": "AI Assistant", "href": "/ai",
+                                "order": 90, "_module": "celerp-ai"})
+        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
+                                "order": 20, "_module": "celerp-inventory"})
+        try:
+            req = self._make_request(["celerp-docs"])  # claim excludes both
+            html = str(_sidebar("", request=req))
+            assert "AI Assistant" in html   # core-folded: always present
+            assert "Inventory" not in html  # regular module: still filtered
+        finally:
+            slots.clear()
+
     def test_kernel_nav_always_visible(self):
         """Kernel nav entries (no _module) always show regardless of modules claim."""
         from ui.components.shell import _sidebar
@@ -8869,6 +8890,9 @@ class TestMarketplaceUI:
         assert 'id="account-gate-panel"' in content
         assert 'id="account-gate-modal"' in content
         assert r.headers.get("HX-Retarget") == "#account-gate-host"
+        # the modal hierarchy hooks the gate stylesheet styles against
+        assert "account-panel__title" in content
+        assert "account-panel__benefit" in content
 
     @pytest.mark.asyncio
     async def test_buy_proceeds_unchanged_when_email_already_verified(self, ui_client):
@@ -9506,6 +9530,59 @@ class TestFilesExcelFunnels:
             r = await ui_client.post("/items/item:1/files/f1/description",
                                      data={"description": "front view"}, cookies=_authed())
         assert r.status_code == 200, r.text  # not 405
+
+
+class TestWebAccessPlansAd:
+    """The Web Access page shows the paid-plan advertisement (feature cards +
+    plan cards) to connected free-tier accounts below the status tab - the
+    free tabs stay, the pitch a not-connected visitor sees stays too. Paid
+    tiers and unknown tiers never see the upsell."""
+
+    def _mocks(self, tier, relay_status="active"):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch(
+            "ui.api_client.get_relay_status",
+            new=AsyncMock(return_value={"connected": True, "relay_status": relay_status,
+                                        "public_url": "", "tier": tier})))
+        stack.enter_context(patch(
+            "ui.api_client.get_backup_status",
+            new=AsyncMock(return_value={"db": {}, "next_db_utc": None})))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_free_tier_sees_tabs_and_plans_ad(self, ui_client):
+        with self._mocks(tier="free"):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "settings-tabs" in r.text          # free keeps its tab bar
+        assert "cloud-plans" in r.text            # the plan cards render
+        assert "plan=ai" in r.text                # subscribe links present
+
+    @pytest.mark.asyncio
+    async def test_paid_tier_sees_no_plans_ad(self, ui_client):
+        with self._mocks(tier="cloud"):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "settings-tabs" in r.text
+        assert "cloud-plans" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_tier_degrades_to_no_ad(self, ui_client):
+        """A failed tier lookup must never show the upsell to a possibly
+        paying customer - neutral state, no plan cards."""
+        with self._mocks(tier=None):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "cloud-plans" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_not_connected_still_gets_full_value_prop(self, ui_client):
+        with self._mocks(tier=None, relay_status="inactive"):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "cloud-hero" in r.text
+        assert "cloud-plans" in r.text
 
 
 class TestPaymentsSettingsPage:
