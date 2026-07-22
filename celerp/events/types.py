@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-from enum import StrEnum
+from celerp.compat import StrEnum
 
 
 class EventType(StrEnum):
