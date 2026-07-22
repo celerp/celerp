@@ -46,7 +46,7 @@ def _pluggable_default_names() -> set[str]:
     return {n for n in default_module_names() if not is_core_folded(n)}
 
 
-def test_default_modules_all_load_and_route_modules_import():
+def test_all_default_modules_load_and_reimport_cleanly():
     loaded = load_all(_BUNDLED_MODULES_DIRS[0], set(default_module_names()))
     loaded_names = {m["name"] for m in loaded}
     for name in sorted(_pluggable_default_names()):
