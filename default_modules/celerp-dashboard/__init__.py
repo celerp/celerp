@@ -13,7 +13,7 @@ PLUGIN_MANIFEST = {
     "ui_routes": None,
     "depends_on": [],
     "slots": {
-        "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1},
+        "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1, "permission": "view_dashboards"},
     },
     "migrations": None,
 }

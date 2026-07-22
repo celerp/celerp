@@ -16,7 +16,7 @@ from starlette.responses import HTMLResponse
 from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
-from ui.routes.settings import _check_role, _token
+from ui.routes.settings import _check_permission, _token
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
 
@@ -780,7 +780,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         from ui.i18n import get_lang
         lang = get_lang(request)
@@ -792,7 +792,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         lang = get_lang(request)
 
@@ -834,7 +834,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
@@ -878,7 +878,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
@@ -921,7 +921,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
@@ -965,7 +965,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
@@ -993,7 +993,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
@@ -1024,7 +1024,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if _validate_platform(platform) is not None:
             return RedirectResponse("/settings?tab=connectors", status_code=302)
@@ -1043,7 +1043,7 @@ def setup_routes(app):
         runs = await _entity_runs(iid, platform)
         icon = _CONNECTOR_ICONS.get(platform, "🔌")
         name = c.get("name", platform.title())
-        return base_shell(
+        return await base_shell(
             breadcrumbs([(t("settings.tab_connectors", lang), "/settings?tab=connectors"), (name, None)]),
             page_header(
                 f"{icon} {name}",
@@ -1062,7 +1062,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Span(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := _check_role(request, "admin")):
+        if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err

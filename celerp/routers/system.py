@@ -12,11 +12,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.services.auth import get_current_company_id, require_admin, require_min_role
+from celerp.services.auth import get_current_company_id
+from celerp.services.permissions import require_permission
 
 _ATTACHMENT_ROOT = Path("static/attachments")
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter(dependencies=[require_permission("manage_company_settings")])
 
 
 # ── Graceful restart ──────────────────────────────────────────────────────────
@@ -44,7 +45,6 @@ def _send_sigterm() -> None:
 @router.post("/restart")
 async def restart_server(
     background_tasks: BackgroundTasks,
-    _=Depends(require_admin),
 ) -> dict:
     """Gracefully restart the server process (SIGTERM → process manager respawns).
 
@@ -69,7 +69,7 @@ _TRUNCATE_TABLES = [
 
 @router.post("/factory-reset")
 async def factory_reset(
-    _: None = require_min_role("owner"),
+    _: None = require_permission("manage_company_lifecycle"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:

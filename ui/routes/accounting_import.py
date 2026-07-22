@@ -56,7 +56,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        return base_shell(
+        return await base_shell(
             page_header("Import Chart of Accounts"),
             upload_form(
                 cols=_CHART_SPEC.cols,
@@ -86,7 +86,7 @@ def setup_routes(app):
         form = await request.form()
         rows, err = await read_csv_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Chart of Accounts"),
                 upload_form(
                     cols=_CHART_SPEC.cols,
@@ -102,7 +102,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
-        return base_shell(
+        return await base_shell(
             page_header("Import Chart of Accounts"),
             column_mapping_form(
                 csv_cols=cols,
@@ -127,7 +127,7 @@ def setup_routes(app):
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Chart of Accounts"),
                 upload_form(
                     cols=_CHART_SPEC.cols,
@@ -146,7 +146,7 @@ def setup_routes(app):
         if mapping_errors:
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            return base_shell(
+            return await base_shell(
                 page_header("Import Chart of Accounts"),
                 column_mapping_form(
                     csv_cols=original_cols,
@@ -169,7 +169,7 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CHART_SPEC.cols)
 
-        return base_shell(
+        return await base_shell(
             page_header("Import Chart of Accounts"),
             validation_result(
                 rows=rows,

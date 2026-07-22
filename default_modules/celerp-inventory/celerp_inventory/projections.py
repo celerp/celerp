@@ -204,7 +204,7 @@ def _recompute_cost(current: dict) -> None:
     landed_unit = sum(float(v or 0) for v in contribs.values())
     current["cost_landed"] = round(landed_unit * qty, 2)
     current["cost_total"] = round(base + current["cost_landed"], 2)
-    current.pop("cost_price", None)  # always derived from cost_total at read time (_flatten_item)
+    current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
 
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:

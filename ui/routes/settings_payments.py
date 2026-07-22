@@ -20,7 +20,7 @@ from ui.components.cloud_gate import upgrade_banner
 from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import add_new_option, bank_account_options
 from ui.i18n import t
-from ui.routes.settings import _check_role, _token
+from ui.routes.settings import _check_permission, _token
 from ui.routes.settings_cloud import _cloud_tabs, _has_team_features
 
 
@@ -120,14 +120,14 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        redir = _check_role(request, "admin")
+        redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
         try:
             relay_ok, enabled, deposit, banks = await _load(token)
         except APIError as e:
-            return base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
-        return base_shell(
+            return await base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
+        return await base_shell(
             _page(relay_ok, enabled, deposit, banks,
                   saved=request.query_params.get("saved") == "1"),
             nav_active="web-access", request=request)
@@ -137,7 +137,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        redir = _check_role(request, "admin")
+        redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
         form = await request.form()
@@ -145,7 +145,7 @@ def setup_routes(app):
             await api.patch_company(token, {"stripe_deposit_account": str(form.get("stripe_deposit_account", "")).strip()})
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
-            return base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
+            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
                               nav_active="web-access", request=request)
         return RedirectResponse("/settings/payments?saved=1", status_code=302)
 
@@ -154,14 +154,14 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        redir = _check_role(request, "admin")
+        redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
         try:
             result = await api.start_payments_connect(token)
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
-            return base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
+            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
                               nav_active="web-access", request=request)
         return RedirectResponse(result.get("url", "/settings/payments"), status_code=302)
 
@@ -170,7 +170,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        redir = _check_role(request, "admin")
+        redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
         try:

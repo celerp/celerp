@@ -13,8 +13,8 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_accounting.ui_routes",
     "slots": {
         "nav": [
-            {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "min_role": "manager"},
-            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "min_role": "manager"},
+            {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "permission": "manage_accounting"},
+            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},

@@ -16,7 +16,7 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_ai.ui_routes",
     "depends_on": [],
     "slots": {
-        "nav": {"group": "AI", "key": "ai", "href": "/ai", "label": "AI Assistant", "label_key": "nav.ai_assistant", "order": 90, "settings_href": "/ai/settings", "min_role": "operator"},
+        "nav": {"group": "AI", "key": "ai", "href": "/ai", "label": "AI Assistant", "label_key": "nav.ai_assistant", "order": 90, "settings_href": "/ai/settings", "permission": "use_ai_assistant"},
     },
     "migrations": None,
 }

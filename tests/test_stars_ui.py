@@ -10,8 +10,8 @@ from ui.components.shell import _topbar, base_shell, star_supporter_card
 from ui.routes.auth import _onboarding_view
 
 
-def test_footer_cta_present_and_gold():
-    xml = to_xml(base_shell(title="t"))
+async def test_footer_cta_present_and_gold():
+    xml = to_xml(await base_shell(title="t"))
     assert 'id="star-cta"' in xml
     assert "/stars/cta?medium=footer" in xml
     assert "/stars/badge" in xml

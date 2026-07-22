@@ -22,6 +22,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, pagination, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
+from ui.routes.settings import _check_permission
 from ui.i18n import get_lang, t
 from ui.i18n import t, get_lang
 
@@ -225,6 +226,8 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_subscriptions")):
+            return r
         q = request.query_params.get("q", "")
         page = int(request.query_params.get("page", 1))
 
@@ -266,7 +269,7 @@ def setup_routes(app) -> None:
             pagination(page, total, _PER_PAGE, "/subscriptions", extra),
             cls="page-content",
         )
-        return base_shell(request, content, title=title,
+        return await base_shell(request, content, title=title,
                           nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
 
     # --- Search (HTMX) ---
@@ -394,7 +397,7 @@ def setup_routes(app) -> None:
 
         _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc)
 
-        return base_shell(
+        return await base_shell(
             breadcrumbs([
                 ("Dashboard", "/dashboard"),
                 ("Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions", list_url),

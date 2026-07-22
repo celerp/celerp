@@ -18,7 +18,7 @@ from ui.i18n import t, get_lang
 
 from ui.routes.settings import (
     _token,
-    _check_role,
+    _check_permission,
     _taxes_tab,
     _connectors_tab,
     _terms_conditions_tab,
@@ -181,7 +181,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "manage_module_settings")):
             return r
         tab = request.query_params.get("tab", "taxes")
         try:
@@ -221,7 +221,7 @@ def setup_routes(app):
             content = _taxes_tab(taxes, lang=lang)
             tab = "taxes"
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Sales"),
             page_header("Sales Documents Settings"),
             _sales_tabs(tab, enabled_modules=enabled_modules, lang=lang),

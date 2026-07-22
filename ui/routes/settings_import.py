@@ -14,7 +14,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.config import get_token as _token
-from ui.routes.settings import _check_role
+from ui.routes.settings import _check_permission
 from ui.routes.csv_import import (
     CsvImportSpec,
     _resolve_csv_text,
@@ -76,9 +76,9 @@ def setup_routes(app):
     async def import_locations_page(request: Request):
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "import_export_data")):
             return r
-        return base_shell(
+        return await base_shell(
             page_header("Import Locations"),
             upload_form(
                 cols=_LOCATION_SPEC.cols,
@@ -105,7 +105,7 @@ def setup_routes(app):
         form = await request.form()
         rows, err = await read_csv_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Locations"),
                 upload_form(
                     cols=_LOCATION_SPEC.cols,
@@ -120,7 +120,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
-        return base_shell(
+        return await base_shell(
             page_header("Import Locations"),
             column_mapping_form(
                 csv_cols=cols,
@@ -143,7 +143,7 @@ def setup_routes(app):
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Locations"),
                 upload_form(
                     cols=_LOCATION_SPEC.cols,
@@ -161,7 +161,7 @@ def setup_routes(app):
         if mapping_errors:
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            return base_shell(
+            return await base_shell(
                 page_header("Import Locations"),
                 column_mapping_form(
                     csv_cols=original_cols,
@@ -183,7 +183,7 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _LOCATION_SPEC.cols)
 
-        return base_shell(
+        return await base_shell(
             page_header("Import Locations"),
             validation_result(
                 rows=rows, cols=cols, validate=_loc_validate,
@@ -265,9 +265,9 @@ def setup_routes(app):
     async def import_taxes_page(request: Request):
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "import_export_data")):
             return r
-        return base_shell(
+        return await base_shell(
             page_header("Import Taxes"),
             upload_form(
                 cols=_TAX_SPEC.cols,
@@ -293,7 +293,7 @@ def setup_routes(app):
         form = await request.form()
         rows, err = await read_csv_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Taxes"),
                 upload_form(
                     cols=_TAX_SPEC.cols,
@@ -308,7 +308,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
-        return base_shell(
+        return await base_shell(
             page_header("Import Taxes"),
             column_mapping_form(
                 csv_cols=cols,
@@ -331,7 +331,7 @@ def setup_routes(app):
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Taxes"),
                 upload_form(
                     cols=_TAX_SPEC.cols,
@@ -349,7 +349,7 @@ def setup_routes(app):
         if mapping_errors:
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            return base_shell(
+            return await base_shell(
                 page_header("Import Taxes"),
                 column_mapping_form(
                     csv_cols=original_cols,
@@ -371,7 +371,7 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TAX_SPEC.cols)
 
-        return base_shell(
+        return await base_shell(
             page_header("Import Taxes"),
             validation_result(
                 rows=rows, cols=cols, validate=_tax_validate,
@@ -458,9 +458,9 @@ def setup_routes(app):
     async def import_terms_page(request: Request):
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "import_export_data")):
             return r
-        return base_shell(
+        return await base_shell(
             page_header("Import Payment Terms"),
             upload_form(
                 cols=_TERMS_SPEC.cols,
@@ -486,7 +486,7 @@ def setup_routes(app):
         form = await request.form()
         rows, err = await read_csv_upload(form)
         if err:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Payment Terms"),
                 upload_form(
                     cols=_TERMS_SPEC.cols,
@@ -501,7 +501,7 @@ def setup_routes(app):
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
-        return base_shell(
+        return await base_shell(
             page_header("Import Payment Terms"),
             column_mapping_form(
                 csv_cols=cols,
@@ -524,7 +524,7 @@ def setup_routes(app):
         form = await request.form()
         csv_text = _resolve_csv_text(form)
         if not csv_text:
-            return base_shell(
+            return await base_shell(
                 page_header("Import Payment Terms"),
                 upload_form(
                     cols=_TERMS_SPEC.cols,
@@ -542,7 +542,7 @@ def setup_routes(app):
         if mapping_errors:
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
-            return base_shell(
+            return await base_shell(
                 page_header("Import Payment Terms"),
                 column_mapping_form(
                     csv_cols=original_cols,
@@ -564,7 +564,7 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TERMS_SPEC.cols)
 
-        return base_shell(
+        return await base_shell(
             page_header("Import Payment Terms"),
             validation_result(
                 rows=rows, cols=cols, validate=_terms_validate,

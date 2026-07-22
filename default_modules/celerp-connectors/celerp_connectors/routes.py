@@ -28,7 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import celerp.connectors as connectors
 from celerp.connectors.base import ConnectorContext, SyncEntity
 from celerp.db import get_session
-from celerp.services.auth import get_current_company_id, get_current_user, require_admin
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.session_gate import require_session_token
 
 log = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ def _relay_https_error() -> dict | None:
 async def store_credentials(
     connector_name: str,
     payload: ApiKeyCredentials,
-    _=Depends(require_admin),
+    _: None = require_permission("manage_integrations"),
 ) -> dict:
     """Validate API-key credentials against the store, then store them on the relay.
 
@@ -233,7 +234,7 @@ async def store_credentials(
 @router.delete("/{connector_name}/credentials")
 async def revoke_credentials(
     connector_name: str,
-    _=Depends(require_admin),
+    _: None = require_permission("manage_integrations"),
 ) -> dict:
     """Revoke stored connector credentials on the relay (disconnect).
 
@@ -259,7 +260,7 @@ async def revoke_credentials(
 @router.get("/{connector_name}/access-token")
 async def connector_access_token(
     connector_name: str,
-    _=Depends(require_admin),
+    _: None = require_permission("manage_integrations"),
 ) -> dict:
     """Return a short-lived decrypted access token from the relay.
 

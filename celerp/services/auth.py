@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -167,65 +167,8 @@ def get_current_company_id(token: str = Depends(oauth2_scheme)) -> uuid.UUID:
     return uuid.UUID(str(company_id))
 
 
-def require_min_role(min_role: str):
-    """DRY guard: require the caller's role to be >= min_role in the hierarchy."""
-    min_level = ROLE_LEVELS[min_role]
-
-    def _guard(token: str = Depends(oauth2_scheme)) -> None:
-        claims = _decode_token(token)
-        raw_role = claims.get("role", "viewer")
-        role = _ROLE_MIGRATION.get(raw_role, raw_role)
-        if ROLE_LEVELS.get(role, 0) < min_level:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Requires {min_role} role or higher")
-
-    return Depends(_guard)
-
-
-def require_admin(token: str = Depends(oauth2_scheme)) -> None:
-    """Raise 403 if role < admin."""
-    claims = _decode_token(token)
-    raw_role = claims.get("role", "viewer")
-    role = _ROLE_MIGRATION.get(raw_role, raw_role)
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
-
-
-def require_operator(token: str = Depends(oauth2_scheme)) -> None:
-    """Raise 403 if role < operator."""
-    claims = _decode_token(token)
-    raw_role = claims.get("role", "viewer")
-    role = _ROLE_MIGRATION.get(raw_role, raw_role)
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["operator"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator role required")
-
-
-def require_manager(token: str = Depends(oauth2_scheme)) -> None:
-    """Raise 403 if role < manager."""
-    claims = _decode_token(token)
-    raw_role = claims.get("role", "viewer")
-    role = _ROLE_MIGRATION.get(raw_role, raw_role)
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager role required")
-
-
 def get_current_role(token: str = Depends(oauth2_scheme)) -> str:
     """Return the role from the current token, applying legacy migration."""
     claims = _decode_token(token)
     raw_role = claims.get("role", "viewer")
     return _ROLE_MIGRATION.get(raw_role, raw_role)
-
-
-def viewer_read_only(request: Request, token: str = Depends(oauth2_scheme)) -> None:
-    """Router-level baseline: a viewer may only read.
-
-    Raise 403 on any write method (POST/PATCH/PUT/DELETE) when the role is
-    viewer. Attached to whole routers so every mutation endpoint - present and
-    future - is covered without per-endpoint guards; endpoints keep their own
-    stricter require_operator/require_manager checks on top."""
-    if request.method in ("POST", "PATCH", "PUT", "DELETE"):
-        claims = _decode_token(token)
-        raw_role = claims.get("role", "viewer")
-        role = _ROLE_MIGRATION.get(raw_role, raw_role)
-        if ROLE_LEVELS.get(role, 0) <= ROLE_LEVELS["viewer"]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="Viewers have read-only access")

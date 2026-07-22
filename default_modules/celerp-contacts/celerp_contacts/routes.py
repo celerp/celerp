@@ -22,9 +22,10 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.attachments import remove_attachment, store_upload
-from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ _CONTACT_TYPE_FILTER: dict[str, tuple[str, ...]] = {
 
 
 @router.post("/contacts")
-async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
     entity_id = f"contact:{uuid.uuid4()}"
@@ -195,7 +196,7 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
 
 
 @router.patch("/contacts/{contact_id}")
-async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -216,7 +217,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
 # ── Tags ──────────────────────────────────────────────────────────────────────
 
 @router.post("/contacts/{contact_id}/tags")
-async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -250,6 +251,7 @@ async def upload_contact_file(
     file: UploadFile,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -296,6 +298,7 @@ async def tag_contact_file(
     document_tag: str = Form(""),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Update the document_tag on an existing uploaded file."""
@@ -328,6 +331,7 @@ async def update_contact_file_description(
     description: str = Form(""),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -389,6 +393,7 @@ async def delete_contact_file(
     file_id: str,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -445,6 +450,7 @@ async def add_contact_note(
     payload: ContactNoteCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -483,6 +489,7 @@ async def update_contact_note(
     payload: ContactNoteUpdate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -517,6 +524,7 @@ async def delete_contact_note(
     note_id: str,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -548,6 +556,7 @@ async def add_contact_person(
     payload: ContactPersonCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -578,6 +587,7 @@ async def update_contact_person(
     payload: ContactPersonUpdate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -606,6 +616,7 @@ async def remove_contact_person(
     person_id: str,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -636,6 +647,7 @@ async def add_contact_address(
     payload: ContactAddressCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -666,6 +678,7 @@ async def update_contact_address(
     payload: ContactAddressUpdate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -694,6 +707,7 @@ async def remove_contact_address(
     address_id: str,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
@@ -724,6 +738,7 @@ async def import_contact(
     body: CRMImportRecord,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Accept a CIF contact record and emit the corresponding ledger event."""
@@ -788,6 +803,7 @@ async def bulk_delete_contacts(
     payload: BulkContactDeleteBody,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.contact_ids:
@@ -1062,6 +1078,7 @@ async def merge_contacts(
     payload: ContactMergeBody,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     result = await merge_contacts_service(
@@ -1134,6 +1151,7 @@ async def batch_import_contacts(
     body: CRMBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch-import CIF contact records. Idempotent on idempotency_key. Max 500 per call."""

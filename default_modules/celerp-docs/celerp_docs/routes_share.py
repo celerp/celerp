@@ -39,8 +39,9 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
-from celerp.services.auth import get_current_company_id, get_current_user, viewer_read_only
+from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.permissions import require_permission
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
     compose_address, render_doc_print_html, unwrap_address,
@@ -49,7 +50,7 @@ from celerp.output.share_render import _not_found_page
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
-router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Public router — share token lookup and recipient import require no auth
 public_router = APIRouter()
@@ -383,6 +384,7 @@ async def create_share_link(
     entity_id: str,
     body: ShareCreateBody | None = None,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create the public share token for a document or list (or update the
@@ -412,6 +414,7 @@ async def create_share_link(
 async def revoke_share_link(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Deactivate the share link immediately. The token row persists so the

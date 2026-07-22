@@ -28,7 +28,7 @@ from starlette.requests import Request
 from starlette.types import ASGIApp
 
 from celerp.db import engine, get_session
-from celerp.services.auth import require_admin
+from celerp.services.permissions import require_permission
 
 router = APIRouter(prefix="/debug", tags=["debug"])
 
@@ -127,7 +127,7 @@ class DebugMiddleware(BaseHTTPMiddleware):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/pool", dependencies=[Depends(require_admin)])
+@router.get("/pool", dependencies=[require_permission("manage_company_settings")])
 async def pool_stats(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Live DB pool stats and active Postgres connections.
 
@@ -191,7 +191,7 @@ async def pool_stats(session: AsyncSession = Depends(get_session)) -> dict[str, 
     }
 
 
-@router.get("/sse", dependencies=[Depends(require_admin)])
+@router.get("/sse", dependencies=[require_permission("manage_company_settings")])
 async def sse_stats() -> dict[str, Any]:
     """Active SSE subscriber state.
 
@@ -208,7 +208,7 @@ async def sse_stats() -> dict[str, Any]:
     }
 
 
-@router.get("/caches", dependencies=[Depends(require_admin)])
+@router.get("/caches", dependencies=[require_permission("manage_company_settings")])
 async def cache_stats() -> dict[str, Any]:
     """In-process cache state (nonce cache, drain cache).
 
@@ -238,7 +238,7 @@ async def cache_stats() -> dict[str, Any]:
     }
 
 
-@router.get("/requests", dependencies=[Depends(require_admin)])
+@router.get("/requests", dependencies=[require_permission("manage_company_settings")])
 async def in_flight_requests() -> dict[str, Any]:
     """Currently in-flight HTTP requests (populated by DebugMiddleware).
 
@@ -262,7 +262,7 @@ async def in_flight_requests() -> dict[str, Any]:
     return {"count": len(requests), "requests": requests}
 
 
-@router.get("/gateway", dependencies=[Depends(require_admin)])
+@router.get("/gateway", dependencies=[require_permission("manage_company_settings")])
 async def gateway_state() -> dict[str, Any]:
     """Live gateway connection state - session token presence, subscription tier, feature flags."""
     from celerp.gateway.state import get_session_token, get_subscription_state, get_feature_flags
@@ -280,7 +280,7 @@ async def gateway_state() -> dict[str, Any]:
     }
 
 
-@router.get("/slow", dependencies=[Depends(require_admin)])
+@router.get("/slow", dependencies=[require_permission("manage_company_settings")])
 async def slow_request_log() -> dict[str, Any]:
     """Log of requests that exceeded the slow threshold (currently {threshold}s).
 

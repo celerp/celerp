@@ -14,7 +14,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.config import COOKIE_NAME
 
-from ui.routes.settings import _token, _check_role, _terms_tab, _price_lists_tab
+from ui.routes.settings import _token, _check_permission, _terms_tab, _price_lists_tab
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t, get_lang
 
@@ -140,7 +140,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "manager")):
+        if (r := await _check_permission(request, "manage_module_settings")):
             return r
         tab = request.query_params.get("tab", "payment-terms")
 
@@ -182,7 +182,7 @@ def setup_routes(app):
                 terms = []
             content = _terms_tab(terms, prefix="terms", import_path=None)
 
-        return base_shell(
+        return await base_shell(
             _section_breadcrumb("Contacts"),
             page_header("Contacts Settings"),
             _contacts_tabs(tab),

@@ -90,27 +90,36 @@ class ModuleLoadError(Exception):
     """Raised (and caught) when a module fails validation."""
 
 
-def _read_depends_on(pkg_path: Path) -> list[str]:
-    """Extract PLUGIN_MANIFEST['depends_on'] from a module's __init__.py via AST.
+def read_manifest(pkg_path: Path) -> dict:
+    """Return PLUGIN_MANIFEST from a module's __init__.py via AST literal_eval.
 
-    Returns empty list if the manifest or key is absent or unparseable.
+    No import side effects. Returns an empty dict if the file is missing or the
+    manifest is absent or unparseable. This is the single source for reading a
+    module's declared manifest without importing it.
     """
     init_file = pkg_path / "__init__.py"
     try:
         tree = ast.parse(init_file.read_text())
     except Exception:
-        return []
+        return {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
                 try:
-                    manifest = ast.literal_eval(node.value)
-                    return list(manifest.get("depends_on") or [])
+                    return dict(ast.literal_eval(node.value))
                 except Exception:
-                    return []
-    return []
+                    return {}
+    return {}
+
+
+def _read_depends_on(pkg_path: Path) -> list[str]:
+    """Extract PLUGIN_MANIFEST['depends_on'] from a module's __init__.py via AST.
+
+    Returns empty list if the manifest or key is absent or unparseable.
+    """
+    return list(read_manifest(pkg_path).get("depends_on") or [])
 
 
 def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:

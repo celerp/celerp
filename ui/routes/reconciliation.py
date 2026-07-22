@@ -568,7 +568,7 @@ def setup_routes(app):
             cls="settings-card",
         )
 
-        return base_shell(
+        return await base_shell(
             page_header("Start Reconciliation",
                         A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
             form,
@@ -625,7 +625,7 @@ def setup_routes(app):
 
         msg = request.query_params.get("msg", "").strip()
         workspace = _workspace_view(session_id, recon, bank, lines, book_entries, currency)
-        return base_shell(
+        return await base_shell(
             flash(msg) if msg else None,
             workspace,
             title="Reconciliation Workspace - Celerp",
@@ -921,7 +921,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return P(str(e.detail), cls="error-banner")
-        return base_shell(
+        return await base_shell(
             page_header("Reconciliation Complete ✓"),
             Div(
                 P(f"Reconciliation completed for {result.get('statement_date', '--')}.",

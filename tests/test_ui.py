@@ -8999,11 +8999,12 @@ _LOCATIONS = [
 
 class TestInventoryItemDetailFixes:
 
-    def test_base_shell_includes_global_htmx_error_surface(self):
+    @pytest.mark.asyncio
+    async def test_base_shell_includes_global_htmx_error_surface(self):
         """Global shell should include a visible surface for HTMX response/send errors."""
         from fasthtml.common import to_xml, Div
         from ui.components.shell import base_shell
-        html = to_xml(base_shell(Div("x"), request=None))
+        html = to_xml(await base_shell(Div("x"), request=None))
         assert 'id="global-ui-error"' in html
         assert 'htmx:responseError' in html
         assert 'htmx:sendError' in html
@@ -12452,7 +12453,7 @@ class TestAIPage:
         assert "ai-input__field--disabled" in html
 
     def test_ai_module_nav_slot_config(self):
-        """celerp-ai manifest declares nav slot with min_role=operator."""
+        """celerp-ai manifest declares nav slot gated on use_ai_assistant."""
         import importlib
         init_path = str(Path(__file__).parent.parent / "default_modules/celerp-ai/__init__.py")
         spec = importlib.util.spec_from_file_location("celerp_ai_init", init_path)
@@ -12460,7 +12461,7 @@ class TestAIPage:
         spec.loader.exec_module(mod)
         manifest = mod.PLUGIN_MANIFEST
         assert manifest["slots"]["nav"]["key"] == "ai"
-        assert manifest["slots"]["nav"]["min_role"] == "operator"
+        assert manifest["slots"]["nav"]["permission"] == "use_ai_assistant"
         assert manifest["slots"]["nav"]["href"] == "/ai"
 
     def test_ai_dropzone_only_on_draft_bills(self):

@@ -770,7 +770,7 @@ def test_labels_print_doc_sku_dedup():
 
 def test_labels_print_doc_sku_lookup_uses_id_field():
     """The SKU inventory lookup result uses 'id' (not 'entity_id') because
-    _flatten_item() in the inventory routes sets flat['id'] = entity_id.
+    flatten_item() in the inventory routes sets flat['id'] = entity_id.
     Both keys should be tried so either path works."""
     # Simulate what the inventory /items endpoint returns
     item_via_id_key = {"id": "item:xyz", "sku": "SKU-1", "name": "Widget"}
@@ -838,7 +838,7 @@ def test_print_bulk_resolves_sku_prefix():
     assert entity_ids == ["item:abc"]
     assert skus_to_resolve == ["SKU-X", "SKU-Y"]
 
-    # Simulate inventory search response (uses 'id' key from _flatten_item)
+    # Simulate inventory search response (uses 'id' key from flatten_item)
     def _resolve(sku: str, items: list[dict]) -> str | None:
         match = next((it for it in items if (it.get("sku") or "").lower() == sku.lower()), None)
         if match:
@@ -1183,3 +1183,49 @@ def test_printable_label_sheet_escapes_values():
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<b>123</b>" not in html
     assert "&lt;b&gt;123&lt;/b&gt;" in html
+
+
+@pytest.mark.asyncio
+async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, session):
+    """PDF label printing honors the view_inventory_costs permission: an
+    ungranted operator's print carries no cost value, a granted operator's does."""
+    from test_helpers import grant_permission, invite_user
+
+    headers = await _headers(client)
+    loc = await client.post(
+        "/companies/me/locations",
+        json={"name": "Main", "type": "warehouse", "address": None, "is_default": True},
+        headers=headers,
+    )
+    r = await client.post(
+        "/items",
+        json={"sku": "COSTLBL", "name": "Cost Label Item", "quantity": 1,
+              "location_id": loc.json()["id"], "cost_price": 123.45,
+              "retail_price": 500.0, "sell_by": "piece"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    t = await client.post(
+        "/api/labels/templates",
+        json={"name": "CostTpl", "format": "40x30mm", "fields": [
+            {"key": "name", "label": "Name", "type": "text"},
+            {"key": "cost_price", "label": "Cost Price", "type": "text"},
+        ]},
+        headers=headers,
+    )
+    assert t.status_code == 201, t.text
+    tid = t.json()["id"]
+
+    op_tok = await invite_user(client, session, headers, "op_labels@example.com", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+
+    r_ungranted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
+    assert r_ungranted.status_code == 200
+    assert b"123.45" not in _pdf_text(r_ungranted.content)
+
+    await grant_permission(client, headers, "view_inventory_costs", "operator")
+    r_granted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
+    assert r_granted.status_code == 200
+    assert b"123.45" in _pdf_text(r_granted.content)

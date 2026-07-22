@@ -23,7 +23,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.currency import CURRENCIES
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.config import get_token as _token, get_role as _get_role
-from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset
@@ -432,7 +432,7 @@ def setup_routes(app):
             else:
                 content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
 
-        return base_shell(
+        return await base_shell(
             page_header(t("page.accounting", get_lang(request))),
             _accounting_tabs(tab),
             content,
@@ -460,8 +460,12 @@ def setup_routes(app):
                                    lines: list[dict], idem_token: str, error: str | None,
                                    date_from: str = "", date_to: str = "",
                                    currency: str = "", rate: str = ""):
-        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
-            return base_shell(
+        try:
+            _settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            _settings = {}
+        if not role_has_permission(_settings, _get_role(request), "manage_accounting"):
+            return await base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
                 _accounting_tabs("journal"),
                 Div(t("acct.not_authorized"), cls="error-banner"),
@@ -480,7 +484,7 @@ def setup_routes(app):
             if error is None:
                 error = (t("acct.not_authorized") if e.status == 403
                          else f"{t('acct.error_loading_data')}: {e.detail}")
-        return base_shell(
+        return await base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _accounting_tabs("journal"),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
@@ -1126,7 +1130,7 @@ def setup_routes(app):
                 content = Div(t("acct.not_authorized"), cls="error-banner")
             else:
                 content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
-            return base_shell(content, title="Ledger - Celerp", nav_active="accounting", request=request)
+            return await base_shell(content, title="Ledger - Celerp", nav_active="accounting", request=request)
 
         # Back link follows the tab the user drilled down from.
         if origin == "balance-sheet":
@@ -1152,7 +1156,7 @@ def setup_routes(app):
         )
 
         account_name = data.get("account_name", account_code)
-        return base_shell(
+        return await base_shell(
             page_header(f"Ledger: {account_code} {account_name}"),
             content,
             title=f"Ledger {account_code} - Celerp",
