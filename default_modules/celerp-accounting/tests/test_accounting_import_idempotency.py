@@ -40,7 +40,7 @@ async def test_accounting_import_batch_idempotency(client, session):
             {
                 "entity_id": entity_id,
                 "event_type": "acc.journal_entry.created",
-                "data": {"memo": "Import Test", "lines": []},
+                "data": {"memo": "Import Test", "entries": []},
                 "source": "import",
                 "idempotency_key": "je-created-" + entity_id,
             }

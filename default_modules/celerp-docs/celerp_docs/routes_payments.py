@@ -87,7 +87,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     charge. Replays (same reference) come back as a quiet None."""
     if not reference:
         return None
-    if any(p.get("reference") == reference for p in doc_state.get("payments", [])):
+    if any(p.get("reference") == reference and p.get("status") != "deleted"
+           for p in doc_state.get("payments", [])):
         return None  # already recorded - replayed push / re-opened return page
     amount = amount_minor / (10 ** currency_dp(currency))
     from celerp_docs.routes import apply_doc_payment

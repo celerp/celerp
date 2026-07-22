@@ -25,6 +25,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from celerp import __version__
 from celerp.cli import _reconcile_after_migrate, _run_migrations
@@ -49,9 +50,13 @@ def _head_rev() -> str:
 
 
 def _swap_db(url: str, dbname: str) -> str:
-    """Replace the database name (last path segment) in a SQLAlchemy URL."""
-    base, _, _old = url.rpartition("/")
-    return f"{base}/{dbname}"
+    """Replace the database name in a SQLAlchemy URL.
+
+    Parsed rather than string-split: a socket DSN carries its directory in a
+    query parameter (?host=/var/run/postgresql), so splitting on the last "/"
+    rewrites the socket path instead of the database.
+    """
+    return make_url(url).set(database=dbname).render_as_string(hide_password=False)
 
 
 @pytest.fixture()
@@ -78,10 +83,15 @@ def fresh_db():
             os.environ["DATABASE_URL"] = saved_env
         admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
         with admin.connect() as c:
+            # Only client backends: this sweep exists to kill leaked test
+            # connection pools. Autovacuum workers run as the superuser cluster
+            # owner, which a non-superuser test role cannot signal; DROP
+            # DATABASE evicts them itself.
             c.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :d AND pid <> pg_backend_pid()"
+                    "WHERE datname = :d AND pid <> pg_backend_pid() "
+                    "AND backend_type = 'client backend'"
                 ),
                 {"d": dbname},
             )

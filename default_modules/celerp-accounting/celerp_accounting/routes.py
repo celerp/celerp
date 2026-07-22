@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import math
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -19,6 +21,8 @@ from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, viewer_read_only
+from celerp.services.je_keys import je_void_data
+from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
 
 router = APIRouter(dependencies=[Depends(get_current_user), Depends(viewer_read_only)])
 
@@ -81,7 +85,13 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6960", "name": "Foreign Exchange Rounding", "account_type": "expense", "parent_code": "6000"},
 ]
+
+# Absorbs the cents left over when each line of a foreign-currency entry rounds
+# independently. Not the FX revaluation of open balances over time, which is a
+# different concern handled elsewhere.
+FX_ROUNDING_ACCOUNT = "6960"
 
 
 class AccountCreate(BaseModel):
@@ -399,45 +409,42 @@ async def batch_import_accounting(
 # Accounting reports - derived from journal_entry projections
 # ---------------------------------------------------------------------------
 
-def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
-    """Aggregate net balance per account_code from posted journal entry projections.
+def _require_iso_date(value: str | None, field: str) -> None:
+    """Reject anything that is not a strict YYYY-MM-DD date.
 
-    Returns {account_code: net_balance} where net_balance = total_debit - total_credit.
-    Asset/Expense accounts are debit-normal (positive = debit balance).
-    Liability/Equity/Revenue accounts are credit-normal (positive = credit balance, stored as positive here).
-    We store the raw difference and let the report layer interpret sign conventions.
+    Reports filter and sort by lexical string compare, so variants
+    fromisoformat tolerates (basic 20260105, week dates) would sort outside
+    their real period and vanish from date-bounded reports. An unparsable
+    filter is refused rather than silently yielding an empty report, which
+    reads as "no activity" when it really means "the question was malformed".
     """
-    balances: dict[str, Decimal] = {}
-    for row in rows:
-        state = row.state
-        if state.get("status") != "posted":
-            continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        ts = str(ts_raw)[:10] if ts_raw else ""
-        if date_from and ts < date_from:
-            continue
-        if date_to and ts > date_to:
-            continue
-        for entry in state.get("entries", []):
-            code = entry.get("account")
-            if not code:
-                continue
-            try:
-                debit = Decimal(str(entry.get("debit") or 0))
-                credit = Decimal(str(entry.get("credit") or 0))
-            except Exception:
-                continue
-            balances[code] = balances.get(code, Decimal(0)) + debit - credit
-    return balances
+    if value is None:
+        return
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+        )
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+        )
 
 
-@router.get("/journal-entries")
-async def list_journal_entries(
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """List all journal entry projections - for debugging and audit."""
+async def _je_rows(
+    session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
+) -> list[tuple[str, dict, str]]:
+    """All journal entry projections as (entity_id, state, date) tuples.
+
+    date is the entry's effective ISO date (YYYY-MM-DD, "" when the entry has none).
+    Posted entries only by default; include_void=True adds voided entries for views
+    that must show the full record (the journal). Deliberately not date-filtered:
+    the general ledger buckets one scan into opening (before date_from) and period
+    ranges, so callers apply their own date filtering.
+    """
     rows = (
         await session.execute(
             select(Projection).where(
@@ -446,8 +453,557 @@ async def list_journal_entries(
             )
         )
     ).scalars().all()
-    items = [{"entity_id": r.entity_id, **r.state} for r in rows]
-    return {"items": items, "total": len(items)}
+    out: list[tuple[str, dict, str]] = []
+    for row in rows:
+        state = row.state
+        status = state.get("status")
+        if status != "posted" and not (include_void and status == "void"):
+            continue
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        out.append((row.entity_id, state, str(ts_raw)[:10] if ts_raw else ""))
+    return out
+
+
+async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
+    """Company base currency for report amounts."""
+    from celerp.models.company import Company
+
+    company = await session.get(Company, company_id)
+    return (company.settings or {}).get("currency", "USD") if company else "USD"
+
+
+async def _validated_fx(
+    session: AsyncSession, company_id: uuid.UUID, fx: "ManualJEFx | None"
+) -> "ManualJEFx | None":
+    """Check a manual entry's currency and rate, or return None for an ordinary
+    base-currency entry.
+
+    Every message names the field at fault: an accountant who mistypes a rate
+    should be told which value was refused, not handed a generic rejection.
+    """
+    if fx is None:
+        return None
+    currency = (fx.currency or "").upper()
+    if currency not in ISO_4217_CURRENCIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown currency {fx.currency}. Use a three-letter ISO 4217 code.",
+        )
+    base = await _base_currency(session, company_id)
+    if currency == base:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{currency} is this company's own currency. Leave the foreign "
+                "currency blank to post an ordinary entry."
+            ),
+        )
+    if not math.isfinite(fx.rate) or fx.rate <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Exchange rate must be greater than zero, not {fx.rate}.",
+        )
+    return ManualJEFx(currency=currency, rate=fx.rate)
+
+
+def _id_chunks(ids: list[str], size: int = 10_000):
+    """Slices for IN() clauses: asyncpg caps a statement at 32767 bind
+    arguments, and a mature company's id lists can exceed that."""
+    for i in range(0, len(ids), size):
+        yield ids[i:i + size]
+
+
+async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
+    """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
+
+    Only JEs whose creation event carries a doc_id in its ledger metadata appear;
+    doc_ref falls back to the raw doc_id when the doc projection is gone.
+    fx is {"currency", "rate"} when the linked doc was recorded in a foreign
+    currency with a stored conversion rate, else None - a missing rate leaves fx
+    empty rather than guessing. Payment JEs (metadata carries payment_index)
+    resolve currency/rate from that specific payment, since a payment may
+    legitimately use a different rate than its invoice.
+    """
+    from celerp.models.ledger import LedgerEntry
+
+    if not je_ids:
+        return {}
+    ledger_events = []
+    for chunk in _id_chunks(je_ids):
+        ledger_events.extend((
+            await session.execute(
+                select(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.event_type == "acc.journal_entry.created",
+                    LedgerEntry.entity_id.in_(chunk),
+                )
+            )
+        ).scalars().all())
+    je_meta: dict[str, dict] = {}
+    je_ts: dict[str, str] = {}
+    for ev in ledger_events:
+        meta = ev.metadata_ or {}
+        if meta.get("doc_id"):
+            je_meta[ev.entity_id] = meta
+            je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
+
+    doc_ids = sorted({m["doc_id"] for m in je_meta.values()})
+    doc_states: dict[str, dict] = {}
+    for chunk in _id_chunks(doc_ids):
+        doc_rows = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_id.in_(chunk),
+                )
+            )
+        ).scalars().all()
+        doc_states.update({dr.entity_id: dr.state for dr in doc_rows})
+
+    base = await _base_currency(session, company_id)
+    refs: dict[str, dict] = {}
+    for je_id, meta in je_meta.items():
+        doc_id = meta["doc_id"]
+        state = doc_states.get(doc_id, {})
+        currency = state.get("currency")
+        rate = state.get("conversion_rate")
+        payment_index = meta.get("payment_index")
+        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided"):
+            payments = state.get("payments", [])
+            # Payments are identified by their index FIELD (stable since
+            # deletions tombstone in place). Projections compacted before that
+            # change may hold rewritten fields pointing at a different payment,
+            # so the JE's date (the payment date it was posted for) is checked;
+            # on mismatch fall back to the doc-level rate rather than show
+            # another payment's.
+            payment = next((p for p in payments if p.get("index") == payment_index), None)
+            if payment is not None:
+                ev_ts = je_ts.get(je_id, "")
+                p_date = str(payment.get("payment_date") or "")[:10]
+                if not ev_ts or not p_date or ev_ts == p_date:
+                    currency = payment.get("currency") or currency
+                    rate = payment.get("conversion_rate") or rate
+        fx = None
+        if currency and currency != base and rate:
+            fx = {"currency": currency, "rate": float(rate)}
+        refs[je_id] = {
+            "doc_id": doc_id,
+            "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+            "fx": fx,
+        }
+    return refs
+
+
+def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
+    """(debit, credit) of a JE line as Decimals, or None for a malformed line.
+
+    One rule for every report: a line whose amounts cannot be parsed is skipped
+    the same way everywhere, so the trial balance, journal, ledger, and general
+    ledger always agree on which lines count.
+    """
+    try:
+        return (Decimal(str(entry.get("debit") or 0)), Decimal(str(entry.get("credit") or 0)))
+    except Exception:
+        return None
+
+
+def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
+    """Aggregate net balance per account_code from posted journal entries (_je_rows output).
+
+    Returns {account_code: net_balance} where net_balance = total_debit - total_credit.
+    Asset/Expense accounts are debit-normal (positive = debit balance).
+    Liability/Equity/Revenue accounts are credit-normal (positive = credit balance, stored as positive here).
+    We store the raw difference and let the report layer interpret sign conventions.
+    """
+    balances: dict[str, Decimal] = {}
+    for _, state, ts in posted:
+        if date_from and ts < date_from:
+            continue
+        if date_to and ts > date_to:
+            continue
+        for entry in state.get("entries", []):
+            code = entry.get("account")
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
+                continue
+            balances[code] = balances.get(code, Decimal(0)) + amounts[0] - amounts[1]
+    return balances
+
+
+@router.get("/journal")
+async def journal(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Journal: every entry with its lines, source-doc link, and FX info.
+
+    Voided entries stay visible flagged status="void" - a journal is a record, and
+    hiding voids would misstate it - but they are excluded from the period totals.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+    rows = await _je_rows(session, company_id, include_void=True)
+    # Dateless JEs count as pre-period, exactly like the trial balance,
+    # general ledger, and per-account ledger: excluded once a start date is
+    # set, included otherwise, so period totals cross-foot between reports.
+    rows = [
+        r for r in rows
+        if not (date_from and (not r[2] or r[2] < date_from))
+        and not (r[2] and date_to and r[2] > date_to)
+    ]
+    # Sort by date with entity_id as the deterministic, replay-stable tiebreak.
+    rows.sort(key=lambda r: (r[2], r[0]))
+
+    accounts = (
+        await session.execute(
+            select(Account).where(Account.company_id == company_id)
+        )
+    ).scalars().all()
+    account_names = {a.code: a.name for a in accounts}
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in rows])
+    base = await _base_currency(session, company_id)
+
+    total_debit = Decimal(0)
+    total_credit = Decimal(0)
+    entries_out = []
+    for je_id, state, ts in rows:
+        posted = state.get("status") == "posted"
+        lines = []
+        for entry in state.get("entries", []):
+            code = entry.get("account")
+            amounts = _line_amounts(entry)
+            # Same rule as every other report: a line with no account code or
+            # unparsable amounts is skipped, so the journal never shows a row
+            # the trial balance and general ledger do not count.
+            if not code or amounts is None:
+                continue
+            if posted:
+                total_debit += amounts[0]
+                total_credit += amounts[1]
+            lines.append({
+                "account": code,
+                "name": account_names.get(code, code),
+                "debit": float(amounts[0]),
+                "credit": float(amounts[1]),
+                # Present only on a foreign-currency line. The rounding plug and
+                # every base-currency line carry None, which the view renders as
+                # an empty cell rather than a guessed figure.
+                "fx_debit": entry.get("fx_debit"),
+                "fx_credit": entry.get("fx_credit"),
+            })
+        ref = refs.get(je_id)
+        entries_out.append({
+            "je_id": je_id,
+            "ts": ts,
+            "memo": state.get("memo", ""),
+            "status": state.get("status"),
+            "je_type": state.get("je_type"),
+            "void_reason": state.get("void_reason"),
+            "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
+            "lines": lines,
+            # A document-linked entry carries its rate on the source doc; a
+            # manual entry carries its own, typed by the author.
+            "fx": ref["fx"] if ref else state.get("fx"),
+        })
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "entries": entries_out,
+        "total_debit": to_stored_float(round_money(total_debit, base)),
+        "total_credit": to_stored_float(round_money(total_credit, base)),
+    }
+
+
+class ManualJELine(BaseModel):
+    account: str
+    debit: float = 0
+    credit: float = 0
+
+
+class ManualJEFx(BaseModel):
+    """The currency and rate for a whole entry. The author types the foreign
+    amounts on each line; the server converts them to base currency."""
+
+    currency: str
+    rate: float
+
+
+class ManualJECreate(BaseModel):
+    ts: str  # ISO date "YYYY-MM-DD"
+    memo: str = ""
+    entries: list[ManualJELine]
+    idempotency_token: str
+    # Absent for an ordinary base-currency entry, which is the common case and
+    # is untouched by any of the conversion below.
+    fx: ManualJEFx | None = None
+
+
+class ManualJEVoidPayload(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/journal-entries")
+async def create_manual_journal_entry(
+    payload: ManualJECreate,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Post a manual journal entry. Validates accounts and balance; the period
+    lock is enforced by the event engine on the entry's date."""
+    _require_iso_date(payload.ts or "", "entry")
+    if len(payload.entries) < 2:
+        raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
+    if not payload.idempotency_token:
+        raise HTTPException(status_code=422, detail="idempotency_token is required.")
+    fx = await _validated_fx(session, company_id, payload.fx)
+
+    accounts = (
+        await session.execute(
+            select(Account).where(Account.company_id == company_id)
+        )
+    ).scalars().all()
+    account_map = {a.code: a for a in accounts}
+    children_of: dict[str, list[str]] = {}
+    for a in accounts:
+        if a.parent_code:
+            children_of.setdefault(a.parent_code, []).append(a.code)
+
+    base = await _base_currency(session, company_id)
+    # With a rate, the author typed foreign amounts: they are validated and
+    # balanced at the foreign currency's precision, then converted. Without one
+    # the amounts are already base currency and nothing below changes.
+    amount_currency = fx.currency if fx else base
+    total_debit = Decimal(0)
+    total_credit = Decimal(0)
+    local_debit = Decimal(0)
+    local_credit = Decimal(0)
+    entries: list[dict] = []
+    for line in payload.entries:
+        acc = account_map.get(line.account)
+        if not acc:
+            raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
+        if not acc.is_active:
+            raise HTTPException(status_code=422, detail=f"Account {line.account} is inactive.")
+        children = children_of.get(line.account)
+        if children:
+            # Parent accounts are grouping rollups (the balance sheet sums their
+            # children); postings belong on leaf accounts.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
+            )
+        if not (math.isfinite(line.debit) and math.isfinite(line.credit)):
+            raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
+        if line.debit < 0 or line.credit < 0:
+            raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
+        d = round_money(line.debit, amount_currency)
+        c = round_money(line.credit, amount_currency)
+        if d > 0 and c > 0:
+            raise HTTPException(status_code=422, detail="Each line must have an amount on only one side, debit or credit.")
+        if d == 0 and c == 0:
+            raise HTTPException(status_code=422, detail="Each line needs a debit or credit amount.")
+        total_debit += d
+        total_credit += c
+        if fx:
+            ld = round_money(d * to_decimal(fx.rate), base)
+            lc = round_money(c * to_decimal(fx.rate), base)
+            local_debit += ld
+            local_credit += lc
+            entries.append({
+                "account": line.account,
+                "debit": to_stored_float(ld),
+                "credit": to_stored_float(lc),
+                "fx_debit": to_stored_float(d) if d else None,
+                "fx_credit": to_stored_float(c) if c else None,
+            })
+        else:
+            entries.append({"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)})
+
+    if total_debit != total_credit:
+        where = f" in {fx.currency}" if fx else ""
+        raise HTTPException(
+            status_code=422,
+            detail=f"Entry is out of balance{where}: debits {total_debit} do not equal credits {total_credit}.",
+        )
+    if total_debit == 0:
+        raise HTTPException(status_code=422, detail="Entry total must be greater than zero.")
+
+    if fx:
+        # Each line converts and rounds independently, so a set of foreign
+        # amounts that balance exactly can convert to local amounts that do not.
+        # The difference is posted as its own visible line rather than folded
+        # into a real account, where it would silently misstate that account.
+        residual = local_credit - local_debit
+        # Provably bounded: each line rounds by at most half a smallest unit of
+        # the foreign currency before conversion, and by at most half a smallest
+        # unit of the base currency after it. Breaching this would mean the
+        # conversion arithmetic is wrong, not that the user typed something odd,
+        # so it fails as a server error rather than posting a number that failed
+        # its own sanity check.
+        half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
+        half_base = Decimal(10) ** -currency_dp(base) / 2
+        ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
+        if abs(residual) > ceiling:
+            # Raised rather than asserted: `python -O` strips assert statements,
+            # and a guard on a posted money figure must not depend on how the
+            # interpreter was launched.
+            raise RuntimeError(
+                f"exchange rounding residual {residual} exceeds the bound {ceiling} "
+                f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
+            )
+        if residual != 0:
+            rounding = account_map.get(FX_ROUNDING_ACCOUNT)
+            if not rounding or not rounding.is_active:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Account {FX_ROUNDING_ACCOUNT} is needed to post the "
+                        "exchange-rate rounding difference and is missing or "
+                        "inactive. Re-seed the chart of accounts in Settings."
+                    ),
+                )
+            entries.append({
+                "account": FX_ROUNDING_ACCOUNT,
+                "debit": to_stored_float(residual) if residual > 0 else 0.0,
+                "credit": to_stored_float(-residual) if residual < 0 else 0.0,
+                # 0.0 rather than null on both sides: the display prefers a
+                # stored foreign amount over deriving one, and a null pair would
+                # fall through to division and invent a foreign figure for a
+                # line the author never typed in any currency.
+                "fx_debit": 0.0,
+                "fx_credit": 0.0,
+            })
+
+    je_id = f"je:manual:{uuid.uuid4()}"
+    created = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=je_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.created",
+        data={
+            "memo": payload.memo, "ts": payload.ts, "entries": entries,
+            "je_type": "manual", "status": "posted",
+            **({"fx": {"currency": fx.currency, "rate": fx.rate}} if fx else {}),
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="manual",
+        idempotency_key=f"je:manual:{payload.idempotency_token}:c",
+        metadata_={},
+    )
+    if getattr(created, "was_deduped", False):
+        # The token was already used: emit_event returned the original event
+        # instead of inserting. A byte-identical retry (double click, network
+        # replay) answers with the original entry; a DIFFERENT payload on the
+        # same token means the user edited and resubmitted a stale form, and a
+        # success response would describe amounts that were never posted.
+        orig = created.data or {}
+
+        def _norm(lines: list) -> list:
+            # Compare money as rounded Decimals so a byte-identical retry never
+            # trips on float representation differences across storage layers.
+            # The foreign amounts come along: two different rates can convert to
+            # the same local figures, and comparing only those would read a
+            # corrected rate as an identical retry and silently post nothing.
+            out = []
+            for l in lines or []:
+                amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
+                out.append((
+                    l.get("account"),
+                    round_money(amounts[0], base), round_money(amounts[1], base),
+                    l.get("fx_debit"), l.get("fx_credit"),
+                ))
+            return out
+
+        def _norm_fx(f: dict | None) -> tuple | None:
+            if not f:
+                return None
+            return ((f.get("currency") or "").upper(), to_decimal(f.get("rate") or 0))
+
+        submitted_fx = {"currency": fx.currency, "rate": fx.rate} if fx else None
+        if (orig.get("ts") != payload.ts
+                or (orig.get("memo") or "") != (payload.memo or "")
+                or _norm_fx(orig.get("fx")) != _norm_fx(submitted_fx)
+                or _norm(orig.get("entries")) != _norm(entries)):
+            raise HTTPException(
+                status_code=409,
+                detail="This entry was already posted with different amounts. Review the journal, then post again if a new entry is intended.",
+            )
+        je_id = created.entity_id
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=je_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.posted",
+        data={"ts": payload.ts},
+        actor_id=user.id,
+        location_id=None,
+        source="manual",
+        idempotency_key=f"je:manual:{payload.idempotency_token}:p",
+        metadata_={},
+    )
+    await session.commit()
+
+    return {
+        "je_id": je_id,
+        "ts": payload.ts,
+        "memo": payload.memo,
+        "entries": entries,
+        "je_type": "manual",
+        "status": "posted",
+    }
+
+
+@router.post("/journal-entries/{entity_id}/void")
+async def void_manual_journal_entry(
+    entity_id: str,
+    payload: ManualJEVoidPayload | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Void a manual journal entry. The voided entry stays on the record - accounting
+    requires the full trail, so entries are never deleted."""
+    row = await session.get(Projection, (company_id, entity_id))
+    if not row or row.entity_type != "journal_entry":
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+    state = row.state
+    if state.get("je_type") != "manual":
+        # Auto-posted entries mirror their source document; voiding one here would
+        # desync the books from the document. Undoing the document reverses its JEs.
+        raise HTTPException(
+            status_code=422,
+            detail="Only manual journal entries can be voided here. Undo the source document instead.",
+        )
+    if state.get("status") == "void":
+        return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
+
+    reason = payload.reason if payload else None
+    data = je_void_data(reason, state)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.voided",
+        data=data,
+        actor_id=user.id,
+        location_id=None,
+        source="manual",
+        idempotency_key=f"{entity_id}:void",
+        metadata_={},
+    )
+    await session.commit()
+    return {"je_id": entity_id, "status": "void", "void_reason": reason}
 
 
 @router.get("/ledger/{account_code}")
@@ -460,8 +1016,6 @@ async def account_ledger(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
-    from celerp.models.ledger import LedgerEntry
-
     # Fetch account metadata for name + type (sign convention)
     account = (
         await session.execute(
@@ -469,88 +1023,40 @@ async def account_ledger(
         )
     ).scalar_one_or_none()
 
-    # Fetch all posted JE projections for this company
-    je_rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
+    posted = await _je_rows(session, company_id)
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
-    # Build je_id -> doc_id map from ledger events (one join query)
-    ledger_events = (
-        await session.execute(
-            select(LedgerEntry).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.event_type == "acc.journal_entry.created",
-            )
-        )
-    ).scalars().all()
-    je_doc_map: dict[str, str] = {}
-    for ev in ledger_events:
-        meta = ev.metadata_ or {}
-        if meta.get("doc_id"):
-            je_doc_map[ev.entity_id] = meta["doc_id"]
+    # Lines are matched by the literal account code, exactly like the trial
+    # balance, journal, and general ledger bucket them, so the drilldown always
+    # reconciles with the report row it was opened from. Legacy entries posted
+    # directly to a parent code appear on the parent's own ledger.
+    match_codes = {account_code}
 
-    # Build doc_id -> doc_ref (human-readable number) map for display
-    doc_ids = set(je_doc_map.values())
-    doc_ref_map: dict[str, str] = {}
-    if doc_ids:
-        doc_rows = (
-            await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(doc_ids),
-                )
-            )
-        ).scalars().all()
-        for dr in doc_rows:
-            ref = dr.state.get("ref_id") or dr.state.get("doc_number") or dr.entity_id
-            doc_ref_map[dr.entity_id] = ref
-
-    # If this account has a parent that has sub-accounts, also include entries posted
-    # directly to the parent (legacy JEs from before the sub-account split).
-    # This ensures e.g. 1130-P ledger shows old 1130 entries alongside new 1130-P entries.
-    parent_legacy_codes: set[str] = set()
-    if account and account.parent_code:
-        sibling_count = (
-            await session.execute(
-                select(func.count()).select_from(Account).where(
-                    Account.company_id == company_id,
-                    Account.parent_code == account.parent_code,
-                )
-            )
-        ).scalar()
-        if sibling_count and sibling_count > 1:
-            parent_legacy_codes.add(account.parent_code)
-    match_codes = {account_code} | parent_legacy_codes
-
-    # Filter to lines that touch this account (or its legacy parent), apply date filter
+    # Filter to lines that touch this account, apply date filter
     lines = []
-    for row in je_rows:
-        state = row.state
-        if state.get("status") != "posted":
-            continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        ts = str(ts_raw)[:10] if ts_raw else ""
-        # Dateless JEs (ts="") are always included - hiding them would be worse than showing them.
-        if ts and date_from and ts < date_from:
+    for je_id, state, ts in posted:
+        # Dateless JEs (ts="") count as pre-period, exactly as the trial
+        # balance, journal, and general ledger treat them: excluded once a
+        # start date is set, included otherwise.
+        if date_from and (not ts or ts < date_from):
             continue
         if ts and date_to and ts > date_to:
             continue
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
                 continue
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
+            ref = refs.get(je_id) or {}
             lines.append({
                 "date": ts,
-                "je_id": row.entity_id,
+                "je_id": je_id,
                 "memo": state.get("memo", ""),
-                "doc_id": je_doc_map.get(row.entity_id),
-                "doc_ref": doc_ref_map.get(je_doc_map.get(row.entity_id, ""), je_doc_map.get(row.entity_id)) if je_doc_map.get(row.entity_id) else None,
-                "debit": float(entry.get("debit") or 0),
-                "credit": float(entry.get("credit") or 0),
+                "doc_id": ref.get("doc_id"),
+                "doc_ref": ref.get("doc_ref"),
+                "debit": float(amounts[0]),
+                "credit": float(amounts[1]),
             })
 
     # Sort chronologically for running balance
@@ -580,6 +1086,7 @@ async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Trial balance: one row per account with debit/credit totals.
@@ -587,14 +1094,7 @@ async def trial_balance(
     Reads posted journal_entry projections. Each journal entry stores
     entries: [{account, debit?, credit?}] in its state.
     """
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
+    posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -604,22 +1104,18 @@ async def trial_balance(
 
     # Accumulate raw debit/credit per account code
     raw: dict[str, tuple[Decimal, Decimal]] = {}  # code -> (total_debit, total_credit)
-    for row in rows:
-        state = row.state
-        if state.get("status") != "posted":
-            continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        ts = str(ts_raw)[:10] if ts_raw else ""
+    for _, state, ts in posted:
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
             continue
         for entry in state.get("entries", []):
             code = entry.get("account")
-            if not code:
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
                 continue
             d, c = raw.get(code, (Decimal(0), Decimal(0)))
-            raw[code] = (d + Decimal(str(entry.get("debit") or 0)), c + Decimal(str(entry.get("credit") or 0)))
+            raw[code] = (d + amounts[0], c + amounts[1])
 
     lines = []
     total_debit = Decimal(0)
@@ -648,6 +1144,117 @@ async def trial_balance(
     }
 
 
+@router.get("/general-ledger")
+async def general_ledger(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    include_lines: bool = False,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """General ledger summary: opening balance, period debits/credits, and closing
+    balance per account. Balances are signed by the account's normal side
+    (debit-normal for asset/expense/cogs, credit-normal otherwise), matching the
+    per-account ledger's running balance. Detail rows live at /ledger/{code}.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+    posted = await _je_rows(session, company_id)
+    accounts = (
+        await session.execute(
+            select(Account).where(Account.company_id == company_id)
+        )
+    ).scalars().all()
+    account_map = {a.code: a for a in accounts}
+
+    opening_raw: dict[str, Decimal] = {}
+    period_debit: dict[str, Decimal] = {}
+    period_credit: dict[str, Decimal] = {}
+    detail: dict[str, list] = {}
+    detail_jes: set[str] = set()
+    for je_id, state, ts in posted:
+        for entry in state.get("entries", []):
+            code = entry.get("account")
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
+                continue
+            d, c = amounts
+            if date_from and ts < date_from:
+                opening_raw[code] = opening_raw.get(code, Decimal(0)) + d - c
+                continue
+            if date_to and ts > date_to:
+                continue
+            period_debit[code] = period_debit.get(code, Decimal(0)) + d
+            period_credit[code] = period_credit.get(code, Decimal(0)) + c
+            if include_lines:
+                detail.setdefault(code, []).append({
+                    "date": ts, "je_id": je_id, "memo": state.get("memo", ""),
+                    "debit": float(d), "credit": float(c),
+                })
+                detail_jes.add(je_id)
+
+    detail_refs: dict[str, dict] = {}
+    if include_lines and detail_jes:
+        detail_refs = await _je_doc_refs(session, company_id, sorted(detail_jes))
+        for rows_for_code in detail.values():
+            rows_for_code.sort(key=lambda l: (l["date"], l["je_id"]))
+            for line in rows_for_code:
+                ref = detail_refs.get(line["je_id"]) or {}
+                line["source_ref"] = ref.get("doc_ref")
+
+    base = await _base_currency(session, company_id)
+    rows_out = []
+    tot_opening = tot_debit = tot_credit = tot_closing = Decimal(0)
+    raw_closing_total = Decimal(0)
+    # Sorted by account code: stable across replays, unlike dict encounter order.
+    for code in sorted(set(opening_raw) | set(period_debit) | set(period_credit)):
+        opening = opening_raw.get(code, Decimal(0))
+        d = period_debit.get(code, Decimal(0))
+        c = period_credit.get(code, Decimal(0))
+        if opening == 0 and d == 0 and c == 0:
+            continue
+        acc = account_map.get(code)
+        account_type = acc.account_type if acc else "unknown"
+        debit_normal = account_type not in ("liability", "equity", "revenue")
+        raw_closing = opening + d - c
+        raw_closing_total += raw_closing
+        signed_opening = opening if debit_normal else -opening
+        signed_closing = raw_closing if debit_normal else -raw_closing
+        tot_opening += signed_opening
+        tot_debit += d
+        tot_credit += c
+        tot_closing += signed_closing
+        row_out = {
+            "code": code,
+            "name": acc.name if acc else code,
+            "account_type": account_type,
+            # The sign convention is decided here, once; consumers (UI, CSV)
+            # must use this flag rather than re-deriving it from account_type.
+            "debit_normal": debit_normal,
+            "opening": to_stored_float(round_money(signed_opening, base)),
+            "debit": to_stored_float(round_money(d, base)),
+            "credit": to_stored_float(round_money(c, base)),
+            "closing": to_stored_float(round_money(signed_closing, base)),
+        }
+        if include_lines:
+            row_out["lines"] = detail.get(code, [])
+        rows_out.append(row_out)
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "rows": rows_out,
+        "totals": {
+            "opening": to_stored_float(round_money(tot_opening, base)),
+            "debit": to_stored_float(round_money(tot_debit, base)),
+            "credit": to_stored_float(round_money(tot_credit, base)),
+            "closing": to_stored_float(round_money(tot_closing, base)),
+        },
+        "balanced": abs(raw_closing_total) < Decimal("0.01"),
+    }
+
+
 @router.get("/pnl")
 async def profit_and_loss(
     date_from: str | None = None,
@@ -661,14 +1268,7 @@ async def profit_and_loss(
     COGS accounts (5xxx) = debit-normal -> positive net debit = cost.
     Expense accounts (6xxx) = debit-normal -> positive net debit = expense.
     """
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
+    posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -676,7 +1276,7 @@ async def profit_and_loss(
     ).scalars().all()
     account_map = {a.code: a for a in accounts}
 
-    balances = _build_balances(rows, date_from, date_to)
+    balances = _build_balances(posted, date_from, date_to)
 
     def _section(types: list[str]) -> list[dict]:
         lines = []
@@ -724,14 +1324,7 @@ async def balance_sheet(
     await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
     await session.commit()
 
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
+    posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -740,7 +1333,7 @@ async def balance_sheet(
     account_map = {a.code: a for a in accounts}
 
     # Balance sheet uses all entries up to as_of
-    balances = _build_balances(rows, date_from=None, date_to=as_of)
+    balances = _build_balances(posted, date_from=None, date_to=as_of)
 
     def _section(types: list[str], credit_normal: bool) -> tuple[list[dict], float]:
         lines = []
@@ -775,13 +1368,12 @@ async def balance_sheet(
             code = leaf["code"]
             children = [l for l in leaf_lines if l.get("parent_code") == code]
             if children:
-                # Roll parent's own JE balance (from pre-sub-account JEs) into the first
-                # "purchased" child (1130-P), then display parent as sum of children.
-                parent_own = leaf["amount"]
-                if parent_own != 0.0:
-                    purchased = next((c for c in children if c["code"].endswith("-P")), children[0])
-                    purchased["amount"] += parent_own
-                parent_total = sum(c["amount"] for c in children)
+                # Parent total = its own directly-posted balance (legacy
+                # pre-sub-account entries) plus its children. The parent's own
+                # amount stays attributed to the parent, matching how the
+                # trial balance, general ledger, and ledger drilldown bucket
+                # by literal account code.
+                parent_total = leaf["amount"] + sum(c["amount"] for c in children)
                 lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
                 for child in children:
                     lines.append({**child, "is_child": True})
@@ -818,6 +1410,147 @@ async def balance_sheet(
         "equity": {"lines": equity_lines, "total": total_equity},
         "total_liabilities_equity": total_l_e,
         "balanced": abs(total_assets - total_l_e) < 0.01,
+    }
+
+
+# Doc types that appear on a statement of account (the same financial docs the
+# AR/AP aging counts, plus credit notes which reduce what the contact owes).
+_SOA_DOC_TYPES = frozenset({"invoice", "credit_note", "purchase_order", "bill"})
+# Legacy doc_type spellings normalised to their canonical names. The AR/AP aging
+# accepts these same spellings (and the "type" state fallback), and a statement
+# must count exactly the doc set aging counts, so the tolerance matches.
+_SOA_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
+
+
+@router.get("/soa/{contact_id}")
+async def statement_of_account(
+    contact_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Statement of account for one contact: opening balance, dated doc/payment
+    rows with a running balance, closing balance.
+
+    Amounts are in base currency so mixed-currency contacts read on one statement
+    (doc totals convert via their stored conversion_rate, payments via their own
+    per-payment rate). Finalized-and-later docs count, drafts and voids do not;
+    only active payments count, on their payment date. Credit notes reduce the
+    balance and their payments (applications, refunds) add back, so an applied
+    credit note is never double-counted against the invoice it settles.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+    contact_row = await session.get(Projection, (company_id, contact_id))
+    if not contact_row or contact_row.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Contact not found")
+    # Merge tombstones carry both deleted and merged_into, so the merge check
+    # must come first or merged contacts would 404 instead of redirecting.
+    if contact_row.state.get("merged_into"):
+        # Follow the merge chain so bookmarked statements land on the surviving contact.
+        seen = {contact_id}
+        winner = contact_row.state["merged_into"]
+        while winner not in seen:
+            seen.add(winner)
+            row = await session.get(Projection, (company_id, winner))
+            nxt = row.state.get("merged_into") if row else None
+            if not nxt:
+                break
+            winner = nxt
+        return {"merged_into": winner}
+    if contact_row.state.get("deleted"):
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    doc_rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+            )
+        )
+    ).scalars().all()
+
+    base = await _base_currency(session, company_id)
+    # (date, doc_id, seq, doc_ref, kind, debit, credit); seq keeps a doc's own row
+    # ahead of its same-day payments and makes the ordering replay-stable.
+    events: list[tuple[str, str, int, str, str, Decimal, Decimal]] = []
+    for dr in doc_rows:
+        state = dr.state
+        linked = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id")
+        if linked != contact_id:
+            continue
+        doc_type = state.get("doc_type", state.get("type", ""))
+        doc_type = _SOA_TYPE_ALIASES.get(doc_type, doc_type)
+        if doc_type not in _SOA_DOC_TYPES:
+            continue
+        if state.get("status") in ("draft", "void"):
+            continue
+        doc_ref = state.get("ref_id") or state.get("doc_number") or dr.entity_id
+        doc_rate = to_decimal(state.get("conversion_rate") or 1)
+        doc_date = str(state.get("issue_date") or state.get("date") or "")[:10]
+        total = round_money(to_decimal(state.get("total") or 0) * doc_rate, base)
+        # Statement sign convention: positive balance = the contact owes us.
+        # Receivable-side docs (invoices) charge as debits; payable-side docs
+        # (bills, purchase orders) and credit notes reduce the net as credits,
+        # so a dual-role contact's receivables and payables net correctly
+        # instead of stacking in one direction. Payments mirror their doc side.
+        reduces_balance = doc_type in ("credit_note", "purchase_order", "bill")
+        if reduces_balance:
+            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, Decimal(0), total))
+        else:
+            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, total, Decimal(0)))
+        for i, p in enumerate(state.get("payments", [])):
+            if p.get("status") != "active":
+                continue
+            p_rate = to_decimal(p.get("conversion_rate") or state.get("conversion_rate") or 1)
+            amount = round_money(to_decimal(p.get("amount") or 0) * p_rate, base)
+            p_date = str(p.get("payment_date") or doc_date or "")[:10]
+            if reduces_balance:
+                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", amount, Decimal(0)))
+            else:
+                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", Decimal(0), amount))
+
+    # Ascending: a statement's running balance reads down the page.
+    events.sort(key=lambda e: (e[0], e[1], e[2]))
+
+    opening = Decimal(0)
+    in_range = []
+    for e in events:
+        if date_from and e[0] < date_from:
+            opening += e[5] - e[6]
+            continue
+        if date_to and e[0] > date_to:
+            continue
+        in_range.append(e)
+
+    running = opening
+    rows_out = []
+    for d, doc_id, _seq, doc_ref, kind, debit, credit in in_range:
+        running += debit - credit
+        rows_out.append({
+            "date": d,
+            "doc_id": doc_id,
+            "doc_ref": doc_ref,
+            "kind": kind,
+            "debit": to_stored_float(debit),
+            "credit": to_stored_float(credit),
+            "balance": to_stored_float(round_money(running, base)),
+        })
+
+    cstate = contact_row.state
+    return {
+        "contact": {
+            "id": contact_id,
+            "name": cstate.get("name") or contact_id,
+            "type": cstate.get("contact_type") or "customer",
+        },
+        "date_from": date_from,
+        "date_to": date_to,
+        "opening_balance": to_stored_float(round_money(opening, base)),
+        "rows": rows_out,
+        "closing_balance": to_stored_float(round_money(running, base)),
     }
 
 
@@ -866,22 +1599,14 @@ async def _compute_bank_balance(
     opening_balance: float,
 ) -> float:
     """Compute bank balance: opening + JE debits - JE credits for this account code."""
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
     net = Decimal(str(opening_balance))
-    for row in rows:
-        state = row.state
-        if state.get("status") != "posted":
-            continue
+    for _, state, _ in await _je_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == chart_account_code:
-                net += Decimal(str(entry.get("debit") or 0)) - Decimal(str(entry.get("credit") or 0))
+                amounts = _line_amounts(entry)
+                if amounts is None:
+                    continue
+                net += amounts[0] - amounts[1]
     return float(net)
 
 
@@ -1022,7 +1747,7 @@ async def create_bank_account(
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.posted",
-            data={},
+            data={"ts": today},
             actor_id=user.id,
             location_id=None,
             source="bank_account_opening",
@@ -1158,7 +1883,7 @@ async def create_transfer(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": payload.date},
         actor_id=user.id,
         location_id=None,
         source="transfer",
@@ -1247,22 +1972,24 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
     }
 
 
-def _je_entries_for_account(rows: list, account_code: str) -> list[dict]:
-    """Return list of {je_id, ts, memo, amount, debit, credit} for a given account code."""
+async def _je_entries_for_account(
+    session: AsyncSession, company_id: uuid.UUID, account_code: str
+) -> list[dict]:
+    """Posted JE lines for one account as {je_id, ts, memo, amount, debit, credit}."""
     result = []
-    for row in rows:
-        state = row.state
-        if state.get("status") != "posted":
-            continue
+    for je_id, state, _ in await _je_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == account_code:
+                amounts = _line_amounts(entry)
+                if amounts is None:
+                    continue
                 result.append({
-                    "je_id": row.entity_id,
+                    "je_id": je_id,
                     "ts": state.get("ts") or state.get("created_at") or "",
                     "memo": state.get("memo", ""),
-                    "debit": float(entry.get("debit") or 0),
-                    "credit": float(entry.get("credit") or 0),
-                    "amount": float(entry.get("debit") or 0) - float(entry.get("credit") or 0),
+                    "debit": float(amounts[0]),
+                    "credit": float(amounts[1]),
+                    "amount": float(amounts[0] - amounts[1]),
                 })
     result.sort(key=lambda x: x["ts"])
     return result
@@ -1321,16 +2048,7 @@ async def get_reconciliation(
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
 
-    je_rows = (
-        await db.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
-
-    all_entries = _je_entries_for_account(je_rows, bank.chart_account_code)
+    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
     reconciled_ids = set(recon.reconciled_je_ids or [])
     unreconciled = [e for e in all_entries if e["je_id"] not in reconciled_ids]
     reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
@@ -1404,15 +2122,7 @@ async def complete_reconciliation(
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
 
-    je_rows = (
-        await db.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
-    all_entries = _je_entries_for_account(je_rows, bank.chart_account_code)
+    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
     reconciled_ids = set(recon.reconciled_je_ids or [])
     reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
     matched_sum = sum(e["amount"] for e in reconciled)
@@ -1614,13 +2324,7 @@ async def auto_match_recon(
         )
     )).scalars().all()
 
-    je_rows = (await db.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "journal_entry",
-        )
-    )).scalars().all()
-    book_entries = _je_entries_for_account(je_rows, bank.chart_account_code)
+    book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
     already_matched = set(recon.reconciled_je_ids or [])
     unmatched_entries = [e for e in book_entries if e["je_id"] not in already_matched]
 
@@ -1743,7 +2447,7 @@ async def create_je_from_line(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": entry_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -1804,7 +2508,7 @@ async def split_stmt_line(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": sl.line_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -1951,13 +2655,7 @@ async def write_off_difference(
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
 
-    je_rows = (await db.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "journal_entry",
-        )
-    )).scalars().all()
-    all_entries = _je_entries_for_account(je_rows, bank.chart_account_code)
+    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
     reconciled_ids = set(recon.reconciled_je_ids or [])
     reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
     matched_sum = sum(e["amount"] for e in reconciled)
@@ -1993,7 +2691,7 @@ async def write_off_difference(
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={}, actor_id=user.id, location_id=None, source="reconciliation",
+        data={"ts": recon.statement_date}, actor_id=user.id, location_id=None, source="reconciliation",
         idempotency_key=idem_p, metadata_={},
     )
 
@@ -2157,12 +2855,7 @@ async def set_period_lock(
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {})
     if payload.lock_date:
-        # Validate date format
-        from datetime import date as date_type
-        try:
-            date_type.fromisoformat(payload.lock_date)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
+        _require_iso_date(payload.lock_date, "lock")
         settings["lock_date"] = payload.lock_date
         settings["lock_date_set_by"] = str(user.id)
         settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
@@ -2188,20 +2881,12 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    from decimal import Decimal
     from celerp.models.company import Company
 
     year_end = payload.fiscal_year_end
     # Build account balances through the year-end date
-    je_rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
-    balances = _build_balances(je_rows, None, year_end)
+    posted = await _je_rows(session, company_id)
+    balances = _build_balances(posted, None, year_end)
 
     # Get chart of accounts to determine account types
     acct_rows = (
@@ -2211,26 +2896,22 @@ async def close_fiscal_year(
     ).scalars().all()
     acct_map = {a.code: a for a in acct_rows}
 
-    # Collect revenue (4xxx) and expense (5xxx, 6xxx) balances
+    # Collect revenue (4xxx) and expense/COGS (5xxx, 6xxx) balances
     closing_entries: list[dict] = []
     net_income = Decimal("0")
 
     for code, balance in balances.items():
         acct = acct_map.get(code)
-        if not acct:
+        if not acct or acct.account_type not in ("revenue", "expense", "cogs"):
             continue
-        if acct.type in ("revenue", "income"):
-            # Revenue accounts have credit-normal balances (negative in our debit-credit system)
-            # Close by debiting the revenue account
-            if balance != 0:
-                closing_entries.append({"account": code, "debit": float(max(balance, 0)), "credit": float(abs(min(balance, 0)))})
-                net_income -= balance  # Revenue reduces net income calc (credit normal -> subtract)
-        elif acct.type in ("expense", "cost_of_goods"):
-            # Expense accounts have debit-normal balances (positive)
-            # Close by crediting the expense account
-            if balance != 0:
-                closing_entries.append({"account": code, "debit": float(max(-balance, 0)), "credit": float(max(balance, 0))})
-                net_income += balance  # Expenses reduce net income
+        if balance == 0:
+            continue
+        # Reverse whatever balance the account carries so it starts the new year at
+        # zero: debit a credit surplus (revenue), credit a debit surplus (costs).
+        closing_entries.append({"account": code, "debit": float(max(-balance, 0)), "credit": float(max(balance, 0))})
+        # balance = debit - credit, so credit-normal revenue arrives negative and
+        # debit-normal costs positive; negating both nets income minus costs.
+        net_income -= balance
 
     if not closing_entries:
         raise HTTPException(status_code=422, detail="No revenue or expense balances to close.")
@@ -2245,13 +2926,26 @@ async def close_fiscal_year(
         "credit": net_float if net_float >= 0 else 0.0,
     })
 
-    # Emit the closing JE
-    je_id = f"je:close:{year_end}"
+    # Emit the closing JE. Cycle-aware: re-closing the same year after an
+    # unlock-edit cycle must post a NEW residual entry, not silently dedupe
+    # into the first close's keys and report success while posting nothing.
     from celerp.events.engine import emit_event
+    from celerp.models.ledger import LedgerEntry
     from celerp.services.je_keys import je_idempotency_key
 
-    idem_create = je_idempotency_key(year_end, "fiscal.close", "c")
-    idem_posted = je_idempotency_key(year_end, "fiscal.close", "p")
+    _cycle = sum(
+        1 for k in (await session.execute(
+            select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.idempotency_key.like(f"je:{year_end}:fiscal.close%"),
+            )
+        )).scalars().all()
+        if k.endswith(":c")
+    )
+    _cycle_tag = f":{_cycle}" if _cycle else ""
+    je_id = f"je:close:{year_end}{_cycle_tag}"
+    idem_create = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "c")
+    idem_posted = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "p")
 
     await emit_event(
         session,
@@ -2272,7 +2966,7 @@ async def close_fiscal_year(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": year_end},
         actor_id=user.id,
         location_id=None,
         source="fiscal_close",

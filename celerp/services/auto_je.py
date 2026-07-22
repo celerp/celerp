@@ -14,7 +14,7 @@ from decimal import Decimal as _Dec
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.je_keys import je_idempotency_key
+from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
@@ -71,7 +71,7 @@ async def _emit_auto_posted_je(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={},
+        data={"ts": ts} if ts else {},
         actor_id=user_id,
         location_id=None,
         source="auto_je",
@@ -132,6 +132,13 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
             {"account": "2110", "debit": base_amount, "credit": 0.0},
             {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
         ]
+    elif doc_type == "credit_note":
+        # Cash refund of a credit note: money LEAVES the bank and the credit
+        # balance the note held against AR is cleared.
+        entries = [
+            {"account": "1120", "debit": base_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+        ]
     else:
         entries = [
             {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
@@ -167,6 +174,13 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
             {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
             {"account": "2110", "debit": 0.0, "credit": base_amount},
         ]
+    elif doc_type == "credit_note":
+        # Reverse of the refund's outflow: the money comes back into the bank
+        # and the credit balance is restored against AR.
+        entries = [
+            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": base_amount},
+        ]
     else:
         entries = [
             {"account": "1120", "debit": base_amount, "credit": 0.0},
@@ -186,7 +200,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
@@ -200,10 +214,14 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}",
+        # Entity id carries the application's index: the same credit note can
+        # be applied to the same invoice more than once, and each application
+        # must be a distinct entry so voiding one never erases another.
+        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}:{payment_index}",
         idem_create=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "p"),
         memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
+        ts=payment_date,
         entries=[
             {"account": "1120", "debit": 0.0, "credit": base_amount},
             {"account": "1120", "debit": base_amount, "credit": 0.0},
@@ -434,7 +452,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
                 entity_id=je_id,
                 entity_type="journal_entry",
                 event_type="acc.journal_entry.voided",
-                data={"reason": f"Reversed: {doc_id} reverted to draft"},
+                data=je_void_data(f"Reversed: {doc_id} reverted to draft", row.state),
                 actor_id=user_id,
                 location_id=None,
                 source="auto_je",
@@ -471,6 +489,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             idem_create=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "c"),
             idem_posted=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "p"),
             memo=f"Auto JE for {doc_id} unvoided (restore finalize)",
+            ts=doc.get("finalized_at") or doc.get("issue_date"),
             entries=[
                 {"account": "1120", "debit": base_total, "credit": 0.0},
                 {"account": "4100", "debit": 0.0, "credit": base_revenue},
@@ -525,7 +544,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         )
 
 
-async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0) -> None:
+async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0, ts: str | None = None) -> None:
     """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1130-P).
 
     cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
@@ -545,6 +564,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
+        ts=ts,
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
@@ -568,7 +588,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": f"Reversed: {doc_id} fulfillment reversed"},
+            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -593,6 +613,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": _INVENTORY_ACCT, "debit": float(total_cogs), "credit": 0.0},
             {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
@@ -616,6 +637,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
@@ -654,6 +676,7 @@ async def create_for_receive_undone(
         idem_create=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {bill_id} goods-received undone",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": "2110", "debit": float(total_cost), "credit": 0.0},
             {"account": credit_account, "debit": 0.0, "credit": float(total_cost)},
@@ -672,6 +695,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_create=je_idempotency_key(order_id, "mfg.completed", "c"),
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=[
             {"account": _INVENTORY_ACCT, "debit": output_cost, "credit": 0.0},
             {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
@@ -718,6 +742,7 @@ async def create_for_audit_adjustment(
         idem_create=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "p"),
         memo=f"Inventory audit adjustment {list_id}",
+        ts=__import__("datetime").date.today().isoformat(),
         entries=entries,
         metadata_={"trigger": "audit.adjusted", "list_id": list_id},
     )
@@ -734,7 +759,7 @@ async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: st
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": f"Reversed: audit {list_id} stock adjustment undone"},
+            data=je_void_data(f"Reversed: audit {list_id} stock adjustment undone", row.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -841,6 +866,28 @@ async def upsert_opening_inventory_je(
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
             return  # already correct and has a date, nothing to do
 
+    # This upsert runs inside report views (balance sheet), so a period lock on
+    # the OB entry must degrade to "leave the books as they are" - a report GET
+    # can never fail because the lock forbids restating the opening balance.
+    # Both halves (void + repost) are lock-checked BEFORE anything mutates, so
+    # a lock can never leave a half-done restatement behind.
+    from datetime import date as _date
+
+    from fastapi import HTTPException as _HTTPExc
+
+    from celerp.events.engine import _check_period_lock
+
+    today = str(_date.today())
+    try:
+        if ob_proj and ob_proj.state.get("status") == "posted":
+            await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
+        if needed >= 0.01:
+            await _check_period_lock(session, company_id, {"ts": today})
+    except _HTTPExc as exc:
+        if exc.status_code == 422 and "locked" in str(exc.detail).lower():
+            return
+        raise
+
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
         from celerp.events.engine import emit_event as _emit
@@ -850,7 +897,7 @@ async def upsert_opening_inventory_je(
             entity_id=ob_je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data={"reason": "opening inventory amount updated"},
+            data=je_void_data("opening inventory amount updated", ob_proj.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
@@ -861,8 +908,6 @@ async def upsert_opening_inventory_je(
     if needed < 0.01:
         return  # gap closed, no new JE needed
 
-    from datetime import date as _date
-    today = str(_date.today())
     await _emit_auto_posted_je(
         session,
         company_id=company_id,

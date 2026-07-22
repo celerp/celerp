@@ -9,7 +9,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -941,7 +941,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             docs, summary, draft_count = [], {}, 0
 
-        extra = f"&q={q}&type={doc_type}&status={status}&view={view}".strip("&")
+        extra = f"&q={quote_plus(q)}&type={quote_plus(doc_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
         total_count = summary.get("total_count", len(docs))
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
@@ -3121,6 +3121,8 @@ celerpUpdateBulkAlloc();
             contact_id = d.get("contact_id") or ""
             doc_currency = d.get("currency") or currency
             for p in (d.get("payments") or []):
+                if p.get("status") == "deleted":
+                    continue
                 payments_list.append({
                     "doc_id": eid,
                     "doc_number": doc_number,
@@ -3168,7 +3170,8 @@ celerpUpdateBulkAlloc();
 
         # Build tabs
         tab_cls = lambda t: f"category-tab {'category-tab--active' if tab == t else ''}"
-        extra_params = f"&q={q}&method={method_filter}&contact={contact_filter}" if any([q, method_filter, contact_filter]) else ""
+        extra_params = (f"&q={quote_plus(q)}&method={quote_plus(method_filter)}&contact={quote_plus(contact_filter)}"
+                        if any([q, method_filter, contact_filter]) else "")
         tabs = Div(
             A(t("doc.all"), href=f"/payments?tab=all{extra_params}", cls=tab_cls("all")),
             A(t("doc.received"), href=f"/payments?tab=received{extra_params}", cls=tab_cls("received")),
@@ -3190,16 +3193,18 @@ celerpUpdateBulkAlloc();
                          Option(t("btn.transfer"), value="transfer"), Option(t("doc.card"), value="card"),
                          Option(t("doc.check"), value="check"), Option(t("doc.credit_note"), value="credit_note"),
                          Option(t("doc.other"), value="other")]
+        _tab_enc, _q_enc = quote_plus(tab), quote_plus(q)
+        _method_enc, _contact_enc = quote_plus(method_filter), quote_plus(contact_filter)
         filter_bar = Div(
             Input(type="search", name="q", value=q, placeholder="Search doc# or reference...",
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={tab}&q='+this.value+'&method={method_filter}&contact={contact_filter}'"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}'"),
             Input(type="text", name="contact", value=contact_filter, placeholder="Contact...",
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={tab}&q={q}&method={method_filter}&contact='+this.value"),
+                  onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}&contact='+encodeURIComponent(this.value)"),
             Select(*_methods_opts, name="method",
                    cls="form-input form-input--sm", style="max-width:150px;",
-                   onchange=f"window.location='/payments?tab={tab}&q={q}&method='+this.value+'&contact={contact_filter}'"),
+                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method='+encodeURIComponent(this.value)+'&contact={_contact_enc}'"),
             cls="filter-bar",
             style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;",
         )
@@ -3233,7 +3238,7 @@ celerpUpdateBulkAlloc();
             breadcrumbs([("Dashboard", "/dashboard"), ("Payments", None)]),
             page_header("Payments"),
             tabs,
-            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={tab}{extra_params}", lang=lang),
+            _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={quote_plus(tab)}{extra_params}", lang=lang),
             summary_bar,
             filter_bar,
             payment_table,
@@ -3727,7 +3732,7 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
-        _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
+        _lists_extra = f"q={quote_plus(q)}&type={quote_plus(list_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
         from celerp.services.auth import ROLE_LEVELS as _RLV
         _lvl = _RLV.get(_get_role(request), 0)
         # Audits are location-bound, not blank drafts: send the user through the location picker.
@@ -4847,7 +4852,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     section_icon = "\U0001f4b3" if is_credit_note else "\U0001f4b0"
     add_label = "Apply to Invoice" if is_credit_note else ("Record Payment" if is_bill else "Receive Payment")
 
-    payments = doc.get("payments") or []
+    # Deleted payments are tombstoned in the doc, not removed; only voided ones
+    # stay visible (struck through).
+    payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
     outstanding = float(doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0)
@@ -4857,7 +4864,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
 
     # --- Payment history table ---
     history_rows = []
-    for i, p in enumerate(payments):
+    for p in payments:
         voided = p.get("status") == "voided"
         p_date = p.get("payment_date") or p.get("recorded_at", "")[:10]
         p_method = p.get("method", "")
@@ -4885,7 +4892,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title="Void this payment"),
                     Form(
-                        Input(type="hidden", name="payment_index", value=str(i)),
+                        Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
                         Input(type="text", name="void_reason", placeholder="Reason...", cls="form-input form-input--sm"),
                         Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--xs"),
                         hx_post=f"/docs/{entity_id}/void-payment", hx_swap="none",

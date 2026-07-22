@@ -589,8 +589,8 @@ async def test_void_payment_without_refund_date_works(client):
 
 
 @pytest.mark.asyncio
-async def test_delete_payment_removes_row_and_voids_je(client):
-    """DELETE /docs/{id}/payments/{index} removes the payment row entirely
+async def test_delete_payment_tombstones_row_and_voids_je(client):
+    """DELETE /docs/{id}/payments/{index} tombstones the payment in place
     and restores amount_outstanding to its pre-payment value."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
@@ -608,15 +608,17 @@ async def test_delete_payment_removes_row_and_voids_je(client):
     assert r.status_code == 200, r.text
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
-    assert len(doc["payments"]) == 0
+    assert len(doc["payments"]) == 1
+    assert doc["payments"][0]["status"] == "deleted"
     assert doc["amount_paid"] == 0.0
     assert doc["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
     assert doc["status"] == "final"
 
 
 @pytest.mark.asyncio
-async def test_delete_payment_reindexes_remaining(client):
-    """After deleting payment[0] from a two-payment doc, payment[1] becomes index=0."""
+async def test_delete_payment_keeps_indices_stable(client):
+    """Payment indices are identity (journal-entry ids and idempotency keys
+    embed them), so deleting payment[0] must not shift payment[1]."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 200.0)
 
@@ -632,10 +634,271 @@ async def test_delete_payment_reindexes_remaining(client):
     assert r.status_code == 200
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
-    assert len(doc["payments"]) == 1
-    assert doc["payments"][0]["index"] == 0
-    assert doc["payments"][0]["amount"] == pytest.approx(60.0, abs=0.01)
+    assert len(doc["payments"]) == 2
+    assert doc["payments"][0]["status"] == "deleted"
+    assert doc["payments"][1]["status"] == "active"
+    assert doc["payments"][1]["index"] == 1
+    assert doc["payments"][1]["amount"] == pytest.approx(60.0, abs=0.01)
     assert doc["amount_paid"] == pytest.approx(60.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_payment_after_deletion_gets_its_own_journal_entry(client):
+    """A payment recorded after a deletion must post its own journal entry:
+    the freed slot stays occupied, so the new payment's index (and therefore
+    its journal-entry idempotency key) never collides with the deleted one."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-25", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][1]["index"] == 1
+    assert doc["status"] == "paid"
+
+    # The new payment's JE exists and is posted: the bank ledger shows the
+    # 2026-01-25 receipt, so cash is not understated.
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    new_lines = [l for l in ledger["lines"] if l["date"] == "2026-01-25"]
+    assert new_lines and new_lines[0]["debit"] == pytest.approx(100.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_payment_index_skips_legacy_minted_keys(client, session):
+    """Docs compacted by pre-tombstone deletions can hold fewer payments than
+    the highest index a journal entry was ever minted with; a new payment must
+    allocate past those keys or its JE would silently dedupe into a dead one."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from sqlalchemy import select as _sel
+
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 80.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Simulate the legacy compaction era: the doc holds one payment at index 0,
+    # but a JE idempotency key for index 1 already exists from a payment that
+    # an old-style deletion removed from the list.
+    doc_row = (await session.execute(_sel(Projection).where(
+        Projection.entity_id == inv, Projection.entity_type == "doc"))).scalar_one()
+    session.add(LedgerEntry(
+        company_id=doc_row.company_id, entity_id=f"je:auto:{inv}:pay:1",
+        entity_type="journal_entry", event_type="acc.journal_entry.created",
+        data={"memo": "legacy", "entries": []}, actor_id=None, location_id=None,
+        source="test", idempotency_key=f"je:{inv}:invoice.paid:1:c", metadata_={},
+    ))
+    await session.flush()
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-02-01", "amount": 120.0, "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    new_pay = [p for p in doc["payments"] if p["payment_date"] == "2026-02-01"]
+    assert new_pay and new_pay[0]["index"] == 2  # skipped the dead index 1
+
+    # And its journal entry is real: the bank ledger shows the receipt.
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    feb = [l for l in ledger["lines"] if l["date"] == "2026-02-01"]
+    assert feb and feb[0]["debit"] == pytest.approx(120.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_void_recompute_keeps_refunds(client):
+    """Voiding a payment recomputes amount_paid from the payments list; a
+    prior refund must stay subtracted."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 150.0)
+    for d, amt in (("2026-01-10", 100.0), ("2026-01-12", 50.0)):
+        r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                              json={"payment_date": d, "amount": amt, "bank_account": "1111"})
+        assert r.status_code == 200
+    r = await client.post(f"/docs/{inv}/refund", headers=_h(token),
+                          json={"amount": 30.0, "payment_date": "2026-01-20"})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_paid"] == pytest.approx(120.0, abs=0.01)
+
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 1})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    # 100 active - 30 refunded, not the bare 100 the list alone would say
+    assert doc["amount_paid"] == pytest.approx(70.0, abs=0.01)
+    assert doc["amount_outstanding"] == pytest.approx(80.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_void_cn_application_posts_no_bank_movement(client):
+    """Voiding a credit-note application voids the AR transfer entry; it must
+    never post a bank reversal for cash that never moved."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}],
+        "subtotal": 40.0, "tax": 0.0, "total": 40.0,
+    })
+    assert r.status_code == 200
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                          json={"target_doc_id": inv, "amount": 40.0})
+    assert r.status_code == 200, r.text
+
+    bank_before = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()["lines"]
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    cn_pay = next(p for p in doc["payments"] if p.get("method") == "credit_note")
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": cn_pay["index"]})
+    assert r.status_code == 200, r.text
+
+    bank_after = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()["lines"]
+    assert len(bank_after) == len(bank_before)  # no phantom cash reversal
+    # The AR transfer entry itself is voided
+    journal = (await client.get("/accounting/journal", headers=_h(token))).json()
+    cnapply = [e for e in journal["entries"] if e["je_id"].startswith(f"je:auto:{inv}:cnapply:")]
+    assert cnapply and cnapply[0]["status"] == "void"
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_cn_refund_credits_the_bank(client):
+    """Refunding a credit note pays money OUT: the bank account is credited,
+    never debited."""
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 60.0, "line_total": 60.0}],
+        "subtotal": 60.0, "tax": 0.0, "total": 60.0,
+    })
+    assert r.status_code == 200
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
+        "amount": 60.0, "date": "2026-03-05", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    refund_lines = [l for l in ledger["lines"] if l["date"] == "2026-03-05"]
+    assert refund_lines
+    assert refund_lines[0]["credit"] == pytest.approx(60.0, abs=0.01)
+    assert refund_lines[0]["debit"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_cn_refund_void_returns_the_cash(client):
+    """Voiding a credit-note refund brings the money back: the reversal debits
+    the bank, so refund + void nets to zero."""
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 60.0, "line_total": 60.0}],
+        "subtotal": 60.0, "tax": 0.0, "total": 60.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
+        "amount": 60.0, "date": "2026-03-05", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{cn}", headers=_h(token))).json()
+    refund = next(p for p in doc["payments"] if p.get("method") == "refund")
+    r = await client.post(f"/docs/{cn}/void-payment", headers=_h(token),
+                          json={"payment_index": refund["index"]})
+    assert r.status_code == 200, r.text
+
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    net = sum(l["debit"] - l["credit"] for l in ledger["lines"])
+    assert net == pytest.approx(0.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_void_correct_cn_application_of_several(client):
+    """The same credit note applied twice to one invoice: voiding one
+    application releases exactly that amount, not its sibling's."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+        "subtotal": 100.0, "tax": 0.0, "total": 100.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    for amt in (30.0, 70.0):
+        r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                              json={"target_doc_id": inv, "amount": amt})
+        assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    seventy = next(p for p in doc["payments"]
+                   if p.get("method") == "credit_note" and abs(p["amount"] - 70.0) < 0.01)
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": seventy["index"]})
+    assert r.status_code == 200, r.text
+
+    # The invoice releases 70 and the credit note gets exactly 70 back
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["amount_outstanding"] == pytest.approx(170.0, abs=0.01)
+    cn_doc = (await client.get(f"/docs/{cn}", headers=_h(token))).json()
+    assert cn_doc["amount_outstanding"] == pytest.approx(70.0, abs=0.01)
+    surviving = [p for p in cn_doc["payments"]
+                 if p.get("status") == "active" and p.get("method") == "applied"]
+    assert len(surviving) == 1
+    assert surviving[0]["amount"] == pytest.approx(30.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_delete_cn_settlement_blocked(client):
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 30.0, "line_total": 30.0}],
+        "subtotal": 30.0, "tax": 0.0, "total": 30.0,
+    })
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(token))).status_code == 200
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token),
+                          json={"target_doc_id": inv, "amount": 30.0})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    cn_pay = next(p for p in doc["payments"] if p.get("method") == "credit_note")
+    r = await client.delete(f"/docs/{inv}/payments/{cn_pay['index']}", headers=_h(token))
+    assert r.status_code == 422
+    assert "void" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_unvoid_blocked_in_locked_period(client):
+    """Unvoiding an invoice restores its finalize entry on the invoice's own
+    date, so a lock over that period must block the unvoid."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "test"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/accounting/period-lock", headers=_h(token),
+                          json={"lock_date": "2099-12-31"})
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/unvoid", headers=_h(token), json={})
+    assert r.status_code == 422, r.text
+    assert "locked" in r.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

@@ -218,9 +218,11 @@ async def execute_fulfill(
     # Memo COGS is recognized when the memo converts to an invoice.
     je_cogs = 0.0 if doc_type in _NO_COGS_DOC_TYPES else total_cogs
     if je_cogs > 0:
+        from datetime import date as _date
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid,
             doc_id=doc_entity_id, total_cogs=je_cogs,
+            ts=_date.today().isoformat(),
         )
 
     return {

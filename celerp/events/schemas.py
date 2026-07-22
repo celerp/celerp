@@ -460,6 +460,9 @@ class DocRevertedToDraft(BaseModel):
     reason: str | None = None
     doc_type: str | None = None  # for PO->bill revert: restored doc_type
     ref_id: str | None = None    # for PO->bill revert: restored ref_id
+    # The document's own date: the revert restates that period, so the period
+    # lock evaluates it even when no posted finalize JE exists to void.
+    ts: str | None = None
 
 
 class DocUnvoided(BaseModel):
@@ -483,6 +486,11 @@ class DocPaymentReceived(BaseModel):
     conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
+    # The recorder allocates the payment's identity index (skipping any value
+    # a journal entry was minted with); paired_index links the two halves of a
+    # credit-note application.
+    index: int | None = None
+    paired_index: int | None = None
 
 
 class DocPaymentRefunded(BaseModel):
@@ -504,6 +512,13 @@ class DocPaymentDeleted(BaseModel):
     delete_reason: str | None = None
     amount: float | None = None     # deleted payment amount, for the history detail
     method: str | None = None
+    # True on events written since deletion started tombstoning the payment in
+    # place; absent on the compaction-era events, whose replay must keep
+    # compacting because later events reference the compacted indices.
+    tombstone: bool = False
+    # The payment's own date: the period lock evaluates the deletion against
+    # the payment's period even when there is no posted JE to void.
+    ts: str | None = None
 
 
 class DocConverted(BaseModel):
@@ -750,17 +765,62 @@ class MpOrderCancelled(BaseModel):
 # -----------------
 
 
+class JELine(BaseModel):
+    # Every field tolerates absence AND explicit null: batch import is
+    # shape-permissive (external serializers commonly emit null for optional
+    # numerics), and every reader already skips empty accounts and coerces
+    # null amounts with `or 0`.
+    account: str | None = ""
+    debit: float | None = 0
+    credit: float | None = 0
+    # The foreign amounts the author actually typed, when the entry carries a
+    # rate. Stored rather than derived so the journal shows the document's own
+    # figure: dividing the local amount back out can read 99.99 against a
+    # 100.00 invoice, which is exactly what an auditor is tying back.
+    fx_debit: float | None = None
+    fx_credit: float | None = None
+
+
+class AccJournalEntryFx(BaseModel):
+    """The currency and rate one whole entry was recorded in.
+
+    Both sides tolerate absence: this validates the shape of an already-stored
+    event, and a malformed or partial fx read back from history must degrade to
+    a blank cell rather than refuse to load the journal.
+    """
+
+    currency: str | None = None
+    rate: float | None = None
+
+
 class AccJournalEntryCreated(BaseModel):
+    """Shape of a journal entry creation. Validates structure only; accounting
+    policy (balanced totals, real accounts) is enforced where entries are authored."""
+
     memo: str | None = None
-    lines: list[dict[str, Any]] = Field(default_factory=list)
+    ts: str | None = None
+    status: str | None = None
+    je_type: str | None = None
+    entries: list[JELine] = Field(default_factory=list)
+    # Absent on an ordinary base-currency entry. Its absence is the correct
+    # representation of such an entry, not a compatibility branch.
+    fx: AccJournalEntryFx | None = None
 
 
 class AccJournalEntryPosted(BaseModel):
     posted_at: str | None = None
+    # The entry's effective date, mirrored from the created event so the
+    # period-lock check evaluates the entry's period for both halves of the
+    # created/posted pair (a dateless posted event is checked against today).
+    ts: str | None = None
 
 
 class AccJournalEntryVoided(BaseModel):
     reason: str | None = None
+    # The voided entry's effective date. Emitters set it so the period-lock
+    # check evaluates the entry's own date; a void without it is checked
+    # against today and could mutate a locked period.
+    ts: str | None = None
 
 
 class AccPeriodClosed(BaseModel):

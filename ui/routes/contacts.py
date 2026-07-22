@@ -6,6 +6,7 @@ from __future__ import annotations
 import json as _json
 import logging
 from datetime import date, datetime, timezone as _tz
+from urllib.parse import quote_plus as _quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
@@ -656,7 +657,8 @@ def _contacts_content(
 
     return Div(
         table_content,
-        pagination(page, total, per_page, base_url, f"type={contact_type}&q={q}&sort={sort}&dir={sort_dir}".strip("&")),
+        pagination(page, total, per_page, base_url,
+                   f"type={contact_type}&q={_quote_plus(q)}&sort={sort}&dir={sort_dir}".strip("&")),
         id="contacts-content",
     )
 

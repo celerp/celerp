@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+from urllib.parse import parse_qsl, quote_plus
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -146,7 +147,7 @@ def setup_routes(app):
             ),
             _date_filter_bar("/reports/sales", date_from, date_to, preset,
                              settings_link="/settings/sales?tab=terms",
-                             extra_params=f"&group_by={group_by}",
+                             extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
         ]
@@ -182,7 +183,7 @@ def setup_routes(app):
             ),
             _date_filter_bar("/reports/purchases", date_from, date_to, preset,
                              settings_link="/settings/sales?tab=terms",
-                             extra_params=f"&group_by={group_by}",
+                             extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
         ]
@@ -285,7 +286,19 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
+    # Carry the non-date params (tab, group_by, contact_id, ...) through the custom-range
+    # submit as hidden fields; otherwise the GET form drops them and the page falls back to
+    # its default view. The form's own field names (from/to/preset) cannot be duplicated.
+    # Callers URL-encode their extra_params values, so decode here; the browser re-encodes
+    # the hidden values on submit.
+    hidden_params = [
+        Input(type="hidden", name=k, value=v)
+        for k, v in parse_qsl(extra_params.lstrip("&"), keep_blank_values=True)
+        if k and k not in ("from", "to", "preset")
+    ]
+
     custom_form = Form(
+        *hidden_params,
         Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input", id="dfb-from"),
         Span("--", cls="date-sep"),
         Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input", id="dfb-to"),

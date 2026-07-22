@@ -54,7 +54,7 @@ jobs:
         # within its 2 cores. 4 shards left one shard ~340s (it hit the old 300s cap); 6
         # shards drop each to ~1/6 of the suite and the 600s cap is a generous backstop.
         run: >
-          timeout 600 pytest tests/ -n auto -q --tb=short --no-cov
+          timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
           --splits 6 --group ${{ matrix.group }}
           --ignore=tests/test_visual.py
