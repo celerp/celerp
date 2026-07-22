@@ -3196,7 +3196,7 @@ def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
     for r in ROLES:
         checked = role_has_permission(settings, r.key, perm.key)
         interactive = is_owner and perm.grantable and r.key != "owner"
-        attrs = {"type": "checkbox", "id": f"perm-{perm.key}-{r.key}", "checked": checked, "cls": "cell-input"}
+        attrs = {"type": "checkbox", "id": f"perm-{perm.key}-{r.key}", "checked": checked, "cls": "role-ref-check"}
         if interactive:
             # An unchecked checkbox is omitted from the request by the browser, so a
             # toggle-off simply sends no granted value; the route reads that as revoke.

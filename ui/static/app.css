@@ -2011,6 +2011,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .role-ref-summary:hover { color: var(--c-text); }
 .role-ref-table { font-size: 13px; }
 .role-ref-table th, .role-ref-table td { padding: 6px 10px; }
+.role-ref-check { width: 15px; height: 15px; accent-color: var(--c-accent); cursor: pointer; }
+.role-ref-check:disabled { cursor: not-allowed; opacity: 0.45; }
 .role-ref-reason { display: block; font-size: 11px; color: var(--c-text2); margin-top: 2px; }
 .role-ref-note { font-size: 12px; color: var(--c-text2); margin-top: 8px; }
 
