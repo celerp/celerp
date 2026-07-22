@@ -8637,6 +8637,8 @@ class TestMarketplaceUI:
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(third_party, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.api_client.buy_module", new=buy),
         ):
             r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
@@ -8662,6 +8664,8 @@ class TestMarketplaceUI:
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.api_client.buy_module",
                   new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})),
         ):
@@ -8723,6 +8727,8 @@ class TestMarketplaceUI:
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.api_client.buy_module",
                   new=AsyncMock(side_effect=APIError(409, "This module's author is not able to accept payments right now."))),
         ):

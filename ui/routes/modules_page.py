@@ -38,6 +38,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
+from ui.routes.account import GATE_UNREACHABLE, account_gate
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -511,6 +512,15 @@ async def _build_marketplace_panel(token: str, lang: str) -> FT:
           target="_blank", rel="noopener noreferrer", cls="btn btn--sm btn--secondary"),
         style="margin-bottom:12px;",
     )]
+    # Quiet confirmation only: when an account is bound, say whose. No line at
+    # all otherwise - the signup ask lives on the Buy action, not the catalog.
+    try:
+        status = await api.account_status(token)
+    except APIError:
+        status = {}
+    if status.get("email_verified") and status.get("email") and not status.get("error"):
+        children.insert(0, P(t("account.signed_in_as", lang, email=status["email"]),
+                             cls="text-muted small"))
     if from_cache:
         children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
     if not trusted:
@@ -762,17 +772,18 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
     )
 
 
-def _row_with_error_toast(row: FT, message: str) -> HTMLResponse:
-    """Swap the row back in place and raise the failure as a corner toast, the
-    app-wide error surface, rather than crowding the status cell."""
+def _with_error_toast(fragment: FT, message: str) -> HTMLResponse:
+    """Swap the fragment back in place and raise the failure as a corner toast,
+    the app-wide error surface, rather than crowding the status cell."""
     return HTMLResponse(
-        to_xml(row),
+        to_xml(fragment),
         headers={"HX-Trigger": json.dumps(
             {"celerpToast": {"message": message, "type": "error"}})},
     )
 
 
-def _community_table(community: list[dict], installed: set[str], lang: str) -> FT:
+def _community_table(community: list[dict], installed: set[str], lang: str,
+                     downloaded: dict[str, str] | None = None) -> FT:
     """Community listings, same table schema as the Installed Modules table."""
     if not community:
         return Div(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"),
@@ -791,7 +802,9 @@ def _community_table(community: list[dict], installed: set[str], lang: str) -> F
                     filter_th(t("th.status", lang), 4, sortable=True),
                     Th(""),
                 )),
-                Tbody(*(_community_row(m, lang, installed) for m in community)),
+                Tbody(*(_community_row(m, lang, installed,
+                                       downloaded_path=(downloaded or {}).get(m["id"]))
+                        for m in community)),
                 id="community-table",
                 cls="data-table js-table",
             ),
@@ -978,12 +991,33 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         module_id = str(form.get("id", ""))
+        # "zone" marks the post-sign-in resume, which re-renders the whole
+        # listings zone (the sign-in panel replaced it) instead of one row.
+        zone = str(form.get("zone", "")) == "1"
+        # Free downloads ask for the free account (the download itself is the
+        # moment the account earns its keep), but a relay outage never blocks
+        # one - the gate fails open.
+        gate = await account_gate(token, lang, f"community:{module_id}",
+                                  "community-zone", "/modules/community-panel")
+        if gate is not None and gate is not GATE_UNREACHABLE:
+            # The Download button targets its own row; the panel replaces the
+            # zone, so retarget the swap.
+            return HTMLResponse(to_xml(gate), headers={
+                "HX-Retarget": "#community-zone", "HX-Reswap": "outerHTML"})
         m, installed = await _community_entry(token, module_id)
         try:
             path = await catalog.download_community_archive(m.get("repo", ""), module_id)
         except Exception:
-            return _row_with_error_toast(_community_row(m, lang, installed),
+            if zone:
+                community, installed = await _community_and_installed(token)
+                return _with_error_toast(_community_table(community, installed, lang),
                                          t("marketplace.download_failed", lang))
+            return _with_error_toast(_community_row(m, lang, installed),
+                                     t("marketplace.download_failed", lang))
+        if zone:
+            community, installed = await _community_and_installed(token)
+            return _community_table(community, installed, lang,
+                                    downloaded={module_id: path})
         return _community_row(m, lang, installed, downloaded_path=path)
 
     @app.post("/modules/community-import")
@@ -1000,11 +1034,11 @@ def setup_routes(app):
             data = catalog.read_staged_archive(path)
             await api.import_module_zip(token, f"{module_id}.zip", data)
         except APIError as e:
-            return _row_with_error_toast(
+            return _with_error_toast(
                 _community_row(m, lang, installed, downloaded_path=path),
                 e.detail or str(e))
         except (ValueError, OSError):
-            return _row_with_error_toast(
+            return _with_error_toast(
                 _community_row(m, lang, installed, downloaded_path=path),
                 t("marketplace.import_failed", lang))
         # Installed: drop the staged archive and re-read the installed set so the
@@ -1082,6 +1116,16 @@ def setup_routes(app):
         lang = get_lang(request)
         slug = request.query_params.get("slug", "")
         kind = request.query_params.get("kind", "monthly")
+        # Purchases are held by the account's email; without a verified one the
+        # license would be recoverable only on this machine. Sign in first, and
+        # fail closed when the account state cannot be checked - checkout must
+        # never start against an unknown account.
+        gate = await account_gate(token, lang, f"buy:{slug}:{kind}",
+                                  "marketplace-panel", "/modules/marketplace-panel")
+        if gate is GATE_UNREACHABLE:
+            return _marketplace_error_panel(t("account.status_unreachable", lang), lang)
+        if gate is not None:
+            return gate
         m, _installed, _licensed = await _marketplace_entry(token, slug)
         try:
             res = await api.buy_module(token, slug, kind, _checkout_consent(m, lang))
@@ -1126,7 +1170,7 @@ def setup_routes(app):
         try:
             res = await api.marketplace_download(token, slug)
         except APIError as e:
-            return _row_with_error_toast(
+            return _with_error_toast(
                 _marketplace_row(m, lang, installed, licensed), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed,
                                 downloaded_path=res.get("path"))
@@ -1148,7 +1192,7 @@ def setup_routes(app):
         try:
             await api.marketplace_install(token, path)
         except APIError as e:
-            return _row_with_error_toast(
+            return _with_error_toast(
                 _marketplace_row(m, lang, installed, licensed, downloaded_path=path),
                 e.detail or str(e))
         # Installed: re-read the installed set so the row reflects reality (the
