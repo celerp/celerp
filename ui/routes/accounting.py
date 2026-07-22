@@ -297,12 +297,12 @@ def setup_routes(app):
                     params["date_to"] = d_to
                 data = await api.get_pnl(token, params)
                 content = Div(
+                    _date_filter_bar("/accounting", d_from, d_to, preset,
+                                     settings_link="/settings/general?tab=company",
+                                     extra_params="&tab=pnl"),
                     Div(
-                        _date_filter_bar("/accounting", d_from, d_to, preset,
-                                         settings_link="/settings/general?tab=company",
-                                         extra_params="&tab=pnl"),
                         _action_bar("pnl", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row flex-between",
+                        cls="flex-row mt-md mb-md",
                     ),
                     _pnl_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
@@ -320,10 +320,10 @@ def setup_routes(app):
                     cls="date-custom-form",
                 )
                 content = Div(
+                    Div(as_of_form, cls="date-filter-bar"),
                     Div(
-                        Div(as_of_form, cls="date-filter-bar"),
                         _action_bar("balance-sheet", {"as_of": as_of}),
-                        cls="flex-row flex-between",
+                        cls="flex-row mt-md mb-md",
                     ),
                     _balance_sheet_view(data, currency, as_of=as_of),
                 )
@@ -337,14 +337,14 @@ def setup_routes(app):
                     tb_params["date_to"] = d_to
                 trial_balance = await api.get_trial_balance(token, tb_params)
                 content = Div(
-                    Div(
-                        _date_filter_bar("/accounting", d_from, d_to, preset,
-                                         settings_link="/settings/general?tab=company",
-                                         extra_params="&tab=trial-balance"),
-                        _action_bar("trial-balance", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row flex-between",
-                    ),
+                    _date_filter_bar("/accounting", d_from, d_to, preset,
+                                     settings_link="/settings/general?tab=company",
+                                     extra_params="&tab=trial-balance"),
                     _trial_balance_summary(trial_balance, currency),
+                    Div(
+                        _action_bar("trial-balance", {"date_from": d_from or "", "date_to": d_to or ""}),
+                        cls="flex-row mt-md mb-md",
+                    ),
                     _trial_balance_table(trial_balance, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
             elif tab == "journal":
@@ -374,13 +374,17 @@ def setup_routes(app):
                 d_from, d_to, preset = _parse_dates(request, fy)
                 params = _date_params(d_from, d_to)
                 data = await api.get_general_ledger(token, params)
+                gl_totals = data.get("totals") or {}
                 content = Div(
+                    _date_filter_bar("/accounting", d_from, d_to, preset,
+                                     settings_link="/settings/general?tab=company",
+                                     extra_params="&tab=general-ledger"),
+                    _totals_chips(float(gl_totals.get("debit", 0) or 0),
+                                  float(gl_totals.get("credit", 0) or 0),
+                                  bool(data.get("balanced", True)), currency),
                     Div(
-                        _date_filter_bar("/accounting", d_from, d_to, preset,
-                                         settings_link="/settings/general?tab=company",
-                                         extra_params="&tab=general-ledger"),
                         _action_bar("general-ledger", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row flex-between",
+                        cls="flex-row mt-md mb-md",
                     ),
                     _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
@@ -411,15 +415,9 @@ def setup_routes(app):
                         return RedirectResponse(f"/accounting{qs}", status_code=302)
                 extra = f"&tab=soa&contact_id={quote_plus(contact_id)}" if contact_id else "&tab=soa"
                 content = Div(
-                    Div(
-                        _date_filter_bar("/accounting", d_from, d_to, preset,
-                                         settings_link="/settings/general?tab=company",
-                                         extra_params=extra),
-                        _action_bar("soa", {"contact_id": contact_id,
-                                            "date_from": d_from or "",
-                                            "date_to": d_to or ""}) if contact_id else None,
-                        cls="flex-row flex-between",
-                    ),
+                    _date_filter_bar("/accounting", d_from, d_to, preset,
+                                     settings_link="/settings/general?tab=company",
+                                     extra_params=extra),
                     _soa_view(data, contacts, contact_id, currency,
                               date_from=d_from or "", date_to=d_to or "",
                               merged_from=request.query_params.get("merged_from", "")),
@@ -1838,22 +1836,17 @@ def _general_ledger_view(data: dict, currency: str | None = None,
         _num_cell(totals.get("credit", 0), strong=True),
         _num_cell(totals.get("closing", 0), strong=True),
     ))
-    # Summary chips above the table, in the same position as the other tabs.
-    return Div(
-        _totals_chips(float(totals.get("debit", 0) or 0), float(totals.get("credit", 0) or 0),
-                      bool(data.get("balanced", True)), currency),
-        Table(
-            Thead(Tr(
-                Th(t("th.code")),
-                Th(t("th.account")),
-                Th(t("th.opening"), cls="cell--number"),
-                Th(t("th.debit"), cls="cell--number"),
-                Th(t("th.credit"), cls="cell--number"),
-                Th(t("th.closing"), cls="cell--number"),
-            )),
-            Tbody(*body),
-            cls="data-table",
-        ),
+    return Table(
+        Thead(Tr(
+            Th(t("th.code")),
+            Th(t("th.account")),
+            Th(t("th.opening"), cls="cell--number"),
+            Th(t("th.debit"), cls="cell--number"),
+            Th(t("th.credit"), cls="cell--number"),
+            Th(t("th.closing"), cls="cell--number"),
+        )),
+        Tbody(*body),
+        cls="data-table",
     )
 
 
@@ -1978,4 +1971,9 @@ def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
     # not the contact that was asked for. Say so, on screen and on anything
     # printed from it (GDR 2d).
     notice = (Div(t("acct.soa_merged_notice"), cls="error-banner") if merged_from else None)
-    return Div(selector, notice, _soa_table(data, currency, date_from, date_to), batch)
+    toolbar = Div(
+        _action_bar("soa", {"contact_id": contact_id,
+                            "date_from": date_from, "date_to": date_to}),
+        cls="flex-row mt-md mb-md",
+    )
+    return Div(selector, notice, toolbar, _soa_table(data, currency, date_from, date_to), batch)
