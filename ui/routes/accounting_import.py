@@ -32,6 +32,8 @@ from ui.routes.csv_import import (
 )
 
 
+ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
+
 _CHART_SPEC = CsvImportSpec(
     cols=["code", "name", "account_type", "parent_code", "is_active"],
     required={"code", "name", "account_type"},
@@ -41,7 +43,7 @@ _CHART_SPEC = CsvImportSpec(
 
 def _chart_validate(col: str, value: str, row: dict | None = None) -> bool:
     if col == "account_type" and value.strip():
-        return value.strip() in {"asset", "liability", "equity", "revenue", "expense", "cogs", "other"}
+        return value.strip() in ACCOUNT_TYPES
     if col == "is_active" and value.strip():
         return value.strip().lower() in {"true", "false", "1", "0", "yes", "no"}
     return validate_cell(_CHART_SPEC, col, value)

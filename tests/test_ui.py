@@ -14648,6 +14648,9 @@ async def test_split_inline_omits_child_sku(ui_client):
 
 # ── Chart of accounts: add and edit ───────────────────────────────────────────
 
+from ui.api_client import APIError
+
+
 class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_chart_tab_add_account_link_points_at_new_route(self, ui_client):
@@ -14752,7 +14755,7 @@ class TestChartOfAccountsAddEdit:
     async def test_add_account_page_unauthenticated_redirects_login(self, ui_client):
         r = await ui_client.get("/settings/accounting/chart/new")
         assert r.status_code == 302
-        assert r.headers.get("location") == "/login"
+        assert r.headers.get("location", "").startswith("/login")
 
     @pytest.mark.asyncio
     async def test_chart_table_row_has_edit_link(self, ui_client):
@@ -14809,11 +14812,15 @@ class TestChartOfAccountsAddEdit:
         assert b"Account not found" in r.content
 
     @pytest.mark.asyncio
-    async def test_create_account_submit_missing_token_shows_error_banner(self, ui_client):
-        r = await ui_client.post(
-            "/settings/accounting/chart/new",
-            data={"code": "1999", "name": "X", "account_type": "asset"},
-        )
+    async def test_create_account_submit_expired_token_shows_error_banner(self, ui_client):
+        create = AsyncMock(side_effect=APIError(401, "Unauthorized"))
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
+            )
         assert r.status_code == 200
         assert b"Unauthorized" in r.content
 

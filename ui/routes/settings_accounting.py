@@ -14,8 +14,9 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.config import COOKIE_NAME
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option
+from ui.components.table import EMPTY, add_new_option, searchable_select
 
+from ui.routes.accounting_import import ACCOUNT_TYPES
 from ui.routes.settings import _token, _check_role
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t, get_lang
@@ -246,13 +247,16 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
 
 def _chart_table(chart: list[dict]) -> FT:
     def _row(a: dict) -> FT:
+        code = a.get("code", "")
         return Tr(
-            Td(a.get("code", ""), cls="cell--mono"),
+            Td(code, cls="cell--mono"),
             Td(a.get("name", "")),
             Td(Span(a.get("account_type", ""), cls=f"badge badge--{a.get('account_type', '')}")),
-            Td(a.get("parent_code", "")),
+            Td(a.get("parent_code") or EMPTY),
             Td(Span("Active" if a.get("is_active", True) else "Inactive",
                     cls="badge badge--active" if a.get("is_active", True) else "badge badge--inactive")),
+            Td(A(t("btn.edit"), href=f"/settings/accounting/chart/{code}/edit",
+                 cls="btn btn--secondary btn--xs")),
             cls="data-row",
         )
 
@@ -262,15 +266,15 @@ def _chart_table(chart: list[dict]) -> FT:
         by_type.setdefault(atype, []).append(a)
 
     sections: list[FT] = []
-    for atype in ("asset", "liability", "equity", "revenue", "cogs", "expense", "other"):
+    for atype in ACCOUNT_TYPES:
         accounts = by_type.get(atype, [])
         if not accounts:
             continue
-        sections.append(Tr(Th(atype.title(), colspan="5", cls="section-header")))
+        sections.append(Tr(Th(atype.title(), colspan="6", cls="section-header")))
         sections.extend(_row(a) for a in accounts)
 
     return Table(
-        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")), Th(t("th.status")))),
+        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")), Th(t("th.status")), Th(""))),
         Tbody(*sections),
         cls="data-table",
     )
@@ -279,7 +283,7 @@ def _chart_table(chart: list[dict]) -> FT:
 def _chart_tab(chart: list[dict]) -> FT:
     return Div(
         Div(
-            A(t("acct.add_account"), href="/accounting/new", cls="btn btn--primary"),
+            A(t("acct.add_account"), href="/settings/accounting/chart/new", cls="btn btn--primary"),
             A(t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
             Form(
                 Button(t("btn.seed_default_chart"), type="submit", cls="btn btn--secondary"),
@@ -296,6 +300,103 @@ def _chart_tab(chart: list[dict]) -> FT:
         ),
         cls="settings-card",
     )
+
+
+def _account_form(chart: list[dict], values: dict | None = None) -> FT:
+    """Add/edit form for a chart account. Pass values to edit an existing one."""
+    v = values or {}
+    editing = bool(v)
+    code = v.get("code", "")
+    parent_opts = [("", EMPTY)] + [
+        (a["code"], f"{a['code']} {a.get('name', '')}")
+        for a in chart if a.get("code") and a.get("code") != code
+    ]
+    rows = [
+        Tr(
+            Td(t("th.code"), cls="detail-label"),
+            Td(Span(code, cls="cell--mono")) if editing else
+            Td(Input(type="text", name="code", placeholder="e.g. 1000", maxlength="32",
+                     cls="cell-input", required=True)),
+        ),
+        Tr(
+            Td(t("th.name"), cls="detail-label"),
+            Td(Input(type="text", name="name", value=v.get("name", ""),
+                     placeholder="e.g. Petty Cash", cls="cell-input", required=True)),
+        ),
+        Tr(
+            Td(t("th.doc_type"), cls="detail-label"),
+            Td(Select(
+                *[Option(x.title(), value=x, selected=(x == v.get("account_type", "asset")))
+                  for x in ACCOUNT_TYPES],
+                name="account_type", cls="cell-input cell-input--select",
+            )),
+        ),
+        Tr(
+            Td(t("th.parent"), cls="detail-label"),
+            Td(searchable_select("parent_code", parent_opts, value=v.get("parent_code") or "")),
+        ),
+    ]
+    if editing:
+        rows.append(Tr(
+            Td(t("th.status"), cls="detail-label"),
+            Td(Select(
+                Option("Active", value="true", selected=bool(v.get("is_active", True))),
+                Option("Inactive", value="false", selected=not v.get("is_active", True)),
+                name="is_active", cls="cell-input cell-input--select",
+            )),
+        ))
+    action = {"hx_patch": f"/settings/accounting/chart/{code}"} if editing else \
+             {"hx_post": "/settings/accounting/chart/new"}
+    return Form(
+        Div(
+            Table(*rows, cls="detail-table"),
+            Div(
+                Button(t("btn.save"), type="submit", cls="btn btn--primary"),
+                A(t("btn.cancel"), href="/settings/accounting?tab=chart",
+                  cls="btn btn--secondary ml-sm"),
+                cls="mt-md",
+            ),
+            Div(id="account-form-error"),
+        ),
+        onkeydown="if(event.key==='Escape'){window.location='/settings/accounting?tab=chart'}",
+        hx_target="#account-form-error",
+        hx_swap="innerHTML",
+        **action,
+    )
+
+
+def _account_error_page(request: Request, message: str) -> FT:
+    return base_shell(
+        _section_breadcrumb("Accounting"),
+        page_header(
+            "Chart of Accounts",
+            A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+        ),
+        Div(P(message, cls="error-banner"), cls="settings-card"),
+        title="Chart of Accounts - Celerp",
+        nav_active="settings-accounting",
+        request=request,
+    )
+
+
+async def _validate_account(token: str, name: str, account_type: str,
+                            parent_code: str, own_code: str) -> str | None:
+    """Field-level validation shared by account create and patch. Returns an
+    error message, or None when the fields are valid."""
+    if not name:
+        return "Name is required."
+    if account_type not in ACCOUNT_TYPES:
+        return "Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + "."
+    if parent_code:
+        if parent_code == own_code:
+            return "An account cannot be its own parent."
+        try:
+            chart = (await api.get_chart(token)).get("items", [])
+        except APIError as e:
+            return str(e.detail)
+        if not any(a.get("code") == parent_code for a in chart):
+            return f"Parent account {parent_code} does not exist."
+    return None
 
 
 def setup_routes(app):
@@ -321,10 +422,11 @@ def setup_routes(app):
         elif tab == "chart":
             try:
                 chart_data = await api.get_chart(token)
-                chart = chart_data.get("items", [])
-            except Exception:
-                chart = []
-            content = _chart_tab(chart)
+                content = _chart_tab(chart_data.get("items", []))
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(str(e.detail), cls="error-banner"), cls="settings-card")
         elif tab == "rules":
             try:
                 rules_data = await api.get_recon_rules(token)
@@ -649,3 +751,107 @@ def setup_routes(app):
         except APIError as e:
             return Div(P(str(e.detail), cls="error-banner"), id="chart-content")
         return Div(_chart_table(chart), id="chart-content")
+
+    @app.get("/settings/accounting/chart/new")
+    async def new_account_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            chart_data = await api.get_chart(token)
+            chart = chart_data.get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return _account_error_page(request, str(e.detail))
+        return base_shell(
+            _section_breadcrumb("Accounting"),
+            page_header(
+                "Add Account",
+                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+            ),
+            Div(_account_form(chart), cls="settings-card"),
+            title="Add Account - Celerp",
+            nav_active="settings-accounting",
+            request=request,
+        )
+
+    @app.post("/settings/accounting/chart/new")
+    async def create_account_submit(request: Request):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="error-banner")
+        form = await request.form()
+        code = str(form.get("code", "")).strip()
+        name = str(form.get("name", "")).strip()
+        account_type = str(form.get("account_type", "")).strip()
+        parent_code = str(form.get("parent_code", "")).strip()
+        if not code:
+            return P("Code is required.", cls="error-banner")
+        if len(code) > 32:
+            return P("Code must be 32 characters or fewer.", cls="error-banner")
+        err = await _validate_account(token, name, account_type, parent_code, own_code=code)
+        if err:
+            return P(err, cls="error-banner")
+        try:
+            await api.create_account(token, {
+                "code": code,
+                "name": name,
+                "account_type": account_type,
+                "parent_code": parent_code or None,
+            })
+        except APIError as e:
+            return P(str(e.detail), cls="error-banner")
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
+
+    @app.get("/settings/accounting/chart/{code}/edit")
+    async def edit_account_page(request: Request, code: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            chart_data = await api.get_chart(token)
+            chart = chart_data.get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return _account_error_page(request, str(e.detail))
+        acct = next((a for a in chart if a.get("code") == code), None)
+        if acct is None:
+            return _account_error_page(request, "Account not found")
+        return base_shell(
+            _section_breadcrumb("Accounting"),
+            page_header(
+                f"Edit {acct.get('name', code)}",
+                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+            ),
+            Div(_account_form(chart, values=acct), cls="settings-card"),
+            title="Edit Account - Celerp",
+            nav_active="settings-accounting",
+            request=request,
+        )
+
+    @app.patch("/settings/accounting/chart/{code}")
+    async def patch_account_submit(request: Request, code: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="error-banner")
+        form = await request.form()
+        name = str(form.get("name", "")).strip()
+        account_type = str(form.get("account_type", "")).strip()
+        parent_code = str(form.get("parent_code", "")).strip()
+        err = await _validate_account(token, name, account_type, parent_code, own_code=code)
+        if err:
+            return P(err, cls="error-banner")
+        try:
+            await api.patch_account(token, code, {
+                "name": name,
+                "account_type": account_type,
+                "parent_code": parent_code or None,
+                "is_active": str(form.get("is_active", "true")).strip() == "true",
+            })
+        except APIError as e:
+            return P(str(e.detail), cls="error-banner")
+        return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
