@@ -8829,6 +8829,304 @@ class TestMarketplaceUI:
         assert "celerpToast" in r.headers.get("HX-Trigger", "")
         assert b'hx-trigger="load"' not in r.content          # error is not auto-wiped
 
+    # ── Account check before Buy ─────────────────────────────────────────────
+
+    _VERIFIED_STATUS = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+                        "pending_selection": False, "linked_elsewhere": False}
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_blocks_checkout_when_no_verified_email(self, ui_client):
+        """Buy with no verified email swaps in the account panel instead of
+        starting checkout; the panel stages the purchase to resume after."""
+        buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": False})),
+            patch("ui.api_client.account_methods",
+                  new=AsyncMock(return_value={"google": False})),
+            patch("ui.api_client.buy_module", new=buy),
+        ):
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        assert "Continue with email" in content
+        assert "checkout.stripe.com" not in content
+        assert buy.await_count == 0                       # no checkout started
+        assert "buy:celerp-budgeting:monthly" in content  # purchase staged for resume
+        assert "linked to your email" in content          # states the true benefit
+        assert 'id="marketplace-panel"' in content        # swaps the panel in place
+
+    @pytest.mark.asyncio
+    async def test_buy_proceeds_unchanged_when_email_already_verified(self, ui_client):
+        """A bound, verified account sees no gate: the same waiting-panel
+        contract as before the account check existed."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.api_client.buy_module",
+                  new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/cs_test_9"})),
+        ):
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"checkout.stripe.com/pay/cs_test_9" in r.content
+        assert b"every 5s" in r.content
+        assert b"buy-cancel" in r.content
+        assert b"Continue with email" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_resume_fires_after_verify_and_activation(self, ui_client):
+        """Once the poll sees the verified account and activation ran, it
+        returns a fragment that re-posts the staged purchase."""
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"relay_status": "active"})),
+        ):
+            r = await ui_client.get(
+                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+        content = r.content.decode()
+        assert "Signed in as" in content
+        assert 'hx-post="/modules/buy?slug=celerp-budgeting&amp;kind=monthly"' in content
+        assert "celerp_resume" in content                 # same-tab one-shot guard
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_resume_withheld_on_pending_selection(self, ui_client):
+        """A verified email that matches other subscriptions must not auto-fire
+        the staged purchase; the action is deferred behind the claim step, and
+        the continuation is carried on the claim link, not dropped."""
+        status = dict(self._VERIFIED_STATUS, pending_selection=True)
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get(
+                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+        content = r.content.decode()
+        assert "more than one subscription" in content
+        assert 'hx-post="/modules/buy' not in content        # not auto-fired
+        # continuation rides the claim link, not dropped
+        assert ('hx-get="/account/panel?intent=claim&amp;panel=marketplace-panel'
+                '&amp;next=buy:celerp-budgeting:monthly"') in content
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_resume_withheld_on_linked_elsewhere(self, ui_client):
+        status = dict(self._VERIFIED_STATUS, linked_elsewhere=True)
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get(
+                "/account/poll?panel=marketplace-panel&mode=email&n=3"
+                "&next=buy:celerp-budgeting:monthly", cookies=_authed())
+        content = r.content.decode()
+        assert "another computer" in content
+        assert 'hx-post="/modules/buy' not in content
+        assert ('hx-get="/account/panel?intent=claim&amp;panel=marketplace-panel'
+                '&amp;next=buy:celerp-budgeting:monthly"') in content
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_fails_to_error_panel_when_relay_unreachable(self, ui_client):
+        """If the account status cannot be checked, Buy stops with an error
+        panel and a way back - checkout never starts on an unknown account."""
+        buy = AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/x"})
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"error": "unreachable"})),
+            patch("ui.api_client.buy_module", new=buy),
+        ):
+            r = await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert buy.await_count == 0
+        assert b"flash--error" in r.content
+        assert b"Could not check" in r.content
+        assert b"/modules/marketplace-panel" in r.content     # way back to the catalog
+
+    @pytest.mark.asyncio
+    async def test_buy_gate_uses_one_relay_roundtrip_not_cached_status(self, ui_client):
+        """Every Buy click checks the live account status - a stale cached
+        value at the payment moment could skip the email binding."""
+        status = AsyncMock(return_value=dict(self._VERIFIED_STATUS))
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status", new=status),
+            patch("ui.api_client.buy_module",
+                  new=AsyncMock(return_value={"url": "https://checkout.stripe.com/pay/x"})),
+        ):
+            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                 cookies=_authed())
+            await ui_client.post("/modules/buy?slug=celerp-budgeting&kind=monthly",
+                                 cookies=_authed())
+        assert status.await_count == 2
+
+    # ── Account check before community downloads ─────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_community_download_gate_blocks_unverified_email(self, ui_client):
+        dl = AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": False})),
+            patch("ui.api_client.account_methods",
+                  new=AsyncMock(return_value={"google": False})),
+            patch("ui.marketplace_catalog.download_community_archive", new=dl),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        assert dl.await_count == 0                              # nothing downloaded
+        assert "Continue with email" in content
+        assert "community:equipment-maintenance" in content     # download staged for resume
+        assert "free Celerp account" in content                 # the stated benefit
+        # the row-targeted click retargets to the zone so the panel replaces the
+        # listings, not a single table row
+        assert r.headers.get("HX-Retarget") == "#community-zone"
+
+    @pytest.mark.asyncio
+    async def test_community_download_gate_skips_for_signed_in_admin(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b">Downloaded<" in r.content
+        assert b"/modules/community-import" in r.content
+        assert b"Continue with email" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_download_gate_resume_reposts_download(self, ui_client):
+        """The poll's resume fragment re-posts the download at zone level, and
+        the zone-level download response restores the listings with the staged
+        row offering Import."""
+        with (
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"relay_status": "active"})),
+        ):
+            r = await ui_client.get(
+                "/account/poll?panel=community-zone&mode=email&n=3"
+                "&next=community:equipment-maintenance", cookies=_authed())
+        content = r.content.decode()
+        assert 'hx-post="/modules/community-download"' in content
+        assert "equipment-maintenance" in content
+        assert '"zone"' in content                         # zone-level re-render requested
+        assert "celerp_resume" in content
+        # the zone-level download restores the table with the staged row
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+        ):
+            r2 = await ui_client.post("/modules/community-download",
+                                      data={"id": "equipment-maintenance", "zone": "1"},
+                                      cookies=_authed())
+        assert b'id="community-zone"' in r2.content
+        assert b">Import<" in r2.content
+        assert b"equipment-maintenance.zip" in r2.content
+
+    @pytest.mark.asyncio
+    async def test_community_download_gate_fails_open_when_relay_unreachable(self, ui_client):
+        """A relay outage never blocks a free download - the account check is
+        skipped and the download proceeds."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"error": "unreachable"})),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b">Downloaded<" in r.content
+        assert b"/modules/community-import" in r.content
+        assert b"Continue with email" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_download_github_failure_after_gate_keeps_toast(self, ui_client):
+        """A GitHub fetch failure after the account check passes keeps the
+        existing toast contract: Download button intact, error in the corner."""
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(side_effect=OSError("offline"))),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/community-download" in r.content
+        assert b"/modules/community-import" not in r.content
+        assert "celerpToast" in r.headers.get("HX-Trigger", "")
+
+    # ── Signed-in line on the marketplace panel ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_marketplace_heading_shows_signed_in_line_when_bound(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"Signed in as" in r.content
+        assert b"o@shop.com" in r.content
+
+    @pytest.mark.asyncio
+    async def test_marketplace_heading_omits_line_when_no_account(self, ui_client):
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": False})),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"Budgeting" in r.content            # catalog renders
+        assert b"Signed in as" not in r.content     # no nag, no call to action
+
+    @pytest.mark.asyncio
+    async def test_marketplace_heading_omits_line_on_status_error(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(side_effect=APIError(502, "relay down"))),
+        ):
+            r = await ui_client.get("/modules/marketplace-panel", cookies=_authed())
+        assert b"Budgeting" in r.content
+        assert b"Signed in as" not in r.content
+
 
 # ---------------------------------------------------------------------------
 # Module slot injection tests
@@ -12000,6 +12298,111 @@ class TestDocumentsOverhaul:
         )
         assert r.status_code == 204
         assert "/settings/general" in r.headers.get("hx-redirect", "")
+
+    # ── Send-by-email offer when no relay is connected ───────────────────────
+
+    @staticmethod
+    def _reset_send_quota_cache():
+        from ui.routes import documents
+        documents._free_send_quota_cache.update({"value": 0, "at": None, "pending": False})
+
+    @pytest.mark.asyncio
+    async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
+        """Disconnected relay + sendable doc: the detail page offers sending
+        through a free Celerp account instead of hiding the send path."""
+        self._reset_send_quota_cache()
+        try:
+            doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+            _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+            _methods = AsyncMock(return_value={"google": False, "free_email_quota": 10})
+            with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+                 patch("ui.api_client.get_relay_status", new=_no_relay), \
+                 patch("ui.api_client.account_methods", new=_methods):
+                # first GET primes the quota cache in the background
+                await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            content = r.content.decode()
+            assert "Send by email" in content
+            assert 'id="doc-send-offer"' in content
+            assert "next=doc-send" in content
+        finally:
+            self._reset_send_quota_cache()
+
+    @pytest.mark.asyncio
+    async def test_send_offer_absent_when_quota_zero(self, ui_client):
+        """No free quota advertised → the offer never renders (no dead end)."""
+        self._reset_send_quota_cache()
+        try:
+            doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+            _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+            _methods = AsyncMock(return_value={"google": False, "free_email_quota": 0})
+            with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+                 patch("ui.api_client.get_relay_status", new=_no_relay), \
+                 patch("ui.api_client.account_methods", new=_methods):
+                await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+            content = r.content.decode()
+            assert "Send by email" not in content
+            assert 'id="doc-send-offer"' not in content
+        finally:
+            self._reset_send_quota_cache()
+
+    @pytest.mark.asyncio
+    async def test_send_offer_admin_click_opens_signup_panel_with_doc_send_next(self, ui_client):
+        """Clicking the offer swaps the signup panel into the offer slot with
+        the doc-send continuation and the quota named in the benefit line."""
+        _methods = AsyncMock(return_value={"google": False, "free_email_quota": 10})
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})), \
+             patch("ui.api_client.account_methods", new=_methods):
+            r = await ui_client.get(
+                "/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
+                cookies=_authed())
+        content = r.content.decode()
+        assert 'id="doc-send-offer"' in content
+        assert "Continue with email" in content
+        assert 'value="doc-send"' in content        # continuation staged in the form
+        assert "10" in content                      # quota stated in the benefit copy
+        assert "account-gate-cancel" in content     # a way to close the offer
+
+    @pytest.mark.asyncio
+    async def test_send_offer_non_admin_click_returns_explanatory_message(self, ui_client):
+        """A non-admin who clicks the offer is told why nothing opens instead
+        of getting a silent empty swap."""
+        r = await ui_client.get(
+            "/account/panel?intent=signup&panel=doc-send-offer&next=doc-send",
+            cookies=_authed(role="manager"))
+        assert r.status_code == 200
+        assert b"Continue with email" not in r.content
+        trigger = r.headers.get("HX-Trigger", "")
+        assert "celerpToast" in trigger
+        assert "administrator" in trigger
+
+    @pytest.mark.asyncio
+    async def test_send_offer_resume_opens_dialog_prefilled_after_verify(self, ui_client):
+        """After signup completes the poll reloads the page with a one-shot
+        marker, and the connected page auto-opens the send dialog prefilled."""
+        verified = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+                    "pending_selection": False, "linked_elsewhere": False}
+        with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)), \
+             patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"relay_status": "active"})):
+            r = await ui_client.get(
+                "/account/poll?panel=doc-send-offer&mode=email&n=3&next=doc-send",
+                cookies=_authed())
+        content = r.content.decode()
+        assert "celerp_open_send" in content
+        assert "location.reload" in content
+
+        doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r2 = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        content2 = r2.content.decode()
+        assert "celerp_open_send" in content2
+        assert "showModal" in content2
+        assert "c@acme.com" in content2
 
 
 class TestProformaNumbering:
@@ -15385,7 +15788,9 @@ class TestCelerpAccountSurface:
         assert b'id="cloud-relay-tab"' in content            # host page keeps its target
         assert b"/settings/cloud-send-otp" in content        # shipped claim flow intact
         assert b"cloud-activate" in content                  # auto-connect intact
-        assert b"Create a free account" in content           # signup demoted, reachable
+        # claim-only: accounts are created at the moment of need (buy,
+        # community download, document send), not from the linking flow
+        assert b"Create a free account" not in content
 
     @pytest.mark.asyncio
     async def test_email_submit_shows_bounded_waiting_panel(self, ui_client):
@@ -15559,7 +15964,8 @@ class TestCelerpAccountSurface:
         html = to_xml(_connect_section("iid-1", lang="en"))
         assert 'id="cloud-relay-tab"' in html
         assert "/settings/cloud-send-otp" in html
-        assert "Create a free account" in html
+        # claim-only surface: no signup link on the Web Access page
+        assert "Create a free account" not in html
 
     @pytest.mark.asyncio
     async def test_poll_waits_while_claim_offer_open_in_browser(self, ui_client):
@@ -15637,6 +16043,10 @@ class TestCelerpAccountSurface:
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(cat, False))),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                                              "tier": "free", "pending_selection": False,
+                                              "linked_elsewhere": False})),
             patch("ui.api_client.buy_module", new=buy),
         ):
             r = await ui_client.post("/modules/buy?slug=acme-crm&kind=monthly", cookies=_authed())
@@ -15645,3 +16055,138 @@ class TestCelerpAccountSurface:
         assert "share your email address and purchase record with Acme Ltd" in consent
         assert "controls that data independently" in consent
         assert "international-transfer safeguards" in consent
+
+    # ── Account gate helper and next-action plumbing ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_account_gate_returns_none_when_email_verified(self):
+        from ui.routes.account import account_gate
+        verified = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+                    "pending_selection": False, "linked_elsewhere": False}
+        with patch("ui.api_client.account_status", new=AsyncMock(return_value=verified)):
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
+                                     "marketplace-panel", "/modules/marketplace-panel")
+        assert out is None
+
+    @pytest.mark.asyncio
+    async def test_account_gate_returns_signup_panel_when_unverified(self):
+        from fasthtml.common import to_xml
+        from ui.routes.account import account_gate
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})), \
+             patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
+                                     "marketplace-panel", "/modules/marketplace-panel")
+        html = to_xml(out)
+        assert 'id="marketplace-panel"' in html
+        assert "Continue with email" in html
+        assert 'name="next"' in html
+        assert "buy:acme-crm:monthly" in html
+        assert "account-gate-cancel" in html
+        assert "/modules/marketplace-panel" in html    # Cancel goes back to the catalog
+        assert "Escape" in html                        # Esc wired to the cancel action
+
+    @pytest.mark.asyncio
+    async def test_account_gate_signals_unreachable_distinctly(self):
+        """The caller must be able to tell 'no account' from 'could not check'
+        - the two lead to different fail-open/fail-closed behavior."""
+        from ui.routes.account import GATE_UNREACHABLE, account_gate
+        from ui.api_client import APIError
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"error": "unreachable"})):
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
+                                     "marketplace-panel", "/modules/marketplace-panel")
+        assert out is GATE_UNREACHABLE
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(side_effect=APIError(502, "down"))):
+            out = await account_gate("tok", "en", "buy:acme-crm:monthly",
+                                     "marketplace-panel", "/modules/marketplace-panel")
+        assert out is GATE_UNREACHABLE
+
+    @pytest.mark.asyncio
+    async def test_gate_signup_panel_renders_google_button_when_advertised(self):
+        from fasthtml.common import to_xml
+        from ui.routes.account import account_gate
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})), \
+             patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": True})):
+            out = await account_gate("tok", "en", "community:acme-crm",
+                                     "community-zone", "/modules/community-panel")
+        html = to_xml(out)
+        assert "Continue with Google" in html
+        assert "next=community" in html                # continuation rides the google link
+
+    @pytest.mark.asyncio
+    async def test_account_panel_rejects_malformed_next_action(self, ui_client):
+        """A tampered next value is dropped, never echoed into the form."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get(
+                "/account/panel?intent=signup&panel=celerp-account-panel"
+                "&next=buy:../../etc:monthly", cookies=_authed())
+        content = r.content.decode()
+        assert r.status_code == 200
+        assert "Continue with email" in content
+        # the tampered value never enters the form or any generated link
+        assert 'value="buy:../../etc:monthly"' not in content
+        assert 'name="next"' not in content
+
+    @pytest.mark.asyncio
+    async def test_signup_disposable_email_shows_error_editable_form(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.account_signup",
+                   new=AsyncMock(side_effect=APIError(422, "Disposable email addresses cannot hold purchases. Use a mailbox you keep."))), \
+             patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.post("/account/email?panel=celerp-account-panel",
+                                     data={"email": "x@mailinator.com"}, cookies=_authed())
+        content = r.content.decode()
+        assert "Disposable email addresses cannot hold purchases" in content
+        assert 'name="email"' in content            # form returned, still editable
+        assert "Continue with email" in content
+
+    @pytest.mark.asyncio
+    async def test_signup_email_undeliverable_shows_error(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.account_signup",
+                   new=AsyncMock(side_effect=APIError(502, "We could not send to that address. Check it and try again."))), \
+             patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.post("/account/email?panel=celerp-account-panel",
+                                     data={"email": "typo@nosuchdomain.example"}, cookies=_authed())
+        content = r.content.decode()
+        assert "could not send to that address" in content
+        assert 'name="email"' in content
+
+    @pytest.mark.asyncio
+    async def test_claim_body_has_no_new_here_link(self, ui_client):
+        """The Web Access page is claim-only: no signup link there, and the
+        locale key behind it is gone from every locale file."""
+        import json
+        from pathlib import Path
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={"google": False})):
+            r = await ui_client.get("/account/panel?intent=claim", cookies=_authed())
+        assert b"Create a free account" not in r.content
+        locales_dir = Path(__file__).resolve().parents[1] / "ui" / "locales"
+        for f in sorted(locales_dir.glob("*.json")):
+            data = json.loads(f.read_text(encoding="utf-8"))
+            assert "account.new_here" not in data, f.name
+
+    @pytest.mark.asyncio
+    async def test_poll_refetches_status_after_activation(self, ui_client):
+        """Activation binds the instance; the panel then shows the account as
+        the relay sees it post-bind, not the pre-bind snapshot."""
+        masked = {"email": "o***@shop.com", "email_verified": True, "tier": "free",
+                  "pending_selection": False, "linked_elsewhere": False}
+        full = dict(masked, email="o@shop.com")
+        status = AsyncMock(side_effect=[masked, full])
+        with patch("ui.api_client.account_status", new=status), \
+             patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"relay_status": "active"})):
+            r = await ui_client.get("/account/poll?panel=celerp-account-panel&mode=email&n=3",
+                                    cookies=_authed())
+        assert status.await_count == 2
+        assert b"o@shop.com" in r.content
