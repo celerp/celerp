@@ -1079,16 +1079,39 @@ def test_resolve_measurements_composes_from_dimensions():
     assert resolve_field_value(item, "measurements", unit_map) == "6.51 x 6.54 x 4.01"
 
 
-def test_resolve_measurements_missing_dimension_yields_empty():
-    """Any missing dimension yields "", never a partial string like "6.5 x  x 4.0"."""
+def test_resolve_measurements_composes_present_dimensions_in_order():
+    """Compose from the dimensions present in length -> width -> height order,
+    stopping at the first gap, so a middle-hole string like "6.5 x  x 4.0" is
+    never emitted and every printed value stays unambiguous by position."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    from celerp_labels.service import resolve_field_value
+    unit_map = build_unit_map(DEFAULT_UNITS)
+    cases = [
+        # trailing dimensions may be absent -> use the leading run that is present
+        ({"length": "6.51", "width": "6.54"}, "6.51 x 6.54"),
+        ({"length": "6.51"}, "6.51"),
+        # a gap stops the run: only the leading dimensions before it print
+        ({"length": "6.51", "width": "6.54", "height": ""}, "6.51 x 6.54"),
+        # a hole before a present value never emits the trailing value
+        ({"length": "6.51", "width": "", "height": "4.01"}, "6.51"),
+    ]
+    for attrs, expected in cases:
+        item = {"name": "Gem", "attributes": attrs}
+        got = resolve_field_value(item, "measurements", unit_map)
+        assert got == expected, (attrs, got)
+
+
+def test_resolve_measurements_no_leading_length_yields_empty():
+    """Without a length there is no dimension to anchor to, so a width/height-only
+    item (or an item with no dimensions) resolves to "" rather than a value that
+    can't be told apart from a length."""
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
     from celerp_labels.service import resolve_field_value
     unit_map = build_unit_map(DEFAULT_UNITS)
     for attrs in (
-        {"length": "6.51", "width": "6.54"},
-        {"length": "6.51", "height": "4.01"},
         {"width": "6.54", "height": "4.01"},
-        {"length": "6.51", "width": "", "height": "4.01"},
+        {"height": "4.01"},
+        {"length": "", "width": "6.54"},
         {},
     ):
         item = {"name": "Gem", "attributes": attrs}

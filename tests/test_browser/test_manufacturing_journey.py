@@ -56,6 +56,11 @@ def test_full_manufacturing_journey(page, ui_server, api):
     _combo_pick(page, ".recipe-add-row", "JNY-GOLD")  # ghost add-row commits a real component
     page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
     _set_cell("recipe__components__0__quantity", "5")
+    # The per-cell save fires recipeSaved, which re-renders the whole #recipe-section
+    # (outerHTML). Wait for that refresh to actually land (the cost card only reads 400,
+    # 5 x 80/g gold, once it has) before adding labor, so the section swap can't race the
+    # add-labor swap and clobber the new row. (Mirrors test_manufacturing_recipe.)
+    page.wait_for_selector("#recipe-cost-card:has-text('400')", timeout=8000)
     page.fill("input[name=labor_new_op]", "Setting")
     page.fill("input[name=labor_new_hours]", "2")
     page.fill("input[name=labor_new_rate]", "50")
