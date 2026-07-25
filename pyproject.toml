@@ -90,7 +90,12 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=30"
+# --timeout guards against a hung test wedging the run. 30s was under the real
+# cost of a page-rendering test on a slow filesystem: fixture setup alone measures
+# 8-19s per worker there, and a two-render test lands at 20-25s, so shards failed
+# on timing rather than on anything being wrong. 60s keeps the guard meaningful
+# (a genuine deadlock still trips it) with headroom for parallel runs.
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=60"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 pythonpath = [".", ".."]
 markers = [
