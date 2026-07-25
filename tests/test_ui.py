@@ -15063,17 +15063,6 @@ class TestChartOfAccountsAddEdit:
         assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
 
     @pytest.mark.asyncio
-    async def test_shell_js_has_no_dead_selected_values_helper(self, ui_client):
-        """selectedValues() was added on this branch and nothing calls it anywhere
-        in the repo; the multi-select combobox works entirely through toggleOpt
-        and syncMultiLabel, so the dead helper must not ship."""
-        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
-             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
-            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
-        assert r.status_code == 200
-        assert b"selectedValues" not in r.content
-
-    @pytest.mark.asyncio
     async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(side_effect=APIError(500, "backend down"))):

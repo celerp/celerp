@@ -50,9 +50,9 @@ async def _api_client(token: str, timeout: float = 10.0):
         async with _client(token, timeout=timeout) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large. Try again or reduce batch size.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large. Try again or reduce the batch size.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
@@ -62,9 +62,9 @@ async def _anon_api_client(timeout: float = 10.0):
         async with _anon_client(timeout=timeout) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
@@ -79,9 +79,9 @@ async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
         ) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 def _raise(r: httpx.Response) -> httpx.Response:
@@ -2192,10 +2192,10 @@ async def export_backup(token: str, backup_id: str | None = None):
         resp = await client.send(client.build_request("GET", url), stream=True)
     except httpx.TimeoutException as exc:
         await client.aclose()
-        raise APIError(504, "Backup timed out — the archive took too long to build.") from exc
+        raise APIError(504, "Backup timed out. The archive took too long to build.") from exc
     except httpx.ConnectError as exc:
         await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
     if resp.status_code >= 400:
         body = await resp.aread()
         await resp.aclose()
