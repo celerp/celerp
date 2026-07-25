@@ -14935,7 +14935,8 @@ class TestChartOfAccountsAddEdit:
     @pytest.mark.asyncio
     async def test_chart_table_shows_the_category_and_dashes_when_unset(self, ui_client):
         """An account on the default reads as "--", not as a blank cell, so the
-        column is legible as "nothing set here" rather than as missing data."""
+        column is legible as "nothing set here" rather than as missing data. Both
+        the set and unset cells render inside the click-to-edit wrapper."""
         chart = [_CHART[0], {"code": "1210", "name": "Equipment", "account_type": "asset",
                              "parent_code": "", "is_active": True,
                              "cash_flow_category": "financing"}]
@@ -14944,8 +14945,133 @@ class TestChartOfAccountsAddEdit:
             r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
         assert r.status_code == 200
         body = r.content.decode()
-        assert "<td>Financing</td>" in body
-        assert "<td>--</td>" in body
+        assert ">Financing<" in body
+        assert ">--<" in body
+        assert 'hx-get="/settings/accounting/chart/1210/cash-flow/edit"' in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_chart_table_cash_flow_cell_is_click_to_edit(self, ui_client):
+        """The cash flow column is a click-to-edit cell like the rest of the app's
+        inline-editable cells, not plain text that only the full edit form can change."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'class="editable-cell"' in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+        assert 'hx-trigger="click"' in body
+        assert 'title="Click to edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_chart_table_cash_flow_cell_shows_dash_and_stays_clickable_when_unset(self, ui_client):
+        """An account carrying no override still shows '--', and the cell keeps its
+        click-to-edit trigger rather than becoming a dead cell."""
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert ">--<" in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_edit_returns_a_select_with_the_derived_option_and_three_sections(self, ui_client):
+        """Clicking the cell offers the same four choices as the full edit form:
+        derive it, or pin to one of the three cash flow sections."""
+        chart = [{**_CHART[0], "cash_flow_category": "investing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "<select" in body
+        for value in ("", "operating", "investing", "financing"):
+            assert f'value="{value}"' in body
+        assert '<option value="investing" selected' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_edit_has_an_escape_handler_that_restores_the_display_cell(self, ui_client):
+        """Escape cancels the in-place edit without saving, by restoring the
+        original display cell rather than submitting the select's value."""
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "Escape" in body
+        assert "/settings/accounting/chart/1000/cash-flow/display" in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_saves_without_a_redirect_and_shows_the_new_value(self, ui_client):
+        """Routine data entry happens on-page: saving the override returns the
+        updated cell fragment, not a full-page redirect or reload."""
+        patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": "operating"})
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": "operating"},
+            )
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert patch_mock.await_args.args[2] == {"cash_flow_category": "operating"}
+        body = r.content.decode()
+        assert ">Operating<" in body
+        assert 'class="editable-cell"' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_sends_an_empty_value_to_clear_the_override(self, ui_client):
+        """Selecting the derived option clears the override rather than sending a
+        category name, matching the API's clear-to-derive contract."""
+        patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": None})
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": ""},
+            )
+        assert r.status_code == 200
+        assert patch_mock.await_args.args[2] == {"cash_flow_category": ""}
+        assert ">--<" in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_shows_the_api_rejection_message_instead_of_failing_silently(self, ui_client):
+        """A rejected save surfaces the API's own message to the user instead of
+        swallowing the error."""
+        patch_mock = AsyncMock(side_effect=APIError(
+            422, "Cash flow category must be one of: operating, investing, financing."))
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": "bogus"},
+            )
+        assert r.status_code == 200
+        assert b"Cash flow category must be one of" in r.content
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_display_restores_the_saved_value_for_escape_cancel(self, ui_client):
+        """The display endpoint the Escape handler calls shows the account's
+        actual saved value, not a blank or stale one."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/display", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert ">Financing<" in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_shell_js_has_no_dead_selected_values_helper(self, ui_client):
+        """selectedValues() was added on this branch and nothing calls it anywhere
+        in the repo; the multi-select combobox works entirely through toggleOpt
+        and syncMultiLabel, so the dead helper must not ship."""
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        assert b"selectedValues" not in r.content
 
     @pytest.mark.asyncio
     async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):

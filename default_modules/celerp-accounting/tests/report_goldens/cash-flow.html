@@ -1,0 +1,81 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Cash Flow</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div class="date-filter-bar">
+      <div class="preset-bar">
+<a href="/reports/cash-flow?preset=this_month" class="preset-btn ">This month</a><a href="/reports/cash-flow?preset=last_3m" class="preset-btn ">Last 3 months</a><a href="/reports/cash-flow?preset=last_6m" class="preset-btn ">Last 6 months</a><a href="/reports/cash-flow?preset=last_12m" class="preset-btn ">Last 12 months</a><a href="/reports/cash-flow?preset=this_fy" class="preset-btn ">This fiscal year</a><a href="/reports/cash-flow?preset=last_fy" class="preset-btn ">Last fiscal year</a><a href="/reports/cash-flow?preset=all" class="preset-btn ">All time</a>      </div>
+<form enctype="multipart/form-data" action="/reports/cash-flow" method="get" class="date-custom-form">        <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
+<span class="date-sep">--</span>        <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/cash-flow/csv?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/cash-flow?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div class="report-view">
+      <div class="valuation-bar">
+<span class="val-chip">Opening cash: ฿0.00</span><span class="val-chip">Net change in cash: ฿15.00</span><span class="val-chip">Closing cash: ฿15.00</span><span class="val-chip">Balanced ✓</span>      </div>
+      <h2 class="report-section-title">Direct method</h2>
+      <div class="report-section">
+        <h3 class="report-section-title">Operating activities</h3>
+        <table class="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th class="cell--number">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1120 Accounts Receivable</td>
+              <td class="cell--number">฿40.00</td>
+            </tr>
+            <tr>
+              <td>6200 Rent</td>
+              <td class="cell--number cell--negative">฿-25.00</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<strong>฿15.00</strong>        </p>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">Investing activities</h3>
+        <p class="empty-state">No entries</p>
+        <p class="section-total">
+<strong>฿0.00</strong>        </p>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">Financing activities</h3>
+        <p class="empty-state">No entries</p>
+        <p class="section-total">
+<strong>฿0.00</strong>        </p>
+      </div>
+      <h2 class="report-section-title">Indirect method</h2>
+      <div class="report-section">
+        <table class="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th class="cell--number">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Net Profit</td>
+              <td class="cell--number">฿120.00</td>
+            </tr>
+            <tr>
+              <td>1120 Accounts Receivable</td>
+              <td class="cell--number cell--negative">฿-105.00</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<strong>฿15.00</strong>        </p>
+      </div>
+    </div>
+  </div>
+</div>

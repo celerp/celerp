@@ -100,6 +100,11 @@ FX_ROUNDING_ACCOUNT = "6960"
 # accounts screen holds the same list and a test keeps the two in lockstep.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 
+# The account types the reports know how to sign and classify. Same arrangement as
+# the list above: this module is authoritative, the chart of accounts screen holds a
+# copy for its dropdown, and a test keeps the two in lockstep.
+ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
+
 
 class AccountCreate(BaseModel):
     code: str
@@ -238,6 +243,18 @@ def _account_to_dict(acc: Account) -> dict:
     }
 
 
+def _checked_account_type(value: str) -> str:
+    """The account's type, which decides its sign on every report. A type outside
+    the known set has no honest sign convention, so it is refused rather than
+    guessed at."""
+    if value not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
+        )
+    return value
+
+
 def _checked_cash_flow_category(value: str | None) -> str | None:
     """The stored override, or None for "derive it". An empty value clears the
     override; anything else must name a section the statement actually has."""
@@ -322,7 +339,7 @@ async def create_account(
         company_id=company_id,
         code=payload.code,
         name=payload.name,
-        account_type=payload.account_type,
+        account_type=_checked_account_type(payload.account_type),
         parent_code=payload.parent_code,
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
@@ -349,7 +366,7 @@ async def patch_account(
     if payload.name is not None:
         acc.name = payload.name
     if payload.account_type is not None:
-        acc.account_type = payload.account_type
+        acc.account_type = _checked_account_type(payload.account_type)
     if payload.parent_code is not None:
         acc.parent_code = payload.parent_code
     if payload.is_active is not None:
@@ -410,6 +427,14 @@ async def batch_import_accounting(
             skipped += 1
             continue
         try:
+            # An imported line may name a party. Checked here, at the boundary,
+            # because an entry whose contact resolves to nothing would post to a
+            # control account and then be missing from every statement, with
+            # nothing on screen to say why.
+            entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
+            if isinstance(entries, list):
+                await _check_line_contacts(
+                    session, company_id, [e for e in entries if isinstance(e, dict)])
             await emit_event(
                 session,
                 company_id=company_id,
@@ -461,6 +486,111 @@ def _require_iso_date(value: str | None, field: str) -> None:
         raise HTTPException(
             status_code=422,
             detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+        )
+
+
+def _require_date_range(date_from: str | None, date_to: str | None) -> None:
+    """Check the date filter pair every report takes, in one place.
+
+    Both ends must be strict ISO dates and the range must run forwards. A
+    backwards range matches nothing, so answering it produces a confident
+    empty report that reads as a quiet period instead of as a question that
+    cannot be answered. Refused here so every report refuses it alike.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"date_from {date_from} is after date_to {date_to}. "
+                    "Start the range on or before the date it ends."),
+        )
+
+
+# Account types whose balance is credit-normal. Every other type, including the
+# unknown type of a code with no chart entry, is reported on the debit side.
+_CREDIT_NORMAL_TYPES = frozenset({"liability", "equity", "revenue"})
+
+# Legacy doc_type spellings normalised to their canonical names, so a statement
+# row and the AR/AP aging call the same document the same thing.
+_DOC_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
+
+
+def _is_debit_normal(account_type: str) -> bool:
+    """Whether an account's balance is signed positive on the debit side.
+
+    One rule for the general ledger and the account ledger, so a drilldown can
+    never contradict the sign of the report row it was opened from. A type the
+    chart does not use, including the unknown type of a code that has posted
+    lines but no chart entry, keeps the raw debit-minus-credit figure rather
+    than having a sign guessed for it.
+    """
+    return account_type not in _CREDIT_NORMAL_TYPES
+
+
+async def _contact_row(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str
+) -> Projection | None:
+    """The contact projection behind an id, or None when the id names no contact."""
+    row = await session.get(Projection, (company_id, contact_id))
+    return row if row and row.entity_type == "contact" else None
+
+
+async def _require_contact(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str
+) -> Projection:
+    """The contact a statement was asked for, or 404 for a contact that is not there."""
+    row = await _contact_row(session, company_id, contact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return row
+
+
+async def _require_contact_filter(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str | None
+) -> None:
+    """Check a report's contact filter before it can silence the report.
+
+    The empty string is the reports' own bucket for lines with no resolvable
+    party, so it is a real filter value rather than a missing contact. Any
+    other id has to name a contact: a mistyped one would otherwise return an
+    empty subledger, which reads as "this party owes nothing".
+
+    Refused as 422 rather than 404, like the date filters: the account being
+    reported on is there, it is the filter that cannot be applied, and 422 is
+    the status whose message reaches the reader intact.
+    """
+    if contact_id is None or contact_id == "":
+        return
+    if await _contact_row(session, company_id, contact_id) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No contact matches contact_id {contact_id}.",
+        )
+
+
+async def _check_line_contacts(
+    session: AsyncSession, company_id: uuid.UUID, entries: list[dict]
+) -> None:
+    """Refuse a set of journal entry lines if any names a contact that is not there.
+
+    A line's contact is what puts a posting on that party's statement, so an id
+    matching no contact would post an entry no statement can ever show and no
+    control-account bucket can ever explain. Checked once per distinct contact
+    named, and by the same rule for every path that writes lines: manual
+    entries, reconciliation, and the batch import.
+    """
+    named = {e.get("contact") for e in entries if isinstance(e.get("contact"), str) and e.get("contact")}
+    if not named:
+        return
+    missing = []
+    for cid in sorted(named):
+        if await _contact_row(session, company_id, cid) is None:
+            missing.append(cid)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail="No contact matches " + ", ".join(missing) + ".",
         )
 
 
@@ -627,13 +757,47 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         party_state = doc_states.get(meta["cn_id"], state) if meta.get("cn_id") else state
         contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
                       or party_state.get("supplier_id"))
+        doc_type = party_state.get("doc_type") or party_state.get("type") or ""
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
             "fx": fx,
             "contact_id": contact_id,
+            "doc_type": _DOC_TYPE_ALIASES.get(doc_type, doc_type),
+            "is_payment": isinstance(payment_index, int),
         }
     return refs
+
+
+def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
+    """The party a journal entry line belongs to, or "" when none resolves.
+
+    A line may name its own contact, which is how a manual posting to a control
+    account reaches that party's statement. Everything else inherits the party of
+    the document that caused the entry, resolved from the doc refs every report
+    already loads. One rule for the account ledger, the general ledger and the
+    statement, so a line can never sit in one party's bucket on one report and
+    another's on the next. Lines that resolve to nothing are reported under the
+    empty string, so a filtered view can never quietly drop them from the
+    account's total.
+    """
+    named = entry.get("contact")
+    if isinstance(named, str) and named:
+        return named
+    return (refs.get(je_id) or {}).get("contact_id") or ""
+
+
+def _statement_kind(ref: dict) -> str:
+    """What a statement row calls the entry behind it.
+
+    A posting the books made for a document is named after that document; a
+    payment against one is a payment whatever the document was; anything a
+    person posted by hand is a journal entry, which is exactly what the reader
+    needs to know to go looking for it.
+    """
+    if ref.get("is_payment"):
+        return "payment"
+    return ref.get("doc_type") or "journal"
 
 
 def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
@@ -685,8 +849,7 @@ async def journal(
     Voided entries stay visible flagged status="void" - a journal is a record, and
     hiding voids would misstate it - but they are excluded from the period totals.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_date_range(date_from, date_to)
     rows = await _je_rows(session, company_id, include_void=True)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
@@ -764,6 +927,13 @@ class ManualJELine(BaseModel):
     account: str
     debit: float = 0
     credit: float = 0
+    # The party this line belongs to. Document-driven postings derive their party
+    # from the document, so this is for the entries that have no document: a
+    # write-off, an opening balance, an adjustment posted straight to a control
+    # account. Without it those lines can only ever sit in the unattributed
+    # bucket, and the party's statement would not show a movement its own
+    # balance includes.
+    contact: str | None = None
 
 
 class ManualJEFx(BaseModel):
@@ -803,6 +973,8 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
+    await _check_line_contacts(
+        session, company_id, [{"contact": line.contact} for line in payload.entries])
     fx = await _validated_fx(session, company_id, payload.fx)
 
     accounts = (
@@ -857,15 +1029,20 @@ async def create_manual_journal_entry(
             lc = round_money(c * to_decimal(fx.rate), base)
             local_debit += ld
             local_credit += lc
-            entries.append({
+            stored = {
                 "account": line.account,
                 "debit": to_stored_float(ld),
                 "credit": to_stored_float(lc),
                 "fx_debit": to_stored_float(d) if d else None,
                 "fx_credit": to_stored_float(c) if c else None,
-            })
+            }
         else:
-            entries.append({"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)})
+            stored = {"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)}
+        # Only lines that name a party carry the key, so an entry with no party
+        # stores exactly what it stored before.
+        if line.contact:
+            stored["contact"] = line.contact
+        entries.append(stored)
 
     if total_debit != total_credit:
         where = f" in {fx.currency}" if fx else ""
@@ -1067,6 +1244,9 @@ async def account_ledger(
     Lines with no resolvable party are reported under the empty string so a
     filtered view can never quietly exclude them from the account's total.
     """
+    _require_date_range(date_from, date_to)
+    await _require_contact_filter(session, company_id, contact_id)
+
     # Fetch account metadata for name + type (sign convention)
     account = (
         await session.execute(
@@ -1075,7 +1255,6 @@ async def account_ledger(
     ).scalar_one_or_none()
 
     posted = await _je_rows(session, company_id)
-    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
     # Lines are matched by the literal account code, exactly like the trial
     # balance, journal, and general ledger bucket them, so the drilldown always
@@ -1083,9 +1262,24 @@ async def account_ledger(
     # directly to a parent code appear on the parent's own ledger.
     match_codes = {account_code}
 
-    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
-    account_type = account.account_type if account else "asset"
-    debit_normal = account_type in ("asset", "expense", "cogs")
+    # A code with no chart entry still has a ledger while the books hold lines
+    # for it: the general ledger lists such codes, and a drilldown must open on
+    # a row the report just showed. A code the chart and the books both know
+    # nothing about is a question about an account that does not exist, and
+    # answering it would invent a chart entry the company never created.
+    # The scan ignores the date and contact filters on purpose: a filter that
+    # matches nothing is an empty period, not a missing account.
+    if account is None and not any(
+        entry.get("account") in match_codes
+        for _, state, _ in posted
+        for entry in state.get("entries", [])
+    ):
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+
+    account_type = account.account_type if account else "unknown"
+    debit_normal = _is_debit_normal(account_type)
 
     def _signed(d: Decimal, c: Decimal) -> Decimal:
         return (d - c) if debit_normal else (c - d)
@@ -1095,13 +1289,11 @@ async def account_ledger(
     opening = Decimal(0)
     for je_id, state, ts in posted:
         ref = refs.get(je_id) or {}
-        # An entry with no source document has no party to resolve; a manual
-        # posting to a control account is the usual case.
-        line_contact = ref.get("contact_id") or ""
-        if contact_id is not None and line_contact != contact_id:
-            continue
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
+                continue
+            line_contact = _line_party(refs, je_id, entry)
+            if contact_id is not None and line_contact != contact_id:
                 continue
             amounts = _line_amounts(entry)
             if amounts is None:
@@ -1142,6 +1334,9 @@ async def account_ledger(
         "account_code": account_code,
         "account_name": account.name if account else account_code,
         "account_type": account_type,
+        # The sign convention is decided here, once; consumers (UI, CSV) must
+        # use this flag rather than re-deriving it from account_type.
+        "debit_normal": debit_normal,
         "contact_id": contact_id,
         "date_from": date_from,
         "date_to": date_to,
@@ -1164,6 +1359,7 @@ async def trial_balance(
     Reads posted journal_entry projections. Each journal entry stores
     entries: [{account, debit?, credit?}] in its state.
     """
+    _require_date_range(date_from, date_to)
     posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
@@ -1219,18 +1415,31 @@ async def general_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
     include_lines: bool = False,
+    contact_id: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """General ledger summary: opening balance, period debits/credits, and closing
-    balance per account. Balances are signed by the account's normal side
-    (debit-normal for asset/expense/cogs, credit-normal otherwise), matching the
-    per-account ledger's running balance. Detail rows live at /ledger/{code}.
+    balance per account. Balances are signed by the account's normal side,
+    matching the per-account ledger's running balance. Detail rows live at
+    /ledger/{code}.
+
+    contact_id narrows every account to one party, the same filter and the same
+    party resolution the account ledger drills down with, so the report and the
+    drilldown always show the same figure. Lines with no resolvable party are
+    reported under the empty string, so the per-party views plus that one add
+    back up to the unfiltered report.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_date_range(date_from, date_to)
+    await _require_contact_filter(session, company_id, contact_id)
     posted = await _je_rows(session, company_id)
+    # The party filter resolves every entry before the scan; unfiltered runs
+    # never pay for the doc lookup.
+    party_refs = (
+        await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+        if contact_id is not None else {}
+    )
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id)
@@ -1248,6 +1457,8 @@ async def general_ledger(
             code = entry.get("account")
             amounts = _line_amounts(entry)
             if not code or amounts is None:
+                continue
+            if contact_id is not None and _line_party(party_refs, je_id, entry) != contact_id:
                 continue
             d, c = amounts
             if date_from and ts < date_from:
@@ -1286,7 +1497,7 @@ async def general_ledger(
             continue
         acc = account_map.get(code)
         account_type = acc.account_type if acc else "unknown"
-        debit_normal = account_type not in ("liability", "equity", "revenue")
+        debit_normal = _is_debit_normal(account_type)
         raw_closing = opening + d - c
         raw_closing_total += raw_closing
         signed_opening = opening if debit_normal else -opening
@@ -1314,6 +1525,7 @@ async def general_ledger(
     return {
         "date_from": date_from,
         "date_to": date_to,
+        "contact_id": contact_id,
         "rows": rows_out,
         "totals": {
             "opening": to_stored_float(round_money(tot_opening, base)),
@@ -1338,6 +1550,7 @@ async def profit_and_loss(
     COGS accounts (5xxx) = debit-normal -> positive net debit = cost.
     Expense accounts (6xxx) = debit-normal -> positive net debit = expense.
     """
+    _require_date_range(date_from, date_to)
     posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
@@ -1390,6 +1603,7 @@ async def balance_sheet(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Balance sheet as of a given date (default: all posted entries to date)."""
+    _require_iso_date(as_of, "as_of")
     from celerp.services.auto_je import upsert_opening_inventory_je
     await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
     await session.commit()
@@ -1483,13 +1697,12 @@ async def balance_sheet(
     }
 
 
-# Doc types that appear on a statement of account (the same financial docs the
-# AR/AP aging counts, plus credit notes which reduce what the contact owes).
-_SOA_DOC_TYPES = frozenset({"invoice", "credit_note", "purchase_order", "bill"})
-# Legacy doc_type spellings normalised to their canonical names. The AR/AP aging
-# accepts these same spellings (and the "type" state fallback), and a statement
-# must count exactly the doc set aging counts, so the tolerance matches.
-_SOA_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
+# The control accounts a party's balance lives on: receivable and payable. A
+# statement is these two accounts filtered to one party, which is what makes the
+# statements sum back to the balance sheet.
+_AR_CODE = "1120"
+_AP_CODE = "2110"
+_CONTROL_CODES = (_AR_CODE, _AP_CODE)
 
 
 @router.get("/soa/{contact_id}")
@@ -1501,21 +1714,27 @@ async def statement_of_account(
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Statement of account for one contact: opening balance, dated doc/payment
-    rows with a running balance, closing balance.
+    """Statement of account for one contact: opening balance, dated rows with a
+    running balance, closing balance.
 
-    Amounts are in base currency so mixed-currency contacts read on one statement
-    (doc totals convert via their stored conversion_rate, payments via their own
-    per-payment rate). Finalized-and-later docs count, drafts and voids do not;
-    only active payments count, on their payment date. Credit notes reduce the
-    balance and their payments (applications, refunds) add back, so an applied
-    credit note is never double-counted against the invoice it settles.
+    The statement is the receivable and payable control accounts filtered to one
+    party, so every customer's statement plus the unattributed bucket sums back
+    to the control account and the balance sheet, by construction rather than by
+    coincidence. Reading the ledger is also what puts a manual adjustment,
+    write-off or opening conversion on the party's statement: anything posted to
+    a control account for them shows up, whether a document caused it or a person
+    typed it.
+
+    Amounts are the posted figures, which are stored in base currency at each
+    entry's own date, so a mixed-currency party reads on one statement with no
+    rate applied here. Only posted entries count; drafts and voids never post.
+
+    The sign convention is the party's net position, debits positive: what a
+    customer owes reads positive, what the company owes a supplier reads
+    negative, and a party that is both nets to one figure.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
-    contact_row = await session.get(Projection, (company_id, contact_id))
-    if not contact_row or contact_row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Contact not found")
+    _require_date_range(date_from, date_to)
+    contact_row = await _require_contact(session, company_id, contact_id)
     # Merge tombstones carry both deleted and merged_into, so the merge check
     # must come first or merged contacts would 404 instead of redirecting.
     if contact_row.state.get("merged_into"):
@@ -1533,81 +1752,56 @@ async def statement_of_account(
     if contact_row.state.get("deleted"):
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    doc_rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
-
     base = await _base_currency(session, company_id)
-    # (date, doc_id, seq, doc_ref, kind, debit, credit); seq keeps a doc's own row
-    # ahead of its same-day payments and makes the ordering replay-stable.
-    events: list[tuple[str, str, int, str, str, Decimal, Decimal]] = []
-    for dr in doc_rows:
-        state = dr.state
-        linked = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id")
-        if linked != contact_id:
-            continue
-        doc_type = state.get("doc_type", state.get("type", ""))
-        doc_type = _SOA_TYPE_ALIASES.get(doc_type, doc_type)
-        if doc_type not in _SOA_DOC_TYPES:
-            continue
-        if state.get("status") in ("draft", "void"):
-            continue
-        doc_ref = state.get("ref_id") or state.get("doc_number") or dr.entity_id
-        doc_rate = to_decimal(state.get("conversion_rate") or 1)
-        doc_date = str(state.get("issue_date") or state.get("date") or "")[:10]
-        total = round_money(to_decimal(state.get("total") or 0) * doc_rate, base)
-        # Statement sign convention: positive balance = the contact owes us.
-        # Receivable-side docs (invoices) charge as debits; payable-side docs
-        # (bills, purchase orders) and credit notes reduce the net as credits,
-        # so a dual-role contact's receivables and payables net correctly
-        # instead of stacking in one direction. Payments mirror their doc side.
-        reduces_balance = doc_type in ("credit_note", "purchase_order", "bill")
-        if reduces_balance:
-            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, Decimal(0), total))
-        else:
-            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, total, Decimal(0)))
-        for i, p in enumerate(state.get("payments", [])):
-            if p.get("status") != "active":
+    posted = await _je_rows(session, company_id)
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+
+    # (date, je_id, seq, line) so same-day entries keep the order they were
+    # posted in and a replay reads the same way twice.
+    events: list[tuple[str, str, int, dict]] = []
+    for je_id, state, ts in posted:
+        ref = refs.get(je_id) or {}
+        for seq, entry in enumerate(state.get("entries", [])):
+            if entry.get("account") not in _CONTROL_CODES:
                 continue
-            p_rate = to_decimal(p.get("conversion_rate") or state.get("conversion_rate") or 1)
-            amount = round_money(to_decimal(p.get("amount") or 0) * p_rate, base)
-            p_date = str(p.get("payment_date") or doc_date or "")[:10]
-            if reduces_balance:
-                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", amount, Decimal(0)))
-            else:
-                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", Decimal(0), amount))
+            if _line_party(refs, je_id, entry) != contact_id:
+                continue
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
+            events.append((ts, je_id, seq, {
+                "date": ts,
+                "je_id": je_id,
+                "doc_id": ref.get("doc_id"),
+                "doc_ref": ref.get("doc_ref") or state.get("memo", ""),
+                "kind": _statement_kind(ref),
+                "debit": to_stored_float(amounts[0]),
+                "credit": to_stored_float(amounts[1]),
+                "_net": amounts[0] - amounts[1],
+            }))
 
     # Ascending: a statement's running balance reads down the page.
     events.sort(key=lambda e: (e[0], e[1], e[2]))
 
     opening = Decimal(0)
     in_range = []
-    for e in events:
-        if date_from and e[0] < date_from:
-            opening += e[5] - e[6]
+    for date, _je_id, _seq, line in events:
+        # Dateless entries count as pre-period, exactly as every other report
+        # treats them, so a statement can never disagree with the ledger it is
+        # a slice of.
+        if date_from and (not date or date < date_from):
+            opening += line["_net"]
             continue
-        if date_to and e[0] > date_to:
+        if date and date_to and date > date_to:
             continue
-        in_range.append(e)
+        in_range.append(line)
 
     running = opening
     rows_out = []
-    for d, doc_id, _seq, doc_ref, kind, debit, credit in in_range:
-        running += debit - credit
-        rows_out.append({
-            "date": d,
-            "doc_id": doc_id,
-            "doc_ref": doc_ref,
-            "kind": kind,
-            "debit": to_stored_float(debit),
-            "credit": to_stored_float(credit),
-            "balance": to_stored_float(round_money(running, base)),
-        })
+    for line in in_range:
+        running += line.pop("_net")
+        line["balance"] = to_stored_float(round_money(running, base))
+        rows_out.append(line)
 
     cstate = contact_row.state
     return {
@@ -1662,22 +1856,44 @@ def _bank_to_dict(b: BankAccount) -> dict:
     }
 
 
-async def _compute_bank_balance(
-    session: AsyncSession,
-    company_id: uuid.UUID,
-    chart_account_code: str,
-    opening_balance: float,
-) -> float:
-    """Compute bank balance: opening + JE debits - JE credits for this account code."""
-    net = Decimal(str(opening_balance))
-    for _, state, _ in await _je_rows(session, company_id):
-        for entry in state.get("entries", []):
-            if entry.get("account") == chart_account_code:
-                amounts = _line_amounts(entry)
-                if amounts is None:
-                    continue
-                net += amounts[0] - amounts[1]
-    return float(net)
+def _opening_je_id(bank_id: uuid.UUID) -> str:
+    """The journal entry that carries a bank account's opening balance.
+
+    Written when the account is created and read by the health check below, from
+    this one place, so the two can never disagree about which entry backs which
+    opening balance.
+    """
+    return f"je:opening:{bank_id}"
+
+
+async def _bank_dicts(
+    session: AsyncSession, company_id: uuid.UUID, banks: list[BankAccount],
+) -> list[dict]:
+    """Bank accounts with their balance and the health of their opening balance.
+
+    The balance is the ledger's, and only the ledger's. Creating an account with
+    an opening balance posts that balance as a journal entry, so adding the column
+    on top of the entries would count it twice. An opening balance with no entry
+    behind it is reported as `opening_unbacked` rather than folded back into the
+    figure, which would put the bank screen back out of step with the books.
+    """
+    rows = await _je_rows(session, company_id)
+    posted_ids = {je_id for je_id, _state, _ts in rows}
+    out = []
+    for b in banks:
+        net = Decimal(0)
+        for _je_id, state, _ts in rows:
+            for entry in state.get("entries", []):
+                if entry.get("account") == b.chart_account_code:
+                    amounts = _line_amounts(entry)
+                    if amounts is None:
+                        continue
+                    net += amounts[0] - amounts[1]
+        d = _bank_to_dict(b)
+        d["balance"] = float(net)
+        d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
+        out.append(d)
+    return out
 
 
 async def _next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -1710,11 +1926,7 @@ async def list_bank_accounts(
         q = q.where(BankAccount.is_active.is_(True))
     q = q.order_by(BankAccount.created_at)
     rows = (await session.execute(q)).scalars().all()
-    items = []
-    for b in rows:
-        d = _bank_to_dict(b)
-        d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-        items.append(d)
+    items = await _bank_dicts(session, company_id, list(rows))
     return {"items": items, "total": len(items)}
 
 
@@ -1732,9 +1944,7 @@ async def get_bank_account(
     ).scalar_one_or_none()
     if not b:
         raise HTTPException(status_code=404, detail="Bank account not found")
-    d = _bank_to_dict(b)
-    d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [b]))[0]
 
 
 @router.post("/bank-accounts")
@@ -1786,7 +1996,7 @@ async def create_bank_account(
 
     # Create opening balance JE if opening_balance != 0
     if payload.opening_balance and payload.opening_balance != 0.0:
-        je_id = f"je:opening:{bank.id}"
+        je_id = _opening_je_id(bank.id)
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
@@ -1828,9 +2038,7 @@ async def create_bank_account(
         )
 
     await session.commit()
-    d = _bank_to_dict(bank)
-    d["balance"] = await _compute_bank_balance(session, company_id, code, float(payload.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
 @router.patch("/bank-accounts/{bank_id}")
@@ -1866,9 +2074,7 @@ async def patch_bank_account(
         b.is_active = payload.is_active
 
     await session.commit()
-    d = _bank_to_dict(b)
-    d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [b]))[0]
 
 
 # ---------------------------------------------------------------------------
@@ -2225,10 +2431,13 @@ class StmtLineCreatePayload(BaseModel):
     memo: str = ""
     amount: float | None = None  # defaults to line amount
     date: str | None = None      # defaults to line_date
+    # A bank line settled straight to a control account belongs to a party, and
+    # this is the only chance to say which: nothing downstream can infer it.
+    contact: str | None = None
 
 
 class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo}]
+    splits: list[dict]  # [{account_code, amount, memo, contact}]
 
 
 class StmtLinePatch(BaseModel):
@@ -2506,10 +2715,17 @@ async def create_je_from_line(
     idem_c = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "c")
     idem_p = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "p")
 
+    # The bank side has no party by nature; the offset side carries the one the
+    # operator named, so a bank line settled to a control account lands on that
+    # party's statement instead of in the unattributed bucket.
+    offset = {"account": payload.account_code, "debit": other_debit, "credit": other_credit}
+    if payload.contact:
+        offset["contact"] = payload.contact
     entries = [
         {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
-        {"account": payload.account_code, "debit": other_debit, "credit": other_credit},
+        offset,
     ]
+    await _check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -2566,11 +2782,15 @@ async def split_stmt_line(
     entries = [{"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit}]
     for s in payload.splits:
         amt = float(s.get("amount", 0))
-        entries.append({
+        split = {
             "account": s["account_code"],
             "debit": amt if sl.amount < 0 else 0.0,
             "credit": amt if sl.amount >= 0 else 0.0,
-        })
+        }
+        if s.get("contact"):
+            split["contact"] = s["contact"]
+        entries.append(split)
+    await _check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -2981,9 +3201,13 @@ async def cash_flow(
     else, which is what the indirect side computes. There is no exchange-rate
     reconciling item because every posting is stored in base currency at its own
     date, so a cash balance is never restated after the fact.
+
+    Cash comes from the ledger. A bank account holding an opening balance that no
+    journal entry carries is listed in `unbacked_bank_openings`, so the gap between
+    that account and the books is reported rather than closed behind the reader's
+    back with a figure the ledger does not support.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_date_range(date_from, date_to)
 
     accounts = (
         await session.execute(select(Account).where(Account.company_id == company_id))
@@ -3035,7 +3259,7 @@ async def cash_flow(
                 by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
         for code, signed in contras:
             acc = account_map.get(code)
-            atype = acc.account_type if acc else "asset"
+            atype = acc.account_type if acc else "unknown"
             if atype in ("revenue", "expense", "cogs"):
                 profit_movement += signed
             else:
@@ -3078,10 +3302,23 @@ async def cash_flow(
     indirect_total = net_profit - sum(non_cash_movement.values(), Decimal(0))
 
     closing_cash = opening_cash + period_cash
+    posted_ids = {je_id for je_id, _s, _t in posted}
+    unbacked = [
+        {
+            "bank_account_id": str(b.id),
+            "bank_name": b.bank_name,
+            "chart_account_code": b.chart_account_code,
+            "opening_balance": to_stored_float(round_money(Decimal(str(b.opening_balance)), base)),
+        }
+        for b in banks
+        if b.opening_balance and _opening_je_id(b.id) not in posted_ids
+    ]
     return {
         "date_from": date_from,
         "date_to": date_to,
         "cash_accounts": sorted(cash_codes),
+        # Named per bank account, not a bare count: fixing one means knowing which.
+        "unbacked_bank_openings": sorted(unbacked, key=lambda u: u["chart_account_code"]),
         "opening_cash": to_stored_float(round_money(opening_cash, base)),
         "closing_cash": to_stored_float(round_money(closing_cash, base)),
         "net_change": to_stored_float(round_money(period_cash, base)),

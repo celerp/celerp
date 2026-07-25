@@ -30,7 +30,10 @@ from ui.components.report_kit import (
     href as _href, period_subtitle as _period_subtitle, plain_error_response as _plain_error_response,
     print_shell as _print_shell, totals_chips as _totals_chips,
 )
-from ui.components.table import empty_state_cta, fmt_money, searchable_select
+from ui.components.table import (
+    PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
+    searchable_select,
+)
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
@@ -177,9 +180,16 @@ def setup_routes(app):
                 request=request,
             )
         base_currency = ""
+        contacts: list[dict] = []
+        contacts_total = 0
         try:
             accounts = (await api.get_chart(token)).get("items", [])
             base_currency = (await api.get_company(token)).get("currency") or ""
+            # One page of parties to open on; typing searches the whole list
+            # server-side, the same way the statement picker works.
+            resp = await api.list_contacts(token, {"limit": PARTY_PRELOAD})
+            contacts = resp.get("items") or []
+            contacts_total = int(resp.get("total") or len(contacts))
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -192,7 +202,8 @@ def setup_routes(app):
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
                                 date_from=date_from, date_to=date_to,
                                 currency=currency, rate=rate,
-                                base_currency=base_currency),
+                                base_currency=base_currency,
+                                contacts=contacts, contacts_total=contacts_total),
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
@@ -233,15 +244,20 @@ def setup_routes(app):
             account = str(form.get(f"account_{i}") or "").strip()
             debit = str(form.get(f"debit_{i}") or "").strip()
             credit = str(form.get(f"credit_{i}") or "").strip()
-            if not (account or debit or credit):
+            contact = str(form.get(f"contact_{i}") or "").strip()
+            if not (account or debit or credit or contact):
                 continue  # an untouched blank row carries no intent
-            lines.append({"account": account, "debit": debit, "credit": credit})
+            lines.append({"account": account, "debit": debit, "credit": credit,
+                          "contact": contact})
 
         error: str | None = None
         entries: list[dict] = []
         try:
+            # No party chosen means no contact key at all, so a line nobody
+            # named posts exactly the request it posted before the column existed.
             entries = [
-                {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0)}
+                {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0),
+                 **({"contact": l["contact"]} if l["contact"] else {})}
                 for l in lines
             ]
             if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):
@@ -589,10 +605,14 @@ def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
 
 # ── Manual journal entry form ───────────────────────────────────────────────
 
-def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]]) -> FT:
+def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
+                 contact_opts: list[tuple[str, str]]) -> FT:
     return Tr(
         Td(searchable_select(f"account_{idx}", acct_opts, value=line.get("account", ""),
                              placeholder=t("th.account"), cls_extra="cell-input")),
+        Td(searchable_select(f"contact_{idx}", contact_opts, value=line.get("contact", ""),
+                             placeholder=t("acct.je_line_party"), cls_extra="cell-input",
+                             search_url=PARTY_SEARCH_URL)),
         Td(Input(type="number", name=f"debit_{idx}", value=line.get("debit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"), cls="cell--number"),
@@ -612,15 +632,18 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
                         idem_token: str, error: str | None = None,
                         date_from: str = "", date_to: str = "",
                         currency: str = "", rate: str = "",
-                        base_currency: str = "") -> FT:
+                        base_currency: str = "",
+                        contacts: list[dict] | None = None,
+                        contacts_total: int = 0) -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
         if a.get("code") and a.get("is_active", True)
     ]
+    contact_opts = party_options(contacts or [])
     if not lines:
         lines = [{}, {}]  # double-entry needs two sides, so start with two rows
-    rows = [_je_line_row(str(i), line, acct_opts) for i, line in enumerate(lines)]
+    rows = [_je_line_row(str(i), line, acct_opts, contact_opts) for i, line in enumerate(lines)]
 
     js = f"""
 var celerpJeIdx = {len(lines)};
@@ -637,6 +660,9 @@ function celerpJeAddLine() {{
     // cloneNode fires neither DOMContentLoaded nor htmx:afterSettle, so the new
     // row's combobox must be initialised here.
     tbody.lastElementChild.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+    // The party picker searches server-side, and a cloned node carries its hx-
+    // attributes as inert markup until htmx is told to bind them.
+    if (window.htmx) htmx.process(tbody.lastElementChild);
     celerpJeTotals();
 }}
 function celerpJeRemoveLine(btn) {{
@@ -758,10 +784,11 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 open=bool(currency),
             ),
             Div("", id="je-rounding-preview", cls="report-section"),
-            Template(_je_line_row("__IDX__", {}, acct_opts), id="je-line-tpl"),
+            Template(_je_line_row("__IDX__", {}, acct_opts, contact_opts), id="je-line-tpl"),
             Table(
                 Thead(Tr(
                     Th(t("th.account")),
+                    Th(t("acct.je_line_party")),
                     Th(t("th.debit"), id="je-debit-head", cls="cell--number"),
                     Th(t("th.credit"), id="je-credit-head", cls="cell--number"),
                     Th("", id="je-local-debit-head", cls="cell--number"),
@@ -771,6 +798,12 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 Tbody(*rows, id="je-lines"),
                 cls="data-table",
             ),
+            P(t("acct.je_party_hint"), cls="cell--muted"),
+            # Say so when the picker opens on part of the contact list, so a short
+            # list is never read as the whole one.
+            (P(t("acct.picker_more_contacts", shown=len(contact_opts), total=contacts_total),
+               cls="cell--muted")
+             if contacts_total > len(contact_opts) else None),
             Div(
                 Button(t("btn.add_line"), type="button", cls="btn btn--secondary btn--sm",
                        onclick="celerpJeAddLine()"),

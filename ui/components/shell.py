@@ -268,10 +268,6 @@ function initCombobox(wrap) {
     if (next >= opts.length) next = 0;
     if (opts[next]) opts[next].classList.add('focused');
   }
-  function selectedValues() {
-    return Array.from(bag.querySelectorAll('input')).map(function(i) { return i.value; });
-  }
-
   function syncMultiLabel() {
     var n = bag.querySelectorAll('input').length;
     if (n === 0) { input.value = ''; input.placeholder = wrap.dataset.emptyLabel || ''; return; }
@@ -282,6 +278,19 @@ function initCombobox(wrap) {
     }
     var tmpl = wrap.dataset.countLabel || '{n} selected';
     input.value = tmpl.replace('{n}', n);
+  }
+
+  // The bag is the selection; the tick on an option is only a view of it. A server
+  // search swaps in options the server marked from the URL, and the restore path puts
+  // the options the page loaded with back, so neither knows about anything picked
+  // since. Both re-read the bag rather than trusting the markup that arrived.
+  function markSelected() {
+    if (!isMulti || !bag) return;
+    var chosen = Array.from(bag.querySelectorAll('input')).map(function(el) { return el.value; });
+    currentOpts().forEach(function(opt) {
+      var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
+      opt.classList.toggle('combobox-option--selected', chosen.indexOf(val) !== -1);
+    });
   }
 
   function toggleOpt(opt, val, label) {
@@ -332,6 +341,7 @@ function initCombobox(wrap) {
     // Restore original static options so user sees full list on re-focus after a search
     if (isServerSearch && originalListHTML) {
       list.innerHTML = originalListHTML;
+      markSelected();
     }
     // Clear the summary so typing searches rather than filtering against "3 selected".
     if (isMulti) input.value = '';
@@ -342,8 +352,9 @@ function initCombobox(wrap) {
   input.addEventListener('input', function() {
     if (isServerSearch) {
       if (!input.value) {
-        // User cleared the search — restore static options and show all
+        // User cleared the search, so put the static options back and show them all
         list.innerHTML = originalListHTML;
+        markSelected();
         filterOpts('');
       }
       // Non-empty: HTMX fires the server request and swaps results into the list
@@ -400,6 +411,9 @@ function initCombobox(wrap) {
       if (!input.value.trim()) {
         e.preventDefault();
       }
+    });
+    wrap.addEventListener('htmx:afterSwap', function(e) {
+      if (e.target === list) markSelected();
     });
   }
 }
@@ -1400,10 +1414,18 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         slot_items = []
 
     all_items_raw = sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+    # Drop what this company cannot see before deduplicating, not after. Two modules
+    # may offer the same section: accounting and reports both declare "reports",
+    # because the financial reports stay reachable when the reports module is off.
+    # Deduplicating first lets a disabled module's entry win the key and then be
+    # filtered out, taking the enabled module's entry with it and leaving the
+    # section missing from the nav altogether.
+    visible = [item for item in all_items_raw if _allowed(item) and _module_enabled(item)]
+
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
     all_items = []
-    for item in all_items_raw:
+    for item in visible:
         k = item.get("key", "")
         if k and k in seen_keys:
             continue
@@ -1411,8 +1433,6 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             seen_keys.add(k)
         all_items.append(item)
 
-    # Filter by role and enabled modules
-    all_items = [item for item in all_items if _allowed(item) and _module_enabled(item)]
     active = _resolve_active_nav_key(active, all_items, request=request)
 
     # Separate top-level (group=None) from grouped items

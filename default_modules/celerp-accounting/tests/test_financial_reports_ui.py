@@ -20,6 +20,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
+from ui.api_client import APIError
 from ui.routes.financial_reports import (
     MOVED_TABS, REPORTS, ledger_path, parse_subject, subject_token,
 )
@@ -103,9 +104,15 @@ _DEFAULTS = {
 
 def _mocks(**overrides):
     """Patch every api_client call this surface makes, returning the mocks by name
-    so a test can inspect what the page actually asked for."""
+    so a test can inspect what the page actually asked for.
+
+    An override is a return value, or a mock of its own where the answer depends
+    on what was asked: a stand-in that pages, or one that answers differently per
+    contact.
+    """
     values = {**_DEFAULTS, **overrides}
-    made = {name: AsyncMock(return_value=val) for name, val in values.items()}
+    made = {name: val if isinstance(val, AsyncMock) else AsyncMock(return_value=val)
+            for name, val in values.items()}
     patchers = [patch(f"ui.api_client.{name}", new=mock) for name, mock in made.items()]
     return made, patchers
 
@@ -460,19 +467,8 @@ async def test_a_merged_contact_is_substituted_only_in_its_own_section(ui_client
         if contact_id == "contact:old":
             return {"merged_into": "contact:9"}
         return _SOA
-    # get_soa needs call-dependent behaviour, so it is patched by hand here.
-    made, _ = _mocks()
-    made["get_soa"] = AsyncMock(side_effect=_soa)
-    ps = [patch(f"ui.api_client.{n}", new=m) for n, m in made.items()]
-    for p in ps:
-        p.start()
-    try:
-        r = await ui_client.get(
-            "/reports/statement?account=c:contact:old&account=a:6200",
-            cookies=_cookies())
-    finally:
-        for p in ps:
-            p.stop()
+    r = await _get(ui_client, "/reports/statement?account=c:contact:old&account=a:6200",
+                   get_soa=AsyncMock(side_effect=_soa))
     assert r.status_code == 200
     assert "merged into" in r.text
     assert "Rent" in r.text  # the other selection is untouched
@@ -484,18 +480,8 @@ async def test_a_tombstone_and_its_winner_together_render_the_winner_once(ui_cli
         if contact_id == "contact:old":
             return {"merged_into": "contact:9"}
         return _SOA
-    made, _ = _mocks()
-    made["get_soa"] = AsyncMock(side_effect=_soa)
-    ps = [patch(f"ui.api_client.{n}", new=m) for n, m in made.items()]
-    for p in ps:
-        p.start()
-    try:
-        r = await ui_client.get(
-            "/reports/statement?account=c:contact:old&account=c:contact:9",
-            cookies=_cookies())
-    finally:
-        for p in ps:
-            p.stop()
+    r = await _get(ui_client, "/reports/statement?account=c:contact:old&account=c:contact:9",
+                   get_soa=AsyncMock(side_effect=_soa))
     assert r.status_code == 200
     # One closing-balance block for the winner, not two.
     assert r.text.count("report-total") == 1
@@ -516,6 +502,142 @@ async def test_the_picker_offers_contacts_and_chart_accounts_together(ui_client)
     assert r.status_code == 200
     assert subject_token("c", "contact:9") in r.text
     assert subject_token("a", "1120") in r.text
+
+
+# ---------------------------------------------------------------------------
+# Every contact is reachable, and the page says what it is showing
+# ---------------------------------------------------------------------------
+
+def _many_contacts(n: int) -> list[dict]:
+    """n customers, zero-padded so a plain name sort keeps them in seeded order."""
+    return [{"id": f"contact:{i:04d}", "name": f"Contact {i:04d}", "contact_type": "customer"}
+            for i in range(n)]
+
+
+def _contacts_api(contacts: list[dict]):
+    """Stand-in for the contacts endpoint: filters, sorts and pages as it does.
+
+    A mock that returns the same list whatever it is asked for cannot show a
+    truncation, because truncation is invisible in the response body. This one
+    honours q, contact_type, limit and offset, so a page that asks for less than
+    the whole set gets less than the whole set.
+    """
+    async def _call(_token, params=None):
+        params = params or {}
+        rows = list(contacts)
+        q = (params.get("q") or "").lower()
+        if q:
+            rows = [c for c in rows if q in (c.get("name") or "").lower()]
+        ctype = params.get("contact_type")
+        if ctype:
+            allowed = {"customer": ("customer", "both"), "vendor": ("vendor", "both")}[ctype]
+            rows = [c for c in rows if (c.get("contact_type") or "customer") in allowed]
+        rows.sort(key=lambda c: ((c.get("name") or "").lower(), c.get("id") or ""))
+        offset, limit = int(params.get("offset") or 0), int(params.get("limit") or 50)
+        return {"items": rows[offset:offset + limit], "total": len(rows)}
+    return AsyncMock(side_effect=_call)
+
+
+async def _get_with_contacts(ui_client, url, contacts):
+    return await _get(ui_client, url, list_contacts=_contacts_api(contacts))
+
+
+@pytest.mark.asyncio
+async def test_a_contact_past_the_first_page_is_reachable_by_typing(ui_client):
+    """The picker opens on a page of contacts, so the rest have to be searchable.
+
+    A company past the page size otherwise gets a control that cannot select some
+    of its own customers and says nothing about it.
+    """
+    r = await _get_with_contacts(ui_client, "/reports/statement/subject-options?q=Contact+1000",
+                                 _many_contacts(1001))
+    assert r.status_code == 200
+    assert subject_token("c", "contact:1000") in r.text
+
+
+@pytest.mark.asyncio
+async def test_the_picker_search_offers_contacts_and_chart_accounts_together(ui_client):
+    """Searching narrows the same pool the picker opens with, not a smaller one."""
+    r = await _get_with_contacts(ui_client, "/reports/statement/subject-options?q=Contact+0007",
+                                 _many_contacts(1001))
+    assert subject_token("c", "contact:0007") in r.text
+    accounts = await _get_with_contacts(ui_client, "/reports/statement/subject-options?q=Rent",
+                                        _many_contacts(1001))
+    assert subject_token("a", "6200") in accounts.text
+
+
+@pytest.mark.asyncio
+async def test_a_selection_stays_marked_when_the_options_come_from_a_search(ui_client):
+    """Search results replace the option list, so they have to carry the selection
+    with them; an option that is selected but drawn unselected reads as a way to
+    add it, while clicking it takes it off the statement."""
+    page = await _get_with_contacts(ui_client, "/reports/statement?account=c:contact:0007",
+                                    _many_contacts(1001))
+    assert "/reports/statement/subject-options?account=c%3Acontact%3A0007" in page.text
+    r = await _get_with_contacts(
+        ui_client,
+        "/reports/statement/subject-options?account=c:contact:0007&q=Contact+0007",
+        _many_contacts(1001))
+    assert "combobox-option--selected" in r.text
+
+
+@pytest.mark.asyncio
+async def test_the_all_customers_quick_pick_covers_the_customers_past_the_first_page(ui_client):
+    """The month-end run is the one place a missing customer costs money, so the
+    button stands for every customer rather than for the ones already loaded."""
+    r = await _get_with_contacts(ui_client, "/reports/statement?pick=customers",
+                                 _many_contacts(1001))
+    assert r.status_code == 200
+    asked = [call.args[1] for call in r.mocks["get_soa"].await_args_list]
+    assert "contact:1000" in asked
+    assert len(asked) == 1001
+
+
+@pytest.mark.asyncio
+async def test_the_picker_says_when_it_is_showing_only_the_first_contacts(ui_client):
+    """Showing part of a list without saying so is the truncation this replaces."""
+    many = await _get_with_contacts(ui_client, "/reports/statement", _many_contacts(1001))
+    assert "1001" in many.text
+    assert "Type to search" in many.text
+    few = await _get_with_contacts(ui_client, "/reports/statement", _many_contacts(3))
+    assert "Type to search" not in few.text
+
+
+@pytest.mark.asyncio
+async def test_the_picker_search_reports_a_failure_instead_of_an_empty_list(ui_client):
+    """An API failure and no matches look identical in an empty option list, and
+    the reader would act on the wrong one of the two."""
+    r = await _get(ui_client, "/reports/statement/subject-options?q=Acme",
+                   list_contacts=AsyncMock(side_effect=APIError(500, "boom")))
+    assert r.status_code == 200
+    assert "combobox-option--empty" in r.text
+    assert "No results" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_the_print_and_csv_buttons_carry_every_selected_subject(ui_client):
+    """The two buttons beside a statement export what is on screen. Carrying one
+    subject out of several hands over a month-end run with the rest missing and
+    nothing saying so."""
+    r = await _get(ui_client, "/reports/statement?account=c:contact:9&account=a:6200")
+    assert r.status_code == 200
+    for path in (REPORTS["statement"][1], REPORTS["statement"][2]):
+        links = [part for part in r.text.split('"') if part.startswith(f"{path}?")]
+        assert links, f"no link to {path} on the page"
+        assert all(link.count("account=") == 2 for link in links), links
+
+
+def test_the_cash_flow_statement_labels_the_column_its_figures_sit_in():
+    """Every other report names its numeric column; an unlabelled one leaves the
+    reader to infer whether the figures are the movement or the balance."""
+    from fasthtml.common import to_xml
+    from ui.routes.financial_reports import _cash_flow_view
+
+    markup = to_xml(_cash_flow_view(_CASH_FLOW, "THB"))
+    assert markup.count("<thead>") >= 2, "the direct section and the indirect table"
+    assert markup.count("<table") == markup.count("<thead>")
+    # Numeric headers sit right-aligned over their figures, as elsewhere.
+    assert 'class="cell--number">Amount' in markup
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +702,95 @@ async def test_action_bar_urls_are_encoded(ui_client):
 
 
 # ---------------------------------------------------------------------------
+# Module matrix: the reports module is not what makes the reports reachable
+# ---------------------------------------------------------------------------
+
+# A company running the books without the reports module installed. The financial
+# reports belong to accounting, which owns the figures; only their URL sits under
+# /reports, and that is the whole point of this matrix.
+_ACCOUNTING_ONLY = ["celerp-accounting", "celerp-inventory", "celerp-sales"]
+
+
+async def _get_without_the_reports_module(ui_client, url):
+    _made, ps = _mocks()
+    for p in ps:
+        p.start()
+    try:
+        return await ui_client.get(
+            url, cookies={"celerp_token": make_test_token(modules=_ACCOUNTING_ONLY)})
+    finally:
+        for p in ps:
+            p.stop()
+
+
+@pytest.mark.parametrize("key", sorted(REPORTS))
+@pytest.mark.asyncio
+async def test_every_financial_report_survives_the_reports_module_being_off(ui_client, key):
+    """Turning off celerp-reports must not take the books away with it.
+
+    The two modules both offer a Reports section and both would answer for the
+    same URL, so it is easy for the financial reports to end up depending on the
+    operational module by accident. Each page is checked on its own here rather
+    than through the index, since the index rendering does not prove the page
+    behind the card answers.
+    """
+    r = await _get_without_the_reports_module(ui_client, REPORTS[key][0])
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_the_reports_section_stays_in_the_nav_without_the_reports_module(ui_client):
+    """Reachable by URL is not reachable by a user. Both modules declare the same
+    nav key, so whichever survives the deduplication has to be the enabled one."""
+    r = await _get_without_the_reports_module(ui_client, "/reports")
+    assert r.status_code == 200, r.text
+    # The sidebar only, not the page: the index links to itself from its own cards.
+    sidebar = r.text.split("</nav>")[0]
+    assert 'href="/reports"' in sidebar
+
+
+def test_a_disabled_module_cannot_take_a_section_the_enabled_one_also_offers():
+    """The nav drops what the company cannot see before it deduplicates keys.
+
+    Two modules declare the section "reports": accounting, because the financial
+    reports ship with the figures, and reports, because it adds the operational
+    ones. Deduplicating first lets the disabled module's entry claim the key and
+    then be filtered out, taking the surviving module's entry with it. Whether
+    that happens used to depend on which module happened to be loaded first, so
+    the order is pinned here with the disabled one deliberately in front.
+    """
+    from unittest.mock import patch
+
+    from fasthtml.common import to_xml
+    from starlette.requests import Request
+
+    from ui.components.shell import _sidebar
+
+    slots = [
+        {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports",
+         "order": 51, "_module": "celerp-reports"},
+        {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports",
+         "order": 51, "_module": "celerp-accounting"},
+    ]
+    request = Request({"type": "http", "method": "GET", "path": "/reports",
+                       "query_string": b"", "headers": []})
+
+    with patch("celerp.modules.slots.get", return_value=slots), \
+         patch("ui.config.get_enabled_modules", return_value={"celerp-accounting"}):
+        markup = to_xml(_sidebar("reports", request=request))
+
+    assert 'href="/reports"' in markup
+
+
+@pytest.mark.asyncio
+async def test_the_reports_index_still_lists_the_financial_reports_without_that_module(ui_client):
+    r = await _get_without_the_reports_module(ui_client, "/reports")
+    assert r.status_code == 200, r.text
+    for key, (path, _print, _csv, _title) in REPORTS.items():
+        assert f'href="{path}"' in r.text, f"{key} card missing from the index"
+
+
+# ---------------------------------------------------------------------------
 # Locale keys
 # ---------------------------------------------------------------------------
 
@@ -587,17 +798,27 @@ _NEW_KEYS = [
     "acct.tab_cash_flow", "acct.cf_direct", "acct.cf_indirect", "acct.cf_operating",
     "acct.cf_investing", "acct.cf_financing", "acct.cf_opening_cash",
     "acct.cf_closing_cash", "acct.cf_net_change", "acct.cf_methods_disagree",
-    "acct.reports_moved_notice", "acct.soa_source_docs", "acct.soa_source_ledger",
+    "acct.reports_moved_notice", "acct.soa_source_ledger",
     "acct.soa_pick_placeholder", "acct.soa_selected_count", "acct.soa_pick_ar_balance",
     "acct.soa_pick_ap_balance", "acct.soa_pick_all_customers",
-    "label.account",
+    "acct.picker_more_contacts",
+    "label.account", "label.vendor_bill", "acct.soa_kind_journal",
+    "acct.je_line_party", "acct.je_party_hint",
+    "acct.cf_unbacked_opening", "acct.opening_balance_unbacked",
     "rpt.cash_flow_desc", "rpt.trial_balance_desc", "rpt.general_ledger_desc",
     "rpt.statement_desc",
 ]
 
 # Deleted with the batch print panel. Presence checks alone would not notice a key
 # left behind in ten locales after being removed from one.
-_REMOVED_KEYS = ["acct.soa_batch_title", "acct.soa_batch_none_selected"]
+_REMOVED_KEYS = [
+    "acct.soa_batch_title", "acct.soa_batch_none_selected",
+    # Every statement is a slice of the ledger now, so there is no second source
+    # to name and no wording that says a party statement came from documents.
+    "acct.soa_source_docs",
+    # Renamed: the same note now appears on the journal entry form too.
+    "acct.soa_picker_more_contacts",
+]
 
 
 def _locales():

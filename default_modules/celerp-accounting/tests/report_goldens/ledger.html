@@ -1,0 +1,84 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Ledger: 1120 Accounts Receivable</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div class="flex-row flex-between">
+      <div class="date-filter-bar">
+        <div class="preset-bar">
+<a href="/reports/ledger/1120?preset=this_month&amp;src=trial-balance" class="preset-btn ">This month</a><a href="/reports/ledger/1120?preset=last_3m&amp;src=trial-balance" class="preset-btn ">Last 3 months</a><a href="/reports/ledger/1120?preset=last_6m&amp;src=trial-balance" class="preset-btn ">Last 6 months</a><a href="/reports/ledger/1120?preset=last_12m&amp;src=trial-balance" class="preset-btn ">Last 12 months</a><a href="/reports/ledger/1120?preset=this_fy&amp;src=trial-balance" class="preset-btn ">This fiscal year</a><a href="/reports/ledger/1120?preset=last_fy&amp;src=trial-balance" class="preset-btn ">Last fiscal year</a><a href="/reports/ledger/1120?preset=all&amp;src=trial-balance" class="preset-btn ">All time</a>        </div>
+<form enctype="multipart/form-data" action="/reports/ledger/1120" method="get" class="date-custom-form">          <input type="hidden" name="src" value="trial-balance">
+          <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
+<span class="date-sep">--</span>          <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>      </div>
+<a href="/reports/trial-balance?from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">← Trial Balance</a>    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Ref</th>
+          <th>Type</th>
+          <th class="cell--number">Debit</th>
+          <th class="cell--number">Credit</th>
+          <th class="cell--number">Balance</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cell--mono">2026-01-01</td>
+          <td></td>
+          <td class="cell--muted">Opening Balance</td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿0.00</td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-01-05</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td>Auto JE for doc:<id> finalized</td>
+          <td class="cell--number">฿100.00</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿100.00</td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-01-20</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td>Auto JE for doc:<id> payment</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿40.00</td>
+          <td class="cell--number">฿60.00</td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-02-10</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td>Auto JE for doc:<id> finalized</td>
+          <td class="cell--number">฿30.00</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿90.00</td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-02-15</td>
+          <td></td>
+          <td>Late delivery charge</td>
+          <td class="cell--number">฿15.00</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿105.00</td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-03-31</td>
+          <td></td>
+          <td>
+<strong>Closing Balance</strong>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td class="cell--number">
+<strong>฿105.00</strong>          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>

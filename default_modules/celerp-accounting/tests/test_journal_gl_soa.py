@@ -797,6 +797,176 @@ async def test_general_ledger_rows_carry_debit_normal(client):
 
 
 # ---------------------------------------------------------------------------
+# Party subledgers: contact filtering on the ledger and the general ledger
+# ---------------------------------------------------------------------------
+
+async def _finalized_invoice(client, tok, contact, total, issue_date):
+    """An invoice that has reached the books, so its JE carries the party."""
+    doc = await _invoice(client, tok, total=total, contact_id=contact, issue_date=issue_date)
+    r = await client.post(f"/docs/{doc}/finalize", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return doc
+
+
+async def _ledger(client, tok, code, **params):
+    r = await client.get(f"/accounting/ledger/{code}", headers=_h(tok), params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _gl_rows(client, tok, **params):
+    r = await client.get("/accounting/general-ledger", headers=_h(tok), params=params)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    return data, {row["code"]: row for row in data["rows"]}
+
+
+@pytest.mark.asyncio
+async def test_ledger_rejects_a_contact_filter_that_matches_no_contact(client):
+    """A mistyped contact must not read as "this customer owes nothing".
+
+    The contact filter is what turns a control account into a subledger, so an
+    id that matches nothing has to be refused rather than answered with an
+    empty statement the reader cannot tell from a settled account.
+    """
+    tok = await _reg(client)
+    r = await client.get("/accounting/ledger/1120", headers=_h(tok),
+                         params={"contact_id": "contact:not-a-real-id"})
+    assert r.status_code == 422, r.text
+    assert "contact_id" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ledger_reports_lines_with_no_party_under_the_empty_contact(client):
+    """Every line on the control account belongs to exactly one bucket: a
+    contact, or the unattributed one. The buckets must sum to the account."""
+    tok = await _reg(client)
+    contact = await _contact(client, tok, name="Alpha")
+    await _finalized_invoice(client, tok, contact, 100.0, "2026-01-05")
+    await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 25.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 25.0},
+    ], ts="2026-01-07")
+
+    everything = await _ledger(client, tok, "1120")
+    party = await _ledger(client, tok, "1120", contact_id=contact)
+    unattributed = await _ledger(client, tok, "1120", contact_id="")
+
+    assert abs(party["closing_balance"] - 100.0) < 0.01
+    assert abs(unattributed["closing_balance"] - 25.0) < 0.01
+    assert abs(party["closing_balance"] + unattributed["closing_balance"]
+               - everything["closing_balance"]) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_general_ledger_filters_by_contact(client):
+    """The same filter as the account ledger, on the report it drills down from,
+    and the two agree account by account."""
+    tok = await _reg(client)
+    alpha = await _contact(client, tok, name="Alpha")
+    beta = await _contact(client, tok, name="Beta")
+    await _finalized_invoice(client, tok, alpha, 100.0, "2026-01-05")
+    await _finalized_invoice(client, tok, beta, 250.0, "2026-01-06")
+
+    data, rows = await _gl_rows(client, tok, contact_id=alpha)
+    assert data["contact_id"] == alpha
+    assert abs(rows["1120"]["closing"] - 100.0) < 0.01
+    assert abs(rows["4100"]["closing"] - 100.0) < 0.01
+
+    led = await _ledger(client, tok, "1120", contact_id=alpha)
+    assert abs(led["closing_balance"] - rows["1120"]["closing"]) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_general_ledger_contact_filter_surfaces_unattributed_lines(client):
+    """A filtered general ledger never quietly loses a line: the per-contact
+    views plus the unattributed view add back up to the unfiltered report."""
+    tok = await _reg(client)
+    alpha = await _contact(client, tok, name="Alpha")
+    beta = await _contact(client, tok, name="Beta")
+    await _finalized_invoice(client, tok, alpha, 100.0, "2026-01-05")
+    await _finalized_invoice(client, tok, beta, 250.0, "2026-01-06")
+    await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 25.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 25.0},
+    ], ts="2026-01-07")
+
+    _, everything = await _gl_rows(client, tok)
+    _, for_alpha = await _gl_rows(client, tok, contact_id=alpha)
+    _, for_beta = await _gl_rows(client, tok, contact_id=beta)
+    _, unattributed = await _gl_rows(client, tok, contact_id="")
+
+    assert abs(unattributed["1120"]["closing"] - 25.0) < 0.01
+    parts = sum(part["1120"]["closing"] for part in (for_alpha, for_beta, unattributed))
+    assert abs(parts - everything["1120"]["closing"]) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(client):
+    tok = await _reg(client)
+    r = await client.get("/accounting/general-ledger", headers=_h(tok),
+                         params={"contact_id": "contact:not-a-real-id"})
+    assert r.status_code == 422, r.text
+    assert "contact_id" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Account codes with no chart entry
+# ---------------------------------------------------------------------------
+
+async def _import_je(client, tok, entries, ts="2026-01-10"):
+    """Post straight to the projection, the only way a code with no chart entry
+    gets a posted line (manual entry refuses an account that does not exist)."""
+    r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}",
+        "event_type": "acc.journal_entry.created",
+        "data": {"status": "posted", "ts": ts, "entries": entries},
+        "source": "test", "idempotency_key": str(uuid.uuid4()),
+    }]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+
+
+@pytest.mark.asyncio
+async def test_ledger_opens_a_posted_code_that_has_no_account_row(client):
+    """The general ledger lists such a code, so its drilldown must open. The
+    type is reported as unknown rather than guessed."""
+    tok = await _reg(client)
+    await _import_je(client, tok, [
+        {"account": "9999", "debit": 70.0, "credit": 0},
+        {"account": "3200", "debit": 0, "credit": 70.0},
+    ])
+
+    led = await _ledger(client, tok, "9999")
+    assert led["account_type"] == "unknown"
+    assert abs(led["closing_balance"] - 70.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_ledger_and_general_ledger_agree_on_the_normal_side(client):
+    """One debit-normal rule for both endpoints: a drilldown can never
+    contradict the sign of the report row it was opened from.
+
+    Both accounts here sit outside the five everyday types: "other" is a type
+    the chart importer accepts, and 9999 has no chart entry at all.
+    """
+    tok = await _reg(client)
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "9100", "name": "Suspense", "account_type": "other"})
+    assert r.status_code == 200, r.text
+    await _import_je(client, tok, [
+        {"account": "9100", "debit": 0, "credit": 40.0},
+        {"account": "9999", "debit": 40.0, "credit": 0},
+    ])
+
+    _, rows = await _gl_rows(client, tok)
+    for code in ("9100", "9999"):
+        led = await _ledger(client, tok, code)
+        assert abs(led["closing_balance"] - rows[code]["closing"]) < 0.01, code
+        assert led["account_type"] == rows[code]["account_type"], code
+        assert led["debit_normal"] is rows[code]["debit_normal"], code
+
+
+# ---------------------------------------------------------------------------
 # Fiscal year close regression
 # ---------------------------------------------------------------------------
 
@@ -907,6 +1077,23 @@ async def test_cross_report_consistency(client):
     assert abs(soa["closing_balance"] - aging_total) < 0.01
 
 
+def _dated_report_paths(contact: str) -> list[str]:
+    """Every report endpoint that takes a date_from/date_to pair.
+
+    One list, so a date filter that is refused on one report is refused on all
+    of them and the tests below cannot drift apart from each other.
+    """
+    return [
+        "/accounting/journal",
+        "/accounting/ledger/4100",
+        "/accounting/trial-balance",
+        "/accounting/general-ledger",
+        "/accounting/pnl",
+        "/accounting/cash-flow",
+        f"/accounting/soa/{contact}",
+    ]
+
+
 @pytest.mark.parametrize("param", ["date_from", "date_to"])
 @pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45", "20260105", "2026-W01"])
 async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
@@ -920,24 +1107,43 @@ async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
     await _post_manual_je(client, tok, _bal(100.0))
     contact = await _contact(client, tok)
 
-    for path in ("/accounting/journal", "/accounting/general-ledger",
-                 f"/accounting/soa/{contact}"):
+    for path in _dated_report_paths(contact):
         r = await client.get(path, headers=_h(tok), params={param: bad})
         assert r.status_code == 422, f"{path} accepted {bad!r}: {r.text}"
         assert param in r.json()["detail"]
 
 
-async def test_report_date_filters_accept_valid_dates(client):
-    """The strict check does not reject the dates the UI actually sends."""
+async def test_report_date_filters_reject_an_inverted_range(client):
+    """A start date after the end date is refused for the same reason a
+    malformed one is: it can only ever produce an empty report, and an empty
+    report reads as a settled, quiet period rather than as a bad question.
+    """
     tok = await _reg(client)
     await _post_manual_je(client, tok, _bal(100.0))
     contact = await _contact(client, tok)
 
-    for path in ("/accounting/journal", "/accounting/general-ledger",
-                 f"/accounting/soa/{contact}"):
+    for path in _dated_report_paths(contact):
+        r = await client.get(path, headers=_h(tok), params={
+            "date_from": "2026-12-31", "date_to": "2026-01-01"})
+        assert r.status_code == 422, f"{path} accepted an inverted range: {r.text}"
+        detail = r.json()["detail"]
+        assert "date_from" in detail and "date_to" in detail, detail
+
+
+async def test_report_date_filters_accept_valid_dates(client):
+    """The strict check does not reject the dates the UI actually sends,
+    including a single-day range where the two ends are equal."""
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(100.0))
+    contact = await _contact(client, tok)
+
+    for path in _dated_report_paths(contact):
         r = await client.get(path, headers=_h(tok),
                              params={"date_from": "2026-01-01", "date_to": "2026-12-31"})
         assert r.status_code == 200, f"{path}: {r.text}"
+        same_day = await client.get(path, headers=_h(tok),
+                                    params={"date_from": "2026-01-15", "date_to": "2026-01-15"})
+        assert same_day.status_code == 200, f"{path}: {same_day.text}"
 
 
 # --- Foreign-currency manual journal entries (J2) ---------------------------
@@ -1250,3 +1456,218 @@ async def test_manual_je_fx_residual_stays_within_its_bound(client):
         {"account": "1111", "debit": 0, "credit": 100.00},
     ], fx={"currency": "USD", "rate": 300.25})
     assert r.status_code == 200, r.text
+
+
+async def test_creating_an_account_with_an_unknown_type_is_rejected(client):
+    """An account type the reports cannot classify has no honest sign convention,
+    so it is refused at the door rather than reported as something it is not."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/accounts", json={
+        "code": "1191", "name": "Odd", "account_type": "liabilty"}, headers=_h(tok))
+    assert r.status_code == 422, r.text
+    assert "asset" in r.json()["detail"] and "liability" in r.json()["detail"]
+
+
+async def test_patching_an_account_to_an_unknown_type_is_rejected(client):
+    tok = await _reg(client)
+    r = await client.patch("/accounting/accounts/1111",
+                           json={"account_type": "cash"}, headers=_h(tok))
+    assert r.status_code == 422, r.text
+    assert "cash" not in r.json()["detail"]
+
+
+async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):
+    """as_of silently ignored means a balance sheet for the wrong date, reported
+    with the same confidence as a right one."""
+    tok = await _reg(client)
+    r = await client.get("/accounting/balance-sheet?as_of=2026-W01", headers=_h(tok))
+    assert r.status_code == 422, r.text
+    assert "as_of" in r.json()["detail"]
+
+
+def test_the_screen_offers_exactly_the_account_types_the_api_accepts():
+    """The chart screen and the API run in separate processes, so the two copies
+    of this list can drift silently. The API is the authoritative side."""
+    from celerp_accounting.routes import ACCOUNT_TYPES
+    from ui.routes.accounting_import import ACCOUNT_TYPES as OFFERED
+    assert set(OFFERED) == set(ACCOUNT_TYPES)
+
+
+# ---------------------------------------------------------------------------
+# The statement as a subledger: party on a line, and the tie-out that proves it
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_manual_entry_named_to_a_party_reaches_that_party_statement(client):
+    """The point of the line-level contact. An adjustment posted straight to the
+    receivable control account is real money the customer owes, and before the
+    line could name a party it could only ever sit in the unattributed bucket
+    while the customer's own statement said nothing about it."""
+    tok = await _reg(client)
+    contact = await _contact(client, tok, name="Adjusted Co")
+
+    r = await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 45.0, "credit": 0, "contact": contact},
+        {"account": "4100", "debit": 0, "credit": 45.0},
+    ], ts="2026-03-05", memo="Rebill of courier cost")
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+
+    soa = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
+    assert abs(soa["closing_balance"] - 45.0) < 0.01
+    row = [x for x in soa["rows"] if x["je_id"] == je_id]
+    assert len(row) == 1, f"the entry is missing from the statement: {soa['rows']}"
+    assert row[0]["kind"] == "journal"
+    assert abs(row[0]["debit"] - 45.0) < 0.01
+
+    # And the same line under the control account's own party filter.
+    party = await _ledger(client, tok, "1120", contact_id=contact)
+    assert abs(party["closing_balance"] - 45.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_an_entry_with_no_party_stays_off_statements_and_in_the_unattributed_bucket(client):
+    """Nothing is silently attributed. An entry nobody named belongs to no
+    statement, and it stays visible on the control account so the difference
+    between the statements and the balance sheet is always explainable."""
+    tok = await _reg(client)
+    contact = await _contact(client, tok, name="Named Co")
+
+    assert (await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 30.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 30.0},
+    ], ts="2026-03-06")).status_code == 200
+
+    soa = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
+    assert soa["rows"] == []
+    assert soa["closing_balance"] == 0
+
+    unattributed = await _ledger(client, tok, "1120", contact_id="")
+    assert abs(unattributed["closing_balance"] - 30.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_every_statement_sums_back_to_the_control_accounts(client):
+    """The tie-out, and the reason the statement reads the ledger at all.
+
+    A statement of account is a subledger: every party's statement plus the
+    unattributed bucket has to add up to the receivable and payable control
+    accounts, or the balance sheet says one thing and the statements say another
+    with nothing on screen to explain the difference.
+
+    The fixture is deliberately mixed: two customers with invoices, a payment,
+    and an adjustment each side of the attribution line, plus a supplier on the
+    payable account, so both control accounts and both signs are in the sum.
+
+    This one is an invariant rather than a defect reproduction. It holds on the
+    document-sourced statement too, because there both sides came from the same
+    document totals. It is here to stay true afterwards, once the statement is a
+    slice of the ledger and any posting at all can reach it."""
+    tok = await _reg(client)
+    alpha = await _contact(client, tok, name="Alpha")
+    beta = await _contact(client, tok, name="Beta")
+    gamma = await _contact(client, tok, name="Gamma", ctype="supplier")
+
+    inv_a = await _invoice(client, tok, total=100.0, contact_id=alpha, issue_date="2026-01-05")
+    assert (await client.post(f"/docs/{inv_a}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.post(f"/docs/{inv_a}/payment", headers=_h(tok), json={
+        "payment_date": "2026-01-20", "amount": 40.0, "method": "transfer", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    inv_b = await _invoice(client, tok, total=250.0, contact_id=beta, issue_date="2026-02-01")
+    assert (await client.post(f"/docs/{inv_b}/finalize", headers=_h(tok))).status_code == 200
+
+    po = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "purchase_order", "contact_id": gamma, "issue_date": "2026-02-10",
+        "line_items": [{"name": "Steel", "quantity": 1, "unit_price": 500.0, "line_total": 500.0}],
+        "subtotal": 500.0, "tax": 0.0, "total": 500.0})
+    assert po.status_code == 200, po.text
+    assert (await client.post(f"/docs/{po.json()['id']}/finalize", headers=_h(tok))).status_code == 200
+
+    assert (await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 15.0, "credit": 0, "contact": beta},
+        {"account": "4100", "debit": 0, "credit": 15.0},
+    ], ts="2026-02-15")).status_code == 200
+    assert (await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 7.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 7.0},
+    ], ts="2026-02-16")).status_code == 200
+
+    statements = []
+    for cid in (alpha, beta, gamma):
+        soa = (await client.get(f"/accounting/soa/{cid}", headers=_h(tok))).json()
+        statements.append(soa["closing_balance"])
+
+    # Both reports net debits against credits; the ledger just reports each
+    # account on its own normal side, so the payable figures flip to match.
+    receivable = await _ledger(client, tok, "1120")
+    payable = await _ledger(client, tok, "2110")
+    unattributed = (
+        (await _ledger(client, tok, "1120", contact_id=""))["closing_balance"]
+        - (await _ledger(client, tok, "2110", contact_id=""))["closing_balance"]
+    )
+    control = receivable["closing_balance"] - payable["closing_balance"]
+
+    assert abs(sum(statements) + unattributed - control) < 0.01, (
+        f"statements {statements} plus unattributed {unattributed} "
+        f"do not sum to the control accounts {control}")
+    assert abs(receivable["closing_balance"] - 332.0) < 0.01, "the fixture itself moved"
+    assert abs(payable["closing_balance"] - 500.0) < 0.01, "the fixture itself moved"
+
+
+@pytest.mark.asyncio
+async def test_a_statement_nets_what_a_party_owes_against_what_it_is_owed(client):
+    """One party can be both customer and supplier. The statement is that party's
+    net position on both control accounts, debits positive, so what the company
+    owes them reads as a negative rather than stacking on the same side."""
+    tok = await _reg(client)
+    both = await _contact(client, tok, name="Both Ways")
+
+    assert (await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 100.0, "credit": 0, "contact": both},
+        {"account": "4100", "debit": 0, "credit": 100.0},
+    ], ts="2026-03-01")).status_code == 200
+    assert (await _post_manual_je(client, tok, [
+        {"account": "6200", "debit": 130.0, "credit": 0},
+        {"account": "2110", "debit": 0, "credit": 130.0, "contact": both},
+    ], ts="2026-03-02")).status_code == 200
+
+    soa = (await client.get(f"/accounting/soa/{both}", headers=_h(tok))).json()
+    assert len(soa["rows"]) == 2
+    assert abs(soa["closing_balance"] + 30.0) < 0.01, (
+        f"expected a net 30 owed to the party, got {soa['closing_balance']}")
+
+
+@pytest.mark.asyncio
+async def test_a_line_naming_a_contact_that_is_not_there_is_refused(client):
+    """A party that resolves to nothing would post to a control account and then
+    be missing from every statement, with nothing on screen to say why."""
+    tok = await _reg(client)
+    r = await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 10.0, "credit": 0, "contact": "contact:nobody"},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ])
+    assert r.status_code == 422, r.text
+    assert "contact:nobody" in r.json()["detail"]
+    assert (await _journal(client, tok))["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
+    """Same rule at the import boundary, which writes entries without going
+    through the manual entry endpoint."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}",
+        "event_type": "acc.journal_entry.created",
+        "data": {"status": "posted", "ts": "2026-01-15", "entries": [
+            {"account": "1120", "debit": 10.0, "credit": 0, "contact": "contact:nobody"},
+            {"account": "4100", "debit": 0, "credit": 10.0},
+        ]},
+        "source": "test", "idempotency_key": str(uuid.uuid4()),
+    }]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] == 0, "the entry was imported despite naming no real contact"
+    assert any("contact:nobody" in e for e in body["errors"]), body["errors"]
+    assert (await _journal(client, tok))["entries"] == []

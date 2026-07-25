@@ -538,3 +538,73 @@ async def test_je_form_renders_hidden_book_total_chips(ui_client):
 # Statement batch print run
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# Naming the party on a journal line
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_je_form_offers_a_party_on_every_line(ui_client):
+    """A line posted to a control account belongs to someone, so the form has to
+    let the person posting it say who. Searchable, because a company's contact
+    list runs past ten."""
+    r = await _get(ui_client, "/accounting/journal/new")
+    assert r.status_code == 200
+    html = r.text
+    assert t("acct.je_line_party") in html
+    assert 'name="contact_0"' in html and 'name="contact_1"' in html
+    # The picker searches the whole contact list rather than the page it opened on.
+    assert "/contacts/search-options?contact_type=all&amp;add_new=0" in html
+    # Both the rendered rows and the template a new row is cloned from.
+    assert 'name="contact___IDX__"' in html
+
+
+@pytest.mark.asyncio
+async def test_je_form_sends_the_chosen_party_and_omits_an_unchosen_one(ui_client):
+    """The contact key reaches the API only when someone picked a party. A line
+    nobody named posts the request it posted before the column existed, so an
+    empty picker can never attribute an entry to anyone."""
+    created = AsyncMock(return_value={"je_id": "je:manual:x"})
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.create_journal_entry", new=created):
+            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+                "ts": "2026-01-15", "memo": "Rebill", "idempotency_token": "tok-party",
+                "account_0": "1120", "debit_0": "10", "credit_0": "0",
+                "contact_0": "contact:9",
+                "account_1": "4100", "debit_1": "0", "credit_1": "10",
+                "contact_1": "",
+            })
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code in (200, 303)
+    entries = created.call_args[0][1]["entries"]
+    assert entries[0]["contact"] == "contact:9"
+    assert "contact" not in entries[1]
+
+
+@pytest.mark.asyncio
+async def test_je_form_keeps_a_chosen_party_through_a_failed_post(ui_client):
+    """A rejected entry comes back with what was typed still in it. Losing the
+    party on the way back would have the user re-pick it with nothing saying so."""
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch("ui.api_client.create_journal_entry",
+                   new=AsyncMock(side_effect=APIError(409, "already posted"))):
+            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+                "ts": "2026-01-15", "memo": "Rebill", "idempotency_token": "stale",
+                "account_0": "1120", "debit_0": "10", "credit_0": "0",
+                "contact_0": "contact:9",
+                "account_1": "4100", "debit_1": "0", "credit_1": "10",
+            })
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert 'value="contact:9"' in r.text

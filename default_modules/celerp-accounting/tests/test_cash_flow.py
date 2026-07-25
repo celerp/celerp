@@ -282,3 +282,120 @@ async def test_reports_permission_can_read_it(client, session):
     }, headers=_h(reader))
     assert w.status_code == 403, w.text
     assert "manage_accounting" in w.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Bank opening balances: which source the statement believes
+# ---------------------------------------------------------------------------
+
+
+async def _bank(client, tok, name: str, opening: float) -> dict:
+    r = await client.post("/accounting/bank-accounts", json={
+        "bank_name": name, "account_number": "0001", "bank_type": "checking",
+        "currency": "USD", "opening_balance": opening,
+    }, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_an_opening_balance_is_counted_once_not_twice(client):
+    """A bank account's opening balance reaches the books one way only.
+
+    Creating the account posts the opening balance as a journal entry, so the
+    ledger already carries it. Adding the column on top of the entries counted the
+    same money twice and made the bank screen disagree with every report that
+    reads the ledger.
+    """
+    tok = await _reg(client)
+    bank = await _bank(client, tok, "Opening Bank", 1000.0)
+    code = bank["chart_account_code"]
+
+    assert bank["balance"] == pytest.approx(1000.0)
+
+    listed = await client.get("/accounting/bank-accounts", headers=_h(tok))
+    shown = {b["chart_account_code"]: b for b in listed.json()["items"]}[code]
+    assert shown["balance"] == pytest.approx(1000.0)
+
+    fetched = await client.get(f"/accounting/bank-accounts/{bank['id']}", headers=_h(tok))
+    assert fetched.json()["balance"] == pytest.approx(1000.0)
+
+    ledger = await client.get(f"/accounting/ledger/{code}", headers=_h(tok))
+    assert ledger.json()["closing_balance"] == pytest.approx(1000.0)
+
+    data = await _cash_flow(client, tok)
+    assert data["closing_cash"] == pytest.approx(1000.0)
+    assert data["unbacked_bank_openings"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_opening_balance_with_no_entry_behind_it_is_reported_not_absorbed(client, session):
+    """The ledger is authoritative, and the gap is named rather than papered over.
+
+    A bank row can hold an opening balance that no entry carries. Folding it back
+    into the balance would put the bank screen back out of step with the books and
+    give the reader a figure the ledger cannot support, so the account is reported
+    instead and the balance stays the ledger's.
+    """
+    from sqlalchemy import select
+
+    from celerp_accounting.models import BankAccount
+
+    tok = await _reg(client)
+    bank = await _bank(client, tok, "Legacy Bank", 0.0)
+    code = bank["chart_account_code"]
+
+    row = (await session.execute(
+        select(BankAccount).where(BankAccount.id == uuid.UUID(bank["id"]))
+    )).scalar_one()
+    row.opening_balance = 750.0
+    await session.commit()
+
+    fetched = await client.get(f"/accounting/bank-accounts/{bank['id']}", headers=_h(tok))
+    assert fetched.json()["balance"] == pytest.approx(0.0), "the ledger says nothing was ever posted"
+    assert fetched.json()["opening_unbacked"] is True
+
+    data = await _cash_flow(client, tok)
+    assert data["closing_cash"] == pytest.approx(0.0)
+    assert [u["chart_account_code"] for u in data["unbacked_bank_openings"]] == [code]
+    reported = data["unbacked_bank_openings"][0]
+    assert reported["bank_name"] == "Legacy Bank"
+    assert reported["opening_balance"] == pytest.approx(750.0)
+
+
+def test_the_statement_names_the_accounts_whose_opening_balance_is_missing():
+    """A count would tell the reader there is a problem without telling them where.
+
+    The warning sits on the statement because that is where the figure it explains
+    is read, and it names each account so the fix is one entry away rather than a
+    hunt through the bank list.
+    """
+    from fasthtml.common import to_xml
+
+    from ui.routes.financial_reports import _cash_flow_view
+
+    clean = {"opening_cash": 0.0, "closing_cash": 0.0, "net_change": 0.0,
+             "direct": {}, "indirect": {}, "unbacked_bank_openings": []}
+    assert "flash--warning" not in to_xml(_cash_flow_view(clean, "THB"))
+
+    flagged = dict(clean, unbacked_bank_openings=[
+        {"bank_account_id": "b1", "bank_name": "Legacy Bank",
+         "chart_account_code": "1112", "opening_balance": 750.0},
+    ])
+    markup = to_xml(_cash_flow_view(flagged, "THB"))
+    assert "flash--warning" in markup
+    assert "Legacy Bank" in markup and "1112" in markup and "750" in markup
+
+
+def test_the_bank_screen_says_why_its_figure_leaves_the_opening_balance_out():
+    """The balance shown there is the ledger's, and a reader who typed an opening
+    balance into that same screen needs to be told why it is not in the number."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.settings_accounting import _bank_account_row
+
+    backed = {"id": "b1", "bank_name": "Bank", "chart_account_code": "1112",
+              "bank_type": "checking", "account_number": "1", "currency": "USD",
+              "balance": 1000.0, "is_active": True, "opening_unbacked": False}
+    assert "flash--warning" not in to_xml(_bank_account_row(backed))
+    assert "flash--warning" in to_xml(_bank_account_row(dict(backed, opening_unbacked=True)))

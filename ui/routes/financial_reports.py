@@ -19,7 +19,9 @@ from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, StreamingResponse, PlainTextResponse
+from starlette.responses import (
+    HTMLResponse, RedirectResponse, StreamingResponse,
+)
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -154,6 +156,79 @@ def parse_subjects(request: Request) -> list[tuple[str, str]]:
 
 def _subject_params(subjects: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [("account", subject_token(k, i)) for k, i in subjects]
+
+
+# Where the statement picker's search sends what the reader types.
+SUBJECT_OPTIONS_PATH = "/reports/statement/subject-options"
+
+# Contacts drawn into the picker before anything is typed. It is where the list
+# opens, not the limit of what can be chosen: typing searches the whole contact
+# list server-side. Loading every contact up front would put a company's entire
+# contact list into every statement page load to save the first keystroke.
+_PICKER_PRELOAD = 50
+
+# Contacts per request when reading the list in full.
+_CONTACT_PAGE = 200
+
+
+def _contact_options(contacts: list[dict]) -> list[tuple[str, str]]:
+    return [
+        (subject_token("c", c["id"]),
+         f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
+        for c in contacts if c.get("id")
+    ]
+
+
+def _account_options(accounts: list[dict]) -> list[tuple[str, str]]:
+    return [
+        (subject_token("a", a["code"]), f"{a.get('code', '')} {a.get('name', '')}".strip())
+        for a in accounts if a.get("code")
+    ]
+
+
+async def _every_contact(token: str, params: dict) -> list[dict]:
+    """Every contact matching params, read page by page to the end of the list.
+
+    One capped request is what let the month-end run miss people: a cap does not
+    show up in the response, so a company past it got a short list and nothing
+    said so. Reading until a page comes back short has no cap to outgrow.
+    """
+    items: list[dict] = []
+    while True:
+        resp = await api.list_contacts(
+            token, params | {"limit": _CONTACT_PAGE, "offset": len(items)})
+        batch = resp.get("items") or []
+        items += batch
+        if len(batch) < _CONTACT_PAGE:
+            return items
+
+
+def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> str:
+    """Combobox options in the shape the picker's JS reads.
+
+    Search results replace the option list whole, so each option has to carry
+    whether it is already picked. An option that arrives unmarked reads as a way
+    to add a subject that is in fact already on the statement, and clicking it
+    would take that subject off.
+    """
+    els = [
+        Div(label,
+            cls="combobox-option" + (" combobox-option--selected" if val in selected else ""),
+            data_value=val)
+        for val, label in opts
+    ]
+    els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
+                   **({"style": "display:none"} if opts else {})))
+    return "".join(to_xml(el) for el in els)
+
+
+def _option_notice(message: str) -> str:
+    """A line of text in place of options, which the picker cannot select.
+
+    An empty list would read as "nobody matched", so a search that could not run
+    says what happened instead of answering with a result it does not have.
+    """
+    return to_xml(Div(message, cls="combobox-option combobox-option--empty"))
 
 
 # Reports a ledger drilldown can arrive from, via the "src" query param.
@@ -449,10 +524,17 @@ def _general_ledger_view(data: dict, currency: str | None = None,
 
 # ── Statement of account ────────────────────────────────────────────────────
 
+# Every kind a statement row can carry: the document types that post to a control
+# account, a payment against one of them, and a journal entry that reached the
+# account with no document behind it. A kind with no entry here would print its
+# raw key, so the API's kinds and this map are changed together.
 _SOA_KIND_KEYS = {
     "invoice": "label.invoice",
     "credit_note": "doc.credit_note",
+    "bill": "label.vendor_bill",
+    "purchase_order": "label.purchase_order",
     "payment": "acct.soa_kind_payment",
+    "journal": "acct.soa_kind_journal",
 }
 
 
@@ -514,16 +596,15 @@ def _soa_table(data: dict, currency: str | None = None,
     )
 
 
-def _statement_source_note(kind: str) -> FT:
+def _statement_source_note() -> FT:
     """Says which books a statement was built from.
 
-    A contact statement is assembled from documents and their payments; an account
-    statement from posted journal entries. The two can differ where an entry was
-    posted by hand against a control account, so the page says which one it is
-    rather than leaving the reader to assume they are the same thing.
+    Every statement, whether its subject is a party or an account, is a slice of
+    the posted journal entries. The reader is told so on the page: it is what
+    makes the figures on a statement the same figures the balance sheet reports,
+    and it means an entry posted by hand against a control account is there too.
     """
-    key = "acct.soa_source_docs" if kind == "c" else "acct.soa_source_ledger"
-    return P(t(key), cls="cell--muted")
+    return P(t("acct.soa_source_ledger"), cls="cell--muted")
 
 
 def _subject_heading(kind: str, data: dict) -> str:
@@ -541,7 +622,7 @@ def _soa_section(kind: str, data: dict, currency: str | None,
     return Div(
         H3(_subject_heading(kind, data), cls="report-section-title"),
         (Div(t("acct.soa_merged_notice"), cls="error-banner") if merged else None),
-        _statement_source_note(kind),
+        _statement_source_note(),
         _soa_table(data, currency, date_from=d_from, date_to=d_to),
         P(Strong(f"{t('acct.closing_balance')}: {fmt_money(data.get('closing_balance', 0), currency)}"),
           cls="report-total"),
@@ -581,6 +662,10 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
         cls = "cell--number cell--negative" if v < 0 else "cell--number"
         return Td(fmt_money(v, currency), cls=cls)
 
+    def _head(first_col: str) -> FT:
+        """The figures are money, so the header sits right-aligned over them."""
+        return Thead(Tr(Th(first_col), Th(t("label.amount"), cls="cell--number")))
+
     def _section(title: str, section: dict) -> FT:
         lines = section.get("lines", [])
         rows = [
@@ -589,8 +674,8 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
         ]
         return Div(
             H3(title, cls="report-section-title"),
-            (Table(Tbody(*rows), cls="data-table data-table--compact") if rows
-             else P(t("acct.no_entries"), cls="empty-state")),
+            (Table(_head(t("th.account")), Tbody(*rows), cls="data-table data-table--compact")
+             if rows else P(t("acct.no_entries"), cls="empty-state")),
             P(Strong(fmt_money(section.get("total", 0), currency)), cls="section-total"),
             cls="report-section",
         )
@@ -599,6 +684,7 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
     indirect = data.get("indirect", {})
     adjustments = indirect.get("adjustments", [])
     balanced = data.get("balanced", True)
+    unbacked = data.get("unbacked_bank_openings", [])
     return Div(
         Div(
             Span(f"{t('acct.cf_opening_cash')}: {fmt_money(data.get('opening_cash', 0), currency)}", cls="val-chip"),
@@ -608,6 +694,14 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
                  cls="val-chip" if balanced else "val-chip val-chip--alert"),
             cls="valuation-bar",
         ),
+        # Named, not counted: the reader has to know which account to go and fix.
+        *([Div(
+            P(t("acct.cf_unbacked_opening")),
+            Ul(*[Li(f"{u.get('bank_name', '')} ({u.get('chart_account_code', '')}): "
+                    f"{fmt_money(u.get('opening_balance', 0), currency)}")
+                 for u in unbacked]),
+            cls="flash flash--warning",
+        )] if unbacked else []),
         H2(t("acct.cf_direct"), cls="report-section-title"),
         _section(t("acct.cf_operating"), direct.get("operating", {})),
         _section(t("acct.cf_investing"), direct.get("investing", {})),
@@ -615,6 +709,9 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
         H2(t("acct.cf_indirect"), cls="report-section-title"),
         Div(
             Table(
+                # Net profit heads this table and the rest are adjustments to it,
+                # so the first column is what the line is, not an account.
+                _head(t("th.description")),
                 Tbody(
                     Tr(Td(t("acct.net_profit")), _amount_cell(indirect.get("net_profit", 0))),
                     *[Tr(Td(f"{a.get('code', '')} {a.get('name', '')}".strip()),
@@ -859,31 +956,67 @@ def setup_routes(app):
             sections.append({"kind": kind, "ident": ident, "data": data, "merged": merged})
         return sections
 
-    async def _subject_options(token: str):
-        """Every selectable subject: contacts first, then the chart of accounts."""
-        contacts = (await api.list_contacts(token, {"limit": 1000})).get("items", [])
-        accounts = (await api.get_chart(token)).get("items", [])
-        opts = [
-            (subject_token("c", c["id"]),
-             f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
-            for c in contacts if c.get("id")
-        ]
-        opts += [
-            (subject_token("a", a["code"]), f"{a.get('code', '')} {a.get('name', '')}".strip())
-            for a in accounts if a.get("code")
-        ]
-        return opts, contacts
+    async def _subject_options(token: str) -> tuple[list[tuple[str, str]], int, int]:
+        """The picker's opening list, with how much of the contact list it covers.
 
-    async def _quick_pick(token: str, pick: str, contacts: list[dict]) -> list[tuple[str, str]]:
+        Contacts come one page at a time and the rest are reached by typing; the
+        chart of accounts comes whole, being a bounded list a company keeps in the
+        dozens. The two counts are returned so the page can say when it is showing
+        part of the contact list rather than leaving the reader to find out.
+        """
+        resp = await api.list_contacts(token, {"limit": _PICKER_PRELOAD})
+        contacts = resp.get("items") or []
+        accounts = (await api.get_chart(token)).get("items") or []
+        opts = _contact_options(contacts) + _account_options(accounts)
+        return opts, len(contacts), int(resp.get("total") or len(contacts))
+
+    @app.get(SUBJECT_OPTIONS_PATH)
+    async def statement_subject_options(request: Request):
+        """The picker's search: contacts and chart accounts matching what was typed.
+
+        The picker opens on one page of contacts, so this is what keeps a company
+        past that page able to select any of its own customers. Every match is
+        returned rather than a first page of them, because a search that stopped
+        early would put the truncation back one step further in.
+
+        An empty query returns an empty body, which is the picker's signal to put
+        its own opening list back.
+        """
+        token = _token(request)
+        if not token:
+            return HTMLResponse(_option_notice(t("error.session_expired")))
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return HTMLResponse("")
+        selected = set(request.query_params.getlist("account"))
+        try:
+            contacts = await _every_contact(token, {"q": q})
+            accounts = (await api.get_chart(token)).get("items") or []
+        except APIError as e:
+            return HTMLResponse(_option_notice(
+                f"{t('acct.error_loading_data')}: {e.detail}"))
+        needle = q.lower()
+        opts = _contact_options(contacts) + [
+            (val, label) for val, label in _account_options(accounts)
+            if needle in label.lower()
+        ]
+        return HTMLResponse(_option_markup(opts, selected))
+
+    async def _quick_pick(token: str, pick: str) -> list[tuple[str, str]]:
         """Expand a quick-pick into the subjects it stands for.
 
         The month-end run is "everyone who owes us", which is a set nobody wants to
         tick by hand. Kept as buttons beside the picker rather than entries inside
         it, so one control never mixes choosing with acting.
+
+        "All customers" reads the customer list in full instead of reusing the
+        picker's opening page. A run that quietly stopped at the first page would
+        leave customers unbilled with nothing on the page saying so, and who counts
+        as a customer is the contacts module's answer to give, not this page's.
         """
         if pick == "customers":
-            return [("c", c["id"]) for c in contacts
-                    if c.get("id") and (c.get("contact_type") or "customer") == "customer"]
+            contacts = await _every_contact(token, {"contact_type": "customer"})
+            return [("c", c["id"]) for c in contacts if c.get("id")]
         if pick in ("ar_balance", "ap_balance"):
             aging = (await api.get_ar_aging(token) if pick == "ar_balance"
                      else await api.get_ap_aging(token))
@@ -917,9 +1050,9 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
-            opts, contacts = await _subject_options(token)
+            opts, shown, total_contacts = await _subject_options(token)
             pick = request.query_params.get("pick", "")
-            subjects = (await _quick_pick(token, pick, contacts) if pick
+            subjects = (await _quick_pick(token, pick) if pick
                         else parse_subjects(request))
             sections = await _resolve_statements(token, subjects, params) if subjects else []
         except APIError as e:
@@ -933,13 +1066,22 @@ def setup_routes(app):
             Label(t("label.account"), cls="form-label"),
             searchable_select("account", opts, multiple=True, values=selected,
                               placeholder=t("acct.soa_pick_placeholder"),
-                              count_label=t("acct.soa_selected_count")),
+                              count_label=t("acct.soa_selected_count"),
+                              search_url=href(SUBJECT_OPTIONS_PATH,
+                                              [("account", s) for s in selected])),
             Input(type="hidden", name="from", value=d_from or ""),
             Input(type="hidden", name="to", value=d_to or ""),
             Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
             method="get", action=_report_path("statement"), cls="flex-row gap-sm",
         )
-        selector = Div(picker, _quick_pick_buttons(d_from or "", d_to or ""))
+        # Say so when the list on screen is part of the contact list, so nobody
+        # reads a short list as the whole one.
+        more_note = (
+            P(t("acct.picker_more_contacts", shown=shown, total=total_contacts),
+              cls="cell--muted")
+            if total_contacts > shown else None
+        )
+        selector = Div(picker, more_note, _quick_pick_buttons(d_from or "", d_to or ""))
 
         if not sections:
             body = empty_state_cta(t("acct.soa_pick_contact"))
@@ -955,7 +1097,10 @@ def setup_routes(app):
                              extra_params="".join(f"&account={subject_token(k, i)}"
                                                   for k, i in subjects)),
             selector,
-            (Div(_bars("statement", date_params(d_from, d_to) | dict(_subject_params(subjects))),
+            # Pairs, not a mapping: one key per subject is what a statement over
+            # several subjects sends, and a mapping keeps only the last of them.
+            (Div(_bars("statement", list(date_params(d_from, d_to).items())
+                       + _subject_params(subjects)),
                  cls="flex-row mt-md mb-md") if sections else None),
             body,
         )

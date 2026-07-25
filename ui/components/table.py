@@ -527,6 +527,26 @@ def empty_state_cta(
     return Div(*inner, cls="empty-state-cta")
 
 
+# A journal line's party picker: every contact, and no add-new. The forms that
+# post to a control account by hand share one search URL and one option shape, so
+# a party chosen on the reconciliation screen is the same party the manual entry
+# form would have chosen. There is nowhere on either form to finish creating a
+# contact, and a half-made one would be a party no statement could ever show.
+PARTY_SEARCH_URL = "/contacts/search-options?contact_type=all&add_new=0"
+
+# Parties drawn into a picker before anything is typed. Where the list opens, not
+# the limit of what can be chosen: typing searches the whole list server-side.
+PARTY_PRELOAD = 50
+
+
+def party_options(contacts: list[dict]) -> list[tuple[str, str]]:
+    """Contacts as picker options, labelled with the side of the books they sit on."""
+    return [
+        (c["id"], f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
+        for c in contacts if c.get("id")
+    ]
+
+
 def searchable_select(
     name: str,
     options: list[str | tuple[str, str]],

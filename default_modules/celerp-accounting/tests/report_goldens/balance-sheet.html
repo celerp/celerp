@@ -1,0 +1,68 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Balance Sheet</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div class="date-filter-bar">
+<form enctype="multipart/form-data" action="/reports/balance-sheet" method="get" class="date-custom-form"><label class="form-label">As of date:</label>        <input type="date" name="as_of" value="2026-03-31" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button></form>    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/balance-sheet/csv?as_of=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/balance-sheet?as_of=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div class="report-view">
+      <div class="report-section">
+        <h3 class="report-section-title">Assets</h3>
+        <table class="data-table data-table--compact">
+          <tbody>
+            <tr>
+              <td>
+<a href="/reports/ledger/1111?date_to=2026-03-31&amp;src=balance-sheet" class="drilldown-link">1111 Default Bank Account (Checking)</a>              </td>
+              <td class="cell--number">฿15.00</td>
+            </tr>
+            <tr>
+              <td>
+<a href="/reports/ledger/1120?date_to=2026-03-31&amp;src=balance-sheet" class="drilldown-link">1120 Accounts Receivable</a>              </td>
+              <td class="cell--number">฿105.00</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<a href="/reports/trial-balance?as_of=2026-03-31" class="drilldown-link"><strong>฿120.00</strong></a>        </p>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">Liabilities</h3>
+        <table class="data-table data-table--compact">
+          <tbody>
+            <tr>
+              <td>
+<a href="/reports/ledger/2120?date_to=2026-03-31&amp;src=balance-sheet" class="drilldown-link">2120 VAT Payable (Output VAT)</a>              </td>
+              <td class="cell--number">฿0.00</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<a href="/reports/trial-balance?as_of=2026-03-31" class="drilldown-link"><strong>฿0.00</strong></a>        </p>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">Equity</h3>
+        <table class="data-table data-table--compact">
+          <tbody>
+            <tr>
+              <td title="Net income accumulated from P&amp;L. Click to see the calculation.">
+<a href="/reports/pnl?date_to=2026-03-31" class="drilldown-link">Retained Earnings</a>              </td>
+              <td class="cell--number">฿120.00</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<a href="/reports/trial-balance?as_of=2026-03-31" class="drilldown-link"><strong>฿120.00</strong></a>        </p>
+      </div>
+      <div class="valuation-bar">
+        <p class="section-total">
+<strong>Total Liabilities &amp; Equity: ฿120.00</strong>        </p>
+<span class="val-chip">Balance checks out ✓</span>      </div>
+    </div>
+  </div>
+</div>

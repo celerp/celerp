@@ -48,44 +48,27 @@ def _declared_permission(route) -> str | None:
     return seen.pop()
 
 
-def test_read_endpoints_require_the_read_permission():
-    """Each report listed above is readable with view_financial_reports."""
-    by_key = {}
-    for route in router.routes:
-        for method in sorted(getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}):
-            by_key[(method, getattr(route, "path", ""))] = route
-    missing = [k for k in EXPECTED if k not in by_key]
-    assert not missing, f"declared endpoints that no longer exist: {missing}"
-    for key, expected in sorted(EXPECTED.items()):
-        got = _declared_permission(by_key[key])
-        assert got == expected, f"{key[0]} {key[1]}: expected {expected}, found {got}"
+def test_every_endpoint_requires_exactly_the_permission_declared_for_it():
+    """Every route in the router, checked against the table, one assertion.
 
-
-def test_no_other_endpoint_reads_with_the_report_permission():
-    """Widening the read grant must not sweep in anything that writes.
-
-    Anything not named in EXPECTED keeps manage_accounting, so relaxing one
-    endpoint too many fails here rather than in production.
+    A route named in EXPECTED must require that permission; every other route
+    must require manage_accounting. Three ways to fail land here: a report that
+    stopped answering to view_financial_reports, a writer that picked it up, and
+    an endpoint left with no permission at all (found is None, which matches
+    neither side of the table).
     """
-    unexpected = []
+    found = {}
     for route in router.routes:
         path = getattr(route, "path", "")
         for method in sorted(getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}):
-            if (method, path) in EXPECTED:
-                continue
-            if _declared_permission(route) == READ:
-                unexpected.append((method, path))
-    assert not unexpected, f"these gained the report permission without being declared: {unexpected}"
+            found[(method, path)] = _declared_permission(route)
 
+    missing = sorted(k for k in EXPECTED if k not in found)
+    assert not missing, f"declared endpoints that no longer exist: {missing}"
 
-def test_every_write_endpoint_is_guarded():
-    """No endpoint may be left with no permission at all."""
-    unguarded = []
-    for route in router.routes:
-        path = getattr(route, "path", "")
-        methods = getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}
-        if not methods:
-            continue
-        if _declared_permission(route) is None:
-            unguarded.append((sorted(methods), path))
-    assert not unguarded, f"endpoints with no permission requirement: {unguarded}"
+    wrong = {
+        key: (EXPECTED.get(key, WRITE), got)
+        for key, got in sorted(found.items())
+        if got != EXPECTED.get(key, WRITE)
+    }
+    assert not wrong, f"expected vs found, per endpoint: {wrong}"

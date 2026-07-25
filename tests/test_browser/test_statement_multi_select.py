@@ -135,3 +135,62 @@ def test_submitting_renders_one_section_per_subject(page, statement_url):
     sections = page.locator(".report-section .report-total")
     assert sections.count() == 2, (
         f"expected a closing balance per subject, found {sections.count()}")
+
+
+def _multi_input(page):
+    return page.locator(".combobox-wrap[data-multiple] .combobox-input").first
+
+
+def _wait_for_swap(page, before):
+    page.wait_for_function(
+        "prev => document.querySelector('.combobox-wrap[data-multiple] .combobox-list')"
+        ".innerHTML !== prev",
+        arg=before, timeout=8000)
+
+
+def _option_by_value(page, value):
+    return page.locator(
+        f'.combobox-wrap[data-multiple] .combobox-list .combobox-option[data-value="{value}"]')
+
+
+def test_a_search_keeps_the_tick_on_an_already_picked_subject(page, statement_url):
+    """The server searches the full contact list, and its results know nothing about
+    what was ticked since the page loaded. The tick is a view of the selection bag,
+    so a swapped-in list has to be re-marked from the bag or the picker lies about
+    what is selected."""
+    _open_picker(page, statement_url)
+    target = _options(page).filter(has_text="Statement Test Co").first
+    value = target.get_attribute("data-value")
+    target.click()
+    assert _selected_inputs(page).count() == 1
+
+    before = page.locator(".combobox-wrap[data-multiple] .combobox-list").inner_html()
+    _multi_input(page).fill("Statement Test")
+    _wait_for_swap(page, before)
+
+    swapped = _option_by_value(page, value)
+    assert swapped.count() == 1, "the searched-for subject should be in the results"
+    assert "combobox-option--selected" in (swapped.first.get_attribute("class") or ""), (
+        "the search results dropped the tick on an already picked subject")
+    assert _selected_inputs(page).count() == 1, "the search changed the submitted set"
+
+
+def test_clearing_the_search_keeps_the_tick(page, statement_url):
+    """Clearing the box puts the original options back. Those are the markup the page
+    loaded with, so they carry no tick for anything picked since."""
+    _open_picker(page, statement_url)
+    target = _options(page).filter(has_text="Statement Test Co").first
+    value = target.get_attribute("data-value")
+    target.click()
+
+    before = page.locator(".combobox-wrap[data-multiple] .combobox-list").inner_html()
+    _multi_input(page).fill("Statement Test")
+    _wait_for_swap(page, before)
+    _multi_input(page).fill("")
+    page.wait_for_timeout(200)
+
+    restored = _option_by_value(page, value)
+    assert restored.count() == 1, "clearing the box should bring the full list back"
+    assert "combobox-option--selected" in (restored.first.get_attribute("class") or ""), (
+        "the restored list dropped the tick on an already picked subject")
+    assert _selected_inputs(page).count() == 1
