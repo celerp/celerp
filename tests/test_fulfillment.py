@@ -1697,3 +1697,32 @@ async def test_revert_lines_without_quantities_is_unchanged(client, session, aut
     assert rr.json()["reverted"] == [eid]
     item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
     assert item["status"] == "available" and item["quantity"] == 3.0
+
+
+@pytest.mark.asyncio
+async def test_convert_after_partial_memo_return_bills_only_what_was_kept(client, session, auth, _setup_ids):
+    """Converting a part-returned memo must invoice the balance the customer kept, not the
+    quantity that originally went out."""
+    cust = "contact:convertPartial"
+    sku = f"CP-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"],
+                          json={"sku": sku, "name": sku, "quantity": 10, "sell_by": "piece"})
+    eid = r.json()["id"]
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 10, "unit_price": 50.0, "line_total": 500.0, "entity_id": eid},
+    ], contact_id=cust)
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+
+    # Customer sends back 6 and keeps 4.
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "quantities": {eid: 6}})
+    assert rr.status_code == 200, rr.text
+
+    conv = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert conv.status_code == 200, conv.text
+    invoice = (await client.get(f"/docs/{conv.json()['target_doc_id']}", headers=auth["headers"])).json()
+    (inv_line,) = [li for li in invoice["line_items"]
+                   if (li.get("entity_id") or li.get("item_id")) == eid]
+    assert inv_line["quantity"] == 4.0, "must bill the 4 kept, not the 10 that went out"
+    assert inv_line["line_total"] == 200.0, "4 at 50 each"

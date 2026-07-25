@@ -2632,6 +2632,18 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 Projection, {"company_id": company_id, "entity_id": li_eid}
             )
             if item_proj and item_proj.state.get("status") == "memo_out":
+                # Invoice what the customer actually still holds. A part-returned line keeps
+                # its original quantity, but the lot out with them has already been reduced,
+                # so bill the remainder or the return would be charged for as well.
+                _still_out = float(item_proj.state.get("quantity") or 0)
+                _line_qty = float(li.get("quantity") or 0)
+                if _line_qty and abs(_still_out - _line_qty) > 1e-9:
+                    _kept = to_decimal(_still_out) / to_decimal(_line_qty)
+                    li = {**li, "quantity": _still_out}
+                    if li.get("line_total") is not None:
+                        # Scale rather than recompute, so any per-line discount is preserved.
+                        li["line_total"] = to_stored_float(round_money(
+                            to_decimal(li["line_total"]) * _kept, state.get("currency")))
                 qualifying_line_items.append(li)
 
         if not qualifying_line_items:
