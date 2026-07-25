@@ -742,9 +742,15 @@ async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) 
         return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
 
 
-async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
+async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str],
+                          quantities: dict[str, float] | None = None) -> dict:
+    """Revert whole lines, or pass quantities={item_id: qty_coming_back} to take back only
+    part of a lot; the remainder stays out with the customer."""
+    payload: dict = {"line_entity_ids": line_entity_ids}
+    if quantities:
+        payload["quantities"] = quantities
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json={"line_entity_ids": line_entity_ids})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:

@@ -383,7 +383,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
         headers=_h(token),
         json={"doc_type": "quotation", "contact_id": "contact:1", "line_items": [], "subtotal": 0, "tax": 0, "total": 0, "valid_until": "2000-01-01"},
     )
-    assert (await client.post(f"/docs/{expired.json()["id"]}/convert", headers=_h(token))).status_code == 409
+    assert (await client.post(f"/docs/{expired.json()['id']}/convert", headers=_h(token))).status_code == 409
 
     # credit note adjusts source invoice outstanding
     inv = await _create_invoice(client, token, subtotal=100, tax=0, total=100)

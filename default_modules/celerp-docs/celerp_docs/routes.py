@@ -211,6 +211,23 @@ class FulfillLinesRequest(BaseModel):
         return list(dict.fromkeys(eid for eid in v if eid))
 
 
+class RevertLinesRequest(FulfillLinesRequest):
+    """Revert whole lines, or return part of one.
+
+    ``quantities`` maps an item entity_id to the quantity coming back. Omit it, or give
+    the item's whole quantity, to take the whole lot back. A smaller quantity is a partial
+    return: that much is split off and comes back into stock, and the remainder stays out
+    with the customer, so goods still in their hands are never written off as returned.
+
+    ``weights`` / ``pieces`` carry the returned lot's measures for parcels tracked by a
+    measure the quantity does not imply (a piece-sold parcel that also carries a weight).
+    The measure of a part-returned parcel cannot be inferred, so it must be stated.
+    """
+    quantities: dict[str, float] | None = None
+    weights: dict[str, float] | None = None
+    pieces: dict[str, int] | None = None
+
+
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
     """Raise 422 if due_date is set and earlier than issue_date.
 
@@ -2405,6 +2422,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     return {"event_id": entry.id}
 
 
+# Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
+# supplier: they are at a customer, gone, or no longer a live parcel.
+_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged"})
+
+
 class ReturnItem(BaseModel):
     item_id: str
     quantity_returned: float
@@ -2429,14 +2451,34 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
         if item is None:
             raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
+        # Only goods actually on the shelf can go back to a supplier. Anything out on memo
+        # is at a customer's site and anything sold has left; shrinking those here would
+        # quietly write off stock that is still owed back to us.
+        _item_status = str(item.state.get("status") or "").lower()
+        if _item_status in _NOT_ON_HAND_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Cannot return {item.state.get('sku', it.item_id)}: it is "
+                        f"'{_item_status}', not on hand. Bring it back into stock first."),
+            )
         current_qty = float(item.state.get("quantity", 0) or 0)
         if it.quantity_returned > current_qty + 1e-9:
             raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
         new_qty = max(0.0, current_qty - it.quantity_returned)
+        adjustment: dict = {"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"}
+        # The returned units physically leave, so the lot's goods cost leaves with them:
+        # scale cost_base to what is still on hand. Without this the remaining balance
+        # would keep carrying the whole lot's cost (a partial return is an in-place
+        # quantity reduction, not a split, so nothing else rescales it).
+        _base = item.state.get("cost_base")
+        if _base is None:
+            _base = item.state.get("cost_total")
+        if _base is not None and current_qty > 0:
+            adjustment["cost_base"] = round(float(_base) * (new_qty / current_qty), 2)
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
             event_type="item.quantity.adjusted",
-            data={"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"},
+            data=adjustment,
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={"source_return": entity_id},
         )
@@ -2605,6 +2647,18 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 Projection, {"company_id": company_id, "entity_id": li_eid}
             )
             if item_proj and item_proj.state.get("status") == "memo_out":
+                # Invoice what the customer actually still holds. A part-returned line keeps
+                # its original quantity, but the lot out with them has already been reduced,
+                # so bill the remainder or the return would be charged for as well.
+                _still_out = float(item_proj.state.get("quantity") or 0)
+                _line_qty = float(li.get("quantity") or 0)
+                if _line_qty and abs(_still_out - _line_qty) > 1e-9:
+                    _kept = to_decimal(_still_out) / to_decimal(_line_qty)
+                    li = {**li, "quantity": _still_out}
+                    if li.get("line_total") is not None:
+                        # Scale rather than recompute, so any per-line discount is preserved.
+                        li["line_total"] = to_stored_float(round_money(
+                            to_decimal(li["line_total"]) * _kept, state.get("currency")))
                 qualifying_line_items.append(li)
 
         if not qualifying_line_items:
@@ -4029,7 +4083,7 @@ async def fulfill_lines(
 @router.post("/{entity_id}/revert-lines")
 async def revert_lines(
     entity_id: str,
-    body: FulfillLinesRequest,
+    body: RevertLinesRequest,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("fulfill_documents"),
     user=Depends(get_current_user),
@@ -4051,8 +4105,18 @@ async def revert_lines(
     if not body.line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
+    _returned_qty = body.quantities or {}
+    _unknown = [eid for eid in _returned_qty if eid not in body.line_entity_ids]
+    if _unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"quantities names items that are not in line_entity_ids: {', '.join(sorted(_unknown))}",
+        )
+
     errors: list[str] = []
     to_revert: list[str] = []
+    # item_eid -> quantity coming back, for lines where only part of the lot returned.
+    partial_plan: dict[str, float] = {}
     fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
@@ -4065,18 +4129,66 @@ async def revert_lines(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' or 'sold' to revert, is '{item_status}'"
             )
             continue
+        _sku = item_proj.state.get("sku", "")
+        _qty_back = _returned_qty.get(item_eid)
+        if _qty_back is not None:
+            _on_hand = float(item_proj.state.get("quantity") or 0)
+            if _qty_back <= 0:
+                errors.append(f"{item_eid} ({_sku}): returned quantity must be greater than zero")
+                continue
+            if _qty_back > _on_hand + 1e-9:
+                errors.append(
+                    f"{item_eid} ({_sku}): cannot return {_qty_back:g} of {_on_hand:g} that went out"
+                )
+                continue
+            if abs(_qty_back - _on_hand) > 1e-9:
+                # Part of the lot is coming back; the rest stays with the customer.
+                if item_status != "memo_out":
+                    errors.append(
+                        f"{item_eid} ({_sku}): only goods out on memo can be part-returned, "
+                        f"this one is '{item_status}'"
+                    )
+                    continue
+                fetched[item_eid] = item_proj
+                partial_plan[item_eid] = float(_qty_back)
+                continue
         fetched[item_eid] = item_proj
         to_revert.append(item_eid)
 
-    if errors and not to_revert:
+    if errors and not to_revert and not partial_plan:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
-    if not to_revert:
+    if not to_revert and not partial_plan:
         raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
 
     now = datetime.now(timezone.utc).isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
+
+    # Partial returns first: split the returned amount off the lot that is out. The child
+    # carries the returned goods and starts available (back in stock); the mother keeps the
+    # remainder and stays memo_out, so what the customer still holds is never lost.
+    returned_brief: list[dict] = []
+    if partial_plan:
+        from celerp_inventory.routes import split_off_child
+        _unit_map = await _get_unit_map(session, company_id)
+        for parent_eid, qty_back in partial_plan.items():
+            parent_proj = fetched[parent_eid]
+            _sb = parent_proj.state.get("sell_by") or ""
+            _sku = parent_proj.state.get("sku", "")
+            child_weight = qty_back if is_weight_unit(_sb, _unit_map) else (body.weights or {}).get(parent_eid)
+            child_pieces = qty_back if is_pieces_unit(_sb, _unit_map) else (body.pieces or {}).get(parent_eid)
+            try:
+                child_eid, _child_sku = await split_off_child(
+                    session, company_id=cid, user_id=uid, parent_proj=parent_proj,
+                    child_qty=qty_back, child_weight=child_weight, child_pieces=child_pieces,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot return part of {_sku}: {exc}",
+                )
+            returned_brief.append({"item_id": child_eid, "sku": _sku, "quantity": qty_back})
 
     for item_eid in to_revert:
         item_proj = fetched[item_eid]
@@ -4125,6 +4237,10 @@ async def revert_lines(
         "reversed_by": str(uid),
         "reason": "per_line_revert",
     }
+    if returned_brief:
+        # Part-returned lots: named separately from whole-line reverts, because the line
+        # itself is still out (for the balance the customer kept).
+        doc_event_data["partially_returned_items"] = returned_brief
     if any(s in ("memo_out", "sold") for s in all_statuses):
         doc_fulfillment_status = "partial"
         doc_event_type = "doc.partially_reverted"
@@ -4155,7 +4271,12 @@ async def revert_lines(
         )
 
     await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "reverted": to_revert}
+    return {
+        "fulfillment_status": doc_fulfillment_status,
+        "reverted": to_revert,
+        # Lots that came back in part: the new in-stock parcel per part-returned line.
+        "partially_returned": returned_brief,
+    }
 
 
 class ReturnReceivedItem(BaseModel):
