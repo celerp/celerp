@@ -23,6 +23,7 @@ from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
 from ui.api_client import APIError
+from ui.i18n import t
 
 
 @pytest_asyncio.fixture
@@ -237,7 +238,7 @@ async def test_je_form_not_authorized_below_manager(ui_client):
         for p in ps:
             p.stop()
     assert r.status_code == 200
-    assert "You need a manager role" in r.text
+    assert t("acct.not_authorized") in r.text
     assert "idempotency_token" not in r.text
 
 
@@ -319,7 +320,7 @@ async def test_forbidden_renders_clean(ui_client):
         for p in ps:
             p.stop()
     assert page.status_code == 200
-    assert "You need a manager role" in page.text  # the clean banner, not a raw error
+    assert t("acct.not_authorized") in page.text  # the clean banner, not a raw error
     assert export.status_code == 403
     assert export.status_code != 500
 
@@ -379,13 +380,16 @@ async def test_print_views_center_column_headers(ui_client):
 
     The print stylesheet left-aligned every header while the on-screen tables
     centered them, so the same report read differently on paper than it did in
-    the browser. Money headers stay right-aligned over their figures in both.
+    the browser. Headers over a right-aligned column stay right-aligned in both,
+    whichever of the two right-aligning cell classes the column carries.
     """
-    for url in ("/accounting/print/journal",):
+    for url in ("/accounting/print/journal", "/reports/print/general-ledger",
+                "/reports/print/trial-balance"):
         r = await _get(ui_client, url)
         assert r.status_code == 200, url
         assert "thead th { background: #f5f5f5; font-weight: 700; text-align: center;" in r.text, url
-        assert "thead th.cell--number { text-align: right; }" in r.text, url
+        assert ("thead th.cell--number, thead th.cell--right { text-align: right; }"
+                in r.text), url
 
 
 @pytest.mark.asyncio

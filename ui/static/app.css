@@ -550,7 +550,6 @@ a:hover { text-decoration: underline; }
 .cell-textarea { white-space: pre-wrap; display: block; max-height: 4.6em; overflow: hidden; }
 .cell-textarea-input { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; line-height: 1.4; }
 .wf-table td.cell--textarea, .wf-table th:nth-child(3) { min-width: 220px; max-width: 380px; }
-.data-table thead th.cell--number { text-align: right; }
 /* Section header: title on the left, running section total right-aligned. */
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .recipe-section-head .section-title { margin-bottom: 0; }
@@ -781,8 +780,8 @@ a:hover { text-decoration: underline; }
 /* Shipment section: all header fields the two printouts need, one visible grid. */
 .shipment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem 1.5rem; }
 /* All line-table headers are centered. !important + higher specificity beats both the per-column
-   right-align rules and the global `.data-table th.cell--number { text-align:right !important }`
-   (the Total header carries cell--number); cell bodies keep their own alignment. */
+   right-align rules and the global `.data-table th.cell--number, .data-table th.cell--right`
+   right-align (the Total header carries cell--number); cell bodies keep their own alignment. */
 .data-table.doc-lines thead th { text-align: center !important; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
@@ -1772,9 +1771,17 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac/combobox cells */
 .data-table td:has(.catalog-ac-wrap),
 .data-table td:has(.combobox-wrap) { overflow: visible; }
-/* Total column: th right-align (!important beats base th{text-align:center}) */
-.data-table th.cell--number { text-align: right !important; }
-/* col-total header alignment: right-aligned (consolidated in doc-lines block above) */
+/* A header over a right-aligned column is right-aligned too, so it sits over its own
+   figures instead of drifting towards the neighbouring column. Both right-aligning
+   cell classes are listed here, and only here, so screen matches print.
+   (!important beats base th{text-align:center}) */
+.data-table th.cell--number,
+.data-table th.cell--right { text-align: right !important; }
+/* The figures under that header, declared once for both cases. A bare `.cell--right`
+   loses to `.data-table td { text-align: left }`, which left counts and percentages
+   hugging the wrong edge on screen while print right-aligned them. */
+.data-table td.cell--right,
+.cell--right { text-align: right; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 /* Editable line identifier: the SKU input row, with the barcode stacked BELOW it on
    its own full-width line — the same shape the finalized view uses. Keeping the
@@ -2608,7 +2615,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .report-kpi__value { font-size: 15px; font-weight: 700; color: var(--c-text); }
 .report-kpi__value--positive { color: var(--c-success, #16a34a); }
 .report-kpi__value--negative { color: var(--c-danger, #dc2626); }
-.cell--right { text-align: right; }
 .cell--muted { color: var(--c-text2); font-size: 12px; }
 
 /* ── Connector Cards ──────────────────────────────────────────────────────── */

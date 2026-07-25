@@ -2877,8 +2877,6 @@ _CASH_PARENT = "1110"  # Cash and Cash Equivalents; bank accounts are seeded ben
 _NON_CURRENT_ASSET_FLOOR = 1200
 _NON_CURRENT_LIABILITY_FLOOR = 2200
 
-_CASH_FLOW_CATEGORIES = frozenset({"operating", "investing", "financing"})
-
 
 def _code_number(code: str) -> int:
     """Leading digits of an account code, for range tests. Codes carry suffixes
@@ -2888,11 +2886,12 @@ def _code_number(code: str) -> int:
 
 
 def _derived_cash_flow_category(account_type: str, code: str) -> str:
-    """Default classification for the account on the far side of a cash movement.
+    """Classification for the account on the far side of a cash movement.
 
     Working capital and trading accounts are operating; long-lived assets are
-    investing; borrowings and owner capital are financing. Correct for the seeded
-    chart, and overridable per account where a company's own chart differs.
+    investing; borrowings and owner capital are financing. Read from the account's
+    type and code every time, so the statement classifies the same chart the same
+    way on every company and cannot drift from a stored value.
     """
     if account_type in ("revenue", "expense", "cogs"):
         return "operating"
@@ -2904,12 +2903,6 @@ def _derived_cash_flow_category(account_type: str, code: str) -> str:
     if account_type == "equity":
         return "financing"
     return "operating"
-
-
-def _cash_flow_category(acc: Account | None, code: str) -> str:
-    if acc is not None and acc.cash_flow_category in _CASH_FLOW_CATEGORIES:
-        return acc.cash_flow_category
-    return _derived_cash_flow_category(acc.account_type if acc else "asset", code)
 
 
 def _split_cash_movement(
@@ -3005,7 +2998,8 @@ async def cash_flow(
         if cash_delta != 0:
             for code, share in _split_cash_movement(cash_delta, sorted(contras), base):
                 acc = account_map.get(code)
-                cat = _cash_flow_category(acc, code)
+                cat = _derived_cash_flow_category(
+                    acc.account_type if acc else "asset", code)
                 by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
         for code, signed in contras:
             acc = account_map.get(code)

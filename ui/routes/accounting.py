@@ -35,7 +35,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
-from ui.routes.financial_reports import MOVED_TABS, REPORTS
+from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path
 from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates
 from celerp.services.money import round_money, to_decimal
 
@@ -60,7 +60,47 @@ def _moved_reports_notice() -> FT:
     )
 
 
+def _moved_to(path: str):
+    """A handler that hands an old report URL on to its new home under /reports.
+
+    Every query parameter comes across untouched: the pages, print views and CSV
+    exports read the same parameter names on both sides of the move, so a saved
+    link lands on the figures it was saved for rather than on an unfiltered
+    report. Values are re-encoded on the way out, keeping raw request text out of
+    the Location header.
+    """
+    async def moved(request: Request):
+        return RedirectResponse(_href(path, request.query_params.multi_items()),
+                                status_code=302)
+    return moved
+
+
 def setup_routes(app):
+
+    # The reports left this section, so their print views and CSV exports left
+    # with them. Bookmarks, emailed links and saved downloads predate the move,
+    # so every old URL still answers and carries its filters over. Destinations
+    # are read from REPORTS, keyed by the tab name the old URL used, so a
+    # report's new home is written down once and these follow it.
+    for _tab, _key in MOVED_TABS.items():
+        _page, _print_path, _csv_path, _title = REPORTS[_key]
+        app.get(f"/accounting/print/{_tab}",
+                name=f"moved_print_{_key}")(_moved_to(_print_path))
+        app.get(f"/accounting/export/{_tab}/csv",
+                name=f"moved_csv_{_key}")(_moved_to(_csv_path))
+
+    # Two shortcut URLs that predate even the tabbed layout, and are still linked
+    # from outside the app.
+    app.get("/accounting/pnl", name="moved_page_pnl")(_moved_to(REPORTS["pnl"][0]))
+    app.get("/accounting/balance-sheet",
+            name="moved_page_balance_sheet")(_moved_to(REPORTS["balance-sheet"][0]))
+
+    @app.get("/accounting/ledger/{account_code}")
+    async def account_ledger_redirect(request: Request, account_code: str):
+        """The per-account drilldown moved to /reports with the reports it hangs off."""
+        return RedirectResponse(
+            _href(ledger_path(account_code), request.query_params.multi_items()),
+            status_code=302)
 
     @app.get("/accounting")
     async def accounting_page(request: Request):
@@ -70,13 +110,13 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         tab = request.query_params.get("tab", "")
         if tab in MOVED_TABS:
-            # Bookmarks and emailed links predate the move; carry their dates over
-            # rather than dropping the reader on an unfiltered report.
-            qp = request.query_params
-            carried = [("from", qp.get("from", "")), ("to", qp.get("to", "")),
-                       ("as_of", qp.get("as_of", ""))]
-            if tab == "soa" and qp.get("contact_id"):
-                carried.append(("contact_id", qp["contact_id"]))
+            # Bookmarks and emailed links predate the move; carry their filters
+            # over rather than dropping the reader on an unfiltered report. Only
+            # "tab" is left behind: it named this page, not the one being opened.
+            # Everything else comes across, so a preset link keeps its preset and
+            # a statement link keeps the party it was written for.
+            carried = [(k, v) for k, v in request.query_params.multi_items()
+                       if k != "tab"]
             return RedirectResponse(
                 _href(REPORTS[MOVED_TABS[tab]][0], carried), status_code=302)
         try:
@@ -119,20 +159,6 @@ def setup_routes(app):
             nav_active="accounting",
             request=request,
         )
-
-    @app.get("/accounting/pnl")
-    async def pnl_page(request: Request):
-        """Long-standing shortcut URL, now pointing at the report's new home."""
-        qp = request.query_params
-        return RedirectResponse(
-            _href(REPORTS["pnl"][0], [("from", qp.get("from", "")), ("to", qp.get("to", ""))]),
-            status_code=302)
-
-    @app.get("/accounting/balance-sheet")
-    async def balance_sheet_page(request: Request):
-        return RedirectResponse(
-            _href(REPORTS["balance-sheet"][0], [("as_of", request.query_params.get("as_of", ""))]),
-            status_code=302)
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
                                    lines: list[dict], idem_token: str, error: str | None,

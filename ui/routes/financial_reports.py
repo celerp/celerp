@@ -76,6 +76,13 @@ MOVED_TABS: dict[str, str] = {
 }
 
 
+def ledger_path(account_code: str) -> str:
+    """One account's ledger drilldown. Kept out of REPORTS because it takes the
+    account in its path and has no print or CSV view of its own, but declared once
+    here all the same so callers and redirects cannot disagree about where it is."""
+    return f"/reports/ledger/{account_code}"
+
+
 def _report_path(key: str) -> str:
     return REPORTS[key][0]
 
@@ -187,7 +194,7 @@ def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
 
 def _drill_ledger_href(code: str, origin: str, date_from: str = "", date_to: str = "") -> str:
     """Link to the per-account ledger, carrying the date range and the originating report."""
-    return href(f"/reports/ledger/{code}",
+    return href(ledger_path(code),
                 [("date_from", date_from), ("date_to", date_to), ("src", origin)])
 
 
@@ -220,45 +227,38 @@ def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
                         tb.get("balanced", True), currency)
 
 
-def _ledger_view(data: dict, currency: str | None = None) -> FT:
-    lines = data.get("lines", [])
-    if not lines:
-        return P(t("acct.no_entries_for_account"), cls="empty-state")
+def _ledger_rows(data: dict) -> list[dict]:
+    """Ledger lines in the statement's row shape.
 
-    def _fmt_nonzero(val: float) -> str:
-        return fmt_money(val, currency) if val else ""
-
-    def _balance_cls(val: float) -> str:
-        if val < 0:
-            return "cell--number cell--negative"
-        return "cell--number"
-
-    rows = [
-        Tr(
-            Td(line["date"], cls="cell--mono"),
-            Td(
-                A(line.get("doc_ref") or line["doc_id"], href=f"/docs/{line['doc_id']}", cls="drilldown-link")
-                if line.get("doc_id") else "",
-            ),
-            Td(line.get("memo", ""), cls="cell--muted"),
-            Td(_fmt_nonzero(line["debit"]), cls="cell--number"),
-            Td(_fmt_nonzero(line["credit"]), cls="cell--number"),
-            Td(fmt_money(line["balance"], currency), cls=_balance_cls(line["balance"])),
-        )
-        for line in lines
+    A line and a statement row differ only in naming; the memo is what a manual
+    entry carries where a document has a type.
+    """
+    return [
+        {
+            "date": l.get("date", ""),
+            "doc_id": l.get("doc_id"),
+            "doc_ref": l.get("doc_ref"),
+            "kind": l.get("memo", ""),
+            "debit": l.get("debit", 0),
+            "credit": l.get("credit", 0),
+            "balance": l.get("balance", 0),
+        }
+        for l in data.get("lines", [])
     ]
-    return Table(
-        Thead(Tr(
-            Th(t("th.date")),
-            Th(t("th.source")),
-            Th(t("th.description")),
-            Th(t("th.debit"), cls="cell--number"),
-            Th(t("th.credit"), cls="cell--number"),
-            Th(t("th.balance"), cls="cell--number"),
-        )),
-        Tbody(*rows),
-        cls="data-table",
-    )
+
+
+def _ledger_view(data: dict, currency: str | None = None,
+                 date_from: str = "", date_to: str = "") -> FT:
+    """One account's ledger, drawn by the same table as that account's statement.
+
+    The running balance carries on from what the account already held, so the
+    opening figure has to be on the page: without it the first row's balance
+    appears from nowhere and cannot be checked against the general ledger.
+    """
+    if not data.get("lines"):
+        return P(t("acct.no_entries_for_account"), cls="empty-state")
+    return _soa_table({**data, "rows": _ledger_rows(data)}, currency,
+                      date_from=date_from, date_to=date_to)
 
 
 def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
@@ -810,13 +810,13 @@ def setup_routes(app):
                    else [("from", d_from), ("to", d_to)])
         content = Div(
             Div(
-                _date_filter_bar(f"/reports/ledger/{account_code}", d_from, d_to, preset,
+                _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=f"&src={origin}"),
                 A(f"← {t(back_key)}", href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
-            _ledger_view(data, currency),
+            _ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
         )
         name = data.get("account_name", account_code)
         return await _page(request, page_header(f"Ledger: {account_code} {name}"), content,
@@ -828,20 +828,7 @@ def setup_routes(app):
         """One subject's statement data, normalised so both kinds render alike."""
         if kind == "a":
             data = await api.get_ledger(token, ident, params)
-            # Ledger lines and statement rows differ only in naming; the memo is
-            # what a manual entry has instead of a document type.
-            data["rows"] = [
-                {
-                    "date": l.get("date", ""),
-                    "doc_id": l.get("doc_id"),
-                    "doc_ref": l.get("doc_ref"),
-                    "kind": l.get("memo", ""),
-                    "debit": l.get("debit", 0),
-                    "credit": l.get("credit", 0),
-                    "balance": l.get("balance", 0),
-                }
-                for l in data.get("lines", [])
-            ]
+            data["rows"] = _ledger_rows(data)
             return data
         return await api.get_soa(token, ident, params)
 

@@ -20,7 +20,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
-from ui.routes.financial_reports import MOVED_TABS, REPORTS, parse_subject, subject_token
+from ui.routes.financial_reports import (
+    MOVED_TABS, REPORTS, ledger_path, parse_subject, subject_token,
+)
 
 
 @pytest_asyncio.fixture
@@ -136,11 +138,14 @@ async def test_moved_tab_redirects_to_its_new_home(ui_client, tab, key):
 @pytest.mark.asyncio
 async def test_moved_tab_redirect_preserves_dates(ui_client):
     """A bookmarked report keeps its period; dropping it would silently show a
-    different set of figures than the link was saved for."""
-    r = await _get(ui_client, "/accounting?tab=pnl&from=2026-01-01&to=2026-12-31")
+    different set of figures than the link was saved for. The date bar wrote
+    preset links as often as explicit ranges, so a preset is a period too."""
+    r = await _get(ui_client,
+                   "/accounting?tab=pnl&from=2026-01-01&to=2026-12-31&preset=last_month")
     assert r.status_code in (302, 303)
     loc = r.headers["location"]
     assert "from=2026-01-01" in loc and "to=2026-12-31" in loc
+    assert "preset=last_month" in loc
 
 
 @pytest.mark.asyncio
@@ -148,6 +153,61 @@ async def test_legacy_soa_contact_link_still_resolves(ui_client):
     r = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:9")
     assert r.status_code in (302, 303)
     assert "contact_id=contact" in r.headers["location"]
+
+
+# Every URL these reports answered on before they moved out of /accounting, with
+# the report key and the slot in REPORTS that now holds the replacement (0 page,
+# 1 print, 2 CSV). The old side is written out because it is a record of what was
+# published; the new side is read from REPORTS so it follows a report that moves
+# again.
+_OLD_REPORT_URLS: list[tuple[str, str, int]] = [
+    ("/accounting/pnl", "pnl", 0),
+    ("/accounting/balance-sheet", "balance-sheet", 0),
+    ("/accounting/print/pnl", "pnl", 1),
+    ("/accounting/print/balance-sheet", "balance-sheet", 1),
+    ("/accounting/print/trial-balance", "trial-balance", 1),
+    ("/accounting/print/general-ledger", "general-ledger", 1),
+    ("/accounting/print/soa", "statement", 1),
+    ("/accounting/export/pnl/csv", "pnl", 2),
+    ("/accounting/export/balance-sheet/csv", "balance-sheet", 2),
+    ("/accounting/export/trial-balance/csv", "trial-balance", 2),
+    ("/accounting/export/general-ledger/csv", "general-ledger", 2),
+    ("/accounting/export/soa/csv", "statement", 2),
+]
+
+
+@pytest.mark.parametrize("old,key,slot", _OLD_REPORT_URLS)
+@pytest.mark.asyncio
+async def test_every_old_report_url_redirects_carrying_its_parameters(
+        ui_client, old, key, slot):
+    """Saved links, emailed reports and scheduled downloads all predate the move.
+
+    A 404 loses the reader outright; a redirect that drops the filters is worse,
+    because it answers with a different set of figures than the link was saved for
+    and says nothing about it.
+    """
+    r = await _get(ui_client, f"{old}?date_from=2026-01-01&date_to=2026-12-31"
+                              "&as_of=2026-12-31&preset=last_month&contact_id=contact:9")
+    assert r.status_code in (302, 303), old
+    loc = r.headers["location"]
+    assert loc.split("?")[0] == REPORTS[key][slot], old
+    for carried in ("date_from=2026-01-01", "date_to=2026-12-31", "as_of=2026-12-31",
+                    "preset=last_month", "contact_id=contact"):
+        assert carried in loc, (old, carried)
+
+
+@pytest.mark.asyncio
+async def test_the_old_account_ledger_url_redirects_carrying_its_parameters(ui_client):
+    """The drilldown moved with the reports it hangs off. Its links carry the
+    originating report in "src" as well as the dates, and losing that strands the
+    reader with no way back to where they came from."""
+    r = await _get(ui_client, "/accounting/ledger/1130-FRT?date_from=2026-01-01"
+                              "&date_to=2026-12-31&src=trial-balance")
+    assert r.status_code in (302, 303)
+    loc = r.headers["location"]
+    assert loc.split("?")[0] == ledger_path("1130-FRT")
+    for carried in ("date_from=2026-01-01", "date_to=2026-12-31", "src=trial-balance"):
+        assert carried in loc, carried
 
 
 @pytest.mark.parametrize("key", sorted(REPORTS))
@@ -234,10 +294,61 @@ async def test_statement_requests_each_selected_subject(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_ledger_drilldown_requests_its_account(ui_client):
-    r = await _get(ui_client, "/reports/ledger/6200?date_from=2026-01-01&src=trial-balance")
+async def test_trial_balance_export_passes_dates(ui_client):
+    """A download taken from a filtered report has to cover that filter's period.
+
+    The mocked API answers with the same figures whatever it is asked for, so the
+    outbound call is the only place the dropped date shows up: a CSV built from the
+    whole history renders exactly like one built from January.
+    """
+    r = await _get(ui_client, "/reports/export/trial-balance/csv"
+                              "?date_from=2026-01-01&date_to=2026-01-31")
     assert r.status_code == 200
-    assert r.mocks["get_ledger"].await_args.args[1] == "6200"
+    _token, params = r.mocks["get_trial_balance"].await_args.args
+    assert params == {"date_from": "2026-01-01", "date_to": "2026-01-31"}
+
+
+@pytest.mark.asyncio
+async def test_ledger_drilldown_requests_its_account(ui_client):
+    """The drilldown asks for the account it names, over the range it was given,
+    and offers a way back to the report the reader came from with that same range
+    still applied. A back link that drops the dates returns them to a different set
+    of figures than the one they clicked out of."""
+    r = await _get(ui_client, "/reports/ledger/6200"
+                              "?src=general-ledger&from=2026-01-01&to=2026-01-31")
+    assert r.status_code == 200
+    _token, code, params = r.mocks["get_ledger"].await_args.args
+    assert code == "6200"
+    assert params == {"date_from": "2026-01-01", "date_to": "2026-01-31"}
+    back = f"{REPORTS['general-ledger'][0]}?from=2026-01-01&amp;to=2026-01-31"
+    assert back in r.text
+
+
+@pytest.mark.asyncio
+async def test_ledger_shows_its_opening_balance_on_every_surface(ui_client):
+    """A date-filtered ledger carries its running balance on from the prior period,
+    so the opening figure has to be on the page. Without it the first row's balance
+    is a number the reader cannot account for or tie back to the general ledger.
+    The account's statement is built from the same call, so all three surfaces are
+    checked together: page, print, and CSV.
+    """
+    page = await _get(ui_client,
+                      "/reports/ledger/6200?date_from=2026-03-01&src=general-ledger")
+    assert page.status_code == 200
+    assert "Opening Balance" in page.text
+    assert "฿10.00" in page.text
+
+    printed = await _get(ui_client, "/reports/print/statement?account=a:6200"
+                                    "&date_from=2026-03-01&date_to=2026-03-31")
+    assert printed.status_code == 200
+    assert "Opening Balance" in printed.text
+    assert "฿10.00" in printed.text
+
+    exported = await _get(ui_client, "/reports/export/statement/csv?account=a:6200"
+                                     "&date_from=2026-03-01&date_to=2026-03-31")
+    assert exported.status_code == 200
+    assert any("Opening Balance" in line and "10.0" in line
+               for line in exported.text.splitlines())
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +441,14 @@ async def test_no_selection_prompts_instead_of_rendering_nothing(ui_client):
 
 @pytest.mark.asyncio
 async def test_duplicate_selection_renders_once(ui_client):
+    """Picking the same subject twice is one statement, not two identical ones.
+
+    One closing-balance block per rendered section, so counting them counts the
+    sections. The subject's name is no use for this: the picker lists it as well.
+    """
     r = await _get(ui_client, "/reports/statement?account=c:contact:9&account=c:contact:9")
     assert r.status_code == 200
-    assert r.text.count("Acme Ltd") == r.text.count("Acme Ltd")
+    assert r.text.count("report-total") == 1
     assert r.mocks["get_soa"].await_count == 1
 
 
@@ -415,6 +531,21 @@ async def test_statement_print_paginates_one_subject_per_page(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_trial_balance_print_shows_period(ui_client):
+    """A printed trial balance is handed to someone who cannot see the filter that
+    produced it, so the sheet has to say which period it covers. "As of:" is the
+    balance sheet's heading and describes a single instant; on a report that spans
+    a range it would misdescribe every figure below it.
+    """
+    r = await _get(ui_client, "/reports/print/trial-balance"
+                              "?date_from=2026-01-01&date_to=2026-01-31")
+    assert r.status_code == 200
+    assert "From: 2026-01-01" in r.text
+    assert "To: 2026-01-31" in r.text
+    assert "As of:" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_statement_csv_covers_every_selection(ui_client):
     r = await _get(ui_client, "/reports/export/statement/csv?account=c:contact:9&account=a:6200")
     assert r.status_code == 200
@@ -459,6 +590,7 @@ _NEW_KEYS = [
     "acct.reports_moved_notice", "acct.soa_source_docs", "acct.soa_source_ledger",
     "acct.soa_pick_placeholder", "acct.soa_selected_count", "acct.soa_pick_ar_balance",
     "acct.soa_pick_ap_balance", "acct.soa_pick_all_customers",
+    "label.account",
     "rpt.cash_flow_desc", "rpt.trial_balance_desc", "rpt.general_ledger_desc",
     "rpt.statement_desc",
 ]

@@ -142,36 +142,45 @@ async def test_an_entry_that_moves_no_cash_changes_nothing(client):
 
 
 @pytest.mark.asyncio
-async def test_an_account_override_beats_the_derived_default(client, session):
-    """A company whose own chart disagrees with the default classification can
-    say so per account."""
-    from sqlalchemy import select
-    from celerp_accounting.models import Account
+async def test_an_accounts_section_is_derived_from_its_type_and_code(client):
+    """Which section a figure lands in is read off the account every run.
 
+    6200 is an expense, so rent paid in cash is operating and only operating.
+    Nothing is stored against the account to say otherwise, which is what keeps
+    two companies on the same chart reading the same statement.
+    """
     tok = await _reg(client)
     await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
                             {"account": "1111", "debit": 0.0, "credit": 100.0}])
-    before = await _cash_flow(client, tok)
-    assert before["direct"]["operating"]["total"] == pytest.approx(-100.0)
-
-    acc = (await session.execute(
-        select(Account).where(Account.code == "6200"))).scalars().first()
-    acc.cash_flow_category = "financing"
-    await session.commit()
-
-    after = await _cash_flow(client, tok)
-    assert after["direct"]["operating"]["total"] == pytest.approx(0.0)
-    assert after["direct"]["financing"]["total"] == pytest.approx(-100.0)
-    # Reclassifying moves a figure between sections; it never changes the total.
-    assert after["net_change"] == before["net_change"]
-    assert after["balanced"] is True
+    data = await _cash_flow(client, tok)
+    assert data["direct"]["operating"]["total"] == pytest.approx(-100.0)
+    assert [line["code"] for line in data["direct"]["operating"]["lines"]] == ["6200"]
+    assert data["direct"]["investing"]["total"] == pytest.approx(0.0)
+    assert data["direct"]["financing"]["total"] == pytest.approx(0.0)
+    assert data["balanced"] is True
 
 
 @pytest.mark.asyncio
 async def test_reports_permission_can_read_it(client, session):
-    """Cash flow is a report, so it answers to the report permission."""
+    """Cash flow is a report, so it answers to the report permission and to nothing
+    else. The subject holds view_financial_reports and not manage_accounting, which
+    is the only pairing that tells the two grants apart: anyone holding both would
+    read the statement either way and prove nothing about which grant let them in.
+    """
+    from test_helpers import grant_permission
     from test_journal_gl_soa import _user_with_role
     admin = await _reg(client)
-    viewer = await _user_with_role(client, session, admin, "manager")
-    r = await client.get("/accounting/cash-flow", headers=_h(viewer))
+    reader = await _user_with_role(client, session, admin, "operator")
+    await grant_permission(client, _h(admin), "view_financial_reports", "operator")
+
+    r = await client.get("/accounting/cash-flow", headers=_h(reader))
     assert r.status_code == 200, r.text
+
+    # manage_accounting stays at manager, so reading the books never became writing them.
+    w = await client.post("/accounting/journal-entries", json={
+        "ts": "2026-02-10", "memo": "Entry", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "1111", "debit": 10.0, "credit": 0.0},
+                    {"account": "4100", "debit": 0.0, "credit": 10.0}],
+    }, headers=_h(reader))
+    assert w.status_code == 403, w.text
+    assert "manage_accounting" in w.json()["detail"]
