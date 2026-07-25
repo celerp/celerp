@@ -3,8 +3,8 @@
 
 """Add accounts.cash_flow_category (cash flow statement classification).
 
-Revision ID: a1b2c3d4e5f6
-Revises: z9a0b1c2d3e4
+Revision ID: c4d5e6f7a8b9
+Revises: f6a7b8c9d0e1
 Create Date: 2026-07-25
 
 The cash flow statement sorts each cash movement into operating, investing or
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a1b2c3d4e5f6"
-down_revision = "z9a0b1c2d3e4"
+revision = "c4d5e6f7a8b9"
+down_revision = "f6a7b8c9d0e1"
 branch_labels = None
 depends_on = None
 

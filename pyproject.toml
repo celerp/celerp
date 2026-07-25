@@ -34,11 +34,11 @@ dependencies = [
     "httpx>=0.27",
     "slowapi>=0.1.9",
     "reportlab>=4.0",
-    "python-fasthtml>=0.12",
-    # fasthtml 0.12 asks for starlette>0.33 with no upper bound, but Starlette 1.0
-    # dropped the on_startup/on_shutdown arguments it passes, so a fresh resolve
-    # picks a version that cannot construct the app.
-    "starlette>=0.33,<1.0",
+    # 0.14 is the floor that works with Starlette 1.0, which dropped the
+    # on_startup/on_shutdown arguments earlier fasthtml passes. Both dependencies
+    # are otherwise unbounded, so a lower floor lets a resolve pair 0.12 with
+    # Starlette 1.x and produce an app that cannot be constructed.
+    "python-fasthtml>=0.14",
     "psutil>=5.9",
     "websockets>=12.0",
     "aiosmtplib>=3.0",

@@ -49,12 +49,12 @@ async def test_direct_and_indirect_agree_exactly(client):
     accounts are one number, to the cent."""
     tok = await _reg(client)
     # Cash sale, rent paid in cash, equipment bought for cash.
-    await _je(client, tok, [{"account": "1110", "debit": 1000.0, "credit": 0.0},
+    await _je(client, tok, [{"account": "1111", "debit": 1000.0, "credit": 0.0},
                             {"account": "4100", "debit": 0.0, "credit": 1000.0}])
     await _je(client, tok, [{"account": "6200", "debit": 300.0, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 300.0}])
+                            {"account": "1111", "debit": 0.0, "credit": 300.0}])
     await _je(client, tok, [{"account": "1210", "debit": 500.0, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 500.0}])
+                            {"account": "1111", "debit": 0.0, "credit": 500.0}])
 
     data = await _cash_flow(client, tok)
     assert data["net_change"] == pytest.approx(200.0)
@@ -66,11 +66,11 @@ async def test_direct_and_indirect_agree_exactly(client):
 @pytest.mark.asyncio
 async def test_movements_land_in_the_right_section(client):
     tok = await _reg(client)
-    await _je(client, tok, [{"account": "1110", "debit": 1000.0, "credit": 0.0},
+    await _je(client, tok, [{"account": "1111", "debit": 1000.0, "credit": 0.0},
                             {"account": "4100", "debit": 0.0, "credit": 1000.0}])
     await _je(client, tok, [{"account": "1210", "debit": 500.0, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 500.0}])
-    await _je(client, tok, [{"account": "1110", "debit": 800.0, "credit": 0.0},
+                            {"account": "1111", "debit": 0.0, "credit": 500.0}])
+    await _je(client, tok, [{"account": "1111", "debit": 800.0, "credit": 0.0},
                             {"account": "2210", "debit": 0.0, "credit": 800.0}])
 
     data = await _cash_flow(client, tok)
@@ -87,7 +87,7 @@ async def test_a_multi_leg_entry_splits_without_losing_cents(client):
     await _je(client, tok, [{"account": "6200", "debit": 3.33, "credit": 0.0},
                             {"account": "6300", "debit": 3.33, "credit": 0.0},
                             {"account": "6400", "debit": 3.34, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 10.0}])
+                            {"account": "1111", "debit": 0.0, "credit": 10.0}])
     data = await _cash_flow(client, tok)
     assert data["net_change"] == pytest.approx(-10.0)
     assert data["direct"]["total"] == pytest.approx(-10.0)
@@ -102,7 +102,7 @@ async def test_the_same_entries_always_split_the_same_way(client):
     await _je(client, tok, [{"account": "6200", "debit": 1.0, "credit": 0.0},
                             {"account": "6300", "debit": 1.0, "credit": 0.0},
                             {"account": "6400", "debit": 1.0, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 3.0}])
+                            {"account": "1111", "debit": 0.0, "credit": 3.0}])
     first = await _cash_flow(client, tok)
     second = await _cash_flow(client, tok)
     assert first["direct"] == second["direct"]
@@ -112,10 +112,10 @@ async def test_the_same_entries_always_split_the_same_way(client):
 @pytest.mark.asyncio
 async def test_opening_cash_excludes_the_period_and_closing_includes_it(client):
     tok = await _reg(client)
-    await _je(client, tok, [{"account": "1110", "debit": 100.0, "credit": 0.0},
+    await _je(client, tok, [{"account": "1111", "debit": 100.0, "credit": 0.0},
                             {"account": "4100", "debit": 0.0, "credit": 100.0}],
               ts="2026-01-05")
-    await _je(client, tok, [{"account": "1110", "debit": 50.0, "credit": 0.0},
+    await _je(client, tok, [{"account": "1111", "debit": 50.0, "credit": 0.0},
                             {"account": "4100", "debit": 0.0, "credit": 50.0}],
               ts="2026-02-05")
 
@@ -142,7 +142,7 @@ async def test_an_entry_that_moves_no_cash_changes_nothing(client):
 
 
 @pytest.mark.asyncio
-async def test_an_account_override_beats_the_derived_default(client):
+async def test_an_account_override_beats_the_derived_default(client, session):
     """A company whose own chart disagrees with the default classification can
     say so per account."""
     from sqlalchemy import select
@@ -150,15 +150,14 @@ async def test_an_account_override_beats_the_derived_default(client):
 
     tok = await _reg(client)
     await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
-                            {"account": "1110", "debit": 0.0, "credit": 100.0}])
+                            {"account": "1111", "debit": 0.0, "credit": 100.0}])
     before = await _cash_flow(client, tok)
     assert before["direct"]["operating"]["total"] == pytest.approx(-100.0)
 
-    from celerp.db import async_session
-    async with async_session() as s:
-        acc = (await s.execute(select(Account).where(Account.code == "6200"))).scalars().first()
-        acc.cash_flow_category = "financing"
-        await s.commit()
+    acc = (await session.execute(
+        select(Account).where(Account.code == "6200"))).scalars().first()
+    acc.cash_flow_category = "financing"
+    await session.commit()
 
     after = await _cash_flow(client, tok)
     assert after["direct"]["operating"]["total"] == pytest.approx(0.0)

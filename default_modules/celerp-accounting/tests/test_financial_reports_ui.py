@@ -81,12 +81,21 @@ _CASH_FLOW = {
     "balanced": True,
 }
 _AGING = {"lines": [{"customer_id": "contact:9", "supplier_id": "contact:9", "total": 60.0}]}
+# /accounting is the journal now, and the signpost test loads it.
+_JOURNAL = {
+    "date_from": "", "date_to": "", "total_debit": 60.0, "total_credit": 60.0,
+    "entries": [{"je_id": "je:manual:abc", "ts": "2026-01-15", "memo": "Adjustment",
+                 "status": "posted", "je_type": "manual", "void_reason": None,
+                 "source_doc": None, "fx": None,
+                 "lines": [{"account": "1111", "name": "Bank", "debit": 60.0, "credit": 0.0},
+                           {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 60.0}]}],
+}
 
 _DEFAULTS = {
     "get_company": _COMPANY, "list_contacts": _CONTACTS, "get_chart": _CHART,
     "get_soa": _SOA, "get_ledger": _LEDGER, "get_pnl": _PNL, "get_balance_sheet": _BS,
     "get_trial_balance": _TB, "get_general_ledger": _GL, "get_cash_flow": _CASH_FLOW,
-    "get_ar_aging": _AGING, "get_ap_aging": _AGING,
+    "get_ar_aging": _AGING, "get_ap_aging": _AGING, "get_journal": _JOURNAL,
 }
 
 
@@ -116,12 +125,12 @@ async def _get(ui_client, url, role: str = "owner", **overrides):
 # The move: old URLs keep working, new ones render
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("tab,expected", sorted(MOVED_TABS.items()))
+@pytest.mark.parametrize("tab,key", sorted(MOVED_TABS.items()))
 @pytest.mark.asyncio
-async def test_moved_tab_redirects_to_its_new_home(ui_client, tab, expected):
+async def test_moved_tab_redirects_to_its_new_home(ui_client, tab, key):
     r = await _get(ui_client, f"/accounting?tab={tab}")
     assert r.status_code in (302, 303), tab
-    assert r.headers["location"].split("?")[0] == expected
+    assert r.headers["location"].split("?")[0] == REPORTS[key][0]
 
 
 @pytest.mark.asyncio
@@ -163,8 +172,8 @@ async def test_accounting_page_signposts_every_moved_report(ui_client):
     link, not a hunt through an index."""
     r = await _get(ui_client, "/accounting")
     assert r.status_code == 200
-    for path in MOVED_TABS.values():
-        assert path in r.text, path
+    for key in MOVED_TABS.values():
+        assert REPORTS[key][0] in r.text, key
 
 
 @pytest.mark.asyncio
@@ -401,7 +410,8 @@ async def test_the_picker_offers_contacts_and_chart_accounts_together(ui_client)
 async def test_statement_print_paginates_one_subject_per_page(ui_client):
     r = await _get(ui_client, "/reports/print/statement?account=c:contact:9&account=a:6200")
     assert r.status_code == 200
-    assert r.text.count("soa-page") == 2
+    # The class name also appears in the print stylesheet, so count the elements.
+    assert r.text.count('class="soa-page"') == 2
 
 
 @pytest.mark.asyncio
@@ -480,35 +490,35 @@ def test_removed_locale_keys_are_gone_everywhere():
 
 @pytest.mark.asyncio
 async def test_gl_csv_single_call_with_backend_lines(ui_client):
-    """The GL export makes one general-ledger call with include_lines and
-    never re-derives detail: no get_ledger, no get_journal, running balance
-    signed by the backend's debit_normal flag."""
+    """The GL export makes one general-ledger call with include_lines and never
+    re-derives detail: no get_ledger, no get_journal, running balance signed by
+    the backend's debit_normal flag."""
     gl = json.loads(json.dumps(_GL))
-    gl["rows"][0]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
-                              "memo": "Adjustment", "source_ref": None,
-                              "debit": 40.0, "credit": 0.0}]
-    gl["rows"][1]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
-                              "memo": "Adjustment", "source_ref": None,
-                              "debit": 0.0, "credit": 40.0}]
-    ledger_mock = AsyncMock(return_value=_LEDGER)
-    journal_mock = AsyncMock(return_value=_JOURNAL)
-    gl_mock = AsyncMock(return_value=gl)
-    ps = _patches()
+    gl["rows"] = [
+        {"code": "1111", "name": "Bank", "account_type": "asset", "debit_normal": True,
+         "opening": 100.0, "debit": 40.0, "credit": 0.0, "closing": 140.0,
+         "lines": [{"date": "2026-01-15", "je_id": "je:manual:abc", "memo": "Adjustment",
+                    "source_ref": None, "debit": 40.0, "credit": 0.0}]},
+        {"code": "4100", "name": "Sales Revenue", "account_type": "revenue",
+         "debit_normal": False, "opening": 100.0, "debit": 0.0, "credit": 40.0,
+         "closing": 140.0,
+         "lines": [{"date": "2026-01-15", "je_id": "je:manual:abc", "memo": "Adjustment",
+                    "source_ref": None, "debit": 0.0, "credit": 40.0}]},
+    ]
+    made, ps = _mocks(get_general_ledger=gl)
     for p in ps:
         p.start()
     try:
-        with patch("ui.api_client.get_ledger", new=ledger_mock), \
-             patch("ui.api_client.get_journal", new=journal_mock), \
-             patch("ui.api_client.get_general_ledger", new=gl_mock):
-            r = await ui_client.get("/reports/export/general-ledger/csv", cookies=_cookies())
+        r = await ui_client.get("/reports/export/general-ledger/csv", cookies=_cookies())
     finally:
         for p in ps:
             p.stop()
     assert r.status_code == 200
-    ledger_mock.assert_not_called()
-    journal_mock.assert_not_called()
-    called_params = gl_mock.call_args.args[1] if len(gl_mock.call_args.args) > 1 else gl_mock.call_args.kwargs.get("params", {})
-    assert called_params.get("include_lines") == "1"
+    made["get_ledger"].assert_not_called()
+    made["get_journal"].assert_not_called()
+    params = made["get_general_ledger"].await_args.args[1]
+    assert params.get("include_lines") == "1"
+
     lines = r.text.strip().splitlines()
     bank = [l for l in lines if l.startswith("1111")]
     assert any("Opening balance" in l and "100.0" in l for l in bank)

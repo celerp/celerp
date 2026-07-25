@@ -52,8 +52,8 @@ def _moved_reports_notice() -> FT:
         Span(t("acct.reports_moved_notice")),
         Span(" "),
         *[
-            A(t(REPORTS[key][3]), href=path, cls="drilldown-link")
-            for key, path in MOVED_TABS.items()
+            A(t(REPORTS[key][3]), href=REPORTS[key][0], cls="drilldown-link")
+            for key in MOVED_TABS.values()
         ],
         A(t("nav.reports"), href="/reports", cls="drilldown-link"),
         cls="info-banner mb-md",
@@ -77,7 +77,8 @@ def setup_routes(app):
                        ("as_of", qp.get("as_of", ""))]
             if tab == "soa" and qp.get("contact_id"):
                 carried.append(("contact_id", qp["contact_id"]))
-            return RedirectResponse(_href(MOVED_TABS[tab], carried), status_code=302)
+            return RedirectResponse(
+                _href(REPORTS[MOVED_TABS[tab]][0], carried), status_code=302)
         try:
             company = await api.get_company(token)
             currency = company.get("currency")

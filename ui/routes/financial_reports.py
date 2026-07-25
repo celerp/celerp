@@ -31,6 +31,7 @@ from ui.components.report_kit import (
 )
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
+from celerp.services.money import to_decimal
 from ui.routes.reports import (
     OPERATIONAL_REPORTS, _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset,
 )
@@ -62,14 +63,16 @@ REPORTS: dict[str, tuple[str, str, str, str]] = {
                   "/reports/export/statement/csv", "acct.soa_title"),
 }
 
-# Where an /accounting?tab=<key> URL now lives. Bookmarks and emailed links predate
-# the move, so they are redirected rather than broken.
+# Old /accounting?tab=<name> -> the report key it became. Bookmarks and emailed
+# links predate the move, so they are redirected rather than broken. Mapping to the
+# key rather than the path keeps one source for each report's URL and its name;
+# note the tab name and the report key differ for the statement.
 MOVED_TABS: dict[str, str] = {
-    "pnl": "/reports/pnl",
-    "balance-sheet": "/reports/balance-sheet",
-    "trial-balance": "/reports/trial-balance",
-    "general-ledger": "/reports/general-ledger",
-    "soa": "/reports/statement",
+    "pnl": "pnl",
+    "balance-sheet": "balance-sheet",
+    "trial-balance": "trial-balance",
+    "general-ledger": "general-ledger",
+    "soa": "statement",
 }
 
 
@@ -1114,16 +1117,27 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            data = await api.get_general_ledger(token, date_params(d_from, d_to))
+            # One call: the backend buckets summary and detail together, so the
+            # export can never disagree with the on-screen general ledger.
+            data = await api.get_general_ledger(
+                token, {**date_params(d_from, d_to), "include_lines": "1"})
         except APIError as e:
             return plain_error_response(e)
-        rows = [["Code", "Account", "Opening", "Debit", "Credit", "Closing"]]
-        rows += [[r.get("code", ""), r.get("name", ""), r.get("opening", 0),
-                  r.get("debit", 0), r.get("credit", 0), r.get("closing", 0)]
-                 for r in data.get("rows", [])]
-        totals = data.get("totals", {})
-        rows.append(["", "TOTAL", totals.get("opening", 0), totals.get("debit", 0),
-                     totals.get("credit", 0), totals.get("closing", 0)])
+        rows: list[list] = [["account_code", "account_name", "date", "source_ref",
+                             "memo", "debit", "credit", "balance"]]
+        for row in data.get("rows", []):
+            code, name = row.get("code", ""), row.get("name", "")
+            debit_normal = row.get("debit_normal")
+            opening = row.get("opening", 0)
+            rows.append([code, name, "", "", "Opening balance", "", "", opening])
+            running = to_decimal(opening)
+            for line in row.get("lines", []):
+                debit = to_decimal(line.get("debit") or 0)
+                credit = to_decimal(line.get("credit") or 0)
+                running += (debit - credit) if debit_normal else (credit - debit)
+                rows.append([code, name, line.get("date", ""), line.get("source_ref") or "",
+                             line.get("memo", ""), float(debit), float(credit), float(running)])
+            rows.append([code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
         return _csv_response(rows, f"general_ledger_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/cash-flow/csv")
