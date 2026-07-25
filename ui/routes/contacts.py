@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import json as _json
 import logging
 from datetime import date, datetime, timezone as _tz
@@ -243,8 +244,17 @@ def _settings_card(c: dict) -> FT:
     )
 
 
-def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01") -> FT:
-    """Compute and render financial summary cards from contact docs."""
+def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01",
+                       consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
+    """Compute and render financial summary cards from contact docs.
+
+    consigned_total / on_memo_total are the live value of goods currently held on
+    consignment from this supplier (at cost) and currently out on memo to this customer
+    (at the price they were quoted). Both come from the contact-scoped holdings filter,
+    so each card's number is the value of the very list it links to. None means the
+    figure was unavailable (e.g. the caller could not reach the API, or costs are
+    hidden from this role), and the card falls back to the document-derived total.
+    """
     from ui.routes.reports import _fy_start
     today = date.today()
     # Reuse the canonical parser: it falls back to Jan 1 on a malformed
@@ -270,12 +280,17 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
                 pass
     avg_dtp = f"{sum(days) // len(days)}d" if days else EMPTY
 
-    # Consignment total (active consignments for this contact)
-    consignment_docs = [d for d in docs if d.get("doc_type") == "consignment_in"]
-    total_consigned = sum(
-        float(d.get("total_amount") or 0) for d in consignment_docs
-        if d.get("status") not in ("void", "converted")
-    )
+    # Consignment: value of goods still held from this supplier. Prefer the live holdings
+    # figure (the value of the items the card links to); fall back to the document totals
+    # when it is unavailable, which reads as the original consigned value.
+    if consigned_total is None:
+        consignment_docs = [d for d in docs if d.get("doc_type") == "consignment_in"]
+        total_consigned = sum(
+            float(d.get("total_amount") or 0) for d in consignment_docs
+            if d.get("status") not in ("void", "converted")
+        )
+    else:
+        total_consigned = consigned_total
 
     def _card(label: str, value: str, sub_label: str = "", href: str = "") -> FT:
         label_el = Div(
@@ -299,8 +314,15 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
         _card("Outstanding", fmt_money(outstanding, None),
               href=f"/docs?type=invoice&status=awaiting_payment{contact_filter}" if contact_id else ""),
         _card("Avg Days to Pay", avg_dtp),
+        # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
+        # as "this customer is holding nothing of ours".
+        _card("On Memo", fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
+              sub_label="Out to customer",
+              href=f"/inventory?on_memo_to={contact_id}" if (contact_id and on_memo_total is not None) else ""),
         _card("Consignment", fmt_money(total_consigned, None),
-              href=f"/docs?type=consignment_in{contact_filter}" if contact_id else ""),
+              sub_label="Held from supplier" if consigned_total is not None else "",
+              href=(f"/inventory?consigned_from={contact_id}" if (contact_id and consigned_total is not None)
+                    else (f"/docs?type=consignment_in{contact_filter}" if contact_id else ""))),
         cls="financial-cards",
     )
 
@@ -775,7 +797,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          contact_id: str = "", show_financials: bool = True, show_delete: bool = True,
                          show_contact_addresses: bool = True, extra_sections: list | None = None,
                          back: tuple | None = None, nav_active: str | None = None,
-                         title: str | None = None) -> FT:
+                         title: str | None = None,
+                         consigned_total: float | None = None,
+                         on_memo_total: float | None = None) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
@@ -837,7 +861,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         autofocus_script,
         action_bar,
         delete_btn,
-        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start)] if show_financials else []),
+        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start,
+                              consigned_total=consigned_total, on_memo_total=on_memo_total)]
+          if show_financials else []),
         Div(
             Div(
                 _contact_info_card(contact),
@@ -1147,7 +1173,23 @@ def setup_routes(app):
         except Exception:
             company = {}
 
-        return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id)
+        # Live holdings behind the On Memo / Consignment cards. limit=1 because only the
+        # scope-wide value_total is needed here; the full list is the click-through.
+        # None (API unreachable, or costs hidden from this role) makes the card degrade
+        # rather than assert a wrong figure.
+        async def _holdings_total(param: str) -> float | None:
+            try:
+                resp = await api.list_items(token, {param: contact_id, "limit": 1})
+            except Exception:
+                return None
+            return resp.get("value_total") if isinstance(resp, dict) else None
+
+        on_memo_total, consigned_total = await _asyncio.gather(
+            _holdings_total("on_memo_to"), _holdings_total("consigned_from"),
+        )
+
+        return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
+                                          on_memo_total=on_memo_total, consigned_total=consigned_total)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail

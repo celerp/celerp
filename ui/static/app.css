@@ -1918,6 +1918,13 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .financial-card--link { text-decoration: none; color: inherit; cursor: pointer; }
 .financial-card--link:hover { background: var(--c-bg-hover, #f0f0f0); }
 .financial-card-value { font-size: 1.3rem; font-weight: 700; margin-top: 0.25rem; }
+/* Contact-scoped holdings view (inventory filtered to one contact's memo / consignment goods). */
+.holdings-scope-banner { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; border: 1px solid var(--c-border); border-left: 3px solid var(--c-primary); border-radius: var(--radius); padding: 0.6rem 0.9rem; margin-bottom: 1rem; background: var(--c-bg-alt, #f8f9fa); }
+.holdings-scope-heading { display: flex; align-items: baseline; gap: 0.6rem; }
+.holdings-scope-label { font-weight: 600; }
+.holdings-scope-total { font-size: 1.15rem; font-weight: 700; }
+.holdings-scope-basis { font-size: 0.8rem; color: var(--c-text-muted); margin-right: auto; }
+
 .section-card { margin-bottom: 1.5rem; }
 /* Contact Info / Settings cards: inset the header + table so they aren't flush against the card border. */
 .detail-card.section-card { padding: 12px 14px; }

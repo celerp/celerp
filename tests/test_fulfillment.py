@@ -736,15 +736,18 @@ async def _create_consignment_in(client, auth, line_items) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _create_memo(client, auth, line_items) -> str:
+async def _create_memo(client, auth, line_items, contact_id=None) -> str:
     """Create a finalized memo document. line_items should include entity_id for linked items."""
     total = sum(li.get("quantity", 0) * li.get("unit_price", 0) for li in line_items)
-    r = await client.post("/docs", headers=auth["headers"], json={
+    payload = {
         "doc_type": "memo",
         "ref_id": f"MEMO-{uuid.uuid4().hex[:6]}",
         "line_items": line_items,
         "total": total,
-    })
+    }
+    if contact_id:
+        payload["contact_id"] = contact_id
+    r = await client.post("/docs", headers=auth["headers"], json=payload)
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
     r2 = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
@@ -1468,3 +1471,109 @@ async def test_fulfill_spans_across_lots_specific_id_cogs(client, session, auth,
     fulfilled = next((e for e in led if e.get("event_type") == "doc.fulfilled"), None)
     assert fulfilled is not None
     assert abs(float(fulfilled["data"].get("total_cogs", 0)) - 140.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Contact-scoped holdings filter: items currently out on memo to a customer.
+# GET /items?on_memo_to=<contact_id> (celerp.services.holdings.memo_holdings).
+# ---------------------------------------------------------------------------
+
+
+async def _memo_out(client, auth, sku, unit_price, contact_id, cost_price=0.0, retail_price=None):
+    """Create an item, put it on memo to `contact_id` at `unit_price`, return its id."""
+    data = {"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece"}
+    if cost_price:
+        data["cost_total"] = cost_price
+    if retail_price is not None:
+        data["retail_price"] = retail_price
+    r = await client.post("/items", headers=auth["headers"], json=data)
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    doc_id = await _create_memo(
+        client, auth,
+        [{"sku": sku, "name": sku, "quantity": 1, "unit_price": unit_price, "entity_id": eid}],
+        contact_id=contact_id,
+    )
+    fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert fr.status_code == 200, fr.text
+    return eid, doc_id
+
+
+@pytest.mark.asyncio
+async def test_items_on_memo_to_lists_outstanding_at_quoted_price(client, session, auth, _setup_ids):
+    cust = "contact:custA"
+    sku_a, sku_b = f"HOL-A-{uuid.uuid4().hex[:6]}", f"HOL-B-{uuid.uuid4().hex[:6]}"
+    eid_a, _ = await _memo_out(client, auth, sku_a, 500.0, cust)
+    eid_b, _ = await _memo_out(client, auth, sku_b, 750.0, cust)
+
+    resp = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert {i["id"] for i in resp["items"]} == {eid_a, eid_b}
+    assert {i["id"]: i["holding_value"] for i in resp["items"]} == {eid_a: 500.0, eid_b: 750.0}
+    assert resp["value_total"] == 1250.0
+
+
+@pytest.mark.asyncio
+async def test_items_on_memo_to_uses_quoted_override_not_catalog(client, session, auth, _setup_ids):
+    """The value is the price quoted on the memo line, never the item's catalog/retail price."""
+    cust = "contact:custOverride"
+    sku = f"HOL-OV-{uuid.uuid4().hex[:6]}"
+    # Catalog/retail says 1000, but the customer was quoted 800 on the memo.
+    eid, _ = await _memo_out(client, auth, sku, 800.0, cust, cost_price=400.0, retail_price=1000.0)
+
+    resp = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert resp["value_total"] == 800.0
+    (item,) = resp["items"]
+    assert item["holding_value"] == 800.0
+    # Prove it is genuinely the quoted price, not the catalog value carried on the item.
+    assert item.get("retail_price") in (1000.0, None) and item["holding_value"] != 1000.0
+
+
+@pytest.mark.asyncio
+async def test_items_on_memo_to_excludes_other_customer(client, session, auth, _setup_ids):
+    a, b = "contact:memoA", "contact:memoB"
+    eid_a, _ = await _memo_out(client, auth, f"HOL-CA-{uuid.uuid4().hex[:6]}", 100.0, a)
+    await _memo_out(client, auth, f"HOL-CB-{uuid.uuid4().hex[:6]}", 100.0, b)
+
+    resp = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": a})).json()
+    assert {i["id"] for i in resp["items"]} == {eid_a}
+    assert resp["value_total"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_items_on_memo_to_excludes_returned_item(client, session, auth, _setup_ids):
+    cust = "contact:memoReturn"
+    eid, doc_id = await _memo_out(client, auth, f"HOL-R-{uuid.uuid4().hex[:6]}", 300.0, cust)
+    # Return the memo line: item goes back to available and drops out of the scope.
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert rr.status_code == 200, rr.text
+
+    resp = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert resp["items"] == []
+    assert resp["value_total"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_items_on_memo_to_aggregates_multiple_memos(client, session, auth, _setup_ids):
+    """The whole point of the feature: several open memos to one customer, one list + total."""
+    cust = "contact:memoMulti"
+    eid_1, _ = await _memo_out(client, auth, f"HOL-M1-{uuid.uuid4().hex[:6]}", 400.0, cust)
+    eid_2, _ = await _memo_out(client, auth, f"HOL-M2-{uuid.uuid4().hex[:6]}", 600.0, cust)  # separate memo doc
+
+    resp = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert {i["id"] for i in resp["items"]} == {eid_1, eid_2}
+    assert resp["value_total"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_items_value_total_reconciles_with_listed_items(client, session, auth, _setup_ids):
+    """Keystone: value_total equals the sum of the per-item holding_value shown in the list."""
+    cust = "contact:memoRecon"
+    await _memo_out(client, auth, f"HOL-X1-{uuid.uuid4().hex[:6]}", 123.45, cust)
+    await _memo_out(client, auth, f"HOL-X2-{uuid.uuid4().hex[:6]}", 678.90, cust)
+
+    resp = (await client.get("/items", headers=auth["headers"],
+                             params={"on_memo_to": cust, "limit": 999})).json()
+    listed = round(sum(float(i["holding_value"]) for i in resp["items"]), 2)
+    assert resp["value_total"] == listed == 802.35
