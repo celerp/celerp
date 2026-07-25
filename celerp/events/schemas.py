@@ -646,6 +646,10 @@ class DocFulfillmentReversed(BaseModel):
     reversed_items: list[dict[str, Any]]
     reversed_by: str
     reason: str
+    # Lots that came back in part: the new in-stock parcel split off each part-returned
+    # line. Named apart from reversed_items because those lines are still out, for the
+    # balance the customer kept.
+    partially_returned_items: list[dict[str, Any]] = []
 
 
 class DocPartiallyReverted(BaseModel):
@@ -654,6 +658,7 @@ class DocPartiallyReverted(BaseModel):
     reversed_items: list[dict[str, Any]]
     reversed_by: str
     reason: str
+    partially_returned_items: list[dict[str, Any]] = []
 
 
 # -----------------

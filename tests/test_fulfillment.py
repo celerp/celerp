@@ -1577,3 +1577,123 @@ async def test_items_value_total_reconciles_with_listed_items(client, session, a
                              params={"on_memo_to": cust, "limit": 999})).json()
     listed = round(sum(float(i["holding_value"]) for i in resp["items"]), 2)
     assert resp["value_total"] == listed == 802.35
+
+
+# ---------------------------------------------------------------------------
+# Partial memo returns: a customer sends back part of a lot and keeps the rest.
+# The balance must stay out on memo, not be written off as returned.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_partial_memo_return_keeps_balance_out_with_customer(client, session, auth, _setup_ids):
+    cust = "contact:partialMemo"
+    sku = f"PM-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"],
+                          json={"sku": sku, "name": sku, "quantity": 7, "sell_by": "piece",
+                                "cost_total": 700.0})
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 7, "unit_price": 100.0, "entity_id": eid},
+    ], contact_id=cust)
+    fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert fr.status_code == 200, fr.text
+
+    before = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert before["value_total"] == 700.0
+
+    # Customer returns 3, keeps 4.
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "quantities": {eid: 3}})
+    assert rr.status_code == 200, rr.text
+    assert rr.json()["reverted"] == [], "the line is still out, so nothing was fully reverted"
+    (returned,) = rr.json()["partially_returned"]
+    assert returned["quantity"] == 3
+
+    # The 4 they kept are still out on memo, at the price they were quoted.
+    after = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert {i["id"] for i in after["items"]} == {eid}, "the balance must stay out with the customer"
+    (still_out,) = after["items"]
+    assert still_out["quantity"] == 4.0
+    assert still_out["status"] == "memo_out"
+    assert after["value_total"] == 400.0, "4 units still out at the quoted 100 each"
+
+    # The 3 that came back are in stock, and are not counted as still out.
+    returned_item = (await client.get(f"/items/{returned['item_id']}", headers=auth["headers"])).json()
+    assert returned_item["status"] == "available"
+    assert returned_item["quantity"] == 3.0
+    assert returned_item["id"] not in {i["id"] for i in after["items"]}
+
+
+@pytest.mark.asyncio
+async def test_full_quantity_revert_still_reverts_whole_line(client, session, auth, _setup_ids):
+    """Passing the whole quantity is the same as passing no quantity: a full revert,
+    with no stray split."""
+    cust = "contact:fullQtyMemo"
+    sku = f"FQ-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"],
+                          json={"sku": sku, "name": sku, "quantity": 5, "sell_by": "piece"})
+    eid = r.json()["id"]
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 10.0, "entity_id": eid},
+    ], contact_id=cust)
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "quantities": {eid: 5}})
+    assert rr.status_code == 200, rr.text
+    assert rr.json()["reverted"] == [eid]
+    assert rr.json()["partially_returned"] == []
+    item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert item["status"] == "available" and item["quantity"] == 5.0
+    after = (await client.get("/items", headers=auth["headers"], params={"on_memo_to": cust})).json()
+    assert after["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_partial_memo_return_rejects_more_than_went_out(client, session, auth, _setup_ids):
+    cust = "contact:overReturn"
+    sku = f"OR-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"],
+                          json={"sku": sku, "name": sku, "quantity": 2, "sell_by": "piece"})
+    eid = r.json()["id"]
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 2, "unit_price": 10.0, "entity_id": eid},
+    ], contact_id=cust)
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "quantities": {eid: 5}})
+    assert rr.status_code == 422
+    for bad in (0, -1):
+        assert (await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                                  json={"line_entity_ids": [eid], "quantities": {eid: bad}})).status_code == 422
+    # Nothing moved.
+    item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert item["status"] == "memo_out" and item["quantity"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_without_quantities_is_unchanged(client, session, auth, _setup_ids):
+    """The existing whole-line call shape keeps working untouched."""
+    cust = "contact:noQty"
+    sku = f"NQ-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"],
+                          json={"sku": sku, "name": sku, "quantity": 3, "sell_by": "piece"})
+    eid = r.json()["id"]
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 10.0, "entity_id": eid},
+    ], contact_id=cust)
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+
+    rr = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert rr.status_code == 200, rr.text
+    assert rr.json()["reverted"] == [eid]
+    item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert item["status"] == "available" and item["quantity"] == 3.0

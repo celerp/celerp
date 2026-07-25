@@ -339,7 +339,12 @@ class TestFirstBootSequence:
 def test_tomli_declared_for_pre_311():
     """celerp/config.py falls back to `import tomli as tomllib` on 3.10; the
     fallback only works if packaging declares tomli for those interpreters."""
-    import tomllib
+    # Read the manifest the same way celerp.config does, or this check for 3.10 support
+    # cannot itself run on 3.10: tomllib is stdlib only from 3.11.
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
     pyproject = tomllib.loads(
         (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
     deps = pyproject["project"]["dependencies"]
