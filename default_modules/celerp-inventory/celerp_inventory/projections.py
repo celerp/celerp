@@ -296,6 +296,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
+        # Returning consigned goods to their supplier adjusts the quantity and settles the
+        # borrowed/owned question in the same breath: the emitter sends consignment_flag
+        # (None once nothing is left on hand, "in" while a partial balance remains). Only
+        # honour the key when present, so ordinary stock adjustments never touch the flag.
+        if "consignment_flag" in data:
+            current["consignment_flag"] = data["consignment_flag"]
         _recompute_cost(current)  # landed cost is per-unit, so it scales with quantity
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
