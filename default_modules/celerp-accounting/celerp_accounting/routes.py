@@ -95,11 +95,18 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
 FX_ROUNDING_ACCOUNT = "6960"
 
 
+# The sections of the cash flow statement, and the values an account may be
+# classified as. This endpoint module is the authoritative side; the chart of
+# accounts screen holds the same list and a test keeps the two in lockstep.
+CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
+
+
 class AccountCreate(BaseModel):
     code: str
     name: str
     account_type: str  # asset|liability|equity|revenue|expense|cogs
     parent_code: str | None = None
+    cash_flow_category: str | None = None  # unset means "derive it from type and code"
 
 
 class AccountPatch(BaseModel):
@@ -107,6 +114,8 @@ class AccountPatch(BaseModel):
     account_type: str | None = None
     parent_code: str | None = None
     is_active: bool | None = None
+    # None leaves the override alone; "" clears it back to the derived default.
+    cash_flow_category: str | None = None
 
 
 class AccImportRecord(BaseModel):
@@ -225,7 +234,21 @@ def _account_to_dict(acc: Account) -> dict:
         "account_type": acc.account_type,
         "parent_code": acc.parent_code,
         "is_active": acc.is_active,
+        "cash_flow_category": acc.cash_flow_category,
     }
+
+
+def _checked_cash_flow_category(value: str | None) -> str | None:
+    """The stored override, or None for "derive it". An empty value clears the
+    override; anything else must name a section the statement actually has."""
+    if not value:
+        return None
+    if value not in CASH_FLOW_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail="Cash flow category must be one of: " + ", ".join(CASH_FLOW_CATEGORIES) + ".",
+        )
+    return value
 
 
 @router.get("/chart")
@@ -301,6 +324,7 @@ async def create_account(
         name=payload.name,
         account_type=payload.account_type,
         parent_code=payload.parent_code,
+        cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
     session.add(acc)
     await session.commit()
@@ -330,6 +354,8 @@ async def patch_account(
         acc.parent_code = payload.parent_code
     if payload.is_active is not None:
         acc.is_active = payload.is_active
+    if payload.cash_flow_category is not None:
+        acc.cash_flow_category = _checked_cash_flow_category(payload.cash_flow_category)
 
     await session.commit()
     return _account_to_dict(acc)
@@ -2886,12 +2912,11 @@ def _code_number(code: str) -> int:
 
 
 def _derived_cash_flow_category(account_type: str, code: str) -> str:
-    """Classification for the account on the far side of a cash movement.
+    """Default classification for the account on the far side of a cash movement.
 
     Working capital and trading accounts are operating; long-lived assets are
-    investing; borrowings and owner capital are financing. Read from the account's
-    type and code every time, so the statement classifies the same chart the same
-    way on every company and cannot drift from a stored value.
+    investing; borrowings and owner capital are financing. Correct for the seeded
+    chart, and overridable per account where a company's own chart differs.
     """
     if account_type in ("revenue", "expense", "cogs"):
         return "operating"
@@ -2903,6 +2928,14 @@ def _derived_cash_flow_category(account_type: str, code: str) -> str:
     if account_type == "equity":
         return "financing"
     return "operating"
+
+
+def _cash_flow_category(acc: Account | None, code: str) -> str:
+    """The account's own classification where it carries one, the derived default
+    where it does not."""
+    if acc is not None and acc.cash_flow_category in CASH_FLOW_CATEGORIES:
+        return acc.cash_flow_category
+    return _derived_cash_flow_category(acc.account_type if acc else "asset", code)
 
 
 def _split_cash_movement(
@@ -2998,8 +3031,7 @@ async def cash_flow(
         if cash_delta != 0:
             for code, share in _split_cash_movement(cash_delta, sorted(contras), base):
                 acc = account_map.get(code)
-                cat = _derived_cash_flow_category(
-                    acc.account_type if acc else "asset", code)
+                cat = _cash_flow_category(acc, code)
                 by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
         for code, signed in contras:
             acc = account_map.get(code)

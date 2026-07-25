@@ -142,13 +142,8 @@ async def test_an_entry_that_moves_no_cash_changes_nothing(client):
 
 
 @pytest.mark.asyncio
-async def test_an_accounts_section_is_derived_from_its_type_and_code(client):
-    """Which section a figure lands in is read off the account every run.
-
-    6200 is an expense, so rent paid in cash is operating and only operating.
-    Nothing is stored against the account to say otherwise, which is what keeps
-    two companies on the same chart reading the same statement.
-    """
+async def test_an_account_with_no_override_is_classified_by_type_and_code(client):
+    """The default: 6200 is an expense, so rent paid in cash is operating."""
     tok = await _reg(client)
     await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
                             {"account": "1111", "debit": 0.0, "credit": 100.0}])
@@ -158,6 +153,109 @@ async def test_an_accounts_section_is_derived_from_its_type_and_code(client):
     assert data["direct"]["investing"]["total"] == pytest.approx(0.0)
     assert data["direct"]["financing"]["total"] == pytest.approx(0.0)
     assert data["balanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_account_override_beats_the_derived_default(client):
+    """A company whose own chart disagrees with the default says so per account,
+    through the same API the chart of accounts screen uses. Nothing here touches
+    the database directly: an override a user cannot set is not an override."""
+    tok = await _reg(client)
+    await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
+                            {"account": "1111", "debit": 0.0, "credit": 100.0}])
+    before = await _cash_flow(client, tok)
+    assert before["direct"]["operating"]["total"] == pytest.approx(-100.0)
+
+    r = await client.patch("/accounting/accounts/6200",
+                           json={"cash_flow_category": "financing"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["cash_flow_category"] == "financing"
+
+    after = await _cash_flow(client, tok)
+    assert after["direct"]["operating"]["total"] == pytest.approx(0.0)
+    assert after["direct"]["financing"]["total"] == pytest.approx(-100.0)
+    assert [line["code"] for line in after["direct"]["financing"]["lines"]] == ["6200"]
+    # Moving a figure between sections must not break the tie-out.
+    assert after["net_change"] == pytest.approx(before["net_change"])
+    assert after["balanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_override_returns_the_account_to_its_default(client):
+    """An empty value clears the override rather than storing a blank category,
+    so a company can undo the change it just made."""
+    tok = await _reg(client)
+    await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
+                            {"account": "1111", "debit": 0.0, "credit": 100.0}])
+    await client.patch("/accounting/accounts/6200",
+                       json={"cash_flow_category": "financing"}, headers=_h(tok))
+
+    r = await client.patch("/accounting/accounts/6200",
+                           json={"cash_flow_category": ""}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["cash_flow_category"] is None
+
+    data = await _cash_flow(client, tok)
+    assert data["direct"]["operating"]["total"] == pytest.approx(-100.0)
+    assert data["direct"]["financing"]["total"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_category_is_rejected_and_the_valid_ones_named(client):
+    """Validation sits on the endpoint, and the message says what was allowed
+    instead of failing silently or storing a value the statement cannot use."""
+    tok = await _reg(client)
+    r = await client.patch("/accounting/accounts/6200",
+                           json={"cash_flow_category": "bogus"}, headers=_h(tok))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    for name in ("operating", "investing", "financing"):
+        assert name in detail
+
+    c = await client.post("/accounting/accounts", json={
+        "code": "6299", "name": "Odd", "account_type": "expense",
+        "cash_flow_category": "bogus"}, headers=_h(tok))
+    assert c.status_code == 422, c.text
+
+
+@pytest.mark.asyncio
+async def test_a_new_account_can_carry_its_category_from_the_start(client):
+    """The override is settable when the account is created, not only afterwards."""
+    tok = await _reg(client)
+    r = await client.post("/accounting/accounts", json={
+        "code": "6298", "name": "Levy", "account_type": "expense",
+        "cash_flow_category": "financing"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["cash_flow_category"] == "financing"
+
+    await _je(client, tok, [{"account": "6298", "debit": 40.0, "credit": 0.0},
+                            {"account": "1111", "debit": 0.0, "credit": 40.0}])
+    data = await _cash_flow(client, tok)
+    assert data["direct"]["financing"]["total"] == pytest.approx(-40.0)
+
+
+@pytest.mark.asyncio
+async def test_the_chart_reports_the_override_so_a_screen_can_show_it(client):
+    """GET /accounting/chart carries the field, which is what lets the chart of
+    accounts screen show the current setting rather than guess it."""
+    tok = await _reg(client)
+    await client.patch("/accounting/accounts/6200",
+                       json={"cash_flow_category": "investing"}, headers=_h(tok))
+    r = await client.get("/accounting/chart", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    by_code = {a["code"]: a for a in r.json()["items"]}
+    assert by_code["6200"]["cash_flow_category"] == "investing"
+    assert by_code["1111"]["cash_flow_category"] is None
+
+
+def test_the_screen_offers_exactly_the_categories_the_api_accepts():
+    """The chart of accounts screen and the endpoint hold the same list, and the
+    endpoint is the authoritative side. They live in separate processes so the
+    screen cannot import it; this is what keeps them in lockstep instead."""
+    from celerp_accounting.routes import CASH_FLOW_CATEGORIES
+    from ui.routes.settings_accounting import CASH_FLOW_CATEGORIES as OFFERED
+
+    assert set(OFFERED) == set(CASH_FLOW_CATEGORIES)
 
 
 @pytest.mark.asyncio

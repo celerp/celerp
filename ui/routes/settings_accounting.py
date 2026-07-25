@@ -17,6 +17,11 @@ from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select
 
 from ui.routes.accounting_import import ACCOUNT_TYPES
+
+# The cash flow sections an account may be pinned to. The accounting API owns this
+# list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
+# two run in separate processes, so a test asserts they still match.
+CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t, get_lang
@@ -253,6 +258,7 @@ def _chart_table(chart: list[dict]) -> FT:
             Td(a.get("name", "")),
             Td(Span(a.get("account_type", ""), cls=f"badge badge--{a.get('account_type', '')}")),
             Td(a.get("parent_code") or EMPTY),
+            Td((a.get("cash_flow_category") or "").title() or EMPTY),
             Td(Span("Active" if a.get("is_active", True) else "Inactive",
                     cls="badge badge--active" if a.get("is_active", True) else "badge badge--inactive")),
             Td(A(t("btn.edit"), href=f"/settings/accounting/chart/{code}/edit",
@@ -270,11 +276,12 @@ def _chart_table(chart: list[dict]) -> FT:
         accounts = by_type.get(atype, [])
         if not accounts:
             continue
-        sections.append(Tr(Th(atype.title(), colspan="6", cls="section-header")))
+        sections.append(Tr(Th(atype.title(), colspan="7", cls="section-header")))
         sections.extend(_row(a) for a in accounts)
 
     return Table(
-        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")), Th(t("th.status")), Th(""))),
+        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")),
+                 Th(t("th.cash_flow_section")), Th(t("th.status")), Th(""))),
         Tbody(*sections),
         cls="data-table",
     )
@@ -336,6 +343,16 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
             Td(searchable_select("parent_code", parent_opts, value=v.get("parent_code") or "")),
         ),
     ]
+    rows.append(Tr(
+        Td(t("th.cash_flow_section"), cls="detail-label"),
+        Td(Select(
+            Option(t("acct.cash_flow_derived"), value="",
+                   selected=not v.get("cash_flow_category")),
+            *[Option(x.title(), value=x, selected=(x == v.get("cash_flow_category")))
+              for x in CASH_FLOW_CATEGORIES],
+            name="cash_flow_category", cls="cell-input cell-input--select",
+        )),
+    ))
     if editing:
         rows.append(Tr(
             Td(t("th.status"), cls="detail-label"),
@@ -802,6 +819,7 @@ def setup_routes(app):
                 "name": name,
                 "account_type": account_type,
                 "parent_code": parent_code or None,
+                "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
@@ -853,6 +871,7 @@ def setup_routes(app):
                 "account_type": account_type,
                 "parent_code": parent_code or None,
                 "is_active": str(form.get("is_active", "true")).strip() == "true",
+                "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")

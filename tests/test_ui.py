@@ -14875,6 +14875,79 @@ class TestChartOfAccountsAddEdit:
         assert b'name="code"' not in r.content
 
     @pytest.mark.asyncio
+    async def test_edit_account_page_offers_the_cash_flow_override(self, ui_client):
+        """The classification the cash flow statement uses is settable here, and the
+        page shows what the account currently carries rather than a blank control."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'name="cash_flow_category"' in body
+        for category in ("operating", "investing", "financing"):
+            assert f'value="{category}"' in body
+        assert '<option value="financing" selected' in body
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_forwards_the_cash_flow_override(self, ui_client):
+        """A mock returns its fixture whatever it is called with, so assert on what
+        the page sent: the override has to reach the API to mean anything."""
+        patch_mock = AsyncMock(return_value={"code": "1000"})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash", "account_type": "asset", "parent_code": "",
+                      "is_active": "true", "cash_flow_category": "investing"},
+            )
+        assert r.status_code == 204
+        assert patch_mock.await_args.args[2]["cash_flow_category"] == "investing"
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_sends_an_empty_override_to_clear_it(self, ui_client):
+        patch_mock = AsyncMock(return_value={"code": "1000"})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash", "account_type": "asset", "parent_code": "",
+                      "is_active": "true", "cash_flow_category": ""},
+            )
+        assert r.status_code == 204
+        assert patch_mock.await_args.args[2]["cash_flow_category"] == ""
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_forwards_the_cash_flow_override(self, ui_client):
+        create = AsyncMock(return_value={"code": "1999"})
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "Test Clearing", "account_type": "asset",
+                      "parent_code": "", "cash_flow_category": "financing"},
+            )
+        assert r.status_code == 204
+        assert create.await_args.args[1]["cash_flow_category"] == "financing"
+
+    @pytest.mark.asyncio
+    async def test_chart_table_shows_the_category_and_dashes_when_unset(self, ui_client):
+        """An account on the default reads as "--", not as a blank cell, so the
+        column is legible as "nothing set here" rather than as missing data."""
+        chart = [_CHART[0], {"code": "1210", "name": "Equipment", "account_type": "asset",
+                             "parent_code": "", "is_active": True,
+                             "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "<td>Financing</td>" in body
+        assert "<td>--</td>" in body
+
+    @pytest.mark.asyncio
     async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):
         with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_chart", new=AsyncMock(side_effect=APIError(500, "backend down"))):
