@@ -141,3 +141,35 @@ async def test_items_consigned_from_partial_return_keeps_item_in_scope(client, s
     # is unchanged by the return: a lot is homogeneous, so scaling the lot cost with the
     # quantity is what a split would have produced anyway.
     assert item["cost_price"] == 125.0, "per-unit cost must survive a partial return"
+
+
+@pytest.mark.asyncio
+async def test_return_items_rejects_goods_not_on_hand(client, session):
+    """Goods out with a customer cannot be handed back to a supplier: they are not on our
+    shelf, and shrinking them here would write off stock still owed back to us."""
+    token = await _register(client)
+    location_id = await _create_location(client, token)
+    supplier = "contact:supNotOnHand"
+    doc_id, item_id = await _consign_in_received(client, token, location_id, supplier,
+                                                 "CIN-OUT-1", qty=2, cost_price=100.0)
+    # Send the consigned goods out on memo to a customer.
+    memo = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "memo", "contact_id": "contact:cust1",
+        "line_items": [{"sku": "CIN-OUT-1", "name": "CIN-OUT-1", "quantity": 2,
+                        "unit_price": 200.0, "line_total": 400.0, "entity_id": item_id}],
+        "subtotal": 400, "tax": 0, "total": 400,
+    })
+    assert memo.status_code == 200, memo.text
+    memo_id = memo.json()["id"]
+    await client.post("/docs/{}/finalize".format(memo_id), headers=_h(token))
+    ff = await client.post("/docs/{}/fulfill-lines".format(memo_id), headers=_h(token),
+                           json={"line_entity_ids": [item_id]})
+    assert ff.status_code == 200, ff.text
+
+    rr = await client.post("/docs/{}/return-items".format(doc_id), headers=_h(token),
+                           json={"items": [{"item_id": item_id, "quantity_returned": 1}]})
+    assert rr.status_code == 409, rr.text
+    assert "not on hand" in str(rr.json().get("detail", ""))
+    # Untouched: still out with the customer at full quantity.
+    item = (await client.get("/items/{}".format(item_id), headers=_h(token))).json()
+    assert item["status"] == "memo_out" and item["quantity"] == 2.0

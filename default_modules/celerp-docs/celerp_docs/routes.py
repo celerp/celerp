@@ -2422,6 +2422,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     return {"event_id": entry.id}
 
 
+# Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
+# supplier: they are at a customer, gone, or no longer a live parcel.
+_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged"})
+
+
 class ReturnItem(BaseModel):
     item_id: str
     quantity_returned: float
@@ -2446,6 +2451,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
         if item is None:
             raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
+        # Only goods actually on the shelf can go back to a supplier. Anything out on memo
+        # is at a customer's site and anything sold has left; shrinking those here would
+        # quietly write off stock that is still owed back to us.
+        _item_status = str(item.state.get("status") or "").lower()
+        if _item_status in _NOT_ON_HAND_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Cannot return {item.state.get('sku', it.item_id)}: it is "
+                        f"'{_item_status}', not on hand. Bring it back into stock first."),
+            )
         current_qty = float(item.state.get("quantity", 0) or 0)
         if it.quantity_returned > current_qty + 1e-9:
             raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
