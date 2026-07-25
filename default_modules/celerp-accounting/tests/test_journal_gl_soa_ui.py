@@ -1,11 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""UI surfaces for the journal, general ledger, SOA, and manual journal entries.
+"""UI surfaces for the journal and manual journal entries.
 
 API responses are mocked (the API contract itself is covered in
 test_journal_gl_soa.py); these tests pin the rendering contract: routes
-resolve, tabs and tables render, CSV exports are flat/safe/dated, error
-states are clean, and every new locale key exists in every locale file.
+resolve, tables render, CSV exports are flat/safe/dated, error states are
+clean, and every locale key exists in every locale file.
+
+The reports that used to be tabs here now live under /reports and are covered
+in test_financial_reports_ui.py.
 """
 
 from __future__ import annotations
@@ -199,23 +202,6 @@ async def test_journal_print_shows_fx_columns(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_general_ledger_tab_renders(ui_client):
-    r = await _get(ui_client, "/accounting?tab=general-ledger")
-    assert r.status_code == 200
-    assert "1111" in r.text and "4100" in r.text
-    # Drilldown carries origin tab
-    assert "src=general-ledger" in r.text
-
-
-@pytest.mark.asyncio
-async def test_soa_tab_renders(ui_client):
-    r = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:9")
-    assert r.status_code == 200
-    assert "Acme Ltd" in r.text
-    assert "60" in r.text
-
-
-@pytest.mark.asyncio
 async def test_void_control_shown_for_auto_entries(ui_client):
     """The control stays on auto-posted entries; the server explains the refusal.
     Hiding it would leave the user guessing why an entry cannot be voided."""
@@ -224,44 +210,6 @@ async def test_void_control_shown_for_auto_entries(ui_client):
     # Two posted entries in the fixture, one manual and one auto-generated;
     # both carry a void control.
     assert r.text.count("/void") >= 2
-
-
-@pytest.mark.asyncio
-async def test_soa_merge_substitution_is_disclosed(ui_client):
-    """Landing on the merge winner's statement must say so, on screen and on
-    anything printed or exported from it."""
-    page = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:9&merged_from=contact:old")
-    assert page.status_code == 200
-    assert "merged into" in page.text
-
-    printed = await _get(ui_client,
-                         "/accounting/print/soa?contact_id=contact:9&merged_from=contact:old")
-    assert printed.status_code == 200
-    assert "merged into" in printed.text
-
-    csv_out = await _get(ui_client,
-                         "/accounting/export/soa/csv?contact_id=contact:9&merged_from=contact:old")
-    assert csv_out.status_code == 200
-    assert "merged into" in csv_out.text
-
-
-@pytest.mark.asyncio
-async def test_soa_tab_without_contact_prompts(ui_client):
-    r = await _get(ui_client, "/accounting?tab=soa")
-    assert r.status_code == 200
-    assert "empty-state" in r.text
-
-
-@pytest.mark.asyncio
-async def test_soa_merged_contact_redirects(ui_client):
-    r = await _get(ui_client, "/accounting?tab=soa&contact_id=contact:old",
-                   get_soa={"merged_into": "contact:new"})
-    assert r.status_code in (302, 303)
-    loc = r.headers["location"]
-    assert "contact_id=contact%3Anew" in loc or "contact_id=contact:new" in loc
-    # The contact that was asked for rides along so the destination can disclose
-    # the substitution, but it is never the contact being shown.
-    assert "merged_from" in loc
 
 
 @pytest.mark.asyncio
@@ -292,21 +240,6 @@ async def test_je_form_not_authorized_below_manager(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_ledger_back_link_follows_origin(ui_client):
-    r = await _get(ui_client, "/accounting/ledger/1111?src=general-ledger")
-    assert r.status_code == 200
-    assert "tab=general-ledger" in r.text
-    r = await _get(ui_client, "/accounting/ledger/1111?src=pnl")
-    assert "tab=pnl" in r.text
-    r = await _get(ui_client, "/accounting/ledger/1111")
-    assert "tab=trial-balance" in r.text
-
-
-# ---------------------------------------------------------------------------
-# CSV exports
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
 async def test_journal_csv_flat_ascending_with_fx(ui_client):
     r = await _get(ui_client, "/accounting/export/journal/csv")
     assert r.status_code == 200
@@ -334,111 +267,6 @@ async def test_journal_csv_neutralizes_formula_memo(ui_client, lead):
     r = await _get(ui_client, "/accounting/export/journal/csv", get_journal=poisoned)
     assert r.status_code == 200
     assert f"'{lead}SUM(A1:A2)" in r.text
-
-
-@pytest.mark.asyncio
-async def test_gl_and_soa_csv(ui_client):
-    r = await _get(ui_client, "/accounting/export/general-ledger/csv")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/csv")
-    r = await _get(ui_client, "/accounting/export/soa/csv?contact_id=contact:9")
-    assert r.status_code == 200
-    assert "Acme" in r.text or "60" in r.text
-
-
-@pytest.mark.asyncio
-async def test_trial_balance_export_passes_dates(ui_client):
-    tb_mock = AsyncMock(return_value={"lines": [], "total_debit": 0, "total_credit": 0})
-    ps = _patches()
-    for p in ps:
-        p.start()
-    try:
-        with patch("ui.api_client.get_trial_balance", new=tb_mock):
-            r = await ui_client.get(
-                "/accounting/export/trial-balance/csv?date_from=2026-01-01&date_to=2026-01-31",
-                cookies=_cookies())
-    finally:
-        for p in ps:
-            p.stop()
-    assert r.status_code == 200
-    called_params = tb_mock.call_args.args[1] if len(tb_mock.call_args.args) > 1 else tb_mock.call_args.kwargs.get("params", {})
-    assert called_params.get("date_from") == "2026-01-01"
-    assert called_params.get("date_to") == "2026-01-31"
-
-
-@pytest.mark.asyncio
-async def test_gl_csv_single_call_with_backend_lines(ui_client):
-    """The GL export makes one general-ledger call with include_lines and
-    never re-derives detail: no get_ledger, no get_journal, running balance
-    signed by the backend's debit_normal flag."""
-    gl = json.loads(json.dumps(_GL))
-    gl["rows"][0]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
-                              "memo": "Adjustment", "source_ref": None,
-                              "debit": 40.0, "credit": 0.0}]
-    gl["rows"][1]["lines"] = [{"date": "2026-01-15", "je_id": "je:manual:abc",
-                              "memo": "Adjustment", "source_ref": None,
-                              "debit": 0.0, "credit": 40.0}]
-    ledger_mock = AsyncMock(return_value=_LEDGER)
-    journal_mock = AsyncMock(return_value=_JOURNAL)
-    gl_mock = AsyncMock(return_value=gl)
-    ps = _patches()
-    for p in ps:
-        p.start()
-    try:
-        with patch("ui.api_client.get_ledger", new=ledger_mock), \
-             patch("ui.api_client.get_journal", new=journal_mock), \
-             patch("ui.api_client.get_general_ledger", new=gl_mock):
-            r = await ui_client.get("/accounting/export/general-ledger/csv", cookies=_cookies())
-    finally:
-        for p in ps:
-            p.stop()
-    assert r.status_code == 200
-    ledger_mock.assert_not_called()
-    journal_mock.assert_not_called()
-    called_params = gl_mock.call_args.args[1] if len(gl_mock.call_args.args) > 1 else gl_mock.call_args.kwargs.get("params", {})
-    assert called_params.get("include_lines") == "1"
-    lines = r.text.strip().splitlines()
-    bank = [l for l in lines if l.startswith("1111")]
-    assert any("Opening balance" in l and "100.0" in l for l in bank)
-    # Debit-normal: opening 100 + 40 debit = 140 running on the detail row
-    assert any(l.endswith("140.0") and "Adjustment" in l for l in bank)
-    # Credit-normal account: the 40 credit INCREASES the running balance
-    sales = [l for l in lines if l.startswith("4100") and "Adjustment" in l]
-    assert sales and any(l.endswith("140.0") for l in sales)
-
-
-@pytest.mark.asyncio
-async def test_ledger_custom_range_honored_with_src(ui_client):
-    """The drilldown page's own custom form submits from/to; with src present
-    those dates must reach the API instead of being dropped."""
-    ledger_mock = AsyncMock(return_value=_LEDGER)
-    ps = _patches()
-    for p in ps:
-        p.start()
-    try:
-        with patch("ui.api_client.get_ledger", new=ledger_mock):
-            r = await ui_client.get(
-                "/accounting/ledger/1111?src=general-ledger&from=2026-01-01&to=2026-01-31",
-                cookies=_cookies())
-    finally:
-        for p in ps:
-            p.stop()
-    assert r.status_code == 200
-    params = ledger_mock.call_args.kwargs.get("params") or ledger_mock.call_args.args[-1]
-    assert params.get("date_from") == "2026-01-01"
-    assert params.get("date_to") == "2026-01-31"
-    assert "tab=general-ledger" in r.text  # back link still follows origin
-
-
-@pytest.mark.asyncio
-async def test_soa_print_merge_redirect_with_encoded_contact_id(ui_client):
-    r = await _get(ui_client, "/accounting/print/soa?contact_id=contact%3Aold",
-                   get_soa={"merged_into": "contact:new"})
-    assert r.status_code == 302
-    loc = r.headers["location"]
-    assert "contact_id=contact%3Anew" in loc or "contact_id=contact:new" in loc
-    assert "contact_id=contact%3Aold" not in loc and "contact_id=contact:old" not in loc
-    assert "merged_from" in loc
 
 
 @pytest.mark.asyncio
@@ -476,28 +304,6 @@ def test_date_filter_bar_carries_encoded_values():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_print_views_render(ui_client):
-    for url in ("/accounting/print/journal", "/accounting/print/general-ledger",
-                "/accounting/print/soa?contact_id=contact:9"):
-        r = await _get(ui_client, url)
-        assert r.status_code == 200, url
-    # SOA print is an outward document: company, contact, closing balance
-    assert "TestCo" in r.text and "Acme Ltd" in r.text
-
-
-@pytest.mark.asyncio
-async def test_trial_balance_print_shows_period(ui_client):
-    r = await _get(ui_client, "/accounting/print/trial-balance?date_from=2026-01-01&date_to=2026-01-31")
-    assert r.status_code == 200
-    assert "2026-01-01" in r.text and "2026-01-31" in r.text
-    assert "As of:" not in r.text
-
-
-# ---------------------------------------------------------------------------
-# Error states
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
 async def test_forbidden_renders_clean(ui_client):
     denied = AsyncMock(side_effect=APIError(403, "Forbidden"))
     ps = _patches()
@@ -532,7 +338,6 @@ _NEW_KEYS = [
     "acct.no_entries_for_account",
     "acct.record_foreign_currency", "acct.currency_base_hint",
     "acct.rounding_line_preview", "acct.err_currency_unknown", "acct.err_rate_positive",
-    "acct.soa_batch_title", "acct.soa_batch_none_selected",
 ]
 
 
@@ -574,8 +379,7 @@ async def test_print_views_center_column_headers(ui_client):
     centered them, so the same report read differently on paper than it did in
     the browser. Money headers stay right-aligned over their figures in both.
     """
-    for url in ("/accounting/print/journal", "/accounting/print/general-ledger",
-                "/accounting/print/trial-balance"):
+    for url in ("/accounting/print/journal",):
         r = await _get(ui_client, url)
         assert r.status_code == 200, url
         assert "thead th { background: #f5f5f5; font-weight: 700; text-align: center;" in r.text, url
@@ -728,113 +532,3 @@ async def test_je_form_renders_hidden_book_total_chips(ui_client):
 # Statement batch print run
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_soa_tab_offers_batch_print_reveal(ui_client):
-    """Collapsed by default, lazy-loading its contact list only when opened."""
-    r = await _get(ui_client, "/accounting?tab=soa")
-    assert r.status_code == 200
-    assert "soa-batch-reveal" in r.text
-    assert "/accounting/soa/batch-panel" in r.text
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_panel_prechecks_contacts_with_balance(ui_client):
-    """Contacts with an outstanding balance sort first and come pre-checked;
-    zero-balance contacts are listed unchecked below."""
-    import re as _re
-    contacts = {"items": [
-        {"id": "contact:9", "name": "Acme Ltd", "contact_type": "customer"},
-        {"id": "contact:0", "name": "Zero Co", "contact_type": "customer"},
-    ], "total": 2}
-    r = await _get(ui_client, "/accounting/soa/batch-panel",
-                   list_contacts=contacts)
-    assert r.status_code == 200
-    html = r.text
-
-    def _box(cid):
-        m = _re.search(rf'<input[^>]*value="{cid}"[^>]*>', html)
-        assert m, cid
-        return m.group(0)
-
-    assert "checked" in _box("contact:9")
-    assert "checked" not in _box("contact:0")
-    assert html.index("Acme Ltd") < html.index("Zero Co")
-    assert "60.00" in html
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_print_one_page_per_contact(ui_client):
-    r = await _post(ui_client, "/accounting/print/soa/batch",
-                    {"contact_ids": ["contact:9", "contact:8"],
-                     "date_from": "", "date_to": ""})
-    assert r.status_code == 200
-    html = r.text
-    assert html.count('class="soa-page"') == 2
-    assert "break-after: page" in html
-    # Each page is a full outward document with its own report header.
-    assert html.count("report-header") >= 2
-    assert "Acme Ltd" in html
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_print_rejects_empty_selection(ui_client):
-    """GDR 2e: the action is allowed and the refusal is explained."""
-    r = await _post(ui_client, "/accounting/print/soa/batch",
-                    {"date_from": "", "date_to": ""})
-    assert r.status_code == 400
-    assert "Select at least one contact" in r.text
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_print_dedupes_merged_contacts(ui_client):
-    """A merged contact resolves to its winner and the pair prints once, with
-    the substitution said on the page (GDR 2d)."""
-    async def _soa(token, contact_id, params=None):
-        if contact_id == "contact:old":
-            return {"merged_into": "contact:9"}
-        return _SOA
-
-    ps = _patches()
-    for p in ps:
-        p.start()
-    try:
-        with patch("ui.api_client.get_soa", new=AsyncMock(side_effect=_soa)):
-            r = await ui_client.post(
-                "/accounting/print/soa/batch", cookies=_cookies(),
-                data={"contact_ids": ["contact:old", "contact:9"],
-                      "date_from": "", "date_to": ""})
-    finally:
-        for p in ps:
-            p.stop()
-    assert r.status_code == 200
-    assert r.text.count('class="soa-page"') == 1
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_print_unauthenticated_redirects_login(ui_client):
-    r = await ui_client.post("/accounting/print/soa/batch",
-                             data={"contact_ids": ["contact:9"]})
-    assert r.status_code == 302
-    assert r.headers.get("location", "").startswith("/login")
-
-
-@pytest.mark.asyncio
-async def test_soa_batch_print_aborts_naming_the_contact_on_error(ui_client):
-    """A batch that silently drops one customer's statement is worse than no
-    batch: any per-contact failure aborts the whole run and says whose fetch
-    failed."""
-    ps = _patches()
-    for p in ps:
-        p.start()
-    try:
-        with patch("ui.api_client.get_soa",
-                   new=AsyncMock(side_effect=APIError(500, "boom"))):
-            r = await ui_client.post(
-                "/accounting/print/soa/batch", cookies=_cookies(),
-                data={"contact_ids": ["contact:9"],
-                      "date_from": "", "date_to": ""})
-    finally:
-        for p in ps:
-            p.stop()
-    assert r.status_code == 500
-    assert "contact:9" in r.text

@@ -893,6 +893,11 @@ async def get_soa(token: str, contact_id: str, params: dict | None = None) -> di
         return _raise(await c.get(f"/accounting/soa/{contact_id}", params=params or {})).json()
 
 
+async def get_cash_flow(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/cash-flow", params=params or {})).json()
+
+
 async def create_journal_entry(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/journal-entries", json=data)).json()

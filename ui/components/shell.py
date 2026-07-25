@@ -217,6 +217,12 @@ function initCombobox(wrap) {
   // Server-search mode: HTMX swaps the list innerHTML; we save original for restore.
   var isServerSearch = wrap.dataset.searchUrl === '1';
   var originalListHTML = isServerSearch ? list.innerHTML : null;
+  // Multi-select mode: values live in a bag of hidden inputs (one per selection)
+  // rather than the single hidden input, because a repeated query key is what the
+  // server reads and one input cannot carry two values.
+  var isMulti = wrap.dataset.multiple === 'true';
+  var bag = isMulti ? wrap.querySelector('.combobox-selected') : null;
+  var fieldName = hidden ? hidden.getAttribute('data-name') : '';
 
   // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
   // We set top/left/width inline on open so it tracks the input position.
@@ -262,12 +268,51 @@ function initCombobox(wrap) {
     if (next >= opts.length) next = 0;
     if (opts[next]) opts[next].classList.add('focused');
   }
+  function selectedValues() {
+    return Array.from(bag.querySelectorAll('input')).map(function(i) { return i.value; });
+  }
+
+  function syncMultiLabel() {
+    var n = bag.querySelectorAll('input').length;
+    if (n === 0) { input.value = ''; input.placeholder = wrap.dataset.emptyLabel || ''; return; }
+    if (n === 1) {
+      var only = bag.querySelector('input');
+      input.value = only.getAttribute('data-label') || only.value;
+      return;
+    }
+    var tmpl = wrap.dataset.countLabel || '{n} selected';
+    input.value = tmpl.replace('{n}', n);
+  }
+
+  function toggleOpt(opt, val, label) {
+    var existing = bag.querySelector('input[value="' + CSS.escape(val) + '"]');
+    if (existing) {
+      existing.remove();
+      opt.classList.remove('combobox-option--selected');
+    } else {
+      var el = document.createElement('input');
+      el.type = 'hidden';
+      el.name = fieldName;
+      el.value = val;
+      el.setAttribute('data-label', label);
+      bag.appendChild(el);
+      opt.classList.add('combobox-option--selected');
+    }
+    syncMultiLabel();
+    // Stay open: picking several accounts in a row is the whole point of the mode.
+    positionList();
+  }
+
   function selectOpt(opt) {
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
     // __new__:URL values trigger a redirect instead of a form submission
     if (val.indexOf('__new__:') === 0) {
       window.location = val.slice('__new__:'.length);
+      return;
+    }
+    if (isMulti && bag) {
+      toggleOpt(opt, val, label);
       return;
     }
     // Show human-readable label in the visible input; store actual value in hidden
@@ -288,6 +333,8 @@ function initCombobox(wrap) {
     if (isServerSearch && originalListHTML) {
       list.innerHTML = originalListHTML;
     }
+    // Clear the summary so typing searches rather than filtering against "3 selected".
+    if (isMulti) input.value = '';
     filterOpts('');
     positionList();
     list.classList.add('open');
@@ -302,18 +349,21 @@ function initCombobox(wrap) {
       // Non-empty: HTMX fires the server request and swaps results into the list
       positionList();
       list.classList.add('open');
-      if (hidden) hidden.value = '';
+      if (hidden && !isMulti) hidden.value = '';
     } else {
       filterOpts(input.value);
       positionList();
       list.classList.add('open');
-      if (hidden) hidden.value = allowCustom ? input.value : '';
+      if (hidden && !isMulti) hidden.value = allowCustom ? input.value : '';
     }
   });
   input.addEventListener('blur', function() {
     // Allow mousedown on option to fire first
     setTimeout(function() {
       list.classList.remove('open');
+      // Typing filters the list in multi mode; the selection bag is the state,
+      // so restore the summary rather than leaving the search text behind.
+      if (isMulti) { syncMultiLabel(); return; }
       // If allow-custom and user typed something not in list, commit typed value
       if (allowCustom && input.value && !hidden.value) {
         hidden.value = input.value;

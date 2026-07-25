@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
+"""The accounting workspace: the journal, and posting entries into it.
+
+Reading the books happens under /reports; this module is the side you act on.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -11,7 +16,6 @@ import json as _json
 import uuid
 import asyncio
 from datetime import date as _date
-from urllib.parse import quote_plus, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -21,409 +25,84 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.currency import CURRENCIES
+from ui.components.report_kit import (
+    action_bar, csv_row, date_params as _date_params, fname_date as _fname_date,
+    href as _href, period_subtitle as _period_subtitle, plain_error_response as _plain_error_response,
+    print_shell as _print_shell, totals_chips as _totals_chips,
+)
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
-from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset
+from ui.routes.financial_reports import MOVED_TABS, REPORTS
+from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates
 from celerp.services.money import round_money, to_decimal
 
-# SVG icons (matching documents.py style)
-_ICON_CSV_EXPORT = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>'
-    '<polyline points="14 2 14 8 20 8"/>'
-    '<line x1="12" y1="18" x2="12" y2="12"/>'
-    '<polyline points="9 15 12 18 15 15"/></svg>'
-)
-_ICON_PRINT = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<polyline points="6 9 6 2 18 2 18 9"/>'
-    '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
-    '<rect x="6" y="14" width="12" height="8"/></svg>'
-)
 
+def _moved_reports_notice() -> FT:
+    """Points at the reports that used to be tabs here.
 
-def _action_bar(tab: str, params: dict) -> FT:
-    """CSV + print icon buttons shown in the top-right corner of each accounting tab.
-
-    Export before print, matching the document-list action order (creative,
-    destructive, import/export, print).
+    Naming each one and linking it directly means someone who came looking for the
+    trial balance reaches it from where it used to be, rather than being sent to an
+    index to hunt. Remove once the move is a release or two old; leaving it becomes
+    the duplicate navigation this move existed to end.
     """
-    qs = "".join(f"&{k}={v}" for k, v in params.items() if v)
-    print_href = f"/accounting/print/{tab}?{qs.lstrip('&')}"
-    csv_href = f"/accounting/export/{tab}/csv?{qs.lstrip('&')}"
     return Div(
-        A(
-            NotStr(_ICON_CSV_EXPORT),
-            href=csv_href,
-            cls="btn btn--ghost btn--icon",
-            title=t("btn.export_csv"),
-        ),
-        A(
-            NotStr(_ICON_PRINT),
-            href=print_href,
-            target="_blank",
-            cls="btn btn--ghost btn--icon",
-            title=t("btn.print"),
-        ),
-        cls="page-actions flex-row gap-sm ml-auto",
+        Span(t("acct.reports_moved_notice")),
+        Span(" "),
+        *[
+            A(t(REPORTS[key][3]), href=path, cls="drilldown-link")
+            for key, path in MOVED_TABS.items()
+        ],
+        A(t("nav.reports"), href="/reports", cls="drilldown-link"),
+        cls="info-banner mb-md",
     )
-
-
-def _csv_safe(cell):
-    """Neutralize spreadsheet formula injection: user-authored strings (memos, account and
-    contact names) must never execute when the export is opened in a spreadsheet, so string
-    cells starting with a formula trigger character get a leading single quote."""
-    if isinstance(cell, str) and cell and cell[0] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + cell
-    return cell
-
-
-def _csv_row(writer, cells: list) -> None:
-    writer.writerow([_csv_safe(c) for c in cells])
-
-
-def _plain_error_response(e: APIError):
-    """Error mapping for print/export routes (non-shell responses)."""
-    if e.status == 401:
-        return RedirectResponse("/login", status_code=302)
-    if e.status == 403:
-        return PlainTextResponse(t("acct.not_authorized"), status_code=403)
-    return PlainTextResponse(f"Error: {e.detail}", status_code=500)
-
-
-def _date_params(d_from: str, d_to: str) -> dict:
-    return {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
-
-
-def _fname_date(v: str) -> str:
-    """A date for a download filename: digits and dashes only, else 'all'.
-
-    Filenames land in a Content-Disposition header, so raw query text must
-    never reach them (header parameter injection, latin-1 encoding errors).
-    """
-    v = (v or "")[:10]
-    return v if re.fullmatch(r"[0-9-]+", v) else "all"
-
-
-def _href(path: str, params: dict) -> str:
-    """path?k=v joining only non-empty params, values URL-encoded; bare path
-    when none. Encoded values also keep header-borne redirects (HX-Redirect,
-    Location) free of raw user text."""
-    qs = urlencode({k: v for k, v in params.items() if v})
-    return f"{path}?{qs}" if qs else path
-
-
-def _soa_merge_redirect(request: Request, winner: str, base_path: str, requested: str = ""):
-    """Re-point a print/export URL at the merge winner's statement.
-
-    Carries the contact that was asked for so the printed page and the exported
-    file both state whose statement this actually is: substituting one party's
-    figures for another's without saying so would be a silent swap on an
-    outward-facing document.
-    """
-    params = dict(request.query_params)
-    params["contact_id"] = winner
-    if requested and requested != winner:
-        params["merged_from"] = requested
-    return RedirectResponse(f"{base_path}?{urlencode(params)}", status_code=302)
-
-
-def _period_subtitle(d_from: str, d_to: str) -> str:
-    parts = []
-    if d_from:
-        parts.append(f"From: {d_from}")
-    if d_to:
-        parts.append(f"To: {d_to}")
-    return "  |  ".join(parts) if parts else "All periods"
-
-
-# Tabs a ledger drilldown can arrive from (via the "src" query param) -> tab label key.
-_LEDGER_BACK_TABS = {
-    "pnl": "acct.tab_pnl",
-    "balance-sheet": "acct.tab_balance_sheet",
-    "trial-balance": "acct.tab_trial_balance",
-    "general-ledger": "acct.tab_general_ledger",
-}
-
-
-def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
-    """Resolve (origin_tab, date_from, date_to, preset) for the ledger drilldown.
-
-    Drilldown links from the report tabs name their originating tab in "src" and
-    carry their dates as date_from/date_to. "src" stays outside the date bar's
-    reserved from/to/preset fields, so the custom-range form's hidden-param
-    carry-through preserves the origin across date changes on the drilldown page.
-    """
-    qp = request.query_params
-    origin = qp.get("src", "")
-    if origin in _LEDGER_BACK_TABS:
-        preset = qp.get("preset", "")
-        if preset and preset != "custom":
-            d_from, d_to = _resolve_preset(preset, fy)
-            return origin, d_from, d_to, preset
-        # Drilldown links carry date_from/date_to; the page's own custom-range
-        # form submits from/to.
-        d_from = qp.get("date_from", "") or qp.get("from", "")
-        d_to = qp.get("date_to", "") or qp.get("to", "")
-        if d_from or d_to:
-            if d_from and d_to and d_from > d_to:
-                d_from, d_to = d_to, d_from
-            return origin, d_from, d_to, "custom"
-        # Drilldown links always encode their view's dates; none means the
-        # originating view was unfiltered, so match it with the full history.
-        return origin, "", "", "all"
-    d_from, d_to, preset = _parse_dates(request, fy)
-    return "trial-balance", d_from, d_to, preset
-
-
-def _report_header(company: dict, title: str, subtitle: str = "") -> FT:
-    """Professional report header for print views."""
-    return Div(
-        Div(
-            H1(company.get("name", ""), cls="report-company-name"),
-            P(company.get("address", ""), cls="report-company-address") if company.get("address") else None,
-            P(f"Tax ID: {company['tax_id']}", cls="report-company-taxid") if company.get("tax_id") else None,
-        ),
-        Div(
-            H2(title, cls="report-title"),
-            P(subtitle, cls="report-subtitle") if subtitle else None,
-            P(f"Printed: {_date.today().isoformat()}", cls="report-print-date"),
-        ),
-        cls="report-header",
-    )
-
-
-def _print_shell(company: dict, title: str, subtitle: str, body: FT,
-                 header: bool = True) -> FT:
-    """Minimal printable page: auto-triggers window.print() on load.
-
-    header=False for the statement batch run, where every page carries its own
-    report header instead of the document carrying one shared header."""
-    return Html(
-        Head(
-            Meta(charset="utf-8"),
-            Meta(name="viewport", content="width=device-width, initial-scale=1"),
-            Title(f"{title} - {company.get('name', 'Celerp')}"),
-            Style(_PRINT_CSS),
-        ),
-        Body(
-            _report_header(company, title, subtitle) if header else None,
-            body,
-            Div(NotStr('Powered by <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
-            Script("window.onload = function() { window.print(); }"),
-        ),
-    )
-
-
-_PRINT_CSS = """
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Arial', sans-serif; font-size: 10pt; color: #111; background: white; padding: 20mm; }
-
-/* Report header */
-.report-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8mm; padding-bottom: 4mm; border-bottom: 2px solid #111; }
-.report-company-name { font-size: 14pt; font-weight: 700; margin-bottom: 2mm; }
-.report-company-address, .report-company-taxid { font-size: 9pt; color: #555; line-height: 1.4; }
-.report-title { font-size: 14pt; font-weight: 700; text-align: right; margin-bottom: 2mm; }
-.report-subtitle { font-size: 9pt; color: #555; text-align: right; line-height: 1.4; }
-.report-print-date { font-size: 8pt; color: #888; text-align: right; margin-top: 1mm; }
-
-/* Sections */
-.report-section { margin-bottom: 6mm; }
-.report-section-title { font-size: 10pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 1mm; margin-bottom: 2mm; }
-
-/* Tables */
-table { width: 100%; border-collapse: collapse; font-size: 9pt; }
-thead th { background: #f5f5f5; font-weight: 700; text-align: center; padding: 1.5mm 2mm; border-bottom: 1px solid #ccc; }
-thead th.cell--number { text-align: right; }
-tbody td { padding: 1.2mm 2mm; border-bottom: 1px solid #eee; }
-td.cell--number, td.cell--right { text-align: right; }
-td.cell--muted { color: #888; font-size: 8pt; }
-td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
-
-/* Totals */
-.section-total { font-weight: 700; text-align: right; padding: 1.5mm 2mm; border-top: 1px solid #999; font-size: 9.5pt; margin-top: 1mm; }
-.report-subtotal, .report-total { text-align: right; padding: 2mm 2mm; border-top: 2px solid #333; font-size: 10pt; margin-bottom: 4mm; }
-.net-profit--positive { color: #1a7a3c; }
-.net-profit--negative { color: #b91c1c; }
-
-/* Balance status */
-.valuation-bar { margin-top: 4mm; display: flex; gap: 4mm; font-size: 9pt; }
-.val-chip { background: #f5f5f5; padding: 1mm 3mm; border: 1px solid #ccc; border-radius: 2px; }
-.val-chip--alert { background: #fef2f2; border-color: #f87171; color: #b91c1c; }
-
-/* Trial balance summary */
-.trial-summary { display: flex; gap: 6mm; margin-bottom: 4mm; font-size: 9.5pt; }
-
-/* Page breaks */
-.report-section { page-break-inside: avoid; }
-/* Statement batch run: one contact per printed page */
-.soa-page { break-after: page; }
-.soa-page:last-child { break-after: auto; }
-
-.report-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 2mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
-.report-footer a { color: #aaa; text-decoration: none; }
-@page { margin: 0; size: A4 portrait; }
-@media print {
-  body { padding: 15mm; }
-  .report-section { page-break-inside: avoid; }
-}
-"""
 
 
 def setup_routes(app):
 
     @app.get("/accounting")
     async def accounting_page(request: Request):
-        """Accounting landing — shows P&L by default (most useful for business owners)."""
+        """The journal. Report tabs that used to live here now redirect to /reports."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        tab = request.query_params.get("tab", "pnl")
+        tab = request.query_params.get("tab", "")
+        if tab in MOVED_TABS:
+            # Bookmarks and emailed links predate the move; carry their dates over
+            # rather than dropping the reader on an unfiltered report.
+            qp = request.query_params
+            carried = [("from", qp.get("from", "")), ("to", qp.get("to", "")),
+                       ("as_of", qp.get("as_of", ""))]
+            if tab == "soa" and qp.get("contact_id"):
+                carried.append(("contact_id", qp["contact_id"]))
+            return RedirectResponse(_href(MOVED_TABS[tab], carried), status_code=302)
         try:
             company = await api.get_company(token)
             currency = company.get("currency")
-            if tab == "pnl":
-                fy = await _get_fiscal(token)
-                d_from, d_to, preset = _parse_dates(request, fy)
-                params = {}
-                if d_from:
-                    params["date_from"] = d_from
-                if d_to:
-                    params["date_to"] = d_to
-                data = await api.get_pnl(token, params)
-                content = Div(
-                    _date_filter_bar("/accounting", d_from, d_to, preset,
-                                     settings_link="/settings/general?tab=company",
-                                     extra_params="&tab=pnl"),
-                    Div(
-                        _action_bar("pnl", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row mt-md mb-md",
-                    ),
-                    _pnl_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
-                )
-            elif tab == "balance-sheet":
-                as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
-                params = {"as_of": as_of} if as_of else {}
-                data = await api.get_balance_sheet(token, params)
-                as_of_form = Form(
-                    Label(t("label.as_of_date"), cls="form-label"),
-                    Input(type="date", name="as_of", value=as_of, cls="date-input"),
-                    Input(type="hidden", name="tab", value="balance-sheet"),
-                    Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
-                    action="/accounting",
-                    method="get",
-                    cls="date-custom-form",
-                )
-                content = Div(
-                    Div(as_of_form, cls="date-filter-bar"),
-                    Div(
-                        _action_bar("balance-sheet", {"as_of": as_of}),
-                        cls="flex-row mt-md mb-md",
-                    ),
-                    _balance_sheet_view(data, currency, as_of=as_of),
-                )
-            elif tab == "trial-balance":
-                fy = await _get_fiscal(token)
-                d_from, d_to, preset = _parse_dates(request, fy)
-                tb_params = {}
-                if d_from:
-                    tb_params["date_from"] = d_from
-                if d_to:
-                    tb_params["date_to"] = d_to
-                trial_balance = await api.get_trial_balance(token, tb_params)
-                content = Div(
-                    _date_filter_bar("/accounting", d_from, d_to, preset,
-                                     settings_link="/settings/general?tab=company",
-                                     extra_params="&tab=trial-balance"),
-                    _trial_balance_summary(trial_balance, currency),
-                    Div(
-                        _action_bar("trial-balance", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row mt-md mb-md",
-                    ),
-                    _trial_balance_table(trial_balance, currency, date_from=d_from or "", date_to=d_to or ""),
-                )
-            elif tab == "journal":
-                fy = await _get_fiscal(token)
-                d_from, d_to, preset = _parse_dates(request, fy)
-                params = _date_params(d_from, d_to)
-                data = await api.get_journal(token, params)
-                content = Div(
-                    _date_filter_bar("/accounting", d_from, d_to, preset,
-                                     settings_link="/settings/general?tab=company",
-                                     extra_params="&tab=journal"),
-                    _journal_totals(data, currency),
-                    # Toolbar over the table, following the document-list pattern:
-                    # creative actions left, export/print right.
-                    Div(
-                        A(t("btn.new_entry"),
-                          href=_href("/accounting/journal/new",
-                                     _date_params(d_from or "", d_to or "")),
-                          cls="btn btn--primary"),
-                        _action_bar("journal", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row flex-between mt-md mb-md",
-                    ),
-                    _journal_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
-                )
-            elif tab == "general-ledger":
-                fy = await _get_fiscal(token)
-                d_from, d_to, preset = _parse_dates(request, fy)
-                params = _date_params(d_from, d_to)
-                data = await api.get_general_ledger(token, params)
-                gl_totals = data.get("totals") or {}
-                content = Div(
-                    _date_filter_bar("/accounting", d_from, d_to, preset,
-                                     settings_link="/settings/general?tab=company",
-                                     extra_params="&tab=general-ledger"),
-                    _totals_chips(float(gl_totals.get("debit", 0) or 0),
-                                  float(gl_totals.get("credit", 0) or 0),
-                                  bool(data.get("balanced", True)), currency),
-                    Div(
-                        _action_bar("general-ledger", {"date_from": d_from or "", "date_to": d_to or ""}),
-                        cls="flex-row mt-md mb-md",
-                    ),
-                    _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
-                )
-            elif tab == "soa":
-                fy = await _get_fiscal(token)
-                d_from, d_to, preset = _parse_dates(request, fy)
-                contact_id = request.query_params.get("contact_id", "")
-                contacts = (await api.list_contacts(token, {"limit": 1000})).get("items", [])
-                data = None
-                if contact_id:
-                    data = await api.get_soa(
-                        token, contact_id,
-                        {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v},
-                    )
-                    winner = data.get("merged_into") or (data.get("contact") or {}).get("id") or contact_id
-                    if winner != contact_id:
-                        # Merged contact: keep the URL on the merge winner so the
-                        # bookmarkable state matches what is shown, and carry the
-                        # contact that was asked for so the destination can say
-                        # whose statement this actually is (GDR 2d: never
-                        # substitute data silently).
-                        qs = (f"?tab=soa&contact_id={quote_plus(winner)}"
-                              f"&merged_from={quote_plus(contact_id)}")
-                        if d_from:
-                            qs += f"&from={d_from}"
-                        if d_to:
-                            qs += f"&to={d_to}"
-                        return RedirectResponse(f"/accounting{qs}", status_code=302)
-                extra = f"&tab=soa&contact_id={quote_plus(contact_id)}" if contact_id else "&tab=soa"
-                content = Div(
-                    _date_filter_bar("/accounting", d_from, d_to, preset,
-                                     settings_link="/settings/general?tab=company",
-                                     extra_params=extra),
-                    _soa_view(data, contacts, contact_id, currency,
-                              date_from=d_from or "", date_to=d_to or "",
-                              merged_from=request.query_params.get("merged_from", "")),
-                )
-            else:
-                return RedirectResponse("/accounting", status_code=302)
+            fy = await _get_fiscal(token)
+            d_from, d_to, preset = _parse_dates(request, fy)
+            params = _date_params(d_from, d_to)
+            data = await api.get_journal(token, params)
+            content = Div(
+                _moved_reports_notice(),
+                _date_filter_bar("/accounting", d_from, d_to, preset,
+                                 settings_link="/settings/general?tab=company"),
+                _journal_totals(data, currency),
+                # Toolbar over the table, following the document-list pattern:
+                # creative actions left, export/print right.
+                Div(
+                    A(t("btn.new_entry"),
+                      href=_href("/accounting/journal/new",
+                                 _date_params(d_from or "", d_to or "")),
+                      cls="btn btn--primary"),
+                    action_bar("/accounting/print/journal", "/accounting/export/journal/csv",
+                               params),
+                    cls="flex-row flex-between mt-md mb-md",
+                ),
+                _journal_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+            )
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -434,27 +113,11 @@ def setup_routes(app):
 
         return await base_shell(
             page_header(t("page.accounting", get_lang(request))),
-            _accounting_tabs(tab),
             content,
             title="Accounting - Celerp",
             nav_active="accounting",
             request=request,
         )
-
-    @app.get("/accounting/pnl")
-    async def pnl_page(request: Request):
-        qs = "?tab=pnl"
-        if request.query_params.get("from"):
-            qs += f"&from={request.query_params['from']}"
-        if request.query_params.get("to"):
-            qs += f"&to={request.query_params['to']}"
-        return RedirectResponse(f"/accounting{qs}", status_code=302)
-
-    @app.get("/accounting/balance-sheet")
-    async def balance_sheet_page(request: Request):
-        return RedirectResponse("/accounting?tab=balance-sheet", status_code=302)
-
-    # ── Manual journal entries ─────────────────────────────────────────────
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
                                    lines: list[dict], idem_token: str, error: str | None,
@@ -467,7 +130,6 @@ def setup_routes(app):
         if not role_has_permission(_settings, _get_role(request), "manage_accounting"):
             return await base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
-                _accounting_tabs("journal"),
                 Div(t("acct.not_authorized"), cls="error-banner"),
                 title="Accounting - Celerp",
                 nav_active="accounting",
@@ -486,7 +148,6 @@ def setup_routes(app):
                          else f"{t('acct.error_loading_data')}: {e.detail}")
         return await base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
-            _accounting_tabs("journal"),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
                                 date_from=date_from, date_to=date_to,
                                 currency=currency, rate=rate,
@@ -622,62 +283,6 @@ def setup_routes(app):
 
     # ── Print (PDF) routes ─────────────────────────────────────────────────
 
-    @app.get("/accounting/print/pnl")
-    async def pnl_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            company, fy = await asyncio.gather(api.get_company(token), _get_fiscal(token))
-            currency = company.get("currency")
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_pnl(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        body = _pnl_view(data, currency, date_from=d_from, date_to=d_to)
-        return _print_shell(company, "Profit & Loss Statement", _period_subtitle(d_from, d_to), body)
-
-    @app.get("/accounting/print/balance-sheet")
-    async def balance_sheet_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency")
-            as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
-            params = {"as_of": as_of}
-            data = await api.get_balance_sheet(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        body = _balance_sheet_view(data, currency, as_of=as_of)
-        return _print_shell(company, "Balance Sheet", f"As of: {as_of}", body)
-
-    @app.get("/accounting/print/trial-balance")
-    async def trial_balance_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency")
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_trial_balance(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        body = Div(
-            _trial_balance_summary(data, currency),
-            _trial_balance_table(data, currency, date_from=d_from, date_to=d_to),
-        )
-        return _print_shell(company, "Trial Balance", _period_subtitle(d_from, d_to), body)
-
     @app.get("/accounting/print/journal")
     async def journal_print(request: Request):
         token = _token(request)
@@ -698,264 +303,6 @@ def setup_routes(app):
             _journal_view(data, currency, date_from=d_from, date_to=d_to, show_actions=False),
         )
         return _print_shell(company, t("acct.tab_journal"), _period_subtitle(d_from, d_to), body)
-
-    @app.get("/accounting/print/general-ledger")
-    async def general_ledger_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency")
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_general_ledger(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        body = _general_ledger_view(data, currency, date_from=d_from, date_to=d_to)
-        return _print_shell(company, t("acct.tab_general_ledger"), _period_subtitle(d_from, d_to), body)
-
-    @app.get("/accounting/print/soa")
-    async def soa_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        contact_id = request.query_params.get("contact_id", "")
-        if not contact_id:
-            return RedirectResponse("/accounting?tab=soa", status_code=302)
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency")
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_soa(token, contact_id, params)
-        except APIError as e:
-            return _plain_error_response(e)
-        if data.get("merged_into"):
-            return _soa_merge_redirect(request, data["merged_into"], "/accounting/print/soa",
-                                       requested=contact_id)
-
-        body = _soa_print_body(data, currency, d_from, d_to,
-                               merged=bool(request.query_params.get("merged_from")))
-        return _print_shell(company, t("acct.soa_title"), _period_subtitle(d_from, d_to), body)
-
-    @app.get("/accounting/soa/batch-panel")
-    async def soa_batch_panel(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        d_from = request.query_params.get("date_from", "")
-        d_to = request.query_params.get("date_to", "")
-        try:
-            company = await api.get_company(token)
-            contacts = (await api.list_contacts(token, {"limit": 1000})).get("items", [])
-            ar = await api.get_ar_aging(token)
-            ap = await api.get_ap_aging(token)
-        except APIError as e:
-            return _plain_error_response(e)
-        currency = company.get("currency")
-        ar_by = {l.get("customer_id"): float(l.get("total") or 0) for l in ar.get("lines", [])}
-        ap_by = {l.get("supplier_id"): float(l.get("total") or 0) for l in ap.get("lines", [])}
-        rows = []
-        for c in contacts:
-            cid = c.get("id")
-            if not cid:
-                continue
-            outstanding = ar_by.get(cid, 0.0) - ap_by.get(cid, 0.0)
-            has_balance = bool(ar_by.get(cid) or ap_by.get(cid))
-            rows.append((c, outstanding, has_balance))
-        # The month-end run is "everyone with a balance": those contacts sort
-        # first and come pre-checked; the rest stay one click away (GDR 2e).
-        rows.sort(key=lambda r: (not r[2], (r[0].get("name") or "").lower()))
-        body_rows = [
-            Tr(
-                Td(Input(type="checkbox", name="contact_ids", value=c["id"],
-                         checked=has_balance)),
-                Td(c.get("name", "")),
-                Td(c.get("contact_type") or "customer"),
-                Td(fmt_money(outstanding, currency), cls="cell--number"),
-            )
-            for c, outstanding, has_balance in rows
-        ]
-        return Form(
-            Div(
-                Table(
-                    Thead(Tr(
-                        Th(Input(
-                            type="checkbox", checked=True,
-                            onclick="this.closest('table').querySelectorAll('tbody input[type=checkbox]').forEach(function(cb) { cb.checked = this.checked; }, this)")),
-                        Th(t("label.contact")),
-                        Th(t("th.type")),
-                        Th(t("th.balance"), cls="cell--number"),
-                    )),
-                    Tbody(*body_rows),
-                    cls="data-table",
-                ),
-                cls="soa-batch-list",
-            ),
-            Button(t("btn.print"), type="submit", cls="btn btn--secondary btn--sm mt-sm"),
-            Input(type="hidden", name="date_from", value=d_from),
-            Input(type="hidden", name="date_to", value=d_to),
-            # POST, not GET: a few hundred contact ids overflow a URL, and this
-            # is an action rather than a filter, so GDR 2m does not apply.
-            method="post", action="/accounting/print/soa/batch", target="_blank",
-        )
-
-    @app.post("/accounting/print/soa/batch")
-    async def soa_batch_print(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        ids = [str(v) for v in form.getlist("contact_ids") if str(v).strip()]
-        if not ids:
-            return PlainTextResponse(t("acct.soa_batch_none_selected"), status_code=400)
-        d_from = str(form.get("date_from", "")).strip()
-        d_to = str(form.get("date_to", "")).strip()
-        params = _date_params(d_from, d_to)
-        try:
-            company = await api.get_company(token)
-        except APIError as e:
-            return _plain_error_response(e)
-        currency = company.get("currency")
-        subtitle = _period_subtitle(d_from, d_to)
-        pages, seen = [], set()
-        for cid in dict.fromkeys(ids):
-            merged = False
-            try:
-                data = await api.get_soa(token, cid, params)
-                winner = data.get("merged_into")
-                if winner:
-                    # The requested contact was merged: print the winner once,
-                    # saying so on its page (GDR 2d).
-                    if winner in seen or winner in ids:
-                        continue
-                    merged = True
-                    cid = winner
-                    data = await api.get_soa(token, winner, params)
-            except APIError as e:
-                if e.status in (401, 403):
-                    return _plain_error_response(e)
-                # A batch that silently drops one contact's statement
-                # understates the run; abort naming the failed contact.
-                return PlainTextResponse(f"Error ({cid}): {e.detail}", status_code=500)
-            if cid in seen:
-                continue
-            seen.add(cid)
-            pages.append(Div(
-                _report_header(company, t("acct.soa_title"), subtitle),
-                _soa_print_body(data, currency, d_from, d_to, merged=merged),
-                cls="soa-page",
-            ))
-        return _print_shell(company, t("acct.soa_title"), subtitle, Div(*pages),
-                            header=False)
-
-    # ── CSV export routes ──────────────────────────────────────────────────
-
-    @app.get("/accounting/export/pnl/csv")
-    async def pnl_export_csv(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_pnl(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["Section", "Code", "Account", "Amount", "% of Revenue"])
-        rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
-
-        def _pct(amount: float) -> str:
-            return f"{abs(amount) / rev_total * 100:.1f}%" if rev_total else ""
-
-        for section_key, section_label in [
-            ("revenue", "Revenue"),
-            ("cogs", "Cost of Goods Sold"),
-            ("expenses", "Operating Expenses"),
-        ]:
-            section = data.get(section_key, {})
-            for line in section.get("lines", []):
-                amt = float(line.get("amount", 0) or 0)
-                _csv_row(w, [section_label, line.get("code", ""), line.get("name", ""), amt, _pct(amt)])
-            w.writerow([f"TOTAL {section_label}", "", "", section.get("total", 0), ""])
-
-        w.writerow([])
-        w.writerow(["Gross Profit", "", "", data.get("gross_profit", 0), ""])
-        w.writerow(["Net Profit", "", "", data.get("net_profit", 0), ""])
-
-        buf.seek(0)
-        fname = f"pnl_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
-
-    @app.get("/accounting/export/balance-sheet/csv")
-    async def balance_sheet_export_csv(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
-            data = await api.get_balance_sheet(token, {"as_of": as_of})
-        except APIError as e:
-            return _plain_error_response(e)
-
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["Section", "Code", "Account", "Amount"])
-        for section_key, section_label in [("assets", "Assets"), ("liabilities", "Liabilities"), ("equity", "Equity")]:
-            section = data.get(section_key, {})
-            for line in section.get("lines", []):
-                _csv_row(w, [section_label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
-            w.writerow([f"TOTAL {section_label}", "", "", section.get("total", 0)])
-            w.writerow([])
-
-        buf.seek(0)
-        fname = f"balance_sheet_{_fname_date(as_of)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
-
-    @app.get("/accounting/export/trial-balance/csv")
-    async def trial_balance_export_csv(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_trial_balance(token, params)
-        except APIError as e:
-            return _plain_error_response(e)
-
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["Code", "Account", "Debit", "Credit"])
-        for line in data.get("lines", []):
-            _csv_row(w, [line.get("code", ""), line.get("name", ""), line.get("total_debit", 0), line.get("total_credit", 0)])
-        w.writerow([])
-        w.writerow(["TOTAL", "", data.get("total_debit", 0), data.get("total_credit", 0)])
-
-        buf.seek(0)
-        fname = f"trial_balance_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
 
     @app.get("/accounting/export/journal/csv")
     async def journal_export_csv(request: Request):
@@ -996,7 +343,7 @@ def setup_routes(app):
                 fx_credit = _fx_c if _fx_c else ""
                 line_fx_currency = fx_currency if (fx_debit != "" or fx_credit != "") else ""
                 line_rate = rate if (fx_debit != "" or fx_credit != "") else ""
-                _csv_row(w, [
+                csv_row(w, [
                     str(entry.get("ts") or "")[:10],
                     entry.get("je_id", ""),
                     source_ref,
@@ -1021,398 +368,6 @@ def setup_routes(app):
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
-    @app.get("/accounting/export/general-ledger/csv")
-    async def general_ledger_export_csv(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            # One call: the backend buckets summary and detail together, so the
-            # export can never disagree with the on-screen general ledger.
-            data = await api.get_general_ledger(
-                token, {**_date_params(d_from, d_to), "include_lines": "1"})
-
-            buf = io.StringIO()
-            w = csv.writer(buf)
-            w.writerow(["account_code", "account_name", "date", "source_ref", "memo", "debit", "credit", "balance"])
-            for row in data.get("rows", []):
-                code = row.get("code", "")
-                name = row.get("name", "")
-                debit_normal = row.get("debit_normal")
-                opening = row.get("opening", 0)
-                _csv_row(w, [code, name, "", "", "Opening balance", "", "", opening])
-                running = to_decimal(opening)
-                for line in row.get("lines", []):
-                    debit = to_decimal(line.get("debit") or 0)
-                    credit = to_decimal(line.get("credit") or 0)
-                    running += (debit - credit) if debit_normal else (credit - debit)
-                    _csv_row(w, [code, name, line.get("date", ""), line.get("source_ref") or "",
-                                 line.get("memo", ""), float(debit), float(credit), float(running)])
-                _csv_row(w, [code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
-        except APIError as e:
-            return _plain_error_response(e)
-
-        buf.seek(0)
-        fname = f"general_ledger_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
-
-    @app.get("/accounting/export/soa/csv")
-    async def soa_export_csv(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        contact_id = request.query_params.get("contact_id", "")
-        if not contact_id:
-            return RedirectResponse("/accounting?tab=soa", status_code=302)
-        try:
-            d_from = request.query_params.get("date_from", "")
-            d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
-            data = await api.get_soa(token, contact_id, params)
-        except APIError as e:
-            return _plain_error_response(e)
-        if data.get("merged_into"):
-            return _soa_merge_redirect(request, data["merged_into"], "/accounting/export/soa/csv",
-                                       requested=contact_id)
-
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["date", "ref", "kind", "debit", "credit", "balance"])
-        if request.query_params.get("merged_from"):
-            # The exported file states the substitution too: a spreadsheet
-            # outlives the redirect that produced it.
-            _csv_row(w, ["", "", t("acct.soa_merged_notice"), "", "", ""])
-        _csv_row(w, [d_from, "", "Opening balance", "", "", data.get("opening_balance", 0)])
-        for row in data.get("rows", []):
-            _csv_row(w, [row.get("date", ""), row.get("doc_ref") or row.get("doc_id") or "",
-                         row.get("kind", ""), row.get("debit", 0), row.get("credit", 0),
-                         row.get("balance", 0)])
-        _csv_row(w, [d_to, "", "Closing balance", "", "", data.get("closing_balance", 0)])
-
-        buf.seek(0)
-        contact_name = (data.get("contact") or {}).get("name") or contact_id
-        contact_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", contact_name).strip("_") or "contact"
-        fname = f"soa_{contact_slug}_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
-
-    # ── Account ledger drilldown ───────────────────────────────────────────
-
-    @app.get("/accounting/ledger/{account_code}")
-    async def account_ledger_page(request: Request, account_code: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            fy = await _get_fiscal(token)
-            origin, d_from, d_to, preset = _ledger_context(request, fy)
-            params = {}
-            if d_from:
-                params["date_from"] = d_from
-            if d_to:
-                params["date_to"] = d_to
-            data = await api.get_ledger(token, account_code, params)
-            company = await api.get_company(token)
-            currency = company.get("currency")
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            if e.status == 403:
-                content = Div(t("acct.not_authorized"), cls="error-banner")
-            else:
-                content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
-            return await base_shell(content, title="Ledger - Celerp", nav_active="accounting", request=request)
-
-        # Back link follows the tab the user drilled down from.
-        if origin == "balance-sheet":
-            back_qs = f"?tab={origin}" + (f"&as_of={d_to}" if d_to else "")
-        else:
-            back_qs = f"?tab={origin}"
-            if d_from:
-                back_qs += f"&from={d_from}"
-            if d_to:
-                back_qs += f"&to={d_to}"
-
-        content = Div(
-            Div(
-                _date_filter_bar(
-                    f"/accounting/ledger/{account_code}", d_from, d_to, preset,
-                    settings_link="/settings/general?tab=company",
-                    extra_params=f"&src={origin}",
-                ),
-                A(f"← {t(_LEDGER_BACK_TABS[origin])}", href=f"/accounting{back_qs}", cls="btn btn--ghost btn--sm"),
-                cls="flex-row flex-between",
-            ),
-            _ledger_view(data, currency),
-        )
-
-        account_name = data.get("account_name", account_code)
-        return await base_shell(
-            page_header(f"Ledger: {account_code} {account_name}"),
-            content,
-            title=f"Ledger {account_code} - Celerp",
-            nav_active="accounting",
-            request=request,
-        )
-
-
-def _accounting_tabs(active: str) -> FT:
-    tabs = [
-        ("pnl", t("acct.tab_pnl")),
-        ("balance-sheet", t("acct.tab_balance_sheet")),
-        ("trial-balance", t("acct.tab_trial_balance")),
-        ("journal", t("acct.tab_journal")),
-        ("general-ledger", t("acct.tab_general_ledger")),
-        ("soa", t("acct.tab_soa")),
-    ]
-    return Div(
-        *[
-            A(label, href=f"/accounting?tab={key}",
-              cls=f"tab-link {'tab-link--active' if key == active else ''}")
-            for key, label in tabs
-        ],
-        cls="tab-bar",
-    )
-
-
-def _drill_ledger_href(code: str, origin: str, date_from: str = "", date_to: str = "") -> str:
-    """Link to the per-account ledger, carrying the date range and the originating tab."""
-    parts = [f"date_from={date_from}"] if date_from else []
-    if date_to:
-        parts.append(f"date_to={date_to}")
-    parts.append(f"src={origin}")
-    return f"/accounting/ledger/{code}?" + "&".join(parts)
-
-
-def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
-    lines = tb.get("lines", [])
-    if not lines:
-        return P(t("acct.no_trial_balance_entries"), cls="empty-state")
-
-    def _ledger_href(code: str) -> str:
-        return _drill_ledger_href(code, "trial-balance", date_from, date_to)
-
-    rows = [
-        Tr(
-            Td(l.get("code", ""), cls="cell--mono"),
-            Td(A(l.get("name", ""), href=_ledger_href(l.get("code", "")), cls="drilldown-link")),
-            Td(fmt_money(l.get('total_debit', 0), currency), cls="cell--number"),
-            Td(fmt_money(l.get('total_credit', 0), currency), cls="cell--number"),
-        )
-        for l in lines
-    ]
-    return Table(
-        Thead(Tr(Th(t("th.code")), Th(t("th.account")), Th(t("th.debit"), cls="cell--number"), Th(t("th.credit"), cls="cell--number"))),
-        Tbody(*rows),
-        cls="data-table",
-    )
-
-
-def _totals_chips(total_debit, total_credit, balanced: bool, currency: str | None) -> FT:
-    return Div(
-        Span(f"{t('acct.total_debit')}: {fmt_money(total_debit, currency)}", cls="val-chip"),
-        Span(f"{t('acct.total_credit')}: {fmt_money(total_credit, currency)}", cls="val-chip"),
-        Span(t("acct.balanced") if balanced else t("acct.out_of_balance"),
-             cls="val-chip" if balanced else "val-chip val-chip--alert"),
-        cls="valuation-bar",
-    )
-
-
-def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
-    return _totals_chips(tb.get("total_debit", 0), tb.get("total_credit", 0),
-                         tb.get("balanced", True), currency)
-
-
-def _ledger_view(data: dict, currency: str | None = None) -> FT:
-    lines = data.get("lines", [])
-    if not lines:
-        return P(t("acct.no_entries_for_account"), cls="empty-state")
-
-    def _fmt_nonzero(val: float) -> str:
-        return fmt_money(val, currency) if val else ""
-
-    def _balance_cls(val: float) -> str:
-        if val < 0:
-            return "cell--number cell--negative"
-        return "cell--number"
-
-    rows = [
-        Tr(
-            Td(line["date"], cls="cell--mono"),
-            Td(
-                A(line.get("doc_ref") or line["doc_id"], href=f"/docs/{line['doc_id']}", cls="drilldown-link")
-                if line.get("doc_id") else "",
-            ),
-            Td(line.get("memo", ""), cls="cell--muted"),
-            Td(_fmt_nonzero(line["debit"]), cls="cell--number"),
-            Td(_fmt_nonzero(line["credit"]), cls="cell--number"),
-            Td(fmt_money(line["balance"], currency), cls=_balance_cls(line["balance"])),
-        )
-        for line in lines
-    ]
-    return Table(
-        Thead(Tr(
-            Th(t("th.date")),
-            Th(t("th.source")),
-            Th(t("th.description")),
-            Th(t("th.debit"), cls="cell--number"),
-            Th(t("th.credit"), cls="cell--number"),
-            Th(t("th.balance"), cls="cell--number"),
-        )),
-        Tbody(*rows),
-        cls="data-table",
-    )
-
-
-def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
-    rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
-
-    # Build date query string for drilldown links
-    _qs_parts = [f"date_from={date_from}"] if date_from else []
-    if date_to:
-        _qs_parts.append(f"date_to={date_to}")
-    _dqs = ("?" + "&".join(_qs_parts)) if _qs_parts else ""
-
-    def _ledger_href(code: str) -> str:
-        return _drill_ledger_href(code, "pnl", date_from, date_to)
-
-    def _pct_of_rev(amount: float) -> str:
-        if not rev_total:
-            return "--"
-        return f"{abs(amount) / rev_total * 100:.1f}%"
-
-    def _section(title, section_data, show_pct: bool = False, cls="", total_href: str = ""):
-        lines = section_data.get("lines", [])
-        rows = []
-        for l in lines:
-            amt = float(l.get("amount", 0) or 0)
-            code = l.get("code", "")
-            label = f"{code} {l.get('name', '')}".strip()
-            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
-            cells = [
-                name_cell,
-                Td(fmt_money(amt, currency), cls="cell--number"),
-            ]
-            if show_pct:
-                cells.append(Td(_pct_of_rev(amt), cls="cell--right cell--muted"))
-            rows.append(Tr(*cells))
-        header_row = Tr(
-            Th(t("th.account")),
-            Th(t("label.amount"), cls="cell--number"),
-            *([] if not show_pct else [Th(t("th._of_revenue"), cls="cell--right")]),
-        )
-        total_el = fmt_money(section_data.get('total', 0), currency)
-        total_content = (
-            A(Strong(total_el), href=total_href, cls="drilldown-link", target="_blank")
-            if total_href else Strong(total_el)
-        )
-        return Div(
-            H3(title, cls="report-section-title"),
-            Table(Thead(header_row), Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(total_content, cls="section-total"),
-            cls=f"report-section {cls}",
-        )
-
-    net = float(data.get("net_profit", 0))
-    return Div(
-        _section("Revenue", data.get("revenue", {}), show_pct=True,
-                 total_href=f"/reports/sales{_dqs}"),
-        _section("Cost of Goods Sold", data.get("cogs", {}), show_pct=True,
-                 total_href=f"/reports/purchases{_dqs}"),
-        Div(P(Strong(f"Gross Profit: {fmt_money(data.get('gross_profit', 0), currency)}")), cls="report-subtotal"),
-        _section("Operating Expenses", data.get("expenses", {}), show_pct=True,
-                 total_href=f"/reports/purchases{_dqs}"),
-        Div(
-            P(Strong(f"Net Profit: {fmt_money(net, currency)}"),
-              cls=f"net-profit {'net-profit--positive' if net >= 0 else 'net-profit--negative'}"),
-            cls="report-total",
-        ),
-        cls="report-view",
-    )
-
-
-def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = "") -> FT:
-    def _ledger_href(code: str) -> str:
-        # Ledger up to as_of date for balance sheet context
-        return _drill_ledger_href(code, "balance-sheet", "", as_of)
-
-    def _pnl_href() -> str:
-        return f"/accounting?tab=pnl&date_to={as_of}" if as_of else "/accounting?tab=pnl"
-
-    def _tb_href() -> str:
-        return f"/accounting?tab=trial-balance&as_of={as_of}" if as_of else "/accounting?tab=trial-balance"
-
-    def _section(title, section_data):
-        lines = section_data.get("lines", [])
-        rows = []
-        for l in lines:
-            code = l.get("code", "")
-            synthetic = l.get("synthetic", False)
-            is_parent = l.get("is_parent", False)
-            is_child = l.get("is_child", False)
-
-            if synthetic and l.get("href_pnl"):
-                label = l.get("name", "")
-                name_cell = Td(
-                    A(label, href=_pnl_href(), cls="drilldown-link"),
-                    title="Net income accumulated from P&L. Click to see the calculation.",
-                )
-            elif is_parent:
-                label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(Strong(label))
-            elif is_child:
-                label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
-            elif code and not synthetic:
-                label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
-            else:
-                name_cell = Td(l.get("name", ""))
-
-            amount_style = "padding-left:2rem" if is_child else ""
-            rows.append(Tr(
-                name_cell,
-                Td(fmt_money(l.get('amount', 0), currency) if not is_parent else "", cls="cell--number", style=amount_style),
-                Td(fmt_money(l.get('amount', 0), currency) if is_parent else "", cls="cell--number"),
-            ) if is_parent else Tr(
-                name_cell,
-                Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
-            ))
-        total_el = fmt_money(section_data.get('total', 0), currency)
-        return Div(
-            H3(title, cls="report-section-title"),
-            Table(Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(A(Strong(total_el), href=_tb_href(), cls="drilldown-link"), cls="section-total"),
-            cls="report-section",
-        )
-
-    balanced = data.get("balanced", True)
-    total_liab = data.get("liabilities", {}).get("total", 0)
-    total_equity = data.get("equity", {}).get("total", 0)
-    return Div(
-        _section("Assets", data.get("assets", {})),
-        _section("Liabilities", data.get("liabilities", {})),
-        _section("Equity", data.get("equity", {})),
-        Div(
-            P(
-                Strong(f"Total Liabilities & Equity: {fmt_money(total_liab + total_equity, currency)}"),
-                cls="section-total",
-            ),
-            Span("Balance checks out ✓" if balanced else "⚠ Imbalance detected",
-                 cls="val-chip" if balanced else "val-chip val-chip--alert"),
-            cls="valuation-bar",
-        ),
-        cls="report-view",
-    )
 
 
 # ── Journal ─────────────────────────────────────────────────────────────────
@@ -1803,181 +758,3 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
         Script(js),
     )
 
-
-# ── General ledger ──────────────────────────────────────────────────────────
-
-def _general_ledger_view(data: dict, currency: str | None = None,
-                         date_from: str = "", date_to: str = "") -> FT:
-    rows = data.get("rows", [])
-    if not rows:
-        return P(t("acct.no_entries"), cls="empty-state")
-
-    def _num_cell(val, strong: bool = False) -> FT:
-        v = float(val or 0)
-        cls = "cell--number cell--negative" if v < 0 else "cell--number"
-        formatted = fmt_money(v, currency)
-        return Td(Strong(formatted) if strong else formatted, cls=cls)
-
-    body = [
-        Tr(
-            Td(r.get("code", ""), cls="cell--mono"),
-            Td(A(r.get("name", ""),
-                 href=_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to),
-                 cls="drilldown-link")),
-            _num_cell(r.get("opening", 0)),
-            _num_cell(r.get("debit", 0)),
-            _num_cell(r.get("credit", 0)),
-            _num_cell(r.get("closing", 0)),
-        )
-        for r in rows
-    ]
-    totals = data.get("totals") or {}
-    body.append(Tr(
-        Td(""),
-        Td(Strong(t("th.total"))),
-        _num_cell(totals.get("opening", 0), strong=True),
-        _num_cell(totals.get("debit", 0), strong=True),
-        _num_cell(totals.get("credit", 0), strong=True),
-        _num_cell(totals.get("closing", 0), strong=True),
-    ))
-    return Table(
-        Thead(Tr(
-            Th(t("th.code")),
-            Th(t("th.account")),
-            Th(t("th.opening"), cls="cell--number"),
-            Th(t("th.debit"), cls="cell--number"),
-            Th(t("th.credit"), cls="cell--number"),
-            Th(t("th.closing"), cls="cell--number"),
-        )),
-        Tbody(*body),
-        cls="data-table",
-    )
-
-
-# ── Statement of account ────────────────────────────────────────────────────
-
-_SOA_KIND_KEYS = {
-    "invoice": "label.invoice",
-    "credit_note": "doc.credit_note",
-    "payment": "acct.soa_kind_payment",
-}
-
-
-def _soa_kind_label(kind: str) -> str:
-    key = _SOA_KIND_KEYS.get(kind)
-    return t(key) if key else kind
-
-
-def _soa_table(data: dict, currency: str | None = None,
-               date_from: str = "", date_to: str = "") -> FT:
-    def _fmt_nonzero(val: float) -> str:
-        return fmt_money(val, currency) if val else ""
-
-    def _bal_cell(val, strong: bool = False) -> FT:
-        v = float(val or 0)
-        cls = "cell--number cell--negative" if v < 0 else "cell--number"
-        formatted = fmt_money(v, currency)
-        return Td(Strong(formatted) if strong else formatted, cls=cls)
-
-    rows = [Tr(
-        Td(date_from, cls="cell--mono"),
-        Td(""),
-        Td(t("acct.opening_balance"), cls="cell--muted"),
-        Td("", cls="cell--number"),
-        Td("", cls="cell--number"),
-        _bal_cell(data.get("opening_balance", 0)),
-    )]
-    for row in data.get("rows", []):
-        ref = row.get("doc_ref") or row.get("doc_id") or ""
-        ref_cell = (A(ref, href=f"/docs/{row['doc_id']}", cls="drilldown-link")
-                    if row.get("doc_id") else ref)
-        rows.append(Tr(
-            Td(row.get("date", ""), cls="cell--mono"),
-            Td(ref_cell),
-            Td(_soa_kind_label(str(row.get("kind") or ""))),
-            Td(_fmt_nonzero(float(row.get("debit") or 0)), cls="cell--number"),
-            Td(_fmt_nonzero(float(row.get("credit") or 0)), cls="cell--number"),
-            _bal_cell(row.get("balance", 0)),
-        ))
-    rows.append(Tr(
-        Td(date_to, cls="cell--mono"),
-        Td(""),
-        Td(Strong(t("acct.closing_balance"))),
-        Td("", cls="cell--number"),
-        Td("", cls="cell--number"),
-        _bal_cell(data.get("closing_balance", 0), strong=True),
-    ))
-    return Table(
-        Thead(Tr(
-            Th(t("th.date")),
-            Th(t("th.ref")),
-            Th(t("th.type")),
-            Th(t("th.debit"), cls="cell--number"),
-            Th(t("th.credit"), cls="cell--number"),
-            Th(t("th.balance"), cls="cell--number"),
-        )),
-        Tbody(*rows),
-        cls="data-table",
-    )
-
-
-def _soa_print_body(data: dict, currency: str | None, d_from: str, d_to: str,
-                    merged: bool = False) -> FT:
-    """The printable statement for one contact: contact block, statement table,
-    closing balance. Shared by the single print and the batch run."""
-    contact = data.get("contact") or {}
-    return Div(
-        (P(t("acct.soa_merged_notice"), cls="report-section") if merged else None),
-        Div(
-            H3(t("label.contact"), cls="report-section-title"),
-            P(contact.get("name", "")),
-            P(contact.get("type", ""), cls="report-company-address") if contact.get("type") else None,
-            cls="report-section",
-        ),
-        _soa_table(data, currency, date_from=d_from, date_to=d_to),
-        P(Strong(f"{t('acct.closing_balance')}: {fmt_money(data.get('closing_balance', 0), currency)}"),
-          cls="report-total"),
-    )
-
-
-def _soa_batch_reveal(date_from: str, date_to: str) -> FT:
-    """Collapsed batch-print control: the contact list loads only when opened."""
-    return Details(
-        Summary(t("acct.soa_batch_title"), cls="btn btn--ghost btn--sm"),
-        Div(hx_get=_href("/accounting/soa/batch-panel",
-                         {"date_from": date_from, "date_to": date_to}),
-            hx_trigger="intersect once", hx_swap="innerHTML"),
-        cls="soa-batch-reveal mt-md",
-    )
-
-
-def _soa_view(data: dict | None, contacts: list[dict], contact_id: str,
-              currency: str | None = None, date_from: str = "", date_to: str = "",
-              merged_from: str = "") -> FT:
-    opts = [
-        (c.get("id", ""), f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
-        for c in contacts if c.get("id")
-    ]
-    selector = Form(
-        Label(t("label.contact"), cls="form-label"),
-        searchable_select("contact_id", opts, value=contact_id,
-                          placeholder=t("label.contact"), onchange="this.form.submit()"),
-        Input(type="hidden", name="tab", value="soa"),
-        Input(type="hidden", name="from", value=date_from),
-        Input(type="hidden", name="to", value=date_to),
-        method="get", action="/accounting",
-        cls="flex-row gap-sm",
-    )
-    batch = _soa_batch_reveal(date_from, date_to)
-    if not contact_id or data is None:
-        return Div(selector, empty_state_cta(t("acct.soa_pick_contact")), batch)
-    # The requested contact was merged into this one, so the figures below are
-    # not the contact that was asked for. Say so, on screen and on anything
-    # printed from it (GDR 2d).
-    notice = (Div(t("acct.soa_merged_notice"), cls="error-banner") if merged_from else None)
-    toolbar = Div(
-        _action_bar("soa", {"contact_id": contact_id,
-                            "date_from": date_from, "date_to": date_to}),
-        cls="flex-row mt-md mb-md",
-    )
-    return Div(selector, notice, toolbar, _soa_table(data, currency, date_from, date_to), batch)

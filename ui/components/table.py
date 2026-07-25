@@ -535,6 +535,9 @@ def searchable_select(
     cls_extra: str = "",
     allow_custom: bool = False,
     search_url: str = "",
+    multiple: bool = False,
+    values: list[str] | None = None,
+    count_label: str = "{n} selected",
     **htmx_attrs,
 ) -> FT:
     """
@@ -547,14 +550,30 @@ def searchable_select(
     search_url: if set, enables server-side search. The text input sends hx-get
         requests to this URL with ?q=<typed>, replacing the option list via HTMX.
         When q is empty the JS restores the original static options.
+    multiple: if True, options toggle instead of replacing and every selection is
+        submitted under the same name, so the server reads a repeated key. Pass the
+        current selection as `values`. Callers that leave this off render exactly
+        what they rendered before it existed.
+    count_label: summary shown in the closed input when several are selected;
+        "{n}" is replaced with the count. Callers pass a translated string.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
     normalized = [
         (o, o) if isinstance(o, str) else (o[0], o[1])
         for o in options
     ]
+    selected = list(values or [])
+    label_by_value = {val: lbl for val, lbl in normalized}
     # Current label for display
-    display_label = next((lbl for val, lbl in normalized if val == value), value)
+    if multiple:
+        if len(selected) == 1:
+            display_label = label_by_value.get(selected[0], selected[0])
+        elif selected:
+            display_label = count_label.replace("{n}", str(len(selected)))
+        else:
+            display_label = ""
+    else:
+        display_label = next((lbl for val, lbl in normalized if val == value), value)
 
     def _opt_cls(val: str) -> str:
         # "__"-prefixed values are action options (add-new, scope toggles): pinned so they
@@ -566,12 +585,25 @@ def searchable_select(
             cls += " combobox-option--new"
         return cls
 
-    opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
+    if multiple:
+        chosen = set(selected)
+        opt_els = [
+            Div(label,
+                cls=_opt_cls(val) + (" combobox-option--selected" if val in chosen else ""),
+                data_value=val)
+            for val, label in normalized
+        ]
+    else:
+        opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
     opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty", style="display:none"))
 
     wrap_attrs: dict = {"cls": "combobox-wrap"}
     if allow_custom:
         wrap_attrs["data_allow_custom"] = "true"
+    if multiple:
+        wrap_attrs["data_multiple"] = "true"
+        wrap_attrs["data_count_label"] = count_label
+        wrap_attrs["data_empty_label"] = placeholder
     if search_url:
         wrap_attrs["data_search_url"] = "1"
         wrap_attrs["hx_get"] = search_url
@@ -583,6 +615,20 @@ def searchable_select(
     text_input_extra: dict = {}
     if search_url:
         text_input_extra["name"] = "q"
+
+    if multiple:
+        # The bag carries the submitted values; the sibling hidden input carries no
+        # value of its own and exists only so the JS can read the field name.
+        return Div(
+            Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
+                  value=display_label, placeholder=placeholder, autocomplete="off", **text_input_extra),
+            Input(type="hidden", data_name=name, value="", **htmx_attrs),
+            Div(*[Input(type="hidden", name=name, value=v,
+                        data_label=label_by_value.get(v, v)) for v in selected],
+                cls="combobox-selected"),
+            Div(*opt_els, cls="combobox-list"),
+            **wrap_attrs,
+        )
 
     return Div(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),

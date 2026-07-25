@@ -232,7 +232,7 @@ def _account_to_dict(acc: Account) -> dict:
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
 ) -> dict:
     """Return all accounts sorted by code."""
     rows = (
@@ -551,7 +551,12 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             je_meta[ev.entity_id] = meta
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
-    doc_ids = sorted({m["doc_id"] for m in je_meta.values()})
+    # A credit note carries both ids; its own party is the one the entry belongs
+    # to, which is not always the party on the invoice it settles.
+    doc_ids = sorted(
+        {m["doc_id"] for m in je_meta.values()}
+        | {m["cn_id"] for m in je_meta.values() if m.get("cn_id")}
+    )
     doc_states: dict[str, dict] = {}
     for chunk in _id_chunks(doc_ids):
         doc_rows = (
@@ -590,10 +595,17 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         fx = None
         if currency and currency != base and rate:
             fx = {"currency": currency, "rate": float(rate)}
+        # The party this entry belongs to, resolved from the document that caused
+        # it. Every document-driven posting records its doc_id, so no separate
+        # party field has to be stored or backfilled for them.
+        party_state = doc_states.get(meta["cn_id"], state) if meta.get("cn_id") else state
+        contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
+                      or party_state.get("supplier_id"))
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
             "fx": fx,
+            "contact_id": contact_id,
         }
     return refs
 
@@ -639,7 +651,7 @@ async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Journal: every entry with its lines, source-doc link, and FX info.
@@ -1015,11 +1027,20 @@ async def account_ledger(
     account_code: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    contact_id: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
+    """Account ledger: posted JE lines for one account, with opening balance,
+    running balance, closing balance and source doc links.
+
+    contact_id narrows the account to one party, which is what turns a control
+    account into that party's subledger: 1120 filtered to a customer is that
+    customer's receivable, and every such line sums back to the control account.
+    Lines with no resolvable party are reported under the empty string so a
+    filtered view can never quietly exclude them from the account's total.
+    """
     # Fetch account metadata for name + type (sign convention)
     account = (
         await session.execute(
@@ -1036,15 +1057,22 @@ async def account_ledger(
     # directly to a parent code appear on the parent's own ledger.
     match_codes = {account_code}
 
+    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
+    account_type = account.account_type if account else "asset"
+    debit_normal = account_type in ("asset", "expense", "cogs")
+
+    def _signed(d: Decimal, c: Decimal) -> Decimal:
+        return (d - c) if debit_normal else (c - d)
+
     # Filter to lines that touch this account, apply date filter
     lines = []
+    opening = Decimal(0)
     for je_id, state, ts in posted:
-        # Dateless JEs (ts="") count as pre-period, exactly as the trial
-        # balance, journal, and general ledger treat them: excluded once a
-        # start date is set, included otherwise.
-        if date_from and (not ts or ts < date_from):
-            continue
-        if ts and date_to and ts > date_to:
+        ref = refs.get(je_id) or {}
+        # An entry with no source document has no party to resolve; a manual
+        # posting to a control account is the usual case.
+        line_contact = ref.get("contact_id") or ""
+        if contact_id is not None and line_contact != contact_id:
             continue
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
@@ -1052,13 +1080,21 @@ async def account_ledger(
             amounts = _line_amounts(entry)
             if amounts is None:
                 continue
-            ref = refs.get(je_id) or {}
+            # Dateless JEs (ts="") count as pre-period, exactly as the trial
+            # balance, journal, and general ledger treat them: excluded once a
+            # start date is set, included otherwise.
+            if date_from and (not ts or ts < date_from):
+                opening += _signed(amounts[0], amounts[1])
+                continue
+            if ts and date_to and ts > date_to:
+                continue
             lines.append({
                 "date": ts,
                 "je_id": je_id,
                 "memo": state.get("memo", ""),
                 "doc_id": ref.get("doc_id"),
                 "doc_ref": ref.get("doc_ref"),
+                "contact_id": line_contact,
                 "debit": float(amounts[0]),
                 "credit": float(amounts[1]),
             })
@@ -1066,22 +1102,26 @@ async def account_ledger(
     # Sort chronologically for running balance
     lines.sort(key=lambda x: (x["date"], x["je_id"]))
 
-    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
-    account_type = account.account_type if account else "asset"
-    debit_normal = account_type in ("asset", "expense", "cogs")
-    running = Decimal(0)
+    # The running balance continues from what the account already held. Starting
+    # a date-filtered view at zero would report a balance that ignores every
+    # prior period and never ties to the general ledger's closing figure.
+    running = opening
     for line in lines:
         d, c = Decimal(str(line["debit"])), Decimal(str(line["credit"]))
-        running += (d - c) if debit_normal else (c - d)
+        running += _signed(d, c)
         line["balance"] = float(running)
 
+    base = await _base_currency(session, company_id)
     return {
         "account_code": account_code,
         "account_name": account.name if account else account_code,
         "account_type": account_type,
+        "contact_id": contact_id,
         "date_from": date_from,
         "date_to": date_to,
+        "opening_balance": to_stored_float(round_money(opening, base)),
         "lines": lines,
+        "closing_balance": to_stored_float(round_money(running, base)),
     }
 
 
@@ -1090,7 +1130,7 @@ async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Trial balance: one row per account with debit/credit totals.
@@ -1154,7 +1194,7 @@ async def general_ledger(
     date_to: str | None = None,
     include_lines: bool = False,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """General ledger summary: opening balance, period debits/credits, and closing
@@ -1263,7 +1303,7 @@ async def general_ledger(
 async def profit_and_loss(
     date_from: str | None = None,
     date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Profit and Loss statement for the period.
@@ -1319,7 +1359,7 @@ async def profit_and_loss(
 async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1432,7 +1472,7 @@ async def statement_of_account(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Statement of account for one contact: opening balance, dated doc/payment
@@ -2827,6 +2867,212 @@ async def _get_recon_and_line(
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
+
+
+# ---------------------------------------------------------------------------
+# Cash flow statement
+# ---------------------------------------------------------------------------
+
+_CASH_PARENT = "1110"  # Cash and Cash Equivalents; bank accounts are seeded beneath it
+_NON_CURRENT_ASSET_FLOOR = 1200
+_NON_CURRENT_LIABILITY_FLOOR = 2200
+
+_CASH_FLOW_CATEGORIES = frozenset({"operating", "investing", "financing"})
+
+
+def _code_number(code: str) -> int:
+    """Leading digits of an account code, for range tests. Codes carry suffixes
+    ("1130-P"), so the numeric part is read rather than the whole string."""
+    m = re.match(r"\d+", code or "")
+    return int(m.group()) if m else 0
+
+
+def _derived_cash_flow_category(account_type: str, code: str) -> str:
+    """Default classification for the account on the far side of a cash movement.
+
+    Working capital and trading accounts are operating; long-lived assets are
+    investing; borrowings and owner capital are financing. Correct for the seeded
+    chart, and overridable per account where a company's own chart differs.
+    """
+    if account_type in ("revenue", "expense", "cogs"):
+        return "operating"
+    num = _code_number(code)
+    if account_type == "asset":
+        return "investing" if num >= _NON_CURRENT_ASSET_FLOOR else "operating"
+    if account_type == "liability":
+        return "financing" if num >= _NON_CURRENT_LIABILITY_FLOOR else "operating"
+    if account_type == "equity":
+        return "financing"
+    return "operating"
+
+
+def _cash_flow_category(acc: Account | None, code: str) -> str:
+    if acc is not None and acc.cash_flow_category in _CASH_FLOW_CATEGORIES:
+        return acc.cash_flow_category
+    return _derived_cash_flow_category(acc.account_type if acc else "asset", code)
+
+
+def _split_cash_movement(
+    cash_delta: Decimal, contras: list[tuple[str, Decimal]], base: str,
+) -> list[tuple[str, Decimal]]:
+    """Apportion one entry's cash movement across the accounts it moved against.
+
+    An entry may touch cash once and several other accounts at once (one payment
+    settling several invoices, a bill paid net of a discount), so the movement is
+    split in proportion to each contra leg. The rounding residual lands on the
+    largest leg, ties broken by account code, so the same entry always splits the
+    same way on replay.
+    """
+    total = sum((abs(v) for _, v in contras), Decimal(0))
+    if not contras or total == 0:
+        return []
+    out: list[tuple[str, Decimal]] = []
+    for code, val in contras:
+        out.append((code, round_money(cash_delta * (abs(val) / total), base)))
+    residual = cash_delta - sum((v for _, v in out), Decimal(0))
+    if residual != 0:
+        biggest = max(range(len(out)), key=lambda i: (abs(contras[i][1]), contras[i][0]))
+        out[biggest] = (out[biggest][0], out[biggest][1] + residual)
+    return out
+
+
+@router.get("/cash-flow")
+async def cash_flow(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cash flow statement, direct and indirect, over the same posted entries.
+
+    Direct reads every entry that moved cash and sorts the movement by what it
+    moved against. Indirect starts from the period's profit and adjusts for the
+    movement in every other non-cash account.
+
+    The two agree by construction rather than by tolerance: a balanced entry set
+    means the change in cash is exactly the negative of the change in everything
+    else, which is what the indirect side computes. There is no exchange-rate
+    reconciling item because every posting is stored in base currency at its own
+    date, so a cash balance is never restated after the fact.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+
+    accounts = (
+        await session.execute(select(Account).where(Account.company_id == company_id))
+    ).scalars().all()
+    account_map = {a.code: a for a in accounts}
+
+    banks = (
+        await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))
+    ).scalars().all()
+    cash_codes = {b.chart_account_code for b in banks}
+    cash_codes |= {a.code for a in accounts
+                   if a.code == _CASH_PARENT or a.parent_code == _CASH_PARENT}
+
+    base = await _base_currency(session, company_id)
+    posted = await _je_rows(session, company_id)
+
+    opening_cash = Decimal(0)
+    by_category: dict[str, dict[str, Decimal]] = {c: {} for c in ("operating", "investing", "financing")}
+    non_cash_movement: dict[str, Decimal] = {}
+    profit_movement = Decimal(0)
+    period_cash = Decimal(0)
+
+    for _je_id, state, ts in posted:
+        cash_delta = Decimal(0)
+        contras: list[tuple[str, Decimal]] = []
+        for entry in state.get("entries", []):
+            code = entry.get("account")
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
+                continue
+            signed = amounts[0] - amounts[1]
+            if code in cash_codes:
+                cash_delta += signed
+            else:
+                contras.append((code, signed))
+        if cash_delta == 0 and not contras:
+            continue
+        # Dateless entries count as pre-period, matching every other report.
+        if date_from and (not ts or ts < date_from):
+            opening_cash += cash_delta
+            continue
+        if ts and date_to and ts > date_to:
+            continue
+        period_cash += cash_delta
+        if cash_delta != 0:
+            for code, share in _split_cash_movement(cash_delta, sorted(contras), base):
+                acc = account_map.get(code)
+                cat = _cash_flow_category(acc, code)
+                by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
+        for code, signed in contras:
+            acc = account_map.get(code)
+            atype = acc.account_type if acc else "asset"
+            if atype in ("revenue", "expense", "cogs"):
+                profit_movement += signed
+            else:
+                non_cash_movement[code] = non_cash_movement.get(code, Decimal(0)) + signed
+
+    def _lines(cat: str) -> list[dict]:
+        # Sorted by code: stable across replays, unlike dict encounter order.
+        return [
+            {
+                "code": code,
+                "name": account_map[code].name if code in account_map else code,
+                "amount": to_stored_float(round_money(amount, base)),
+            }
+            for code, amount in sorted(by_category[cat].items())
+            if amount != 0
+        ]
+
+    direct_sections = {}
+    direct_total = Decimal(0)
+    for cat in ("operating", "investing", "financing"):
+        lines = _lines(cat)
+        subtotal = sum((to_decimal(l["amount"]) for l in lines), Decimal(0))
+        direct_total += subtotal
+        direct_sections[cat] = {"lines": lines, "total": to_stored_float(round_money(subtotal, base))}
+
+    # Revenue and expenses are credit-normal and debit-normal respectively, so the
+    # summed debit-credit movement across them is the negative of the profit.
+    net_profit = -profit_movement
+    adjustments = [
+        {
+            "code": code,
+            "name": account_map[code].name if code in account_map else code,
+            # Cash moves opposite to a non-cash balance: stock bought (a debit)
+            # consumes cash, a supplier balance taken on (a credit) preserves it.
+            "amount": to_stored_float(round_money(-amount, base)),
+        }
+        for code, amount in sorted(non_cash_movement.items())
+        if amount != 0
+    ]
+    indirect_total = net_profit - sum(non_cash_movement.values(), Decimal(0))
+
+    closing_cash = opening_cash + period_cash
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "cash_accounts": sorted(cash_codes),
+        "opening_cash": to_stored_float(round_money(opening_cash, base)),
+        "closing_cash": to_stored_float(round_money(closing_cash, base)),
+        "net_change": to_stored_float(round_money(period_cash, base)),
+        "direct": {
+            **direct_sections,
+            "total": to_stored_float(round_money(direct_total, base)),
+        },
+        "indirect": {
+            "net_profit": to_stored_float(round_money(net_profit, base)),
+            "adjustments": adjustments,
+            "total": to_stored_float(round_money(indirect_total, base)),
+        },
+        # Exact, not approximate: a reconciling item here would mean an entry
+        # whose sides do not sum to zero, which is a data fault worth surfacing.
+        "balanced": (round_money(direct_total, base) == round_money(period_cash, base)
+                     and round_money(indirect_total, base) == round_money(period_cash, base)),
+    }
 
 
 class PeriodLockPayload(BaseModel):

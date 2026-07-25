@@ -612,6 +612,27 @@ a:hover { text-decoration: underline; }
 .recipe-save-status.error { color: var(--c-red); }
 /* Pinned combobox action options (add-new, scope toggles): always visible, set apart. */
 .combobox-option--pinned { border-top: 1px solid var(--c-border); color: var(--c-text2); font-style: italic; }
+/* Multi-select combobox: a checkbox drawn in CSS, so the option list needs no
+   extra markup and single-select comboboxes are untouched. */
+.combobox-wrap[data-multiple] .combobox-option { padding-left: 26px; position: relative; }
+.combobox-wrap[data-multiple] .combobox-option::before {
+    content: ""; position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+    width: 13px; height: 13px; border: 1px solid var(--c-border); border-radius: 3px;
+    background: var(--c-bg);
+}
+.combobox-wrap[data-multiple] .combobox-option--empty { padding-left: 10px; }
+.combobox-wrap[data-multiple] .combobox-option--empty::before { display: none; }
+.combobox-wrap[data-multiple] .combobox-option--selected::before {
+    background: var(--c-accent); border-color: var(--c-accent);
+}
+.combobox-wrap[data-multiple] .combobox-option--selected::after {
+    content: ""; position: absolute; left: 11px; top: 50%;
+    width: 4px; height: 8px; margin-top: -6px;
+    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+/* Quick-picks under the subject picker: distinct buttons rather than options in
+   the list, so one control never mixes "tick a box" with "run an action". */
+.picker-quickpicks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 /* Ghost "add" row: a permanent affordance at the bottom of each recipe table. */
 .recipe-add-row td { background: var(--c-bg2); }
 .recipe-add-row input::placeholder, .recipe-add-row .combobox-input::placeholder { font-style: italic; color: var(--c-text-muted); }

@@ -35,6 +35,10 @@ dependencies = [
     "slowapi>=0.1.9",
     "reportlab>=4.0",
     "python-fasthtml>=0.12",
+    # fasthtml 0.12 asks for starlette>0.33 with no upper bound, but Starlette 1.0
+    # dropped the on_startup/on_shutdown arguments it passes, so a fresh resolve
+    # picks a version that cannot construct the app.
+    "starlette>=0.33,<1.0",
     "psutil>=5.9",
     "websockets>=12.0",
     "aiosmtplib>=3.0",

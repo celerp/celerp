@@ -253,7 +253,7 @@ def setup_routes(app):
                 skipped=0,
                 errors=[e.detail],
                 entity_label="accounts",
-                back_href="/accounting?tab=chart",
+                back_href="/settings/accounting?tab=chart",
                 import_more_href="/accounting/import/chart",
                 has_mapping=True,
             )
@@ -268,7 +268,7 @@ def setup_routes(app):
             skipped=skipped,
             errors=errors,
             entity_label="accounts",
-            back_href="/accounting?tab=chart",
+            back_href="/settings/accounting?tab=chart",
             import_more_href="/accounting/import/chart",
             has_mapping=True,
         )
