@@ -156,11 +156,13 @@ async def _post(ui_client, url, data, **overrides):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_journal_tab_renders(ui_client):
-    r = await _get(ui_client, "/accounting?tab=journal")
+async def test_journal_page_renders(ui_client):
+    r = await _get(ui_client, "/accounting")
     assert r.status_code == 200
     html = r.text
-    assert "tab-bar" in html
+    # No tab bar: the journal is the only page under Accounting now, and the
+    # reports it used to sit beside live under /reports.
+    assert "tab-bar" not in html
     assert "Adjustment" in html
     assert "INV-1" in html
     # Newest entry (2026-01-20) renders before the older one
