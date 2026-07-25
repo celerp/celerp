@@ -2433,10 +2433,20 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         if it.quantity_returned > current_qty + 1e-9:
             raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
         new_qty = max(0.0, current_qty - it.quantity_returned)
+        adjustment: dict = {"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"}
+        # The returned units physically leave, so the lot's goods cost leaves with them:
+        # scale cost_base to what is still on hand. Without this the remaining balance
+        # would keep carrying the whole lot's cost (a partial return is an in-place
+        # quantity reduction, not a split, so nothing else rescales it).
+        _base = item.state.get("cost_base")
+        if _base is None:
+            _base = item.state.get("cost_total")
+        if _base is not None and current_qty > 0:
+            adjustment["cost_base"] = round(float(_base) * (new_qty / current_qty), 2)
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
             event_type="item.quantity.adjusted",
-            data={"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"},
+            data=adjustment,
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={"source_return": entity_id},
         )

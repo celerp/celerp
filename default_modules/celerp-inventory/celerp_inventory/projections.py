@@ -302,6 +302,10 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # honour the key when present, so ordinary stock adjustments never touch the flag.
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
+        # A return sends the goods cost that left with the units. Only honoured when
+        # present, so a plain stock correction still leaves the lot's cost alone.
+        if "cost_base" in data and data["cost_base"] is not None:
+            current["cost_base"] = float(data["cost_base"])
         _recompute_cost(current)  # landed cost is per-unit, so it scales with quantity
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so

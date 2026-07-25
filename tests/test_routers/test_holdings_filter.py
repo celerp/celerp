@@ -109,13 +109,12 @@ async def test_items_consigned_from_excludes_owned_and_other_supplier(client, se
 @pytest.mark.asyncio
 async def test_items_consigned_from_partial_return_keeps_item_in_scope(client, session):
     """A partial return leaves the balance on consignment: the item stays in scope with
-    consignment_flag still "in", and only the returned quantity leaves the shelf.
+    consignment_flag still "in", only the returned quantity leaves the shelf, and the
+    value steps down with it.
 
-    Value note: cost_total is the lot's purchase cost and is deliberately not rescaled by
-    a quantity adjustment (see _recompute_cost - only per-unit landed cost scales), so the
-    holding value of a partially returned lot still reflects the lot cost. That is existing
-    system-wide cost behaviour, not something this scope introduces; it is asserted here so
-    the behaviour is pinned rather than assumed.
+    A partial return reduces quantity in place (unlike partial fulfillment, it does not
+    split off a child), so the goods cost has to be rescaled with it or the remaining
+    balance would keep carrying the whole lot's cost.
     """
     token = await _register(client)
     location_id = await _create_location(client, token)
@@ -136,5 +135,9 @@ async def test_items_consigned_from_partial_return_keeps_item_in_scope(client, s
     assert item["consignment_flag"] == "in", "flag must persist while a balance remains"
     # Card and list still agree, whatever the basis.
     assert after["value_total"] == item["holding_value"]
-    # Pinned: the lot cost is not rescaled by the quantity adjustment (see docstring).
-    assert after["value_total"] == 250.0
+    # 1 of 2 units returned, so half the lot cost went back with them.
+    assert after["value_total"] == 125.0
+    # The quantity left on the lot is the record of how much was kept, and per-unit cost
+    # is unchanged by the return: a lot is homogeneous, so scaling the lot cost with the
+    # quantity is what a split would have produced anyway.
+    assert item["cost_price"] == 125.0, "per-unit cost must survive a partial return"
