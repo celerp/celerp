@@ -6,6 +6,13 @@ subscription, no cloud required. Easy enough for solo entrepreneurs, deep enough
 
 Website: https://www.celerp.com - Repository: https://github.com/celerp/celerp
 
+## Quote from the founder
+
+> "My vision for Celerp is that anyone with AI coding tools can describe what their business needs
+> and get a module that imports right into the system."
+>
+> Noah Severs, Founder
+
 ## Screenshots
 
 These images are the canonical source for the README, the website, and external listings. Read them
