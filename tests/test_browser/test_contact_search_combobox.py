@@ -6,11 +6,12 @@ Proves:
 1. The contact field on an invoice renders a combobox with data-search-url set.
 2. Typing in the combobox triggers a server-side search (network request with q=).
 3. The dropdown updates with results returned by /contacts/search-options.
-4. Selecting a result commits the value to the hidden input.
+4. Selecting a result commits that contact to the document.
 """
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.browser
 
@@ -92,26 +93,29 @@ def test_contact_search_shows_results(page, contact_search_page):
 
 
 def test_contact_search_select_commits_value(page, contact_search_page):
-    """Clicking a server-search result must update the hidden input value."""
+    """Selecting a server-search result must commit that contact to the document."""
     _load(page, contact_search_page)
     contact_cell = page.locator("[hx-get*='field/contact_id/edit']").first
     contact_cell.click()
     page.wait_for_selector(".combobox-wrap[data-search-url] .combobox-input", timeout=5000)
 
     inp = page.locator(".combobox-wrap[data-search-url] .combobox-input").first
-    hidden = page.locator(".combobox-wrap[data-search-url] input[type=hidden]").first
     inp.press_sequentially("Alpha", delay=20)
     page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     first_opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first
-    opt_value = first_opt.get_attribute("data-value")
+    opt_label = first_opt.inner_text().strip()
     first_opt.click()
-    page.wait_for_timeout(200)
 
-    assert hidden.input_value() == opt_value, (
-        f"Hidden input not updated after selecting search result: "
-        f"expected {opt_value!r}, got {hidden.input_value()!r}"
-    )
+    # Selecting writes the hidden input and fires its change event, which commits the
+    # field and swaps the editor back to the display cell - taking the hidden input
+    # with it. Assert on what the commit leaves behind, not on the element it removes:
+    # reading the hidden input is a race the fast machine loses.
+    cell = page.locator("[hx-get*='field/contact_id/edit']").first
+    expect(cell).to_contain_text(opt_label, timeout=10000)
+    # And it is the server that holds it, not just the DOM.
+    page.reload(wait_until="domcontentloaded")
+    expect(page.locator("[hx-get*='field/contact_id/edit']").first).to_contain_text(opt_label, timeout=10000)
 
 
 def test_clearing_search_restores_static_options(page, contact_search_page):

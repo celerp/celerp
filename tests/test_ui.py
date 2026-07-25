@@ -7108,25 +7108,20 @@ class TestCurrencyThreading:
 
     @pytest.mark.asyncio
     async def test_accounting_page_uses_company_currency(self, ui_client):
-        _empty_section = {"lines": [], "total": 0}
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01"
             })),
-            patch("ui.api_client.get_pnl", new=AsyncMock(return_value={
-                "revenue": _empty_section, "cogs": _empty_section, "expenses": _empty_section,
-                "gross_profit": 0, "net_profit": 0,
-            })),
-            patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value={
-                "assets": _empty_section, "liabilities": _empty_section, "equity": _empty_section,
-                "total_assets": 0, "total_liabilities": 0, "total_equity": 0,
-            })),
-            patch("ui.api_client.get_trial_balance", new=AsyncMock(return_value={
-                "accounts": [], "total_debit": 0, "total_credit": 0,
+            patch("ui.api_client.get_journal", new=AsyncMock(return_value={
+                "entries": [], "total_debit": 1234.5, "total_credit": 1234.5,
             })),
         ):
             r = await ui_client.get("/accounting", cookies=_authed())
         assert r.status_code == 200
+        body = r.content.decode()
+        # Journal totals must be formatted with the company currency, not a hardcoded symbol
+        assert "$1,234.50" in body
+        assert "฿" not in body
 
     @pytest.mark.asyncio
     async def test_crm_deal_value_uses_fmt_money(self, ui_client):
