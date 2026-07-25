@@ -489,7 +489,7 @@ class TestCRUDRead:
     @pytest.mark.asyncio
     async def test_accounting_balance_sheet(self, ui):
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/accounting?tab=balance-sheet", cookies=_c())
+            r = await ui.get("/reports/balance-sheet", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -734,7 +734,7 @@ class TestNavigation:
 
     @pytest.mark.asyncio
     async def test_accounting_subpages(self, ui):
-        for subpath in ["/accounting", "/accounting?tab=pnl", "/accounting?tab=balance-sheet"]:
+        for subpath in ["/accounting", "/reports/pnl", "/reports/balance-sheet"]:
             with _Patches(_accounting_mocks()):
                 r = await ui.get(subpath, cookies=_c())
             assert r.status_code == 200, f"{subpath} failed"
@@ -846,7 +846,7 @@ class TestSearchAndFilter:
     @pytest.mark.asyncio
     async def test_pnl_date_range(self, ui):
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/accounting?tab=pnl&from=2026-01-01&to=2026-12-31", cookies=_c())
+            r = await ui.get("/reports/pnl?from=2026-01-01&to=2026-12-31", cookies=_c())
         assert r.status_code == 200
 
 

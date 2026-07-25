@@ -838,7 +838,7 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/accounting?tab=pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl", cookies=_authed())
         assert r.status_code == 200
         # USD accounting: should not show ฿5000
         assert "฿5000" not in r.text or "$" in r.text
@@ -862,6 +862,6 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/accounting?tab=balance-sheet", cookies=_authed())
+            r = await ui_client.get("/reports/balance-sheet", cookies=_authed())
         assert r.status_code == 200
         assert "฿10000" not in r.text

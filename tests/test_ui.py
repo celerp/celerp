@@ -1372,12 +1372,14 @@ class TestDocCatalogLookup:
 class TestAccountingPage:
     @pytest.mark.asyncio
     async def test_accounting_renders(self, ui_client):
-        """Default tab is P&L."""
-        with patch("ui.api_client.get_pnl", new=AsyncMock(return_value=_PNL)):
+        """The accounting page is the journal; the reports moved to /reports."""
+        with patch("ui.api_client.get_journal",
+                   new=AsyncMock(return_value={"entries": [], "total_debit": 0,
+                                               "total_credit": 0})):
             r = await ui_client.get("/accounting", cookies=_authed())
         assert r.status_code == 200
         assert b"Accounting" in r.content
-        assert b"P&amp;L" in r.content or b"P&L" in r.content
+        assert b"/reports/pnl" in r.content
 
     @pytest.mark.asyncio
     async def test_accounting_chart_in_settings(self, ui_client):
@@ -1389,16 +1391,16 @@ class TestAccountingPage:
         assert b"Cash" in r.content
 
     @pytest.mark.asyncio
-    async def test_pnl_redirects_to_tab(self, ui_client):
+    async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/pnl", cookies=_authed())
         assert r.status_code == 302
-        assert "tab=pnl" in r.headers.get("location", "")
+        assert r.headers.get("location", "").startswith("/reports/pnl")
 
     @pytest.mark.asyncio
-    async def test_balance_sheet_redirects_to_tab(self, ui_client):
+    async def test_balance_sheet_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/balance-sheet", cookies=_authed())
         assert r.status_code == 302
-        assert "tab=balance-sheet" in r.headers.get("location", "")
+        assert r.headers.get("location", "").startswith("/reports/balance-sheet")
 
 
 class TestPeriodLockAndCloseBooks:
@@ -3037,7 +3039,7 @@ class TestDateRangeFilters:
     @pytest.mark.asyncio
     async def test_pnl_tab_has_date_filter(self, ui_client):
         with patch("ui.api_client.get_pnl", new=AsyncMock(return_value={"revenue": {"total": 0, "lines": []}, "cogs": {"total": 0, "lines": []}, "gross_profit": 0, "expenses": {"total": 0, "lines": []}, "net_profit": 0})):
-            r = await ui_client.get("/accounting?tab=pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl", cookies=_authed())
         assert r.status_code == 200
         assert b"date-filter-bar" in r.content
 

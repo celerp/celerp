@@ -120,6 +120,20 @@ def setup_routes(app):
             request=request,
         )
 
+    @app.get("/accounting/pnl")
+    async def pnl_page(request: Request):
+        """Long-standing shortcut URL, now pointing at the report's new home."""
+        qp = request.query_params
+        return RedirectResponse(
+            _href(REPORTS["pnl"][0], [("from", qp.get("from", "")), ("to", qp.get("to", ""))]),
+            status_code=302)
+
+    @app.get("/accounting/balance-sheet")
+    async def balance_sheet_page(request: Request):
+        return RedirectResponse(
+            _href(REPORTS["balance-sheet"][0], [("as_of", request.query_params.get("as_of", ""))]),
+            status_code=302)
+
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
                                    lines: list[dict], idem_token: str, error: str | None,
                                    date_from: str = "", date_to: str = "",
