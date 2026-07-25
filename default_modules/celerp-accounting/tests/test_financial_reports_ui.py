@@ -253,6 +253,39 @@ def test_a_chart_code_never_parses_as_a_contact():
     assert kind == "a" and ident == "1120"
 
 
+def test_single_select_comboboxes_are_untouched_by_the_multiple_option():
+    """searchable_select is used across the app; gaining a multi-select mode must
+    not change a single byte of what every existing caller renders."""
+    from fasthtml.common import to_xml
+    from ui.components.table import searchable_select
+
+    markup = to_xml(searchable_select("acct", [("a", "Alpha"), ("b", "Beta")], value="b"))
+    assert "data-multiple" not in markup
+    assert "combobox-selected" not in markup
+    assert "combobox-option--selected" not in markup
+
+
+def test_multi_select_submits_one_field_per_selection():
+    """A repeated query key is what the server reads back, and one input cannot
+    carry two values."""
+    from fasthtml.common import to_xml
+    from ui.components.table import searchable_select
+
+    opts = [("a", "Alpha"), ("b", "Beta")]
+    # Leading space, so the data-name attribute is not counted as a submitted field.
+    two = to_xml(searchable_select("account", opts, multiple=True, values=["a", "b"],
+                                   count_label="{n} selected"))
+    assert two.count(' name="account"') == 2
+    assert "2 selected" in two
+
+    one = to_xml(searchable_select("account", opts, multiple=True, values=["b"]))
+    assert one.count(' name="account"') == 1
+    assert 'value="Beta"' in one, "a single selection reads as its own name, not a count"
+
+    none = to_xml(searchable_select("account", opts, multiple=True, values=[]))
+    assert none.count(' name="account"') == 0
+
+
 @pytest.mark.asyncio
 async def test_single_subject_renders_one_statement(ui_client):
     r = await _get(ui_client, "/reports/statement?account=c:contact:9")
