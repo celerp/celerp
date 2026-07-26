@@ -11,12 +11,14 @@ what stops the two route modules from forming an import cycle.
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from datetime import date as _date
 from urllib.parse import urlencode
 
 from fasthtml.common import *
-from starlette.responses import PlainTextResponse, RedirectResponse
+from starlette.responses import PlainTextResponse, RedirectResponse, StreamingResponse
 
 from celerp.services.money import round_money, to_decimal
 from ui.api_client import APIError
@@ -94,6 +96,24 @@ def csv_safe(cell):
 
 def csv_row(writer, cells: list) -> None:
     writer.writerow([csv_safe(c) for c in cells])
+
+
+def csv_response(rows: list[list], filename: str) -> StreamingResponse:
+    """Rows as a CSV download, every cell put through `csv_safe` on the way out.
+
+    One writer for every export, so no route can grow its own and lose the formula
+    guard or the download header with it.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    for row in rows:
+        csv_row(writer, row)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def plain_error_response(e: APIError):
