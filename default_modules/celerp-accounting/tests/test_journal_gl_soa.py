@@ -1546,6 +1546,66 @@ async def test_an_entry_with_no_party_stays_off_statements_and_in_the_unattribut
     assert abs(unattributed["closing_balance"] - 30.0) < 0.01
 
 
+async def _issued_credit_note(client, tok, total, issue_date, contact=None) -> str:
+    payload = {
+        "doc_type": "credit_note", "issue_date": issue_date,
+        "line_items": [{"name": "Returned goods", "quantity": 1,
+                        "unit_price": total, "line_total": total}],
+        "subtotal": total, "tax": 0.0, "total": total,
+    }
+    if contact:
+        payload["contact_id"] = contact
+    r = await client.post("/docs", headers=_h(tok), json=payload)
+    assert r.status_code == 200, r.text
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(tok))).status_code == 200
+    return cn
+
+
+@pytest.mark.asyncio
+async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one(client):
+    """A credit note never puts its rows on a party it does not belong to.
+
+    Two doors keep that true, and both are checked here. Applying a credit note
+    to another party's invoice is refused outright, so the mismatch cannot be
+    created. And where the note names nobody, its application is attributed to
+    nobody rather than inheriting the invoice's party, which is what would put a
+    credit somebody else's on a reader's statement.
+
+    The amounts are a transfer within receivables and net to nothing, so no
+    balance moves either way. It is the rows that are wrong, and a reader
+    querying a credit they never received is a conversation the books should
+    never have started.
+    """
+    tok = await _reg(client)
+    invoiced = await _contact(client, tok, name="Invoiced Co")
+    other = await _contact(client, tok, name="Other Co")
+
+    invoice = await _finalized_invoice(client, tok, invoiced, 100.0, "2026-01-05")
+
+    mismatched = await _issued_credit_note(client, tok, 40.0, "2026-01-20", contact=other)
+    r = await client.post(f"/docs/{mismatched}/apply-to-invoice", headers=_h(tok),
+                          json={"target_doc_id": invoice, "amount": 40.0, "date": "2026-01-21"})
+    assert r.status_code == 422, r.text
+    assert "same contact" in r.json()["detail"]
+
+    unnamed = await _issued_credit_note(client, tok, 40.0, "2026-01-20")
+    r = await client.post(f"/docs/{unnamed}/apply-to-invoice", headers=_h(tok),
+                          json={"target_doc_id": invoice, "amount": 40.0, "date": "2026-01-21"})
+    assert r.status_code == 200, r.text
+
+    soa = (await client.get(f"/accounting/soa/{invoiced}", headers=_h(tok))).json()
+    assert all(unnamed not in str(row.get("doc_ref", "")) for row in soa["rows"]), (
+        "a credit note naming nobody is not this party's")
+    assert abs(soa["closing_balance"] - 100.0) < 0.01, (
+        "and the transfer nets to nothing, so the balance is the invoice")
+
+    unattributed = await _ledger(client, tok, "1120", contact_id="")
+    assert abs(unattributed["closing_balance"]) < 0.01, "the two legs cancel"
+    assert len(unattributed["lines"]) == 2, (
+        "but both are on the control account, where they can be found")
+
+
 @pytest.mark.asyncio
 async def test_every_statement_sums_back_to_the_control_accounts(client):
     """The tie-out, and the reason the statement reads the ledger at all.

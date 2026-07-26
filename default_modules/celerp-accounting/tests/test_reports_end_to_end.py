@@ -232,6 +232,63 @@ async def test_the_hand_posted_line_reaches_the_statement_by_its_contact_key(see
     assert "Late delivery charge" in control, "and so does the control account's"
 
 
+_CLOSING = re.compile(r'class="report-total"[^>]*>.*?(-?[\d,]+\.\d\d)', re.S)
+
+
+def _closing(section: str) -> float:
+    """The closing balance a reader sees at the foot of one statement section."""
+    found = _CLOSING.search(section)
+    assert found, f"no closing balance rendered in section: {section[:300]}"
+    return float(found.group(1).replace(",", ""))
+
+
+@pytest.mark.asyncio
+async def test_the_subledger_ties_to_its_control_account_on_the_rendered_page(seeded, client):
+    """The figures on the statement page add up to the control account.
+
+    This is the identity the whole subledger rests on: every party's statement,
+    plus the lines that belong to no party, equals what the balance sheet reports
+    for receivables. If it fails, a customer is being shown a balance the books do
+    not agree with, which is the one error in a statement that cannot be argued
+    about with the reader.
+
+    Read off the rendered page rather than from the API, because the page is what
+    the change added and what somebody acts on. The party and control figures come
+    out of the HTML; the unattributed bucket has no page of its own, so it is read
+    from the ledger endpoint and has to account for the whole difference between
+    the two rendered figures, to the cent.
+    """
+    ui, tok, contact = seeded
+
+    # A line posted to receivables with no party on it, which is how a deposit
+    # nobody has allocated yet gets onto the books.
+    r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
+        "ts": "2026-02-20", "memo": "Unallocated deposit",
+        "entries": [{"account": "1120", "debit": 12.50, "credit": 0},
+                    {"account": "4100", "debit": 0, "credit": 12.50}],
+        "idempotency_token": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+
+    statement = await _fetch(ui, tok, _urls(contact)["statement"])
+    sections = statement.split('<h3 class="report-section-title">')[1:]
+    party = next(s for s in sections if s.startswith("Riverside Supplies"))
+    control = next(s for s in sections if s.startswith("1120"))
+
+    assert "Unallocated deposit" not in party, "it belongs to no party, so no party shows it"
+    assert "Unallocated deposit" in control, "the control account carries every line"
+
+    r = await client.get("/accounting/ledger/1120", headers=_h(tok),
+                         params={"from": PERIOD[0][1], "to": PERIOD[1][1], "contact_id": ""})
+    assert r.status_code == 200, r.text
+    unattributed = r.json()["closing_balance"]
+    assert unattributed == pytest.approx(12.50), "the bucket holds the unallocated line"
+
+    assert _closing(party) == pytest.approx(105.0), "100 raised + 30 raised + 15 charged - 40 paid"
+    assert _closing(control) == pytest.approx(_closing(party) + unattributed), (
+        "the statement page and the control account disagree, so the subledger "
+        "does not explain the balance sheet")
+
+
 @pytest.mark.parametrize("key", GOLDEN_KEYS)
 @pytest.mark.asyncio
 async def test_report_html_matches_its_golden(seeded, key):

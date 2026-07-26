@@ -201,6 +201,48 @@ async def test_clearing_the_override_returns_the_account_to_its_default(client):
 
 
 @pytest.mark.asyncio
+async def test_two_editors_of_one_account_are_last_write_wins(client):
+    """Two people pinning the same account do not see each other; the second write
+    replaces the first silently.
+
+    This is the behaviour of every click-to-edit field in the application, so the
+    pin is consistent with what a user already knows rather than uniquely unsafe.
+    Pinned as a test because it is a deliberate choice and not an oversight: if a
+    precondition is ever added, this test should fail and be rewritten, not quietly
+    keep passing against a stronger guarantee.
+    """
+    tok = await _reg(client)
+    await _je(client, tok, [{"account": "6200", "debit": 100.0, "credit": 0.0},
+                            {"account": "1111", "debit": 0.0, "credit": 100.0}])
+
+    # Both editors read the same account before either writes, so neither has seen
+    # the other's change when it submits.
+    before = await client.get("/accounting/chart", headers=_h(tok))
+    assert before.status_code == 200, before.text
+    row = next(a for a in before.json()["items"] if a["code"] == "6200")
+    assert row["cash_flow_category"] is None
+
+    # Nothing in what they read could be sent back as a precondition.
+    assert not {"version", "etag", "updated_at", "revision"} & set(row)
+
+    first = await client.patch("/accounting/accounts/6200",
+                               json={"cash_flow_category": "investing"}, headers=_h(tok))
+    second = await client.patch("/accounting/accounts/6200",
+                                json={"cash_flow_category": "financing"}, headers=_h(tok))
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, f"the second write is not refused: {second.text}"
+
+    after = await client.get("/accounting/chart", headers=_h(tok))
+    kept = next(a for a in after.json()["items"] if a["code"] == "6200")
+    assert kept["cash_flow_category"] == "financing", "the later write is what survives"
+
+    # And the statement follows the surviving value, not the overwritten one.
+    data = await _cash_flow(client, tok)
+    assert data["direct"]["financing"]["total"] == pytest.approx(-100.0)
+    assert data["direct"]["investing"]["total"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_category_is_rejected_and_the_valid_ones_named(client):
     """Validation sits on the endpoint, and the message says what was allowed
     instead of failing silently or storing a value the statement cannot use."""
