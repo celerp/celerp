@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Se muestran los primeros {shown} de {total} contactos. Escribe para buscar entre todos.",
   "acct.reconcile": "Conciliar",
   "acct.record_foreign_currency": "Registrar en moneda extranjera",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Informes de contabilidad:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Las reglas clasifican automáticamente las líneas coincidentes del extracto bancario durante la conciliación.",
   "acct.section_assets": "Activos",
   "acct.section_cogs": "Costo de ventas",

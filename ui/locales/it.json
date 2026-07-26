@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Vengono mostrati i primi {shown} contatti su {total}. Digita per cercarli tutti.",
   "acct.reconcile": "Riconcilia",
   "acct.record_foreign_currency": "Registra in valuta estera",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Report di contabilità:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Le regole categorizzano automaticamente le righe di estratto conto corrispondenti durante la riconciliazione.",
   "acct.section_assets": "Attività",
   "acct.section_cogs": "Costo del venduto",

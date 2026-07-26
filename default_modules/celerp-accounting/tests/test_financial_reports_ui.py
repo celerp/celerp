@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from html import escape
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
 from ui.api_client import APIError
+from ui.i18n import t
 from ui.routes.financial_reports import (
     MOVED_TABS, REPORTS, ledger_path, parse_subject, subject_token,
 )
@@ -343,6 +345,61 @@ async def test_accounting_page_signposts_every_moved_report(ui_client):
     assert r.status_code == 200
     for key in MOVED_TABS.values():
         assert REPORTS[key][0] in r.text, key
+
+
+def _nav(text: str) -> str:
+    """The navigation strip's own markup, or "" when the page carries no strip.
+
+    Scoped rather than searched page-wide: every report page links to other
+    reports from its figures too, and a page-wide search for a path would pass on
+    a drilldown link while the strip was missing.
+    """
+    if 'id="report-nav"' not in text:
+        return ""
+    return text.split('id="report-nav"', 1)[1].split("</div>", 1)[0]
+
+
+@pytest.mark.parametrize("key", sorted(REPORTS))
+@pytest.mark.asyncio
+async def test_report_nav_appears_on_every_report_page(ui_client, key):
+    """Every financial report reaches every other from its own top, so an
+    accountant working across them never goes back through the index for the next
+    one. The page being read names itself without linking: a link to where the
+    reader already is has nothing to do."""
+    r = await _get(ui_client, REPORTS[key][0])
+    assert r.status_code == 200
+    nav = _nav(r.text)
+    assert nav, f"no navigation strip on {REPORTS[key][0]}"
+    for other, (path, _print, _csv, title) in REPORTS.items():
+        assert escape(t(title)) in nav, other
+        assert (f'href="{path}' in nav) is (other != key), other
+
+
+@pytest.mark.asyncio
+async def test_report_nav_carries_the_date_range(ui_client):
+    """The period the reader set survives the hop to the next report, rather than
+    every link dropping them back on the default range. The balance sheet is a
+    snapshot rather than a period, so it takes the period end as its as-of date,
+    which is what the ledger's back link already does."""
+    r = await _get(ui_client, "/reports/pnl?from=2026-02-01&to=2026-02-28")
+    nav = _nav(r.text)
+    assert nav
+    for key, (path, _print, _csv, _title) in REPORTS.items():
+        if key in ("pnl", "balance-sheet"):
+            continue
+        assert f'href="{path}?from=2026-02-01&amp;to=2026-02-28"' in nav, key
+    assert f'href="{REPORTS["balance-sheet"][0]}?as_of=2026-02-28"' in nav
+
+
+@pytest.mark.asyncio
+async def test_moved_notice_is_gone(ui_client):
+    """The banner was temporary signposting for the move. The strip is the
+    permanent version of the same thing, and keeping both would be the duplicate
+    navigation the move existed to end."""
+    r = await _get(ui_client, "/accounting")
+    assert r.status_code == 200
+    assert "have moved to" not in r.text
+    assert "info-banner" not in r.text
 
 
 @pytest.mark.asyncio
@@ -900,7 +957,7 @@ _NEW_KEYS = [
     "acct.tab_cash_flow", "acct.cf_direct", "acct.cf_indirect", "acct.cf_operating",
     "acct.cf_investing", "acct.cf_financing", "acct.cf_opening_cash",
     "acct.cf_closing_cash", "acct.cf_net_change", "acct.cf_methods_disagree",
-    "acct.reports_moved_notice", "acct.soa_source_ledger",
+    "acct.reports_nav", "acct.soa_source_ledger",
     "acct.soa_pick_placeholder", "acct.soa_pick_ar_balance",
     "acct.soa_pick_ap_balance", "acct.soa_pick_all_customers",
     "acct.picker_more_contacts",
@@ -928,6 +985,9 @@ _REMOVED_KEYS = [
     # The same words as label.n_selected, which the shared toolbar and the shared
     # multi-select both count with now. This copy was never translated.
     "acct.soa_selected_count",
+    # The banner that pointed at the reports after they moved. The navigation
+    # strip on every report is the permanent version of it.
+    "acct.reports_moved_notice",
 ]
 
 

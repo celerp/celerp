@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Affichage des {shown} premiers contacts sur {total}. Saisissez du texte pour les rechercher tous.",
   "acct.reconcile": "Réconcilier",
   "acct.record_foreign_currency": "Enregistrer en devise étrangère",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Rapports de comptabilité :",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Les règles catégorisent automatiquement les lignes de relevé bancaire correspondantes lors du rapprochement.",
   "acct.section_assets": "Actif",
   "acct.section_cogs": "Coût des marchandises vendues",

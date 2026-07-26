@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Menampilkan {shown} kontak pertama dari {total}. Ketik untuk mencari semuanya.",
   "acct.reconcile": "Mendamaikan",
   "acct.record_foreign_currency": "Catat dalam mata uang asing",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Laporan Akuntansi:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Aturan mengkategorikan secara otomatis baris laporan bank yang cocok selama rekonsiliasi.",
   "acct.section_assets": "Aset",
   "acct.section_cogs": "HPP",

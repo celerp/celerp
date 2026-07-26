@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "يتم عرض أول {shown} من {total} جهة اتصال. اكتب للبحث في جميعها.",
   "acct.reconcile": "تصالح",
   "acct.record_foreign_currency": "التسجيل بعملة أجنبية",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "التقارير المحاسبية:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "قواعد التصنيف التلقائي لبنود كشف الحساب البنكي المتطابقة أثناء التسوية.",
   "acct.section_assets": "الأصول",
   "acct.section_cogs": "تكلفة البضائع المباعة",

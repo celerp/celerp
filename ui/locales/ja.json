@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "{total}件の連絡先のうち最初の{shown}件を表示しています。入力するとすべてを検索します。",
   "acct.reconcile": "和解する",
   "acct.record_foreign_currency": "外貨で記帳する",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "会計レポート:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "ルールは、照合中に一致する銀行取引明細行を自動分類します。",
   "acct.section_assets": "資産",
   "acct.section_cogs": "売上原価",

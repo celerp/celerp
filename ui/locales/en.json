@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Showing the first {shown} of {total} contacts. Type to search all of them.",
   "acct.reconcile": "Reconcile",
   "acct.record_foreign_currency": "Record in a foreign currency",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Accounting Reports:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Rules auto-categorise matching bank statement lines during reconciliation.",
   "acct.section_assets": "Assets",
   "acct.section_cogs": "Cost of Goods Sold",

@@ -41,31 +41,11 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
-from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path
+from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
 from ui.routes.reports import (
     _date_filter_bar, _filter_accounts, _get_fiscal, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
-
-
-def _moved_reports_notice() -> FT:
-    """Points at the reports that used to be tabs here.
-
-    Naming each one and linking it directly means someone who came looking for the
-    trial balance reaches it from where it used to be, rather than being sent to an
-    index to hunt. Remove once the move is a release or two old; leaving it becomes
-    the duplicate navigation this move existed to end.
-    """
-    return Div(
-        Span(t("acct.reports_moved_notice")),
-        Span(" "),
-        *[
-            A(t(REPORTS[key][3]), href=REPORTS[key][0], cls="drilldown-link")
-            for key in MOVED_TABS.values()
-        ],
-        A(t("nav.reports"), href="/reports", cls="drilldown-link"),
-        cls="info-banner mb-md",
-    )
 
 
 def _moved_to(path: str):
@@ -141,7 +121,7 @@ def setup_routes(app):
             carried = ({"preset": preset} if preset and preset != "custom"
                        else {"from": d_from, "to": d_to})
             content = Div(
-                _moved_reports_notice(),
+                report_nav("journal", d_from or "", d_to or ""),
                 _date_filter_bar("/accounting", d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),

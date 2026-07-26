@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Đang hiển thị {shown} liên hệ đầu tiên trong {total}. Nhập để tìm trong toàn bộ.",
   "acct.reconcile": "Hòa giải",
   "acct.record_foreign_currency": "Ghi nhận bằng ngoại tệ",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Báo cáo kế toán:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Quy tắc tự động phân loại các dòng sao kê ngân hàng phù hợp trong quá trình đối chiếu.",
   "acct.section_assets": "Tài Sản",
   "acct.section_cogs": "Giá Vốn Hàng Bán",

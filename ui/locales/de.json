@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Es werden die ersten {shown} von {total} Kontakten angezeigt. Tippen Sie, um alle zu durchsuchen.",
   "acct.reconcile": "Abstimmen",
   "acct.record_foreign_currency": "In Fremdwährung erfassen",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Buchhaltungsberichte:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "Regeln kategorisieren passende Kontoauszugszeilen automatisch während der Abstimmung.",
   "acct.section_assets": "Aktiva",
   "acct.section_cogs": "Wareneinsatz",
