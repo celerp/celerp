@@ -10,6 +10,7 @@ from celerp.services.money import (
     DEFAULT_DP,
     EXCHANGE_RATE_DP,
     RATE_EXTRA_DP,
+    checked_exchange_rate,
     currency_dp,
     rate_dp,
     round_exchange_rate,
@@ -220,6 +221,36 @@ def test_round_exchange_rate_is_half_up_at_the_ceiling():
     assert round_exchange_rate("0.0000000000005") == Decimal("0.000000000001")
     assert round_exchange_rate("0.0000000000004") == Decimal("0.000000000000")
     assert round_exchange_rate("1.2345678901235") == Decimal("1.234567890124")
+
+
+def test_checked_exchange_rate_returns_the_rate_at_the_ceiling():
+    """The usable case: same result round_exchange_rate gives."""
+    assert checked_exchange_rate("0.00001117318355") == Decimal("0.000011173184")
+    assert checked_exchange_rate(35) == Decimal("35.000000000000")
+    assert checked_exchange_rate(1) == 1
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, "0", -1, -0.5, "-35", float("nan"), float("inf")])
+def test_checked_exchange_rate_refuses_a_rate_that_is_not_a_rate(bad):
+    """Zero, negative and non-finite are wrong answers, not slow paths.
+
+    A rate multiplies every amount it converts, so a zero rate posts a foreign
+    amount as though it were already in the books' currency and a negative one
+    posts a mirror image of the document. Neither can be allowed to reach a
+    ledger, so the door refuses them rather than the posting silently absorbing
+    them.
+    """
+    with pytest.raises(ValueError, match="greater than zero"):
+        checked_exchange_rate(bad)
+
+
+@pytest.mark.parametrize("bad", ["", "abc", None, {}])
+def test_checked_exchange_rate_refuses_what_is_not_a_number(bad):
+    """Reached through free-form doors (a patch envelope, a form field), so an
+    unparseable value has to come back as ValueError for the door to turn into a
+    422, not an ArithmeticError the caller never expected."""
+    with pytest.raises(ValueError):
+        checked_exchange_rate(bad)
 
 
 def test_unit_price_from_total_the_reported_bug():

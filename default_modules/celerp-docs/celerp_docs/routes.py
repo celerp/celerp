@@ -11,7 +11,6 @@ from datetime import datetime, timezone, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-import math
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select, func as _func
@@ -33,7 +32,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import round_exchange_rate, round_money, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, round_money, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
@@ -88,6 +87,26 @@ class LineItem(BaseModel):
         return self
 
 
+def _stored_conversion_rate(v: float | None) -> float | None:
+    """The rate as a document stores it, or ValueError naming what is wrong.
+
+    Shared by every door that sets a rate on a document or on one of its
+    payments, so a rate is one stored fact at one precision however it arrived.
+    checked_exchange_rate holds the rule; this only adds that a document may
+    carry no rate at all, which is what a base-currency document does.
+
+    Validation belongs here, at the request boundary, and never in the
+    projection: the projection replays stored events, so rejecting or rounding
+    there would restate documents that are already posted.
+    """
+    if v is None:
+        return v
+    try:
+        return to_stored_float(checked_exchange_rate(v))
+    except ValueError as exc:
+        raise ValueError(f"conversion_rate {exc}") from exc
+
+
 class DocCreatePayload(BaseModel):
     doc_type: str
     ref_id: str | None = None
@@ -104,6 +123,9 @@ class DocCreatePayload(BaseModel):
     payment_terms: str | None = None
     due_date: str | None = None
     currency: str | None = None
+    # Declared rather than left to extra="allow" so the rate is validated on the
+    # way in. Foreign-currency documents require one before they can finalize.
+    conversion_rate: float | None = None
     notes: str | None = None
     expected_delivery: str | None = None
     valid_until: str | None = None
@@ -118,6 +140,11 @@ class DocCreatePayload(BaseModel):
     amount_outstanding: float | None = None
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
+
+    @field_validator("conversion_rate")
+    @classmethod
+    def _rate_is_usable(cls, v: float | None) -> float | None:
+        return _stored_conversion_rate(v)
 
 
 class DocPatch(BaseModel):
@@ -164,24 +191,8 @@ class DocPaymentBody(BaseModel):
 
     @field_validator("conversion_rate")
     @classmethod
-    def _rate_positive_and_within_the_ceiling(cls, v: float | None) -> float | None:
-        """A rate divides an amount, so zero and negatives are not slow paths,
-        they are wrong answers. Checked here rather than on the input, which a
-        currency worth a small fraction of the base needs left wide open.
-
-        Then held to the same ceiling a journal line's rate is, so one rate is
-        one stored fact whichever door it came through. The journal shows a rate
-        at that many places; a payment kept finer than what it displays would
-        post a base amount no reader could reproduce from the rate in front of
-        them. Rounding belongs here, at the request boundary, and never in the
-        projection: the projection replays stored events, so rounding there
-        would restate documents that are already posted.
-        """
-        if v is None:
-            return v
-        if not math.isfinite(v) or v <= 0:
-            raise ValueError("conversion_rate must be greater than zero")
-        return to_stored_float(round_exchange_rate(v))
+    def _rate_is_usable(cls, v: float | None) -> float | None:
+        return _stored_conversion_rate(v)
 
 
 class ReceivedItem(BaseModel):
@@ -1000,9 +1011,24 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # values like "346.50000000000006".
     _currency = row.state.get("currency")
     _MONEY_FIELDS = {"subtotal", "tax", "total", "discount_amount"}
-    def _round_field(field: str, value):
+    def _round_field(field: str, value, *, incoming: bool = False):
         if field in _MONEY_FIELDS and value is not None:
             return to_stored_float(round_money(value, _currency))
+        if field == "conversion_rate" and incoming:
+            # The inline rate field posts a form value, so an edit arrives as a
+            # string: normalised here to the same number create stores, at the
+            # same ceiling. An empty value clears the rate, which is the remedy
+            # for one that should not be on the document at all.
+            #
+            # Only the incoming value is checked. A rate stored before this guard
+            # existed can then still be corrected, rather than the bad value
+            # blocking the very edit that fixes it.
+            if value in (None, ""):
+                return None
+            try:
+                return to_stored_float(checked_exchange_rate(value))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"The conversion rate {exc}.") from exc
         return value
     # Keep only fields that actually changed (old != new). A re-select/blur that resets a
     # field to its current value must emit no event - otherwise it records an empty
@@ -1010,7 +1036,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     effective = {}
     for k, change in payload.fields_changed.items():
         old = _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k))
-        new = _round_field(k, change.get("new"))
+        new = _round_field(k, change.get("new"), incoming=True)
         if old != new:
             effective[k] = {"old": old, "new": new}
     if not effective:
@@ -1174,15 +1200,36 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     _company = await session.get(Company, company_id)
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
 
-    # Validate: foreign-currency docs require a conversion rate before finalization.
+    # The stored currency and the stored rate have to agree before anything posts.
+    # Checked here rather than on entry: this is the last point before the journal
+    # entry is minted, both values are final, and the rate is immutable afterwards.
     _doc_currency = _initial_doc_state.get("currency", _base_currency)
-    if _doc_currency != _base_currency:
-        _rate = _initial_doc_state.get("conversion_rate")
-        if not _rate or float(_rate) <= 0:
+    _stored_rate = _initial_doc_state.get("conversion_rate")
+    _rate = None
+    if _stored_rate not in (None, ""):
+        try:
+            _rate = checked_exchange_rate(_stored_rate)
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
-                detail="A conversion rate is required for foreign-currency documents. Set the exchange rate before finalizing.",
-            )
+                detail=f"This document's conversion rate {exc}. Correct it before finalizing.",
+            ) from exc
+    if _doc_currency != _base_currency and _rate is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A conversion rate is required for foreign-currency documents. Set the exchange rate before finalizing.",
+        )
+    # A document in the company's own currency converts at 1 by definition, so any
+    # other rate silently restates it: 100 USD posted as 3500 in USD books. The
+    # manual journal door refuses the same mismatch on a journal line.
+    if _doc_currency == _base_currency and _rate is not None and _rate != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{_doc_currency} is this company's own currency, so its conversion rate is 1, "
+                f"not {_stored_rate}. Clear the rate before finalizing."
+            ),
+        )
 
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
@@ -1585,6 +1632,22 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
         if not bank_code:
             raise HTTPException(status_code=422, detail="bank_account is required")
         body.setdefault("currency", doc_state.get("currency", "USD"))
+        # A payment carries its own rate because the rate moves between issuing a
+        # foreign-currency document and being paid for it. On a document in the
+        # company's own currency there is nothing to convert, so any rate other
+        # than 1 restates the receipt: 100 banked as 3500. Refused before the
+        # event is written, the same way finalization refuses it on the document.
+        _company = await session.get(Company, company_id)
+        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+        if body.get("currency") == _base_currency and body.get("conversion_rate") not in (None, "") \
+                and to_decimal(body["conversion_rate"]) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{_base_currency} is this company's own currency, so a payment on this "
+                    f"document converts at 1, not {body['conversion_rate']}."
+                ),
+            )
         body["remaining_balance"] = max(0.0, outstanding - amount)
         payment_index = await _alloc_payment_index(
             session, company_id, doc_state.get("payments", []),
@@ -1595,8 +1658,6 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
             data=body, actor_id=actor_id, location_id=None, source=source,
             idempotency_key=idempotency_key, metadata_={},
         )
-        _company = await session.get(Company, company_id)
-        _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
         await auto_je.create_for_doc_payment(
             session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
             amount=amount, payment_index=payment_index,

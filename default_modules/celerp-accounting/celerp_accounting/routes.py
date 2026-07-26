@@ -24,7 +24,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    currency_dp, round_exchange_rate, round_money, to_base, to_decimal, to_stored_float,
+    checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import require_permission
 
@@ -670,12 +670,10 @@ def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str
             status_code=422,
             detail=f"{where} is in {currency} but has no exchange rate.",
         )
-    if not math.isfinite(line.rate) or line.rate <= 0:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{where}: exchange rate must be greater than zero, not {line.rate}.",
-        )
-    return currency, round_exchange_rate(line.rate)
+    try:
+        return currency, checked_exchange_rate(line.rate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{where}: exchange rate {exc}.") from exc
 
 
 def _id_chunks(ids: list[str], size: int = 10_000):
