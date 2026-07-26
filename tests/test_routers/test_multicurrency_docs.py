@@ -201,6 +201,54 @@ async def test_finalize_accepts_an_explicit_rate_of_one_on_a_base_currency_doc(c
     assert ar is not None and abs(float(ar["debit"]) - 100.0) < 0.01
 
 
+async def _net_by_account(session, doc_id: str) -> dict[str, float]:
+    """Debits less credits per account, across every auto JE this document posted."""
+    rows = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.entity_id.like(f"je:auto:{doc_id}%"),
+            LedgerEntry.event_type == "acc.journal_entry.created",
+        )
+    )).scalars().all()
+    net: dict[str, float] = {}
+    for row in rows:
+        for e in row.data.get("entries", []):
+            net[e["account"]] = round(
+                net.get(e["account"], 0.0) + float(e.get("debit") or 0) - float(e.get("credit") or 0), 2)
+    return net
+
+
+@pytest.mark.asyncio
+async def test_voiding_a_payment_reverses_it_at_the_rate_it_posted_at(client, session):
+    """A reversal has to undo the numbers the posting it reverses actually made.
+
+    A payment carries its own rate, because the rate moves between issuing a
+    foreign-currency invoice and being paid for it. Reversing at the document's
+    rate instead leaves the difference behind in both accounts the payment
+    touched: the receivable is part relieved on a document that is back to
+    unpaid, and the bank keeps money that was never banked.
+    """
+    token = await _register(client)
+    h = _auth(token)
+    await _set_base_currency(client, h, "THB")
+
+    doc_id = (await _make_invoice(client, h, "USD", 35.0)).json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=h)).status_code == 200
+
+    r = await client.post(f"/docs/{doc_id}/payment", headers=h, json={
+        "payment_date": "2026-01-15", "amount": 100.0,
+        "bank_account": "1111", "conversion_rate": 36.0})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc_id}/void-payment", headers=h,
+                          json={"payment_index": 0, "void_reason": "Wrong account"})
+    assert r.status_code == 200, r.text
+
+    net = await _net_by_account(session, doc_id)
+    # Back to what finalization alone left: the receivable it raised, and a bank
+    # account no cash ever reached.
+    assert net.get("1111", 0.0) == 0.0
+    assert net["1120"] == 3500.0
+
+
 @pytest.mark.asyncio
 async def test_invalid_currency_code_rejected(client):
     token = await _register(client)

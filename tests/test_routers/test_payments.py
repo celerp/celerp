@@ -442,7 +442,7 @@ async def test_payment_conversion_rate_stored(client):
 
 
 @pytest.mark.asyncio
-async def test_payment_on_a_base_currency_doc_refuses_a_rate_other_than_one(client, session):
+async def test_payment_on_a_base_currency_doc_refuses_a_rate_other_than_one(client):
     """There is nothing to convert on a document already in the books' currency,
     so a rate of 35 would bank 3500 for a receipt of 100. The form offers the
     field on every payment, which is exactly why the refusal lives on the

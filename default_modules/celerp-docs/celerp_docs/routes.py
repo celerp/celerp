@@ -1752,7 +1752,12 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
             bank_account_code=bank_code, doc_type=doc_type,
             refund_date=payload.refund_date,
             base_currency=_void_base_currency,
-            conversion_rate=float(row.state.get("conversion_rate") or 1),
+            # The payment's own rate, not the document's. A payment carries a
+            # rate because the rate moves between issuing a document and being
+            # paid for it, so a reversal at the document's rate would not undo
+            # the numbers this posting made: it would leave the difference in
+            # the receivable and in the bank. Same fallback the recorder uses.
+            conversion_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
         )
     else:
         # Credit-note settlement: void the paired payment on the other doc,
