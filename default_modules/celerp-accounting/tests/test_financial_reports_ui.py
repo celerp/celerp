@@ -95,24 +95,41 @@ _JOURNAL = {
 }
 
 # The same period as the journal above, with the item detail the extended view
-# adds: one entry split into its items, one left whole because its figures did
-# not tie, so the page renders both the item rows and the note about the rest.
+# adds, and one entry of every status the expansion can end in: split into its
+# items, left whole because its figures did not tie, left whole because the
+# document behind it is gone, and a payment that never had items of its own. The
+# page renders the item rows, both notes, and nothing about the payment.
 _EXTENDED_JOURNAL = {
     "date_from": "", "date_to": "", "total_debit": 60.0, "total_credit": 60.0,
     "entries": [
         {"je_id": "je:doc:1", "ts": "2026-01-15", "memo": "Auto JE for doc:1 finalized",
          "status": "posted", "je_type": "auto", "void_reason": None,
          "source_doc": {"doc_id": "doc:1", "doc_ref": "INV-0001", "doc_type": "invoice"},
-         "fx": None, "items_expanded": True,
+         "fx": None, "items_status": "expanded",
          "lines": [{"account": "1120", "name": "Accounts Receivable", "debit": 60.0, "credit": 0.0},
                    {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 60.0,
                     "item": "WIDGET-1", "quantity": 2, "unit_price": 30.0}]},
         {"je_id": "je:doc:2", "ts": "2026-01-16", "memo": "Auto JE for doc:2 finalized",
          "status": "posted", "je_type": "auto", "void_reason": None,
          "source_doc": {"doc_id": "doc:2", "doc_ref": "INV-0002", "doc_type": "invoice"},
-         "fx": None, "items_expanded": False,
+         "fx": None, "items_status": "untied",
          "lines": [{"account": "1120", "name": "Accounts Receivable", "debit": 10.0, "credit": 0.0},
                    {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 10.0}]},
+        {"je_id": "je:doc:3", "ts": "2026-01-17", "memo": "Auto JE for doc:3 finalized",
+         "status": "posted", "je_type": "auto", "void_reason": None,
+         # A document that is no longer in the books: the reference the report can
+         # show is the raw id the entry carries, because there is no document left
+         # to read a number from.
+         "source_doc": {"doc_id": "doc:3", "doc_ref": "doc:3"},
+         "fx": None, "items_status": "no_document",
+         "lines": [{"account": "1120", "name": "Accounts Receivable", "debit": 25.0, "credit": 0.0},
+                   {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 25.0}]},
+        {"je_id": "je:doc:1:pay:0", "ts": "2026-01-18", "memo": "Payment received for doc:1",
+         "status": "posted", "je_type": "auto", "void_reason": None,
+         "source_doc": {"doc_id": "doc:1", "doc_ref": "INV-0001", "doc_type": "invoice"},
+         "fx": None, "items_status": "no_items",
+         "lines": [{"account": "1010", "name": "Cash", "debit": 60.0, "credit": 0.0},
+                   {"account": "1120", "name": "Accounts Receivable", "debit": 0.0, "credit": 60.0}]},
     ],
 }
 
@@ -266,15 +283,54 @@ async def test_extended_journal_page_shows_what_each_posting_was_for(ui_client):
     assert "฿30.00" in r.text
 
 
+# The two reasons item detail can be withheld, as the page words them.
+_UNTIED = "because their amounts do not tie to the document lines:"
+_NO_DOCUMENT = "because the document behind them is no longer in the books:"
+
+
+def _note(text: str, reason: str) -> str:
+    """What the note giving `reason` says, or "" when the page gives no such note."""
+    if reason not in text:
+        return ""
+    return text.split(reason, 1)[1].split("</div>", 1)[0]
+
+
 @pytest.mark.asyncio
 async def test_extended_journal_page_names_the_entries_it_could_not_expand(ui_client):
-    """An entry from a document with no item detail shown is called out by id.
-    Reading past it as though the document had no items would be worse than
-    saying nothing, so the report says which entries it could not account for."""
+    """An entry with no item detail shown is called out by id, under the reason it
+    was withheld. Reading past it as though the document had no items would be
+    worse than saying nothing, so the report says which entries it could not
+    account for, and figures that did not tie are not confused with a document
+    that is no longer there: one is a judgement about the numbers, the other is a
+    fact about the books, and an accountant does something different about each."""
     r = await _get(ui_client, "/reports/extended-journal")
-    note = r.text.split("Item detail is not shown")[-1][:200]
-    assert "je:doc:2" in note
-    assert "je:doc:1" not in note
+    untied, orphaned = _note(r.text, _UNTIED), _note(r.text, _NO_DOCUMENT)
+    assert untied, f"no note about figures that did not tie: {r.text[:2000]}"
+    assert orphaned, f"no note about a missing document: {r.text[:2000]}"
+    assert "je:doc:2" in untied and "je:doc:3" not in untied
+    assert "je:doc:3" in orphaned and "je:doc:2" not in orphaned
+    assert "je:doc:1" not in untied and "je:doc:1" not in orphaned
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_page_says_nothing_about_entries_with_no_items(ui_client):
+    """A payment moves cash against a control account and never had items of its
+    own, so naming it would send a reader hunting for detail that was never meant
+    to exist. It appears in the report like any other entry and in neither note."""
+    r = await _get(ui_client, "/reports/extended-journal")
+    # The rows carry the memo, not the entry id: an id on the page at all means a
+    # note named it.
+    assert "Payment received for doc:1" in r.text
+    assert "je:doc:1:pay:0" not in r.text
+    assert "je:doc:1:pay:0" not in _note(r.text, _UNTIED)
+    assert "je:doc:1:pay:0" not in _note(r.text, _NO_DOCUMENT)
+
+    payments = {**_EXTENDED_JOURNAL,
+                "entries": [e for e in _EXTENDED_JOURNAL["entries"]
+                            if e["items_status"] == "no_items"]}
+    r = await _get(ui_client, "/reports/extended-journal", get_extended_journal=payments)
+    assert r.status_code == 200
+    assert "Item detail is not shown" not in r.text
 
 
 @pytest.mark.asyncio

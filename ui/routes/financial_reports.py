@@ -622,18 +622,33 @@ def _extended_journal_view(data: dict, currency: str | None = None) -> FT:
     return Table(Thead(Tr(*headers)), Tbody(*body), cls="data-table")
 
 
+# The statuses worth a sentence, and the sentence each one gets. `expanded` needs
+# none, and `no_items` must not have one: an entry that never had items is not an
+# entry whose items were withheld, and listing it sends a reader looking for
+# detail that was never meant to exist.
+_WITHHELD_KEYS = (("untied", "acct.items_untied"),
+                  ("no_document", "acct.items_no_document"))
+
+
 def _unexpanded_note(data: dict) -> FT | None:
     """Names the entries whose item detail could not be shown, and why.
 
     An accountant reading a report about items has to be able to tell an entry
     with no items from one whose items were withheld, so the ones that were
-    withheld are listed rather than silently rendered like the rest.
+    withheld are listed rather than silently rendered like the rest, under the
+    reason they were withheld: figures that do not tie is a judgement about the
+    numbers, a document that is gone is a fact about the books, and they are acted
+    on differently.
     """
-    missing = [e.get("je_id", "") for e in data.get("entries", [])
-               if e.get("source_doc") and not e.get("items_expanded")]
-    if not missing:
+    entries = data.get("entries", [])
+    sentences = []
+    for status, key in _WITHHELD_KEYS:
+        ids = [e.get("je_id", "") for e in entries if e.get("items_status") == status]
+        if ids:
+            sentences.append(Div(f"{t(key)} {', '.join(ids)}"))
+    if not sentences:
         return None
-    return Div(f"{t('acct.items_not_expanded')} {', '.join(missing)}", cls="report-section cell--muted")
+    return Div(*sentences, cls="report-section cell--muted")
 
 
 # ── Statement of account ────────────────────────────────────────────────────

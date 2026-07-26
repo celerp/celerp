@@ -1038,9 +1038,21 @@ def _item_row(line: dict, side: str, doc_line: dict, amount: Decimal) -> dict:
     }
 
 
-def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[list[dict], bool]:
-    """The entry's lines with the item each one is for attached, and whether that
-    could be done.
+def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[list[dict], str]:
+    """The entry's lines with the item each one is for attached, and what became of
+    the attempt.
+
+    The status is one of four, because "no item detail" covers four different
+    facts and a reader has to be able to tell them apart:
+
+    - `expanded`: the items are on the lines below.
+    - `no_items`: there was never item detail to show. A manual entry, a payment
+      moving cash against a control account, or a document kind that does not
+      carry items.
+    - `no_document`: the document the entry was posted for is not in the books
+      any more, so there is nothing left to read items from.
+    - `untied`: the document is there and it has items, but its lines do not
+      account for what was posted, so no item was attached.
 
     Two shapes are recognised, and the money is checked before anything is
     attached: one posting covering the whole document, which becomes a row per
@@ -1056,13 +1068,20 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     charge that is not one of its lines, and it refuses rather than inflating an
     item to swallow it.
     """
-    if not ref or ref.get("is_payment"):
-        return lines, False
-    side = _ITEM_SIDE.get(ref.get("doc_type") or "")
+    if not ref:
+        return lines, "no_items"
     doc = ref.get("doc") or {}
+    # Checked before the payment exit: an entry pointing at a document that is no
+    # longer readable is worth saying out loud whatever the entry was for, and it
+    # is the one case here that means something is missing rather than absent.
+    if not doc:
+        return lines, "no_document"
+    if ref.get("is_payment"):
+        return lines, "no_items"
+    side = _ITEM_SIDE.get(ref.get("doc_type") or "")
     doc_lines = _doc_item_lines(doc, base)
     if not side or not doc_lines:
-        return lines, False
+        return lines, "no_items"
     other = "credit" if side == "debit" else "debit"
 
     posted = _doc_net_posted(doc, base)
@@ -1074,7 +1093,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
             if to_decimal(line.get(side) or 0) == posted and not to_decimal(line.get(other) or 0):
                 amounts[-1] += residual
                 rows = [_item_row(line, side, d, a) for d, a in zip(doc_lines, amounts)]
-                return lines[:i] + rows + lines[i + 1:], True
+                return lines[:i] + rows + lines[i + 1:], "expanded"
 
     on_side = [l for l in lines if to_decimal(l.get(side) or 0) > 0]
     head = on_side[:len(doc_lines)]
@@ -1082,9 +1101,9 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
             to_decimal(h.get(side) or 0) == d["amount"] for h, d in zip(head, doc_lines)):
         paired = {id(h): d for h, d in zip(head, doc_lines)}
         return [_item_row(l, side, paired[id(l)], paired[id(l)]["amount"]) if id(l) in paired else l
-                for l in lines], True
+                for l in lines], "expanded"
 
-    return lines, False
+    return lines, "untied"
 
 
 @router.get("/extended-journal")
@@ -1101,14 +1120,16 @@ async def extended_journal(
     journal: nothing is posted, stored or recomputed here. A sale posted as one
     revenue line becomes a row per item sold, a purchase already posted line by
     line gains the item on each, and an entry whose figures do not tie to its
-    document is shown as it stands with `items_expanded` false, so a reader can
-    tell "no item here" from "the item detail was not trustworthy".
+    document is shown as it stands. Every entry carries an `items_status` of
+    `expanded`, `no_items`, `no_document` or `untied` (see `_expand_item_lines`),
+    so a reader can tell "no item here" from "the item detail was not
+    trustworthy" from "the document is gone".
     """
     payload, refs, base = await _journal_payload(session, company_id, date_from, date_to)
     for entry in payload["entries"]:
-        lines, expanded = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
+        lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
         entry["lines"] = lines
-        entry["items_expanded"] = expanded
+        entry["items_status"] = status
     return payload
 
 
