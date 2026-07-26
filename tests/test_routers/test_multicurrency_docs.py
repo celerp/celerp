@@ -247,6 +247,102 @@ async def test_voiding_a_payment_reverses_it_at_the_rate_it_posted_at(client, se
     # account no cash ever reached.
     assert net.get("1111", 0.0) == 0.0
     assert net["1120"] == 3500.0
+    assert net.get("6960", 0.0) == 0.0, "the exchange difference has to come back too"
+
+
+# ---------------------------------------------------------------------------
+# Settlement exchange differences.
+#
+# A receivable can only be cleared at the rate it was raised at, and cash can
+# only be banked at the rate it actually converted at. When a document is paid
+# at a different rate from the one it was issued at, the gap between those two
+# is a realised exchange gain or loss. It belongs on the P&L, not left behind in
+# the control account where nothing would ever flag it.
+# ---------------------------------------------------------------------------
+
+
+async def _foreign_invoice_paid_at(client, h, session, *, doc_rate: float, paid_at: float) -> dict[str, float]:
+    """A USD 100 invoice raised at doc_rate in THB books, paid in full at paid_at."""
+    await _set_base_currency(client, h, "THB")
+    doc_id = (await _make_invoice(client, h, "USD", doc_rate)).json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=h)).status_code == 200
+    r = await client.post(f"/docs/{doc_id}/payment", headers=h, json={
+        "payment_date": "2026-01-15", "amount": 100.0,
+        "bank_account": "1111", "conversion_rate": paid_at})
+    assert r.status_code == 200, r.text
+    return await _net_by_account(session, doc_id)
+
+
+@pytest.mark.asyncio
+async def test_payment_above_the_document_rate_posts_the_gain(client, session):
+    """Issued at 35, paid at 36: 3,600 arrived against a 3,500 receivable.
+
+    The receivable clears exactly, and the 100 the company gained by being paid
+    late at a better rate is a credit to the exchange difference account.
+    """
+    net = await _foreign_invoice_paid_at(client, _auth(await _register(client)), session,
+                                         doc_rate=35.0, paid_at=36.0)
+    assert net["1111"] == 3600.0
+    assert net["1120"] == 0.0, "the receivable has to clear, with nothing left over"
+    assert net["6960"] == -100.0, "a gain is a credit to the exchange account"
+
+
+@pytest.mark.asyncio
+async def test_payment_below_the_document_rate_posts_the_loss(client, session):
+    """Issued at 35, paid at 34: only 3,400 arrived against a 3,500 receivable.
+
+    The receivable still clears in full, because that is the amount it was
+    raised at and the customer owes nothing more. The 100 shortfall is the
+    company's loss on the rate, and it is a debit to the exchange account.
+    """
+    net = await _foreign_invoice_paid_at(client, _auth(await _register(client)), session,
+                                         doc_rate=35.0, paid_at=34.0)
+    assert net["1111"] == 3400.0
+    assert net["1120"] == 0.0
+    assert net["6960"] == 100.0, "a loss is a debit to the exchange account"
+
+
+@pytest.mark.asyncio
+async def test_payment_at_the_document_rate_posts_no_difference_line(client, session):
+    """Nothing to recognise when the rates agree, so no line is written.
+
+    An exchange difference of zero is not a difference. A line for it would put
+    an account with no movement on the statement of every document ever paid.
+    """
+    net = await _foreign_invoice_paid_at(client, _auth(await _register(client)), session,
+                                         doc_rate=35.0, paid_at=35.0)
+    assert net["1111"] == 3500.0
+    assert net["1120"] == 0.0
+    assert "6960" not in net
+
+
+@pytest.mark.asyncio
+async def test_paying_a_bill_above_its_rate_posts_the_loss(client, session):
+    """The payable side of the same rule, and the sign flips with it.
+
+    A USD 200 bill raised at 35 owes 7,000. Settling it at 36 costs 7,200, so
+    the payable clears at what it was raised at and the extra 200 the company
+    had to find is its loss.
+    """
+    token = await _register(client)
+    h = _auth(token)
+    await _set_base_currency(client, h, "THB")
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill", "currency": "USD", "conversion_rate": 35.0, "total": 200.0,
+        "line_items": [{"name": "Service", "quantity": 1, "unit_price": 200.0, "line_total": 200.0}]})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=h)).status_code == 200
+
+    r = await client.post(f"/docs/{doc_id}/payment", headers=h, json={
+        "payment_date": "2026-01-15", "amount": 200.0,
+        "bank_account": "1111", "conversion_rate": 36.0})
+    assert r.status_code == 200, r.text
+
+    net = await _net_by_account(session, doc_id)
+    assert net["1111"] == -7200.0, "the cash that actually left the bank"
+    assert net["2110"] == 0.0, "the payable has to clear, with nothing left over"
+    assert net["6960"] == 200.0
 
 
 @pytest.mark.asyncio

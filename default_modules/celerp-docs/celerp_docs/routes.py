@@ -1664,7 +1664,12 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
             bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
             payment_date=body["payment_date"],
             base_currency=_base_currency,
-            conversion_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+            # The receivable was raised at the document's rate and can only be
+            # cleared at that rate; the bank moves at the rate the cash actually
+            # converted at. A payer who records no rate of their own settled at
+            # the document's rate, so the two agree and no difference arises.
+            doc_rate=float(doc_state.get("conversion_rate") or 1),
+            settlement_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
         )
         from celerp.modules.slots import fire_lifecycle
         await fire_lifecycle(
@@ -1752,12 +1757,12 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
             bank_account_code=bank_code, doc_type=doc_type,
             refund_date=payload.refund_date,
             base_currency=_void_base_currency,
-            # The payment's own rate, not the document's. A payment carries a
-            # rate because the rate moves between issuing a document and being
-            # paid for it, so a reversal at the document's rate would not undo
-            # the numbers this posting made: it would leave the difference in
-            # the receivable and in the bank. Same fallback the recorder uses.
-            conversion_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+            # The same two rates the payment posted at, resolved the same way, so
+            # the reversal is its mirror. Reversing at the document's rate alone
+            # would not undo the numbers this posting made: it would leave the
+            # difference in the receivable and in the bank.
+            doc_rate=float(row.state.get("conversion_rate") or 1),
+            settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
         )
     else:
         # Credit-note settlement: void the paired payment on the other doc,
@@ -2170,7 +2175,10 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
             bank_account_code=bank_code, doc_type="credit_note",
             payment_date=payment_date,
             base_currency=_refund_base_currency,
-            conversion_rate=float(cn.get("conversion_rate") or 1),
+            # A refund is issued at the rate the credit note itself carries, and
+            # there is no second rate to record: the form does not ask for one.
+            doc_rate=float(cn.get("conversion_rate") or 1),
+            settlement_rate=float(cn.get("conversion_rate") or 1),
         )
         await session.commit()
     return {"event_id": entry.id}
@@ -2266,7 +2274,10 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
                 bank_account_code=bank_code, doc_type=doc_type,
                 payment_date=payment_date,
                 base_currency=_bulk_base_currency,
-                conversion_rate=float(state.get("conversion_rate") or 1),
+                # One bulk receipt settles many documents, so it records no rate of
+                # its own: each document is settled at the rate it was raised at.
+                doc_rate=float(state.get("conversion_rate") or 1),
+                settlement_rate=float(state.get("conversion_rate") or 1),
             )
             # The lock only helps if this recorder's write is visible to the
             # next lock holder: commit before releasing.

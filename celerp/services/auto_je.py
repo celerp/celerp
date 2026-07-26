@@ -26,6 +26,43 @@ from sqlalchemy import select as _select
 # relieved on sale.
 _INVENTORY_ACCT = "1130-P"
 
+# Where a settlement exchange difference lands. Seeded in the default chart and
+# backfilled for every company holding the 6000 parent, so it is always there to
+# post to.
+_FX_DIFFERENCE_ACCT = "6960"
+
+
+def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
+    """The entry, plus the exchange difference line that makes it balance.
+
+    A receivable or payable can only be cleared at the rate it was raised at, and
+    cash can only move at the rate it actually converted at. When a document is
+    settled at a different rate from the one it was issued at, those two amounts
+    differ and the entry is short on one side by exactly that difference. It is a
+    realised exchange gain or loss, and this is the line an accountant writes by
+    hand for it.
+
+    The side is not decided here, it is read off the entry: whichever side is
+    short takes the line. One rule covers a receipt and a payment, a gain and a
+    loss, without a sign convention to get backwards.
+
+    Returned untouched when the two rates agree, which is every document in the
+    company's own currency. A difference of zero is not a difference, and a line
+    for it would put an account with no movement on the statement of every
+    document ever settled.
+    """
+    gap = (sum(to_decimal(e.get("debit")) for e in entries)
+           - sum(to_decimal(e.get("credit")) for e in entries))
+    if gap == 0:
+        return entries
+    short_side = "credit" if gap > 0 else "debit"
+    return entries + [{
+        "account": _FX_DIFFERENCE_ACCT,
+        "debit": 0.0,
+        "credit": 0.0,
+        short_side: to_stored_float(abs(gap)),
+    }]
+
 
 async def _emit_auto_posted_je(
     session,
@@ -104,7 +141,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account to debit. Required - no default. Always pass the
@@ -114,28 +151,36 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     payment_index: position of this payment in the payments list (0-based). Used as the
         idempotency key suffix so voiding and re-paying at the same amount never collides.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    doc_rate: the rate the document raised the receivable or payable at. That balance
+        can only be cleared at the rate it was raised at, so this converts the AR/AP side.
+    settlement_rate: the rate the cash actually converted at, which converts the bank
+        side. Equal to doc_rate unless the payer recorded a rate of their own.
+
+    Both rates are required - no default. A rate silently defaulting to 1 next to a real
+    one would post a fabricated exchange difference, so a caller that omits either raises
+    TypeError at call time instead.
     """
-    rate = _Dec(str(conversion_rate or 1))
-    base_amount = to_base(float(amount), rate, base_currency)
+    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
+    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
     paid_key = str(payment_index)
     if doc_type in ("bill", "purchase_order"):
         entries = [
-            {"account": "2110", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "2110", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
     elif doc_type == "credit_note":
         # Cash refund of a credit note: money LEAVES the bank and the credit
         # balance the note held against AR is cleared.
         entries = [
-            {"account": "1120", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
     else:
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
         ]
+    entries = _balanced_with_fx_difference(entries)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -150,34 +195,38 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Reverse a payment JE by creating a counter-entry.
 
     refund_date: ISO date for the reversal JE (defaults to today if None). Used when
         void is actually a refund - the date affects bank ledger position.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    doc_rate, settlement_rate: the same two rates the payment posted at, so the counter
+        entry is the mirror of it line for line, exchange difference included. Reversing
+        at any other rate would leave the difference behind in the accounts the payment
+        touched, on a document that is back to unpaid.
     """
-    rate = _Dec(str(conversion_rate or 1))
-    base_amount = to_base(float(amount), rate, base_currency)
+    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
+    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "2110", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "2110", "debit": 0.0, "credit": ledger_amount},
         ]
     elif doc_type == "credit_note":
         # Reverse of the refund's outflow: the money comes back into the bank
         # and the credit balance is restored against AR.
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
         ]
     else:
         entries = [
-            {"account": "1120", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
+    entries = _balanced_with_fx_difference(entries)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
