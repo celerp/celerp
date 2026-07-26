@@ -115,6 +115,9 @@ def _patches(**overrides):
     mocks = {
         "get_company": _COMPANY,
         "get_journal": overrides.get("journal", _JOURNAL),
+        # The two journal pages read the same shape from two endpoints, so the
+        # default stub covers both; a test that cares patches the one it exercises.
+        "get_extended_journal": _JOURNAL,
         "get_general_ledger": _GL,
         "get_soa": _SOA,
         "get_ledger": _LEDGER,
@@ -298,6 +301,150 @@ async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
     assert r.status_code == 200
     assert "already posted" in r.text.lower() or "review the journal" in r.text.lower()
     assert "stale-token" not in r.text  # a fresh token replaces the burnt one
+
+
+# ---------------------------------------------------------------------------
+# Journal filters
+# ---------------------------------------------------------------------------
+
+_FILTERS_QS = "account=4100&q=rent&amount=350"
+# On-screen pages take the period as from/to; print sheets and exports take it as
+# date_from/date_to, which is the convention across every report here.
+_FILTER_QS = f"from=2026-01-01&to=2026-03-31&{_FILTERS_QS}"
+_EXPORT_QS = f"date_from=2026-01-01&date_to=2026-03-31&{_FILTERS_QS}"
+
+
+def _filtered_payload(*, entries: int = 1) -> dict:
+    """What the API answers for a filter that matched `entries` of the two."""
+    out = json.loads(json.dumps(_JOURNAL))
+    # The INV-1 entry: account 4100, 350.00, so the payload agrees with the filter
+    # the tests ask for.
+    out["entries"] = out["entries"][1:1 + entries]
+    out["total_debit"] = out["total_credit"] = 350.0 * entries
+    out["filtered"] = True
+    return out
+
+
+async def _get_spied(ui_client, url, name, mock):
+    """A page fetch with one API call replaced by a mock we can question."""
+    ps = _patches()
+    for p in ps:
+        p.start()
+    try:
+        with patch(f"ui.api_client.{name}", new=mock):
+            return await ui_client.get(url, cookies=_cookies())
+    finally:
+        for p in ps:
+            p.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page,call", [("/accounting", "get_journal"),
+                                       ("/reports/extended-journal", "get_extended_journal")])
+async def test_filtered_page_says_it_is_filtered(ui_client, page, call):
+    """A filtered page must never read as the whole book: it states the filter in
+    words, offers the way back, and the totals it shows are of what it shows."""
+    spy = AsyncMock(return_value=_filtered_payload())
+    r = await _get_spied(ui_client, f"{page}?{_FILTER_QS}", call, spy)
+    assert r.status_code == 200
+    html = r.text
+    assert t("acct.filtered_totals") in html
+    assert "Account = 4100" in html and "Amount = 350" in html and "rent" in html
+    assert t("acct.filter_clear") in html
+    # The filter bar comes back holding what was asked for, so the reader can see
+    # and adjust it rather than re-typing it.
+    assert 'value="4100"' in html and 'value="rent"' in html and 'value="350"' in html
+    # ESC empties a filter field (GDR 2j).
+    assert "Escape" in html
+    # The three filters reached the API, and the period went with them.
+    params = spy.await_args.args[1]
+    assert params["account"] == "4100" and params["q"] == "rent" and params["amount"] == "350"
+    assert params["date_from"] == "2026-01-01" and params["date_to"] == "2026-03-31"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page,call", [("/accounting", "get_journal"),
+                                       ("/reports/extended-journal", "get_extended_journal")])
+async def test_no_matches_state_differs_from_empty_period(ui_client, page, call):
+    """"Nothing here" and "nothing matches" are different facts. Saying the first
+    when the second is true sends the reader looking for missing bookkeeping."""
+    matched_none = _filtered_payload(entries=0)
+    r = await _get_spied(ui_client, f"{page}?{_FILTER_QS}", call,
+                         AsyncMock(return_value=matched_none))
+    assert r.status_code == 200
+    assert t("acct.no_matches") in r.text
+    assert t("acct.no_journal_entries") not in r.text
+
+    empty_period = json.loads(json.dumps(_JOURNAL))
+    empty_period["entries"] = []
+    empty_period["total_debit"] = empty_period["total_credit"] = 0.0
+    r = await _get_spied(ui_client, page, call, AsyncMock(return_value=empty_period))
+    assert r.status_code == 200
+    assert t("acct.no_journal_entries") in r.text
+    assert t("acct.no_matches") not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stem,print_url,csv_url,call", [
+    ("journal", "/accounting/print/journal", "/accounting/export/journal/csv", "get_journal"),
+    ("extended_journal", "/reports/print/extended-journal",
+     "/reports/export/extended-journal/csv", "get_extended_journal"),
+])
+async def test_journal_print_and_csv_carry_the_filter(ui_client, stem, print_url, csv_url, call):
+    """Paper and a spreadsheet outlive the page they came from. Both have to say
+    they hold a slice, and both have to hold the slice the screen showed."""
+    spy = AsyncMock(return_value=_filtered_payload())
+    r = await _get_spied(ui_client, f"{print_url}?{_EXPORT_QS}", call, spy)
+    assert r.status_code == 200
+    assert t("acct.filtered_totals") in r.text
+    assert "Account = 4100" in r.text
+    assert spy.await_args.args[1]["account"] == "4100"
+
+    spy = AsyncMock(return_value=_filtered_payload())
+    r = await _get_spied(ui_client, f"{csv_url}?{_EXPORT_QS}", call, spy)
+    assert r.status_code == 200
+    # The filename says it is a slice; the filter values stay out of the header,
+    # and the single header row stays what a spreadsheet reads as column names.
+    assert f'filename="{stem}_2026-01-01_2026-03-31_filtered.csv"' in \
+        r.headers["content-disposition"]
+    assert "rent" not in r.headers["content-disposition"]
+    assert r.text.strip().splitlines()[0].startswith("date,")
+    assert spy.await_args.args[1]["amount"] == "350"
+    # Only the filtered entry is in the file: one entry, two postings.
+    assert len([row for row in r.text.strip().splitlines() if row]) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page", ["/accounting", "/reports/extended-journal"])
+async def test_journal_page_survives_an_unreadable_chart(ui_client, page):
+    """The account options are a convenience beside a book that already loaded. A
+    chart that cannot be read costs the reader one dropdown's contents, not the
+    page, and the list comes back empty rather than invented."""
+    broken = AsyncMock(side_effect=APIError(500, "chart is down"))
+    r = await _get_spied(ui_client, page, "get_chart", broken)
+    assert r.status_code == 200
+    assert "Adjustment" in r.text and "INV-1" in r.text
+    # The control is there and says it has nothing to offer, rather than offering
+    # accounts it could not read.
+    assert "combobox-option--empty" in r.text
+    assert 'data-value="1111"' not in r.text and 'data-value="4100"' not in r.text
+    assert "chart is down" not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("csv_url,call", [
+    ("/accounting/export/journal/csv", "get_journal"),
+    ("/reports/export/extended-journal/csv", "get_extended_journal"),
+])
+async def test_journal_csv_rejects_a_bad_amount_with_422(ui_client, csv_url, call):
+    """A typed filter the server refuses is the reader's to correct. Answering it
+    as a 500 turns a typo into something they report as an outage."""
+    refused = AsyncMock(side_effect=APIError(422, "Amount filter abc is not a number."))
+    r = await _get_spied(ui_client, f"{csv_url}?amount=abc", call, refused)
+    # The route has to hand the filter over to be refused in the first place.
+    assert refused.await_args.args[1]["amount"] == "abc"
+    assert r.status_code == 422
+    assert "not a number" in r.text
 
 
 def test_date_filter_bar_carries_encoded_values():

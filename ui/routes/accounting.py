@@ -25,11 +25,14 @@ from ui.components.shell import base_shell, page_header
 from ui.components.currency import CURRENCIES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
-    fname_date as _fname_date, href as _href, journal_totals as _journal_totals,
-    period_subtitle as _period_subtitle,
+    href as _href, journal_totals as _journal_totals,
     plain_error_response as _plain_error_response, print_shell as _print_shell,
 )
-from ui.components.journal import journal_csv_rows, journal_rows, journal_table
+from ui.components.journal import (
+    JOURNAL_FILTER_KEYS, journal_csv_rows, journal_export_name, journal_filter_bar,
+    journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
+    journal_rows, journal_table,
+)
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
     searchable_select,
@@ -40,7 +43,7 @@ from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path
 from ui.routes.reports import (
-    _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
+    _date_filter_bar, _filter_accounts, _get_fiscal, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
 
@@ -129,13 +132,24 @@ def setup_routes(app):
             currency = company.get("currency")
             fy = await _get_fiscal(token)
             d_from, d_to, preset = _parse_dates(request, fy)
-            params = _date_params(d_from, d_to)
+            filters = journal_filters(request)
+            params = {**_date_params(d_from, d_to), **filters}
             data = await api.get_journal(token, params)
+            accounts = await _filter_accounts(token)
+            # What the period is, in the terms the reader set it: a preset stays a
+            # preset through a filter change, so the button they picked stays lit.
+            carried = ({"preset": preset} if preset and preset != "custom"
+                       else {"from": d_from, "to": d_to})
             content = Div(
                 _moved_reports_notice(),
                 _date_filter_bar("/accounting", d_from, d_to, preset,
-                                 settings_link="/settings/general?tab=company"),
-                _journal_totals(data, currency),
+                                 settings_link="/settings/general?tab=company",
+                                 extra_params=journal_filter_qs(filters)),
+                journal_filter_bar("/accounting", filters, carried, accounts,
+                                   get_lang(request)),
+                _journal_totals(data, currency,
+                                filter_words=journal_filter_words(filters, get_lang(request)),
+                                clear_href=_href("/accounting", carried)),
                 # Toolbar over the table, following the document-list pattern:
                 # creative actions left, export/print right.
                 Div(
@@ -148,8 +162,9 @@ def setup_routes(app):
                     cls="flex-row flex-between mt-md mb-md",
                 ),
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
-                              params={"date_from": d_from or "", "date_to": d_to or ""},
-                              void_action=True),
+                              params={"date_from": d_from or "", "date_to": d_to or "",
+                                      **filters},
+                              void_action=True, filtered=bool(data.get("filtered"))),
             )
         except APIError as e:
             if e.status == 401:
@@ -333,8 +348,15 @@ def setup_routes(app):
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
-        target = _href("/accounting", {"tab": "journal", "from": str(form.get("date_from") or ""),
-                                       "to": str(form.get("date_to") or "")})
+        # Back to the view the void was pressed from, filters and all: a reader who
+        # narrowed the journal to find an entry should not be handed the whole book
+        # back the moment they act on it.
+        target = _href("/accounting", {
+            "tab": "journal",
+            "from": str(form.get("date_from") or ""),
+            "to": str(form.get("date_to") or ""),
+            **{k: str(form.get(k) or "") for k in JOURNAL_FILTER_KEYS},
+        })
         return _R("", status_code=204, headers={"HX-Redirect": target})
 
     # ── Print (PDF) routes ─────────────────────────────────────────────────
@@ -349,16 +371,21 @@ def setup_routes(app):
             currency = company.get("currency")
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
+            filters = journal_filters(request)
+            params = {**_date_params(d_from, d_to), **filters}
             data = await api.get_journal(token, params)
         except APIError as e:
             return _plain_error_response(e)
 
         body = Div(
             _journal_totals(data, currency),
-            journal_table(journal_rows(data, items=False), items=False, currency=currency),
+            journal_table(journal_rows(data, items=False), items=False, currency=currency,
+                          filtered=bool(data.get("filtered"))),
         )
-        return _print_shell(company, t("acct.tab_journal"), _period_subtitle(d_from, d_to), body)
+        # The filter is stated in the sheet's own header, next to the period, so a
+        # page found on a desk later cannot be read as the whole book.
+        return _print_shell(company, t("acct.tab_journal"),
+                            journal_print_subtitle(d_from, d_to, filters), body)
 
     @app.get("/accounting/export/journal/csv")
     async def journal_export_csv(request: Request):
@@ -368,12 +395,13 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            params = _date_params(d_from, d_to)
+            filters = journal_filters(request)
+            params = {**_date_params(d_from, d_to), **filters}
             company, data = await asyncio.gather(api.get_company(token), api.get_journal(token, params))
         except APIError as e:
             return _plain_error_response(e)
 
-        fname = f"journal_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
+        fname = journal_export_name("journal", d_from, d_to, filters)
         return _csv_response(journal_csv_rows(data, items=False,
                                               currency=company.get("currency") or ""), fname)
 

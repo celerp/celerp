@@ -154,25 +154,41 @@ def period_subtitle(d_from: str, d_to: str) -> str:
     return "  |  ".join(parts) if parts else "All periods"
 
 
-def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None) -> FT:
+def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None,
+                 extra: list | None = None) -> FT:
     return Div(
         Span(f"{t('acct.total_debit')}: {fmt_money(total_debit, currency)}", cls="val-chip"),
         Span(f"{t('acct.total_credit')}: {fmt_money(total_credit, currency)}", cls="val-chip"),
         Span(t("acct.balanced") if balanced else t("acct.out_of_balance"),
              cls="val-chip" if balanced else "val-chip val-chip--alert"),
+        *(extra or []),
         cls="valuation-bar",
     )
 
 
-def journal_totals(data: dict, currency: str | None = None) -> FT:
+def journal_totals(data: dict, currency: str | None = None, *,
+                   filter_words: str = "", clear_href: str = "") -> FT:
     """The debit, credit and balance chips over a journal.
 
     The classical journal and the extended one are the same postings, so they read
     their totals through one function and can never disagree about them.
+
+    A narrowed journal says so beside its totals, in the words the filter was set
+    in, because these totals are the totals of what was shown and not of the
+    period. Whether it was narrowed is what the payload said, never worked out
+    again here. `clear_href` offers the way back to the whole book, and the print
+    sheet leaves it off: there is nothing to click on paper.
     """
     total_debit = float(data.get("total_debit", 0) or 0)
     total_credit = float(data.get("total_credit", 0) or 0)
-    return totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01, currency)
+    extra: list = []
+    if data.get("filtered"):
+        extra.append(Span(filter_words or t("acct.filtered_totals"),
+                          cls="val-chip val-chip--alert"))
+        if clear_href:
+            extra.append(A(t("acct.filter_clear"), href=clear_href, cls="btn btn--ghost btn--sm"))
+    return totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01,
+                        currency, extra)
 
 
 def je_source_label(entry: dict, csv_export: bool = False) -> str:
