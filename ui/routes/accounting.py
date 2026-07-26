@@ -8,8 +8,6 @@ Reading the books happens under /reports; this module is the side you act on.
 
 from __future__ import annotations
 
-import csv
-import io
 import math as _math
 import re
 import json as _json
@@ -19,18 +17,19 @@ from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, StreamingResponse, PlainTextResponse
+from starlette.responses import RedirectResponse, PlainTextResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.currency import CURRENCIES
 from ui.components.report_kit import (
-    action_bar, csv_row, date_params as _date_params, fname_date as _fname_date,
-    fx_line_amounts as _fx_line_amounts, href as _href, je_source_label as _je_source_label,
-    journal_totals as _journal_totals, period_subtitle as _period_subtitle,
+    action_bar, csv_response as _csv_response, date_params as _date_params,
+    fname_date as _fname_date, href as _href, journal_totals as _journal_totals,
+    period_subtitle as _period_subtitle,
     plain_error_response as _plain_error_response, print_shell as _print_shell,
 )
+from ui.components.journal import journal_csv_rows, journal_rows, journal_table
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
     searchable_select,
@@ -43,7 +42,7 @@ from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path
 from ui.routes.reports import (
     _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
 )
-from celerp.services.money import CURRENCY_DP, DEFAULT_DP, EXCHANGE_RATE_DP, currency_dp
+from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
 
 
 def _moved_reports_notice() -> FT:
@@ -148,7 +147,9 @@ def setup_routes(app):
                                params),
                     cls="flex-row flex-between mt-md mb-md",
                 ),
-                _journal_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                journal_table(journal_rows(data, items=False), items=False, currency=currency,
+                              params={"date_from": d_from or "", "date_to": d_to or ""},
+                              void_action=True),
             )
         except APIError as e:
             if e.status == 401:
@@ -355,7 +356,7 @@ def setup_routes(app):
 
         body = Div(
             _journal_totals(data, currency),
-            _journal_view(data, currency, date_from=d_from, date_to=d_to, show_actions=False),
+            journal_table(journal_rows(data, items=False), items=False, currency=currency),
         )
         return _print_shell(company, t("acct.tab_journal"), _period_subtitle(d_from, d_to), body)
 
@@ -372,183 +373,10 @@ def setup_routes(app):
         except APIError as e:
             return _plain_error_response(e)
 
-        base_currency = company.get("currency") or ""
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["date", "entry_id", "source_ref", "memo", "account_code", "account_name",
-                    "debit", "credit", "currency", "fx_currency", "fx_debit", "fx_credit",
-                    "exchange_rate", "status"])
-        # Rows stay ascending by date (the order the API returns): auditors and pivot
-        # tables read a journal chronologically, unlike the on-screen newest-first view.
-        for entry in data.get("entries", []):
-            source = entry.get("source_doc") or {}
-            source_ref = source.get("doc_ref") or source.get("doc_id") or _je_source_label(entry, csv_export=True)
-            for line in entry.get("lines", []):
-                debit = float(line.get("debit") or 0)
-                credit = float(line.get("credit") or 0)
-                _fx_d, _fx_c = _fx_line_amounts(debit, credit, line)
-                # A zero foreign amount is not a figure the author typed, so it
-                # exports as a blank cell with no currency claimed for it.
-                fx_debit = _fx_d if _fx_d else ""
-                fx_credit = _fx_c if _fx_c else ""
-                has_amount = fx_debit != "" or fx_credit != ""
-                line_fx_currency = (line.get("fx_currency") or "") if has_amount else ""
-                line_rate = (line.get("fx_rate") or 0) if has_amount else ""
-                csv_row(w, [
-                    str(entry.get("ts") or "")[:10],
-                    entry.get("je_id", ""),
-                    source_ref,
-                    entry.get("memo", ""),
-                    line.get("account", ""),
-                    line.get("name", ""),
-                    debit,
-                    credit,
-                    base_currency,
-                    line_fx_currency,
-                    fx_debit,
-                    fx_credit,
-                    line_rate or "",
-                    entry.get("status", ""),
-                ])
-
-        buf.seek(0)
         fname = f"journal_{_fname_date(d_from)}_{_fname_date(d_to)}.csv"
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-        )
+        return _csv_response(journal_csv_rows(data, items=False,
+                                              currency=company.get("currency") or ""), fname)
 
-
-
-# ── Journal ─────────────────────────────────────────────────────────────────
-
-def _fmt_exchange_rate(rate) -> str:
-    """An exchange rate is a ratio, not an amount: no currency symbol, and
-    trailing zeros trimmed so 35 reads as 35 and 0.00001117318 keeps every digit
-    the author typed."""
-    try:
-        s = f"{float(rate):,.{EXCHANGE_RATE_DP}f}".rstrip("0").rstrip(".")
-    except (TypeError, ValueError):
-        return ""
-    return s or "0"
-
-
-def _journal_view(data: dict, currency: str | None = None, date_from: str = "",
-                  date_to: str = "", show_actions: bool = True) -> FT:
-    entries = list(data.get("entries", []))
-    if not entries:
-        return P(t("acct.no_journal_entries"), cls="empty-state")
-    entries.reverse()  # the API returns ascending; the screen shows newest first
-    # Foreign-currency columns appear only when this period actually holds a
-    # foreign-currency transaction, so a single-currency journal stays as narrow
-    # as it has always been.
-    has_fx = any(l.get("fx_currency") for e in entries for l in e.get("lines", []))
-
-    def _fmt_nonzero(val: float) -> str:
-        return fmt_money(val, currency) if val else ""
-
-    def _void_action(entry: dict) -> FT:
-        if entry.get("status") != "posted":
-            return Td("")
-        # Auto-posted entries keep the control and are refused by the server with
-        # an explanation naming the source document. Removing the button instead
-        # would leave the user guessing why an entry cannot be voided (GDR 2e:
-        # validate at the function level, never restrict the interface).
-        return Td(Details(
-            Summary(t("btn.void"), cls="btn btn--danger btn--sm"),
-            Form(
-                Input(type="text", name="reason", placeholder=t("acct.void_reason_optional"),
-                      cls="form-input form-input--sm",
-                      onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
-                Input(type="hidden", name="date_from", value=date_from),
-                Input(type="hidden", name="date_to", value=date_to),
-                Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--sm",
-                       style="margin-top:0.5rem;"),
-                hx_post=f"/accounting/journal/{entry.get('je_id', '')}/void",
-                hx_swap="none", cls="inline-form",
-            ),
-            cls="void-section",
-        ))
-
-    rows = []
-    for entry in entries:
-        voided = entry.get("status") == "void"
-        row_cls = "payment-voided" if voided else ""
-        source = entry.get("source_doc") or {}
-        if source.get("doc_id"):
-            source_cell = A(source.get("doc_ref") or source["doc_id"],
-                            href=f"/docs/{source['doc_id']}", cls="drilldown-link")
-        else:
-            source_cell = _je_source_label(entry)
-        memo_bits: list = [Span(entry.get("memo", ""))] if entry.get("memo") else []
-        if voided:
-            reason = str(entry.get("void_reason") or entry.get("reason") or "").strip()
-            memo_bits.append(Span(f"{t('doc.voided')}: {reason}" if reason else t("doc.voided"),
-                                  cls="badge badge--void"))
-        cells = [
-            Td(str(entry.get("ts") or "")[:10], cls="cell--mono"),
-            Td(source_cell),
-            Td(*memo_bits, cls="cell--muted"),
-            Td("", cls="cell--number"),
-            Td("", cls="cell--number"),
-        ]
-        if has_fx:
-            # The currency and rate belong to the line, not the entry: one entry
-            # may settle an invoice in one currency with cash in another. The
-            # entry row leaves the foreign columns empty and each line states its
-            # own.
-            cells += [
-                Td("", cls="cell--number"),
-                Td("", cls="cell--number"),
-                Td("", cls="cell--number"),
-            ]
-        if show_actions:
-            cells.append(_void_action(entry))
-        rows.append(Tr(*cells, cls=row_cls) if row_cls else Tr(*cells))
-        for line in entry.get("lines", []):
-            debit = float(line.get("debit") or 0)
-            credit = float(line.get("credit") or 0)
-            line_cells = [
-                Td(""),
-                Td(""),
-                Td(f"{line.get('account', '')} {line.get('name', '')}".strip(),
-                   style="padding-left:2rem"),
-                Td(_fmt_nonzero(debit), cls="cell--number"),
-                Td(_fmt_nonzero(credit), cls="cell--number"),
-            ]
-            if has_fx:
-                fx_debit, fx_credit = _fx_line_amounts(debit, credit, line)
-                fx_currency = line.get("fx_currency")
-                # GDR 2k: a foreign column with nothing in it reads "--", never
-                # blank, so a base-currency line in a mixed entry is visibly a
-                # line with no foreign amount rather than one that failed to load.
-                line_cells += [
-                    Td(fmt_money(fx_debit, fx_currency) if fx_debit else "--", cls="cell--number"),
-                    Td(fmt_money(fx_credit, fx_currency) if fx_credit else "--", cls="cell--number"),
-                    Td(_fmt_exchange_rate(line.get("fx_rate")) if line.get("fx_rate") else "--",
-                       cls="cell--number cell--mono"),
-                ]
-            if show_actions:
-                line_cells.append(Td(""))
-            rows.append(Tr(*line_cells, cls=row_cls) if row_cls else Tr(*line_cells))
-
-    headers = [
-        Th(t("th.date")),
-        Th(t("th.source")),
-        Th(t("th.description")),
-        Th(t("th.debit"), cls="cell--number"),
-        Th(t("th.credit"), cls="cell--number"),
-    ]
-    if has_fx:
-        headers += [
-            Th(t("th.fx_debit"), cls="cell--number"),
-            Th(t("th.fx_credit"), cls="cell--number"),
-            Th(t("th.rate"), cls="cell--number"),
-        ]
-    if show_actions:
-        headers.append(Th(""))
-    return Table(Thead(Tr(*headers)), Tbody(*rows), cls="data-table")
 
 
 # ── Manual journal entry form ───────────────────────────────────────────────

@@ -12,25 +12,21 @@ figures; only the URL sits under /reports.
 
 from __future__ import annotations
 
-import csv
-import io
 import re
 from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import (
-    HTMLResponse, RedirectResponse, StreamingResponse,
-)
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import EMPTY, empty_state_cta, fmt_money, searchable_select
+from ui.components.table import empty_state_cta, fmt_money, searchable_select
+from ui.components.journal import journal_csv_rows, journal_rows, journal_table
 from ui.components.report_kit import (
-    action_bar, csv_row, date_params, fname_date, fx_line_amounts, href,
-    je_source_label, journal_totals, period_subtitle, plain_error_response,
-    print_shell, report_header, totals_chips,
+    action_bar, csv_response, date_params, fname_date, href, journal_totals,
+    period_subtitle, plain_error_response, print_shell, report_header, totals_chips,
 )
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
@@ -533,102 +529,6 @@ def _general_ledger_view(data: dict, currency: str | None = None,
     )
 
 
-# ── Extended journal ────────────────────────────────────────────────────────
-
-def _extended_rows(data: dict) -> list[dict]:
-    """The journal flattened to one row per posting, newest first.
-
-    The classical journal indents its lines under an entry heading, which reads
-    well and pivots badly. This report exists to be pulled apart by item, so
-    every row carries its own date, source and memo and stands on its own.
-    """
-    out: list[dict] = []
-    for entry in reversed(list(data.get("entries", []))):
-        source = entry.get("source_doc") or {}
-        for line in entry.get("lines", []):
-            out.append({
-                **line,
-                "ts": str(entry.get("ts") or "")[:10],
-                "je_id": entry.get("je_id", ""),
-                "doc_id": source.get("doc_id", ""),
-                "source": source.get("doc_ref") or source.get("doc_id") or je_source_label(entry),
-                "source_csv": (source.get("doc_ref") or source.get("doc_id")
-                               or je_source_label(entry, csv_export=True)),
-                "memo": entry.get("memo", ""),
-                "status": entry.get("status"),
-            })
-    return out
-
-
-def _extended_journal_view(data: dict, currency: str | None = None) -> FT:
-    rows = _extended_rows(data)
-    if not rows:
-        return P(t("acct.no_journal_entries"), cls="empty-state")
-    # The foreign columns appear only when the period actually holds a foreign
-    # transaction, exactly as the classical journal decides it.
-    has_fx = any(r.get("fx_currency") for r in rows)
-
-    def _money(val, cur=None) -> str:
-        # The unused side of a posting is left blank, the way the classical
-        # journal and the general ledger leave it: a journal reads down one
-        # money column at a time, and filling the other with a marker fights it.
-        return fmt_money(val, cur) if val else ""
-
-    def _attr(val, cur=None) -> str:
-        # An item attribute is not a posting. A row with no unit price has none
-        # to show, so it says so rather than going blank and reading as a cell
-        # that failed to load.
-        return fmt_money(val, cur) if val else EMPTY
-
-    body = []
-    for r in rows:
-        debit = float(r.get("debit") or 0)
-        credit = float(r.get("credit") or 0)
-        fx_debit, fx_credit = fx_line_amounts(debit, credit, r)
-        fx_currency = r.get("fx_currency")
-        qty = r.get("quantity")
-        source_cell = (A(r["source"], href=f"/docs/{r['doc_id']}", cls="drilldown-link")
-                       if r.get("doc_id") else r["source"])
-        cells = [
-            Td(r["ts"], cls="cell--mono"),
-            Td(source_cell),
-            Td(r.get("item") or EMPTY),
-            Td(f"{r.get('account', '')} {r.get('name', '')}".strip()),
-            Td(r.get("memo", ""), cls="cell--muted"),
-            Td(fx_currency or currency or EMPTY, cls="cell--mono"),
-            Td(f"{to_decimal(qty).normalize():f}" if qty else EMPTY, cls="cell--number"),
-            Td(_attr(r.get("unit_price"), fx_currency or currency), cls="cell--number"),
-            Td(_money(debit, currency), cls="cell--number"),
-            Td(_money(credit, currency), cls="cell--number"),
-        ]
-        if has_fx:
-            cells += [
-                Td(_money(fx_debit, fx_currency), cls="cell--number"),
-                Td(_money(fx_credit, fx_currency), cls="cell--number"),
-            ]
-        body.append(Tr(*cells, cls="payment-voided") if r.get("status") == "void" else Tr(*cells))
-
-    headers = [
-        Th(t("th.date")),
-        Th(t("th.source")),
-        Th(t("th.item")),
-        Th(t("th.account")),
-        Th(t("th.description")),
-        Th(t("th.currency")),
-        # HTML/CSS 4a: a header over figures sits right, above the digits it names.
-        Th(t("th.quantity"), cls="cell--number"),
-        Th(t("th.unit_price"), cls="cell--number"),
-        Th(t("th.debit"), cls="cell--number"),
-        Th(t("th.credit"), cls="cell--number"),
-    ]
-    if has_fx:
-        headers += [
-            Th(t("th.fx_debit"), cls="cell--number"),
-            Th(t("th.fx_credit"), cls="cell--number"),
-        ]
-    return Table(Thead(Tr(*headers)), Tbody(*body), cls="data-table")
-
-
 # The statuses worth a sentence, and the sentence each one gets. `expanded` needs
 # none, and `no_items` must not have one: an entry that never had items is not an
 # entry whose items were withheld, and listing it sends a reader looking for
@@ -1039,7 +939,7 @@ def setup_routes(app):
                 journal_totals(data, currency),
                 Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
                 _unexpanded_note(data),
-                _extended_journal_view(data, currency),
+                journal_table(journal_rows(data, items=True), items=True, currency=currency),
             )
         except APIError as e:
             if e.status == 401:
@@ -1357,7 +1257,8 @@ def setup_routes(app):
         except APIError as e:
             return plain_error_response(e)
         body = Div(journal_totals(data, currency), _unexpanded_note(data),
-                   _extended_journal_view(data, currency))
+                   journal_table(journal_rows(data, items=True), items=True,
+                                 currency=currency))
         return print_shell(company, t("acct.tab_extended_journal"),
                            period_subtitle(d_from, d_to), body)
 
@@ -1388,18 +1289,6 @@ def setup_routes(app):
 
     # ── CSV ────────────────────────────────────────────────────────────────
 
-    def _csv_response(rows: list[list], filename: str) -> StreamingResponse:
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        for r in rows:
-            csv_row(w, r)
-        buf.seek(0)
-        return StreamingResponse(
-            iter([buf.read()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
     @app.get("/reports/export/trial-balance/csv")
     async def trial_balance_csv(request: Request):
         token = _token(request)
@@ -1416,7 +1305,7 @@ def setup_routes(app):
                   l.get("total_debit", 0), l.get("total_credit", 0), l.get("net", 0)]
                  for l in data.get("lines", [])]
         rows.append(["", "TOTAL", "", data.get("total_debit", 0), data.get("total_credit", 0), ""])
-        return _csv_response(rows, f"trial_balance_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+        return csv_response(rows, f"trial_balance_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/general-ledger/csv")
     async def general_ledger_csv(request: Request):
@@ -1447,7 +1336,7 @@ def setup_routes(app):
                 rows.append([code, name, line.get("date", ""), line.get("source_ref") or "",
                              line.get("memo", ""), float(debit), float(credit), float(running)])
             rows.append([code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
-        return _csv_response(rows, f"general_ledger_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+        return csv_response(rows, f"general_ledger_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/extended-journal/csv")
     async def extended_journal_csv(request: Request):
@@ -1460,27 +1349,8 @@ def setup_routes(app):
             data = await api.get_extended_journal(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
-        rows: list[list] = [["date", "entry_id", "source_ref", "item", "account_code",
-                             "account_name", "memo", "quantity", "unit_price", "debit", "credit",
-                             "fx_currency", "fx_debit", "fx_credit", "status"]]
-        # Rows stay newest first, as the screen shows them: this export is read as
-        # the report it came from, not replayed as a ledger.
-        for r in _extended_rows(data):
-            debit = float(r.get("debit") or 0)
-            credit = float(r.get("credit") or 0)
-            fx_debit, fx_credit = fx_line_amounts(debit, credit, r)
-            has_amount = bool(fx_debit) or bool(fx_credit)
-            rows.append([
-                r["ts"], r.get("je_id", ""), r["source_csv"], r.get("item") or "",
-                r.get("account", ""), r.get("name", ""), r.get("memo", ""),
-                r.get("quantity") if r.get("quantity") else "",
-                r.get("unit_price") if r.get("unit_price") else "",
-                debit, credit,
-                (r.get("fx_currency") or "") if has_amount else "",
-                fx_debit if fx_debit else "", fx_credit if fx_credit else "",
-                r.get("status") or "",
-            ])
-        return _csv_response(rows, f"extended_journal_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+        return csv_response(journal_csv_rows(data, items=True),
+                            f"extended_journal_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/cash-flow/csv")
     async def cash_flow_csv(request: Request):
@@ -1504,7 +1374,7 @@ def setup_routes(app):
         for a in data.get("indirect", {}).get("adjustments", []):
             rows.append(["indirect", a.get("code", ""), a.get("name", ""), a.get("amount", 0)])
         rows.append(["indirect", "", "TOTAL", data.get("indirect", {}).get("total", 0)])
-        return _csv_response(rows, f"cash_flow_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+        return csv_response(rows, f"cash_flow_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/statement/csv")
     async def statement_csv(request: Request):
@@ -1536,7 +1406,7 @@ def setup_routes(app):
         stem = (re.sub(r"[^A-Za-z0-9_-]+", "_",
                        _subject_heading(sections[0]["kind"], sections[0]["data"])).strip("_")
                 if len(sections) == 1 else f"{len(sections)}_accounts")
-        return _csv_response(rows, f"statement_{stem or 'account'}_"
+        return csv_response(rows, f"statement_{stem or 'account'}_"
                                    f"{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/pnl/csv")
@@ -1565,7 +1435,7 @@ def setup_routes(app):
             rows.append([f"TOTAL {label}", "", "", section.get("total", 0), ""])
         rows += [[], ["Gross Profit", "", "", data.get("gross_profit", 0), ""],
                  ["Net Profit", "", "", data.get("net_profit", 0), ""]]
-        return _csv_response(rows, f"pnl_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+        return csv_response(rows, f"pnl_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/balance-sheet/csv")
     async def balance_sheet_csv(request: Request):
@@ -1584,4 +1454,4 @@ def setup_routes(app):
             for line in section.get("lines", []):
                 rows.append([label, line.get("code", ""), line.get("name", ""), line.get("amount", 0)])
             rows += [[f"TOTAL {label}", "", "", section.get("total", 0)], []]
-        return _csv_response(rows, f"balance_sheet_{fname_date(as_of)}.csv")
+        return csv_response(rows, f"balance_sheet_{fname_date(as_of)}.csv")

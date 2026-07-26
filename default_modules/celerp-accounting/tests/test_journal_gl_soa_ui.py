@@ -485,27 +485,27 @@ async def test_je_form_rejects_unknown_currency_without_calling_the_api(ui_clien
 
 def test_fx_line_amounts_prefers_stored_over_derived():
     """A typed foreign figure is what the document says; division can miss it."""
-    from ui.routes.accounting import _fx_line_amounts
+    from ui.components.report_kit import fx_line_amounts
 
-    stored = _fx_line_amounts(300.25, 0, {"fx_currency": "USD", "fx_rate": 3.0025,
-                                          "fx_debit": 100.0, "fx_credit": None})
+    stored = fx_line_amounts(300.25, 0, {"fx_currency": "USD", "fx_rate": 3.0025,
+                                         "fx_debit": 100.0, "fx_credit": None})
     assert stored == (100.0, None)
 
 
 def test_fx_line_amounts_blank_when_rate_absent():
     """No rate means no figure, not a guessed one."""
-    from ui.routes.accounting import _fx_line_amounts
+    from ui.components.report_kit import fx_line_amounts
 
-    assert _fx_line_amounts(100.0, 0, {"fx_currency": "USD", "fx_rate": 0}) == (None, None)
+    assert fx_line_amounts(100.0, 0, {"fx_currency": "USD", "fx_rate": 0}) == (None, None)
 
 
 def test_fx_line_amounts_blank_when_currency_missing():
     """A rate with no currency cannot be formatted: rounding it at a defaulted
     precision and showing it under an unknown currency is a fabricated figure."""
-    from ui.routes.accounting import _fx_line_amounts
+    from ui.components.report_kit import fx_line_amounts
 
-    assert _fx_line_amounts(100.0, 0, {"fx_currency": None, "fx_rate": 35.0}) == (None, None)
-    assert _fx_line_amounts(100.0, 0, {"fx_rate": 35.0}) == (None, None)
+    assert fx_line_amounts(100.0, 0, {"fx_currency": None, "fx_rate": 35.0}) == (None, None)
+    assert fx_line_amounts(100.0, 0, {"fx_rate": 35.0}) == (None, None)
 
 
 @pytest.mark.asyncio
