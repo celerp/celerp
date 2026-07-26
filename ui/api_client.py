@@ -913,6 +913,12 @@ async def void_journal_entry(token: str, entity_id: str, reason: str | None = No
         return _raise(await c.post(f"/accounting/journal-entries/{entity_id}/void", json={"reason": reason})).json()
 
 
+async def bulk_void_journal_entries(token: str, je_ids: list[str], reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/journal-entries/bulk-void",
+                                   json={"je_ids": je_ids, "reason": reason})).json()
+
+
 async def get_bank_accounts(token: str, include_inactive: bool = False) -> dict:
     async with _api_client(token) as c:
         params = {"include_inactive": "true"} if include_inactive else {}
