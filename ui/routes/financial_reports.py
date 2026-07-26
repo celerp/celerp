@@ -576,31 +576,31 @@ def _general_ledger_view(data: dict, currency: str | None = None,
 
 # The statuses worth a sentence, and the sentence each one gets. `expanded` needs
 # none, and `no_items` must not have one: an entry that never had items is not an
-# entry whose items were withheld, and listing it sends a reader looking for
-# detail that was never meant to exist.
+# entry whose items were withheld, and naming it sends a reader looking for detail
+# that was never meant to exist.
 _WITHHELD_KEYS = (("untied", "acct.items_untied"),
                   ("no_document", "acct.items_no_document"))
 
 
 def _unexpanded_note(data: dict) -> FT | None:
-    """Names the entries whose item detail could not be shown, and why.
+    """A print-only footnote naming the entries whose item detail was withheld.
 
-    An accountant reading a report about items has to be able to tell an entry
-    with no items from one whose items were withheld, so the ones that were
-    withheld are listed rather than silently rendered like the rest, under the
-    reason they were withheld: figures that do not tie is a judgement about the
-    numbers, a document that is gone is a fact about the books, and they are acted
-    on differently.
+    On screen each such entry carries its reason as a tooltip on its own item
+    cell, so the reader learns why that row shows no detail exactly where they
+    look for it. Paper has no hover, so the printed sheet gathers the same reasons
+    into a footnote: figures that do not tie is a judgement about the numbers, a
+    document that is gone is a fact about the books, and an accountant acts on the
+    two differently.
     """
     entries = data.get("entries", [])
-    sentences = []
+    notes = []
     for status, key in _WITHHELD_KEYS:
         ids = [e.get("je_id", "") for e in entries if e.get("items_status") == status]
         if ids:
-            sentences.append(Div(f"{t(key)} {', '.join(ids)}"))
-    if not sentences:
+            notes.append(Div(Div(t(key)), Div(", ".join(ids), cls="cell--muted")))
+    if not notes:
         return None
-    return Div(*sentences, cls="report-section cell--muted")
+    return Div(*notes, cls="report-section cell--muted")
 
 
 # ── Statement of account ────────────────────────────────────────────────────
@@ -999,7 +999,6 @@ def setup_routes(app):
                                filter_words=journal_filter_words(filters, get_lang(request)),
                                clear_href=href(path, carried)),
                 Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
-                _unexpanded_note(data),
                 journal_bulk_toolbar(params, carried, items=True),
                 journal_table(journal_rows(data, items=True), items=True, currency=currency,
                               select=True, filtered=bool(data.get("filtered"))),
@@ -1321,9 +1320,10 @@ def setup_routes(app):
                 token, {**date_params(d_from, d_to), **filters})
         except APIError as e:
             return plain_error_response(e)
-        body = Div(journal_totals(data, currency), _unexpanded_note(data),
+        body = Div(journal_totals(data, currency),
                    journal_table(journal_rows(data, items=True), items=True,
-                                 currency=currency, filtered=bool(data.get("filtered"))))
+                                 currency=currency, filtered=bool(data.get("filtered"))),
+                   _unexpanded_note(data))
         return print_shell(company, t("acct.tab_extended_journal"),
                            journal_print_subtitle(d_from, d_to, filters), body)
 

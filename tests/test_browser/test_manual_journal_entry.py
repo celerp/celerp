@@ -152,15 +152,19 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart, party):
     page.goto(f"{ui_server}/accounting?tab=journal", wait_until="domcontentloaded")
     page.wait_for_selector("text=Browser test adjustment", timeout=10000)
 
-    # Void: act on this entry's own row. The journal is newest-first and shared
-    # with every other entry the suite has posted, and the void control is shown
-    # on document-generated rows too so the server can explain the refusal, so
-    # "the first Void on the page" is not necessarily this entry's.
+    # Void: tick this entry's own row and act through the selection toolbar. The
+    # journal is newest-first and shared with every other entry the suite has
+    # posted, so tick by this entry's memo rather than the first box on the page.
     row = page.locator("tr", has_text="Browser test adjustment").first
-    row.locator("details summary", has_text="Void").first.click()
-    reason = row.locator('details[open] input[name="reason"]').first
+    row.locator(".bulk-select").check()
+    bar = page.locator(".bulkbar").first
+    bar.locator(".bulk-action-select").select_option("void")
+    reason = bar.locator(".bulk-field--reason")
+    reason.wait_for(state="visible", timeout=3000)
     reason.fill("browser test cleanup")
-    row.locator("details[open] button", has_text="Confirm").first.click()
+    # Confirm asks before it strikes: a mis-ticked box is caught here, not after.
+    page.once("dialog", lambda d: d.accept())
+    bar.locator(".bulk-apply").click()
     page.wait_for_selector("tr.payment-voided .badge--void", timeout=10000)
 
 

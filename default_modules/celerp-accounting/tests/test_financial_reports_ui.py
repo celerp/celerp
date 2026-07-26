@@ -100,7 +100,8 @@ _JOURNAL = {
 # adds, and one entry of every status the expansion can end in: split into its
 # items, left whole because its figures did not tie, left whole because the
 # document behind it is gone, and a payment that never had items of its own. The
-# page renders the item rows, both notes, and nothing about the payment.
+# page renders the item rows, an inline marker on each withheld entry, and nothing
+# on the payment.
 _EXTENDED_JOURNAL = {
     "date_from": "", "date_to": "", "total_debit": 60.0, "total_credit": 60.0,
     "entries": [
@@ -285,56 +286,71 @@ async def test_extended_journal_page_shows_what_each_posting_was_for(ui_client):
     assert "฿30.00" in r.text
 
 
-# The two reasons item detail can be withheld, as the page words them.
-_UNTIED = "because their amounts do not tie to the document lines:"
-_NO_DOCUMENT = "because the document behind them is no longer in the books:"
-
-
-def _note(text: str, reason: str) -> str:
-    """What the note giving `reason` says, or "" when the page gives no such note."""
-    if reason not in text:
-        return ""
-    return text.split(reason, 1)[1].split("</div>", 1)[0]
+# The two reasons item detail can be withheld, as the page words them: the whole
+# sentence, because it is what the reader hovers to read on screen and what the
+# printed footnote spells out under each id.
+_UNTIED_TITLE = ("Item detail is not shown for this entry because its amounts "
+                 "do not tie to the document lines.")
+_NO_DOCUMENT_TITLE = ("Item detail is not shown for this entry because the document "
+                      "behind it is no longer in the books.")
 
 
 @pytest.mark.asyncio
-async def test_extended_journal_page_names_the_entries_it_could_not_expand(ui_client):
-    """An entry with no item detail shown is called out by id, under the reason it
-    was withheld. Reading past it as though the document had no items would be
-    worse than saying nothing, so the report says which entries it could not
-    account for, and figures that did not tie are not confused with a document
+async def test_extended_journal_marks_each_withheld_entry_inline(ui_client):
+    """An entry with no item detail says so on its own row, as a tooltip on the --
+    in its item column, not in a banner gathering every such id at the top of the
+    page. Reading past it as though the document had no items would be worse than
+    saying nothing, and figures that did not tie are not confused with a document
     that is no longer there: one is a judgement about the numbers, the other is a
     fact about the books, and an accountant does something different about each."""
     r = await _get(ui_client, "/reports/extended-journal")
-    untied, orphaned = _note(r.text, _UNTIED), _note(r.text, _NO_DOCUMENT)
-    assert untied, f"no note about figures that did not tie: {r.text[:2000]}"
-    assert orphaned, f"no note about a missing document: {r.text[:2000]}"
-    assert "je:doc:2" in untied and "je:doc:3" not in untied
-    assert "je:doc:3" in orphaned and "je:doc:2" not in orphaned
-    assert "je:doc:1" not in untied and "je:doc:1" not in orphaned
+    assert _UNTIED_TITLE in r.text, f"no untied tooltip: {r.text[:2000]}"
+    assert _NO_DOCUMENT_TITLE in r.text, f"no missing-document tooltip: {r.text[:2000]}"
+    # Two withheld entries, two lines each: four -- cells carry the marker. The
+    # expanded entry and the payment carry none.
+    assert r.text.count('class="item-note"') == 4
+    # No top banner: each id is on the page once, as its row's selection value, and
+    # nowhere as prose naming the entries that could not be expanded.
+    assert r.text.count("je:doc:2") == 1
+    assert r.text.count("je:doc:3") == 1
 
 
 @pytest.mark.asyncio
-async def test_extended_journal_page_says_nothing_about_entries_with_no_items(ui_client):
+async def test_extended_journal_marks_nothing_on_entries_with_no_items(ui_client):
     """A payment moves cash against a control account and never had items of its
-    own, so naming it would send a reader hunting for detail that was never meant
-    to exist. It appears in the report like any other entry and in neither note."""
+    own, so marking it would send a reader hunting for detail that was never meant
+    to exist. It renders like any other entry, with no marker of its own."""
     r = await _get(ui_client, "/reports/extended-journal")
     # The rows carry the memo, not the entry id. The id is on the page once, as
-    # the value of that row's selection box, which is not text anybody reads: a
-    # second occurrence anywhere means something named the entry.
+    # the value of that row's selection box, which is not text anybody reads.
     assert "Payment received for doc:1" in r.text
     assert r.text.count("je:doc:1:pay:0") == 1
     assert 'value="je:doc:1:pay:0" class="bulk-select"' in r.text
-    assert "je:doc:1:pay:0" not in _note(r.text, _UNTIED)
-    assert "je:doc:1:pay:0" not in _note(r.text, _NO_DOCUMENT)
 
     payments = {**_EXTENDED_JOURNAL,
                 "entries": [e for e in _EXTENDED_JOURNAL["entries"]
                             if e["items_status"] == "no_items"]}
     r = await _get(ui_client, "/reports/extended-journal", get_extended_journal=payments)
     assert r.status_code == 200
+    assert 'class="item-note"' not in r.text
     assert "Item detail is not shown" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_print_footnotes_the_withheld_entries(ui_client):
+    """Paper has no hover, so the printed sheet gathers the withheld entries into a
+    footnote naming each id under its reason. The reason the -- shows has to travel
+    with the page it prints on."""
+    r = await _get(ui_client, "/reports/print/extended-journal")
+    assert r.status_code == 200
+    assert _UNTIED_TITLE in r.text and _NO_DOCUMENT_TITLE in r.text
+    # Each id sits under its own reason, and the expanded entry and payment, whose
+    # detail was not withheld, are in neither footnote.
+    assert r.text.index("je:doc:2") > r.text.index(_UNTIED_TITLE)
+    assert r.text.index("je:doc:3") > r.text.index(_NO_DOCUMENT_TITLE)
+    # Neither the expanded entry nor the payment is footnoted (both share the
+    # je:doc:1 prefix, and neither carries a select box on paper).
+    assert "je:doc:1" not in r.text
 
 
 @pytest.mark.asyncio

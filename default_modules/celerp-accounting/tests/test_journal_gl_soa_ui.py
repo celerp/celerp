@@ -214,22 +214,10 @@ async def test_journal_print_shows_fx_columns(ui_client):
     assert "FX Debit" in r.text and "FX Credit" in r.text
 
 
-@pytest.mark.asyncio
-async def test_void_control_shown_for_auto_entries(ui_client):
-    """The control stays on auto-posted entries; the server explains the refusal.
-    Hiding it would leave the user guessing why an entry cannot be voided."""
-    r = await _get(ui_client, "/accounting?tab=journal")
-    assert r.status_code == 200
-    # Two posted entries in the fixture, one manual and one auto-generated;
-    # both carry a void control.
-    assert r.text.count("/void") >= 2
-
-
 # ---------------------------------------------------------------------------
-# Voiding entries from the page: one at a time, or a selection
+# Voiding entries from the page: the selection acts on one or many at once
 # ---------------------------------------------------------------------------
 
-_VOID_ONE = {"je_id": "je:manual:abc", "status": "void", "void_reason": "Keyed twice"}
 _VOID_BATCH = {"results": [{"je_id": "je:manual:abc", "status": "void",
                             "void_reason": "Duplicate batch"}],
                "voided": 1, "refused": 0}
@@ -366,20 +354,6 @@ async def test_bulk_void_refusal_from_the_api_reaches_the_reader(ui_client):
     assert r.status_code == 200
     assert r.headers["hx-reswap"] == "none"
     assert "201" in _toast(r)["message"]
-
-
-@pytest.mark.asyncio
-async def test_single_void_swaps_the_view_instead_of_reloading(ui_client):
-    """One entry is a batch of one: it answers with the table and its totals and
-    reports the same way, rather than reloading the page under the reader."""
-    r = await _post(ui_client,
-                    "/accounting/journal/je:manual:abc/void?date_from=2026-01-01&q=1111",
-                    {"reason": "Keyed twice"}, void_journal_entry=_VOID_ONE)
-    assert r.status_code == 200
-    assert "hx-redirect" not in {k.lower() for k in r.headers}
-    assert 'id="journal-table"' in r.text
-    assert 'id="journal-totals"' in r.text and 'hx-swap-oob="true"' in r.text
-    assert _toast(r) == {"message": t("acct.bulk_void_result", n=1), "type": "success"}
 
 
 @pytest.mark.asyncio

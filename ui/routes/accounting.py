@@ -142,7 +142,7 @@ def setup_routes(app):
                 ),
                 journal_bulk_toolbar(params, carried),
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
-                              params=params, void_action=True, select=True,
+                              params=params, select=True,
                               filtered=bool(data.get("filtered"))),
             )
         except APIError as e:
@@ -338,10 +338,10 @@ def setup_routes(app):
         carried = ({"preset": preset} if preset and preset != "custom"
                    else {"from": d_from, "to": d_to})
         base = REPORTS["extended-journal"][0] if items else "/accounting"
-        # The classical journal carries a per-entry void control and the extended
-        # journal does not, so each book comes back the shape it went out in.
+        # Each book comes back the shape it went out in, so a void fired from the
+        # extended journal returns the extended journal.
         table = journal_table(journal_rows(data, items=items), items=items,
-                              currency=currency, params=params, void_action=not items,
+                              currency=currency, params=params,
                               select=True, filtered=bool(data.get("filtered")))
         totals = _journal_totals(
             data, currency, oob=True,
@@ -351,24 +351,6 @@ def setup_routes(app):
             to_xml(table) + to_xml(totals),
             headers={"HX-Trigger": _json.dumps({"celerpToast": journal_void_toast(result)})},
         )
-
-    @app.post("/accounting/journal/{je_id}/void")
-    async def journal_void(request: Request, je_id: str):
-        from starlette.responses import Response as _R
-        token = _token(request)
-        if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        reason = str(form.get("reason", "")).strip() or None
-        try:
-            voided = await api.void_journal_entry(token, je_id, reason)
-        except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
-        # One entry is a batch of one: it answers the way a batch does, so the reader
-        # is told the same thing either way and the page does not reload under them.
-        return await _journal_void_answer(request, token, {"results": [voided]})
 
     @app.post("/accounting/journal/bulk-void")
     async def journal_bulk_void(request: Request):

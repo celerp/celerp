@@ -675,6 +675,33 @@ async def test_extended_journal_leaves_a_payment_alone(client):
 
 
 @pytest.mark.asyncio
+async def test_extended_journal_leaves_a_fulfilment_cost_posting_as_no_items(client, session):
+    """The fulfilment posting moves inventory to cost of sales at cost, as one
+    figure with no item breakdown of its own, and its cost basis is not meant to
+    equal the document's sale-price lines. It has no items to show, so it reads
+    `no_items`, not `untied`: tie-checking a cost posting against sale-price lines
+    would flag every fulfilled sale as an entry whose figures did not tie."""
+    from celerp.services.auto_je import create_for_doc_fulfilled
+    from celerp.models.company import Company, User
+    from sqlalchemy import select as _select
+
+    tok = await _reg(client)
+    # Finalized, so the document is still in the books: this proves the entry reads
+    # `no_items` on its own merits, not `no_document` because the doc had gone.
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
+    company_id = (await session.execute(_select(Company.id))).scalars().first()
+    user_id = (await session.execute(_select(User.id))).scalars().first()
+    await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
+                                   doc_id=doc, total_cogs=42.0, ts="2026-02-02")
+    await session.commit()
+
+    entry = next(e for e in (await _extended(client, tok))["entries"]
+                 if e["je_id"] == f"je:auto:{doc}:fulfill")
+    assert entry["items_status"] == "no_items"
+    assert all("item" not in l for l in entry["lines"])
+
+
+@pytest.mark.asyncio
 async def test_extended_journal_survives_a_deleted_source_document(client, session):
     tok = await _reg(client)
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 100.0)])

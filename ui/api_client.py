@@ -908,11 +908,6 @@ async def create_journal_entry(token: str, data: dict) -> dict:
         return _raise(await c.post("/accounting/journal-entries", json=data)).json()
 
 
-async def void_journal_entry(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/journal-entries/{entity_id}/void", json={"reason": reason})).json()
-
-
 async def bulk_void_journal_entries(token: str, je_ids: list[str], reason: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/journal-entries/bulk-void",

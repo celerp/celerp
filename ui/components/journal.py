@@ -161,6 +161,7 @@ def journal_rows(data: dict, *, items: bool, newest_first: bool = True) -> list[
                            or je_source_label(entry, csv_export=True)),
             "memo": entry.get("memo", ""),
             "status": entry.get("status"),
+            "items_status": entry.get("items_status"),
         }
         if not items:
             out.append({
@@ -299,36 +300,6 @@ def journal_void_toast(result: dict) -> dict:
     return {"message": message.strip(), "type": "error" if refused else "success"}
 
 
-def _void_control(row: dict, params: dict) -> FT:
-    """The void control for one entry, carrying the view it was pressed from.
-
-    Auto-posted entries keep the control and are refused by the server with an
-    explanation naming the source document. Removing the button instead would leave
-    the reader guessing why an entry cannot be voided (GDR 2e: validate at the
-    function level, never restrict the interface).
-
-    The view travels in the URL, the same way the selection toolbar sends it, so
-    both void paths read where the reader was from one place. The answer swaps the
-    table in place: a reader who narrowed the journal to find an entry keeps the
-    view they narrowed to, and the page does not reload under them.
-    """
-    if row.get("status") != "posted":
-        return Td("")
-    return Td(Details(
-        Summary(t("btn.void"), cls="btn btn--danger btn--sm"),
-        Form(
-            Input(type="text", name="reason", placeholder=t("acct.void_reason_optional"),
-                  cls="form-input form-input--sm",
-                  onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
-            Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--sm",
-                   style="margin-top:0.5rem;"),
-            hx_post=href(f"/accounting/journal/{row.get('je_id', '')}/void", params),
-            hx_target=f"#{JOURNAL_TABLE_ID}", hx_swap="outerHTML", cls="inline-form",
-        ),
-        cls="void-section",
-    ))
-
-
 def _entry_cells(row: dict, has_fx: bool) -> list:
     """The heading row of an entry: what it is, with the figures left to its lines."""
     memo_bits: list = [Span(row.get("memo", ""))] if row.get("memo") else []
@@ -384,6 +355,33 @@ def _line_cells(row: dict, currency: str | None, has_fx: bool) -> list:
     return cells
 
 
+# The two facts that leave a posting without item detail a reader can act on. A
+# `no_items` posting (a payment, a fulfilment cost movement, a manual entry) simply
+# never had items and gets no marker: an entry that never had items is not one whose
+# items were withheld. `expanded` shows its items on the line.
+_WITHHELD_NOTES = {
+    "untied": "acct.items_untied",
+    "no_document": "acct.items_no_document",
+}
+
+
+def _item_or_note(row: dict) -> FT:
+    """The item this posting was for, or a marked `--` saying why it is not shown.
+
+    A posting with an item names it. One without either never had an item, in which
+    case the cell is a plain `--`, or its item detail was withheld for a reason the
+    reader can act on, in which case the `--` carries that reason as a tooltip on the
+    row itself rather than in a note piled at the top of the page.
+    """
+    item = row.get("item")
+    if item:
+        return item
+    note = _WITHHELD_NOTES.get(row.get("items_status") or "")
+    if note:
+        return Span(EMPTY, cls="item-note", title=t(note))
+    return EMPTY
+
+
 def _item_cells(row: dict, currency: str | None, has_fx: bool) -> list:
     """One posting standing on its own, with what was sold on it."""
     debit = float(row.get("debit") or 0)
@@ -394,7 +392,7 @@ def _item_cells(row: dict, currency: str | None, has_fx: bool) -> list:
     cells = [
         Td(row["ts"], cls="cell--mono"),
         Td(_source_cell(row)),
-        Td(row.get("item") or EMPTY),
+        Td(_item_or_note(row)),
         Td(f"{row.get('account', '')} {row.get('name', '')}".strip()),
         Td(row.get("memo", ""), cls="cell--muted"),
         Td(fx_currency or currency or EMPTY, cls="cell--mono"),
@@ -411,7 +409,7 @@ def _item_cells(row: dict, currency: str | None, has_fx: bool) -> list:
     return cells
 
 
-def _headers(*, items: bool, has_fx: bool, void_action: bool, select: bool) -> list:
+def _headers(*, items: bool, has_fx: bool, select: bool) -> list:
     """The header row. Headers over figures are right-aligned, above the digits they
     name (HTML/CSS 4a)."""
     if items:
@@ -443,8 +441,6 @@ def _headers(*, items: bool, has_fx: bool, void_action: bool, select: bool) -> l
             # journal does not: its rows are split by item, and a rate repeated down
             # every split of one posting reads as several rates.
             headers.append(Th(t("th.rate"), cls="cell--number"))
-    if void_action:
-        headers.append(Th(""))
     if select:
         headers.insert(0, Th(Input(type="checkbox", cls="bulk-select-all",
                                    title=t("label.select_all")), cls="col-checkbox"))
@@ -452,13 +448,12 @@ def _headers(*, items: bool, has_fx: bool, void_action: bool, select: bool) -> l
 
 
 def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
-                  params: dict | None = None, void_action: bool = False,
+                  params: dict | None = None,
                   filtered: bool = False, select: bool = False) -> FT:
     """The journal as a table, in whichever of its two shapes the caller asked for.
 
-    `params` is the view the reader is looking at, carried into the void form so
-    voiding an entry returns them to the same view. `void_action` adds the column
-    holding that control, which the print sheet and the extended journal do without.
+    `params` is the view the reader is looking at, carried into the selection
+    toolbar so an action taken on a selection returns them to the same view.
     `select` adds the selection column the bulk toolbar reads, which the print
     sheets do without: there is nothing to tick on paper. `filtered` is what the
     payload said about itself, so an empty answer says which kind of empty it is: a
@@ -489,22 +484,17 @@ def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
             continue
         if row["kind"] == "entry":
             cells = _entry_cells(row, has_fx)
-            if void_action:
-                cells.append(_void_control(row, params))
             if select:
                 cells.insert(0, _select_cell(row, True))
             body.append(_row(cells, row, data_row=select))
             continue
         cells = _line_cells(row, currency, has_fx)
-        if void_action:
-            cells.append(Td(""))
         if select:
             cells.insert(0, _select_cell(row, False))
         body.append(_row(cells, row))
 
     return Table(
-        Thead(Tr(*_headers(items=items, has_fx=has_fx, void_action=void_action,
-                           select=select))),
+        Thead(Tr(*_headers(items=items, has_fx=has_fx, select=select))),
         Tbody(*body),
         cls="data-table", id=JOURNAL_TABLE_ID,
     )

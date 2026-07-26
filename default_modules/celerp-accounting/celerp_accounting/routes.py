@@ -877,6 +877,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "contact_id": contact_id,
             "doc_type": _DOC_TYPE_ALIASES.get(doc_type, doc_type),
             "is_payment": isinstance(payment_index, int),
+            "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             "doc": state,
         }
     return refs
@@ -1167,7 +1168,8 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
 
     - `expanded`: the items are on the lines below.
     - `no_items`: there was never item detail to show. A manual entry, a payment
-      moving cash against a control account, or a document kind that does not
+      moving cash against a control account, a fulfilment posting that moves
+      inventory to cost of sales as one figure, or a document kind that does not
       carry items.
     - `no_document`: the document the entry was posted for is not in the books
       any more, so there is nothing left to read items from.
@@ -1197,6 +1199,14 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     if not doc:
         return lines, "no_document"
     if ref.get("is_payment"):
+        return lines, "no_items"
+    if ref.get("is_cost_posting"):
+        # The fulfilment posting moves inventory to cost of sales at cost, as a
+        # single figure, not a line per item. It has no item breakdown to attach,
+        # and its cost basis is not meant to equal the document's sale-price lines,
+        # so tie-checking it against them would flag every sale as untied. The
+        # items are named on the same document's revenue posting; this entry stands
+        # as the classical journal shows it.
         return lines, "no_items"
     side = _ITEM_SIDE.get(ref.get("doc_type") or "")
     doc_lines = _doc_item_lines(doc, base)

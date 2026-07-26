@@ -114,7 +114,6 @@
           <th>Description</th>
           <th class="cell--number">Debit</th>
           <th class="cell--number">Credit</th>
-          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -128,9 +127,6 @@
 <span>Late delivery charge</span>          </td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td>
-<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:manual:<uuid>/void?date_from=2026-01-01&amp;date_to=2026-03-31" hx-swap="outerHTML" hx-target="#journal-table" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
-<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -139,7 +135,6 @@
           <td style="padding-left:2rem">1120 Accounts Receivable</td>
           <td class="cell--number">฿15.00</td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -148,7 +143,6 @@
           <td style="padding-left:2rem">4100 Sales Revenue</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿15.00</td>
-          <td></td>
         </tr>
         <tr class="data-row">
           <td class="col-checkbox">
@@ -161,9 +155,6 @@
 <span>Auto JE for doc:<id> finalized</span>          </td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td>
-<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:fin/void?date_from=2026-01-01&amp;date_to=2026-03-31" hx-swap="outerHTML" hx-target="#journal-table" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
-<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -172,7 +163,6 @@
           <td style="padding-left:2rem">1120 Accounts Receivable</td>
           <td class="cell--number">฿30.00</td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -181,7 +171,6 @@
           <td style="padding-left:2rem">4100 Sales Revenue</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿30.00</td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -190,7 +179,6 @@
           <td style="padding-left:2rem">2120 VAT Payable (Output VAT)</td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr class="data-row">
           <td class="col-checkbox">
@@ -202,9 +190,6 @@
 <span>February rent</span>          </td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td>
-<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:manual:<uuid>/void?date_from=2026-01-01&amp;date_to=2026-03-31" hx-swap="outerHTML" hx-target="#journal-table" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
-<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -213,7 +198,6 @@
           <td style="padding-left:2rem">6200 Rent</td>
           <td class="cell--number">฿25.00</td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -222,7 +206,6 @@
           <td style="padding-left:2rem">1111 Default Bank Account (Checking)</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿25.00</td>
-          <td></td>
         </tr>
         <tr class="data-row">
           <td class="col-checkbox">
@@ -235,9 +218,6 @@
 <span>Auto JE for doc:<id> payment</span>          </td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td>
-<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:pay:0/void?date_from=2026-01-01&amp;date_to=2026-03-31" hx-swap="outerHTML" hx-target="#journal-table" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
-<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -246,7 +226,6 @@
           <td style="padding-left:2rem">1111 Default Bank Account (Checking)</td>
           <td class="cell--number">฿40.00</td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -255,7 +234,6 @@
           <td style="padding-left:2rem">1120 Accounts Receivable</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿40.00</td>
-          <td></td>
         </tr>
         <tr class="data-row">
           <td class="col-checkbox">
@@ -268,9 +246,6 @@
 <span>Auto JE for doc:<id> finalized</span>          </td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td>
-<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:fin/void?date_from=2026-01-01&amp;date_to=2026-03-31" hx-swap="outerHTML" hx-target="#journal-table" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
-<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -279,7 +254,6 @@
           <td style="padding-left:2rem">1120 Accounts Receivable</td>
           <td class="cell--number">฿100.00</td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -288,7 +262,6 @@
           <td style="padding-left:2rem">4100 Sales Revenue</td>
           <td class="cell--number"></td>
           <td class="cell--number">฿100.00</td>
-          <td></td>
         </tr>
         <tr>
           <td class="col-checkbox"></td>
@@ -297,7 +270,6 @@
           <td style="padding-left:2rem">2120 VAT Payable (Output VAT)</td>
           <td class="cell--number"></td>
           <td class="cell--number"></td>
-          <td></td>
         </tr>
       </tbody>
     </table>

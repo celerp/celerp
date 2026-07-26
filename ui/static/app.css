@@ -2999,6 +2999,11 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* Status indicators with an explanatory tooltip show the help cursor on hover. */
 .badge[title], .status-card[title] { cursor: help; }
 
+/* The extended journal marks a posting whose item detail was withheld: the empty
+   `--` in its item column carries the reason as a tooltip, dotted-underlined so a
+   reader knows there is something to hover rather than an ordinary empty cell. */
+.item-note { border-bottom: 1px dotted var(--c-text-muted, #888); cursor: help; }
+
 /* ── Client-side sortable headers + windowed pagination (enhanced tables) ── */
 .sortable-th { cursor: pointer; user-select: none; }
 /* Sort arrow sits inner (right after the label, before any filter funnel), shown when active -
