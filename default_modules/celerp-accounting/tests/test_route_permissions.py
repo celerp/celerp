@@ -22,6 +22,7 @@ EXPECTED: dict[tuple[str, str], str] = {
     # Reports. Reading these is what view_financial_reports means.
     ("GET", "/chart"): READ,
     ("GET", "/journal"): READ,
+    ("GET", "/extended-journal"): READ,
     ("GET", "/ledger/{account_code}"): READ,
     ("GET", "/trial-balance"): READ,
     ("GET", "/general-ledger"): READ,

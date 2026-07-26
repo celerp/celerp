@@ -52,16 +52,18 @@ async def _user_with_role(client, session, admin_token: str, role: str) -> str:
     return r2.json()["access_token"]
 
 
-async def _post_manual_je(client, tok, entries, ts="2026-01-15", memo="Adjustment", token=None,
-                          fx=None):
+async def _post_manual_je(client, tok, entries, ts="2026-01-15", memo="Adjustment", token=None):
     payload = {
         "ts": ts, "memo": memo, "entries": entries,
         "idempotency_token": token or uuid.uuid4().hex,
     }
-    if fx is not None:
-        payload["fx"] = fx
     r = await client.post("/accounting/journal-entries", headers=_h(tok), json=payload)
     return r
+
+
+def _fx(line: dict, currency: str, rate: float) -> dict:
+    """The same line, typed in a foreign currency at a rate."""
+    return {**line, "currency": currency, "rate": rate}
 
 
 async def _thb(client, tok):
@@ -398,6 +400,173 @@ async def test_journal_source_typing(client):
     types = {e["je_id"]: e["je_type"] for e in data["entries"]}
     assert types[manual] == "manual"
     assert "transfer" in [t for i, t in types.items() if i != manual]
+
+
+# ---------------------------------------------------------------------------
+# Extended journal
+# ---------------------------------------------------------------------------
+
+async def _extended(client, tok, **params):
+    r = await client.get("/accounting/extended-journal", headers=_h(tok), params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _doc_with_items(client, tok, doc_type, items, *, tax=0.0, shipping=0.0,
+                          currency=None, rate=None, issue_date="2026-02-01"):
+    """A finalized document whose lines are the ones handed in.
+
+    items are (sku, quantity, unit_price) triples; the totals are computed from
+    them so the posting and the lines agree unless a test deliberately adds
+    shipping the lines do not account for.
+    """
+    line_items = [{"sku": sku, "name": sku, "quantity": qty, "unit_price": price,
+                   "line_total": round(qty * price, 2)}
+                  for sku, qty, price in items]
+    subtotal = round(sum(li["line_total"] for li in line_items), 2)
+    payload = {
+        "doc_type": doc_type, "contact_id": "contact:1", "issue_date": issue_date,
+        "line_items": line_items, "subtotal": subtotal, "tax": tax,
+        "shipping": shipping, "total": round(subtotal + tax + shipping, 2),
+    }
+    if currency:
+        payload["currency"] = currency
+        payload["conversion_rate"] = rate
+    r = await client.post("/docs", headers=_h(tok), json=payload)
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))).status_code == 200
+    return doc_id
+
+
+def _entry_for(data, doc_id):
+    hits = [e for e in data["entries"]
+            if (e.get("source_doc") or {}).get("doc_id") == doc_id]
+    assert hits, f"no journal entry for {doc_id}"
+    return hits[0]
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_splits_a_sale_into_one_row_per_item(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice",
+                                [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+
+    entry = _entry_for(await _extended(client, tok), doc)
+    assert entry["items_expanded"] is True
+    sold = [l for l in entry["lines"] if l.get("item")]
+    assert [(l["item"], l["quantity"], l["unit_price"], l["credit"]) for l in sold] == [
+        ("WIDGET", 2, 30.0, 60.0), ("GIZMO", 1, 40.0, 40.0)]
+    # The revenue it split is gone, not duplicated: the entry still foots.
+    assert sum(l["debit"] for l in entry["lines"]) == sum(l["credit"] for l in entry["lines"]) == 100.0
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_names_the_item_on_each_line_of_a_purchase(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "bill",
+                                [("BOLT", 10, 1.5), ("NUT", 20, 0.25)])
+
+    entry = _entry_for(await _extended(client, tok), doc)
+    assert entry["items_expanded"] is True
+    bought = [l for l in entry["lines"] if l.get("item")]
+    assert [(l["item"], l["quantity"], l["debit"]) for l in bought] == [
+        ("BOLT", 10, 15.0), ("NUT", 20, 5.0)]
+    # A purchase already posts a line per item, so nothing was split.
+    assert len(entry["lines"]) == len(_entry_for(await _journal(client, tok), doc)["lines"])
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_leaves_a_manual_entry_untouched(client):
+    tok = await _reg(client)
+    je_id = (await _post_manual_je(client, tok, _bal(10.0))).json()["je_id"]
+
+    entry = [e for e in (await _extended(client, tok))["entries"] if e["je_id"] == je_id][0]
+    assert entry["items_expanded"] is False
+    assert all("item" not in l for l in entry["lines"])
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_withholds_item_detail_when_amounts_do_not_tie(client):
+    tok = await _reg(client)
+    # Shipping is charged on the document but is not one of its lines, so the
+    # revenue posted is more than the lines account for.
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)], shipping=40.0)
+
+    entry = _entry_for(await _extended(client, tok), doc)
+    assert entry["items_expanded"] is False
+    assert all("item" not in l for l in entry["lines"])
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_leaves_a_payment_alone(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 100.0)])
+    r = await client.post(f"/docs/{doc}/payment", headers=_h(tok), json={
+        "payment_date": "2026-02-10", "amount": 100.0, "method": "transfer",
+        "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+    data = await _extended(client, tok)
+    pay = [e for e in data["entries"]
+           if (e.get("source_doc") or {}).get("doc_id") == doc and e["ts"] == "2026-02-10"]
+    assert pay and pay[0]["items_expanded"] is False
+    assert all("item" not in l for l in pay[0]["lines"])
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_survives_a_deleted_source_document(client, session):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 100.0)])
+    from sqlalchemy import delete
+    from celerp.models.projections import Projection
+    await session.execute(delete(Projection).where(Projection.entity_id == doc))
+    await session.commit()
+
+    entry = _entry_for(await _extended(client, tok), doc)
+    assert entry["items_expanded"] is False
+    assert sum(l["credit"] for l in entry["lines"]) == 100.0
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_foreign_rows_foot_to_the_posting(client):
+    tok = await _reg(client)
+    await _thb(client, tok)
+    # Three thirds of a dollar: converting each and converting their sum differ,
+    # which is exactly the case the expanded rows have to absorb.
+    doc = await _doc_with_items(client, tok, "invoice",
+                                [("A", 1, 33.33), ("B", 1, 33.33), ("C", 1, 33.34)],
+                                currency="USD", rate=35.0)
+
+    ext = _entry_for(await _extended(client, tok), doc)
+    classical = _entry_for(await _journal(client, tok), doc)
+    assert ext["items_expanded"] is True
+    rows = [l for l in ext["lines"] if l.get("item")]
+    assert [l["fx_credit"] for l in rows] == [33.33, 33.33, 33.34]
+    posted = [l["credit"] for l in classical["lines"] if l["account"] == "4100"][0]
+    assert sum(l["credit"] for l in rows) == posted
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_agrees_with_the_classical_journal(client):
+    tok = await _reg(client)
+    await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    await _doc_with_items(client, tok, "bill", [("BOLT", 10, 1.5)], issue_date="2026-02-03")
+    await _post_manual_je(client, tok, _bal(12.0), ts="2026-02-05")
+
+    classical = await _journal(client, tok)
+    extended = await _extended(client, tok)
+    assert [e["je_id"] for e in extended["entries"]] == [e["je_id"] for e in classical["entries"]]
+    assert extended["total_debit"] == classical["total_debit"]
+    assert extended["total_credit"] == classical["total_credit"]
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_requires_view_financial_reports(client, session):
+    admin = await _reg(client)
+    operator = await _user_with_role(client, session, admin, "operator")
+    assert (await client.get("/accounting/extended-journal",
+                             headers=_h(operator))).status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -914,13 +1083,20 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
 # Account codes with no chart entry
 # ---------------------------------------------------------------------------
 
-async def _import_je(client, tok, entries, ts="2026-01-10"):
+async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
     """Post straight to the projection, the only way a code with no chart entry
-    gets a posted line (manual entry refuses an account that does not exist)."""
+    gets a posted line (manual entry refuses an account that does not exist).
+
+    `fx` writes the entry-level shape used before currency moved to the line,
+    which is the only way to produce one now that the writer is gone.
+    """
+    data = {"status": "posted", "ts": ts, "entries": entries}
+    if fx is not None:
+        data["fx"] = fx
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
-        "data": {"status": "posted", "ts": ts, "entries": entries},
+        "data": data,
         "source": "test", "idempotency_key": str(uuid.uuid4()),
     }]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
@@ -1149,196 +1325,298 @@ async def test_report_date_filters_accept_valid_dates(client):
 # --- Foreign-currency manual journal entries (J2) ---------------------------
 
 
-async def test_manual_je_fx_converts_foreign_to_local(client):
-    """The author types foreign amounts; the server stores base currency and
-    keeps the typed figures so an auditor can tie them to the document."""
+async def test_manual_je_line_fx_converts_to_base_and_keeps_the_typed_figures(client):
+    """The author types foreign amounts on a line; the server stores base
+    currency and keeps the typed figures so an auditor can tie them back."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 10.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 10.0},
-    ], fx={"currency": "USD", "rate": 35.0})
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        _fx({"account": "4100", "debit": 0, "credit": 10.0}, "USD", 35.0),
+    ])
     assert r.status_code == 200, r.text
 
-    j = await _journal(client, tok)
-    entry = j["entries"][0]
-    assert entry["fx"] == {"currency": "USD", "rate": 35.0}
+    entry = (await _journal(client, tok))["entries"][0]
     debit_line = next(l for l in entry["lines"] if l["debit"])
     credit_line = next(l for l in entry["lines"] if l["credit"])
     assert debit_line["debit"] == 350.0 and debit_line["fx_debit"] == 10.0
     assert credit_line["credit"] == 350.0 and credit_line["fx_credit"] == 10.0
+    assert debit_line["fx_currency"] == "USD" and debit_line["fx_rate"] == 35.0
 
 
-async def test_manual_je_fx_base_currency_rejected(client):
+async def test_manual_je_accepts_rate_below_one_ten_thousandth(client):
+    """A rate far below 0.0001 posts and reads back at the precision typed.
+
+    1 LBP is about 0.00001117318 THB. A four-place floor would have refused this
+    rate or flattened it to 0.0000, and the base figures derived from it would
+    have been wrong by orders of magnitude.
+    """
     tok = await _reg(client)
     await _thb(client, tok)
-    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "THB", "rate": 1.0})
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10_000_000.0, "credit": 0}, "LBP", 0.00001117318),
+        {"account": "4100", "debit": 0, "credit": 111.73},
+    ])
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    fx_line = next(l for l in entry["lines"] if l["debit"])
+    assert fx_line["fx_rate"] == 0.00001117318, "the rate must survive the round trip intact"
+    assert fx_line["fx_debit"] == 10_000_000.0
+    # 10,000,000 LBP * 0.00001117318 = 111.7318, at THB's two places.
+    assert fx_line["debit"] == 111.73
+
+
+async def test_manual_je_carries_a_different_currency_on_each_line(client):
+    """One entry, two currencies. Both sides convert to base and balance there,
+    which is the whole reason currency belongs to the line."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        _fx({"account": "4100", "debit": 0, "credit": 100.0}, "CNY", 3.5),
+    ])
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    by_account = {l["account"]: l for l in entry["lines"]}
+    assert by_account["1111"]["fx_currency"] == "USD"
+    assert by_account["4100"]["fx_currency"] == "CNY"
+    assert by_account["1111"]["debit"] == by_account["4100"]["credit"] == 350.0
+
+
+async def test_manual_je_mixes_a_foreign_line_with_a_base_currency_line(client):
+    """A line with no currency is a base-currency line and stays annotation-free,
+    beside a foreign one in the same entry."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        {"account": "4100", "debit": 0, "credit": 350.0},
+    ])
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    plain = next(l for l in entry["lines"] if l["account"] == "4100")
+    assert plain["fx_currency"] is None and plain["fx_rate"] is None
+    assert plain["fx_debit"] is None and plain["fx_credit"] is None
+
+
+async def test_manual_je_line_in_base_currency_at_rate_one_is_accepted(client):
+    """Naming the company currency at par says nothing new, so it is not an
+    error; it simply carries no annotation."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "THB", 1.0),
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ])
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert all(l["fx_currency"] is None for l in entry["lines"])
+
+
+async def test_manual_je_line_in_base_currency_at_another_rate_rejected(client):
+    """A rate against the company's own currency is a mistake, and the message
+    names the line so the author knows which one."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "THB", 2.0),
+        {"account": "4100", "debit": 0, "credit": 20.0},
+    ])
     assert r.status_code == 422
-    assert "THB" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "THB" in detail and "Line 1" in detail
 
 
-async def test_manual_je_fx_invalid_currency_code_rejected(client):
+async def test_manual_je_line_invalid_currency_code_rejected(client):
     tok = await _reg(client)
     await _thb(client, tok)
-    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "QQQ", "rate": 2.0})
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "QQQ", 2.0),
+        {"account": "4100", "debit": 0, "credit": 20.0},
+    ])
     assert r.status_code == 422
     assert "QQQ" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("rate", [0, -5.0])
-async def test_manual_je_fx_nonpositive_rate_rejected(client, rate):
+async def test_manual_je_line_nonpositive_rate_rejected(client, rate):
     tok = await _reg(client)
     await _thb(client, tok)
-    r = await _post_manual_je(client, tok, _bal(10.0), fx={"currency": "USD", "rate": rate})
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", rate),
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ])
     assert r.status_code == 422
     assert "rate" in r.json()["detail"].lower()
 
 
-async def test_manual_je_fx_balance_checked_on_foreign_totals(client):
-    """Balance is judged on what the author typed, and the message says so."""
+async def test_manual_je_line_currency_without_a_rate_rejected(client):
+    """A currency with no rate is incomplete, not a default of 1.0."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 10.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 9.0},
-    ], fx={"currency": "USD", "rate": 35.0})
+        {"account": "1111", "debit": 10.0, "credit": 0, "currency": "USD"},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ])
     assert r.status_code == 422
-    assert "USD" in r.json()["detail"]
+    assert "rate" in r.json()["detail"].lower()
 
 
-async def test_manual_je_fx_rounding_residual_posted_as_extra_line(client):
-    """Lines that balance in the foreign currency can convert to local amounts
-    that do not; the difference posts as its own disclosed line."""
+async def test_manual_je_line_rate_without_a_currency_rejected(client):
+    """A rate on its own says nothing: a bare number cannot convert an amount
+    from a currency nobody named."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], fx={"currency": "USD", "rate": 3.0025})
+        {"account": "1111", "debit": 10.0, "credit": 0, "rate": 35.0},
+        {"account": "4100", "debit": 0, "credit": 10.0},
+    ])
+    assert r.status_code == 422
+    assert "currency" in r.json()["detail"].lower()
+
+
+async def test_manual_je_balance_is_checked_in_base_currency(client):
+    """Balance is judged on the converted figures, because those are what the
+    books hold, and the message names the base currency and the short side."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        _fx({"account": "4100", "debit": 0, "credit": 9.0}, "USD", 35.0),
+    ])
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "THB" in detail and "credit" in detail
+
+
+async def test_manual_je_conversion_difference_is_refused_not_plugged(client):
+    """Lines that balance in the foreign currency can convert to base amounts
+    that do not. The author decides where that difference belongs, so the entry
+    comes back with the gap named rather than a line appearing on its own."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "6100", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6200", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6300", "debit": 33.34, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "1111", "debit": 0, "credit": 100.00}, "USD", 3.0025),
+    ])
+    # 33.33 and 33.34 convert to 100.07, 100.07 and 100.10 = 300.24, while the
+    # 100.00 credit converts to 300.25: one satang the debit side is short of.
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "0.01" in detail and "debit" in detail
+    assert (await _journal(client, tok))["entries"] == []
+
+
+async def test_manual_je_the_author_posts_the_difference_themselves(client):
+    """The same entry with the difference written as its own line goes through,
+    and that line is the author's, on the account they chose."""
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "6100", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6200", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6300", "debit": 33.34, "credit": 0}, "USD", 3.0025),
+        {"account": "6960", "debit": 0.01, "credit": 0},
+        _fx({"account": "1111", "debit": 0, "credit": 100.00}, "USD", 3.0025),
+    ])
     assert r.status_code == 200, r.text
 
-    # 33.33 and 33.34 convert to 100.07, 100.07, 100.10 = 300.24, while the
-    # 100.00 credit converts to 300.25: a one-cent debit plug.
     j = await _journal(client, tok)
     entry = j["entries"][0]
-    assert len(entry["lines"]) == 4 + 1
-    plug = next(l for l in entry["lines"] if l["account"] == "6960")
-    assert plug["debit"] == 0.01 and plug["credit"] == 0.0
-    # A local-only plug: zero on both sides, so the display takes the stored
-    # branch and never divides a local figure back into an invented foreign one.
-    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
+    assert len(entry["lines"]) == 5
+    difference = next(l for l in entry["lines"] if l["account"] == "6960")
+    assert difference["debit"] == 0.01
+    # A base-currency line: no foreign figure, because none was typed.
+    assert difference["fx_debit"] is None and difference["fx_currency"] is None
     assert j["total_debit"] == j["total_credit"] == 300.25
 
 
-async def test_manual_je_fx_zero_residual_adds_no_line(client):
+async def test_manual_je_nothing_is_posted_to_the_difference_account_on_its_own(client):
+    """Nothing writes to 6960 automatically any more, so an entry that balances
+    in base currency posts exactly the lines it was given."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 50.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 50.0},
-    ], fx={"currency": "USD", "rate": 2.0})
+        _fx({"account": "1111", "debit": 50.0, "credit": 0}, "USD", 2.0),
+        _fx({"account": "4100", "debit": 0, "credit": 50.0}, "USD", 2.0),
+    ])
     assert r.status_code == 200, r.text
 
     entry = (await _journal(client, tok))["entries"][0]
     assert len(entry["lines"]) == 2
     assert entry["lines"][0]["debit"] == 100.0
+    assert all(l["account"] != "6960" for l in entry["lines"])
 
 
-async def test_manual_je_fx_respects_foreign_currency_decimal_places(client):
-    """JPY has no minor unit, so both sides quantize to whole yen and balance."""
+async def test_manual_je_line_respects_its_own_currency_decimal_places(client):
+    """JPY has no minor unit, so a yen line quantizes to whole yen before it
+    converts, at the same place the currency itself uses."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 100.5, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 101.0},
-    ], fx={"currency": "JPY", "rate": 0.30})
+        _fx({"account": "1111", "debit": 100.5, "credit": 0}, "JPY", 0.25),
+        {"account": "4100", "debit": 0, "credit": 25.25},
+    ])
     assert r.status_code == 200, r.text
 
+    line = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
+                if l["account"] == "1111")
+    # 100.5 rounds to 101 yen, and 101 at 0.25 is 25.25 base.
+    assert line["fx_debit"] == 101.0 and line["debit"] == 25.25
 
-async def test_manual_je_fx_token_reuse_with_different_rate_conflicts(client):
+
+async def test_manual_je_token_reuse_with_a_different_rate_conflicts(client):
     """Same amounts at a different rate is a different entry, not a retry."""
     tok = await _reg(client)
     await _thb(client, tok)
     token = uuid.uuid4().hex
-    first = await _post_manual_je(client, tok, _bal(10.0), token=token,
-                                  fx={"currency": "USD", "rate": 35.0})
+    first = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        _fx({"account": "4100", "debit": 0, "credit": 10.0}, "USD", 35.0),
+    ], token=token)
     assert first.status_code == 200, first.text
-    second = await _post_manual_je(client, tok, _bal(10.0), token=token,
-                                   fx={"currency": "USD", "rate": 36.0})
+    second = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 36.0),
+        _fx({"account": "4100", "debit": 0, "credit": 10.0}, "USD", 36.0),
+    ], token=token)
     assert second.status_code == 409, second.text
 
 
-async def test_manual_je_fx_rounding_account_missing_rejected(client):
-    """With 6960 inactive, an entry that needs a plug is refused, not silently
-    posted out of balance."""
+async def test_manual_je_token_reuse_conflicts_when_rate_rounds_to_the_same_base(client):
+    """Two rates can convert to identical base figures. Comparing only those
+    would read a corrected rate as a retry and silently post nothing."""
     tok = await _reg(client)
     await _thb(client, tok)
-    patched = await client.patch("/accounting/accounts/6960", headers=_h(tok),
-                                 json={"is_active": False})
-    assert patched.status_code == 200, patched.text
-    r = await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], fx={"currency": "USD", "rate": 3.0025})
-    assert r.status_code == 422
-    assert "6960" in r.json()["detail"]
+    token = uuid.uuid4().hex
+    first = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 1.0, "credit": 0}, "USD", 35.001),
+        _fx({"account": "4100", "debit": 0, "credit": 1.0}, "USD", 35.001),
+    ], token=token)
+    assert first.status_code == 200, first.text
+
+    second = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 1.0, "credit": 0}, "USD", 35.004),
+        _fx({"account": "4100", "debit": 0, "credit": 1.0}, "USD", 35.004),
+    ], token=token)
+    assert second.status_code == 409, second.text
 
 
-async def test_seed_chart_includes_fx_rounding_account(client):
+async def test_seed_chart_includes_the_fx_difference_account(client):
     tok = await _reg(client)
     chart = (await client.get("/accounting/chart", headers=_h(tok))).json()
     items = chart["items"] if isinstance(chart, dict) else chart
     row = next(a for a in items if a["code"] == "6960")
+    assert row["name"] == "Foreign Exchange Difference"
     assert row["account_type"] == "expense" and row["parent_code"] == "6000"
 
 
-async def test_manual_je_without_fx_is_unchanged(client):
-    """J1: an ordinary entry carries no fx and no foreign amounts at all."""
-    tok = await _reg(client)
-    r = await _post_manual_je(client, tok, _bal(100.0))
-    assert r.status_code == 200, r.text
-
-    entry = (await _journal(client, tok))["entries"][0]
-    assert entry["fx"] is None
-    assert all(l["fx_debit"] is None and l["fx_credit"] is None for l in entry["lines"])
-
-
-async def test_manual_je_fx_residual_can_land_on_the_credit_side(client):
-    """A residual is not always a debit; the plug follows whichever side is
-    short, which is why one difference account carries both signs."""
-    tok = await _reg(client)
-    await _thb(client, tok)
-    r = await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], fx={"currency": "USD", "rate": 3.005})
-    assert r.status_code == 200, r.text
-
-    j = await _journal(client, tok)
-    plug = next(l for l in j["entries"][0]["lines"] if l["account"] == "6960")
-    assert plug["credit"] == 0.01 and plug["debit"] == 0.0
-    assert j["total_debit"] == j["total_credit"] == 300.51
-
-
-async def test_manual_je_fx_missing_rate_rejected(client):
-    """A currency with no rate is incomplete, not a default of 1.0."""
-    tok = await _reg(client)
-    await _thb(client, tok)
-    r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
-        "ts": "2026-01-15", "memo": "m", "entries": _bal(10.0),
-        "idempotency_token": uuid.uuid4().hex,
-        "fx": {"currency": "USD"},
-    })
-    assert r.status_code == 422
-
-
-async def test_seed_chart_endpoint_backfills_fx_rounding_account(client):
+async def test_seed_chart_endpoint_backfills_the_fx_difference_account(client):
     """Re-seeding an existing chart adds 6960 without disturbing the rest."""
     tok = await _reg(client)
     r = await client.post("/accounting/chart/seed", headers=_h(tok))
@@ -1350,15 +1628,48 @@ async def test_seed_chart_endpoint_backfills_fx_rounding_account(client):
     assert row["account_type"] == "expense" and row["parent_code"] == "6000"
 
 
-async def test_void_manual_je_fx_preserves_stored_foreign_amounts(client):
+async def test_journal_reads_pre_change_entry_level_fx(client):
+    """An entry posted before currency moved to the line still reads correctly.
+
+    Stored events are immutable, so entries written in the old shape carry one
+    `fx` for the whole entry. Their lines inherit it on read; nothing rewrites
+    the event.
+    """
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _import_je(client, tok, [
+        {"account": "1111", "debit": 350.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 350.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert all(l["fx_currency"] == "USD" for l in entry["lines"])
+    assert all(l["fx_rate"] == 35.0 for l in entry["lines"])
+
+
+async def test_manual_je_without_fx_is_unchanged(client):
+    """J1: an ordinary entry carries no currency, no rate and no foreign
+    amounts at all."""
+    tok = await _reg(client)
+    r = await _post_manual_je(client, tok, _bal(100.0))
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert entry["fx"] is None
+    assert all(l["fx_debit"] is None and l["fx_credit"] is None
+               and l["fx_currency"] is None and l["fx_rate"] is None
+               for l in entry["lines"])
+
+
+async def test_void_manual_je_preserves_the_stored_line_fx(client):
     """Voiding removes the entry from the books but not from the record: the
-    foreign amounts and rate stay for the audit trail."""
+    foreign amounts, currency and rate stay for the audit trail."""
     tok = await _reg(client)
     await _thb(client, tok)
     posted = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 10.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 10.0},
-    ], fx={"currency": "USD", "rate": 35.0})
+        _fx({"account": "1111", "debit": 10.0, "credit": 0}, "USD", 35.0),
+        _fx({"account": "4100", "debit": 0, "credit": 10.0}, "USD", 35.0),
+    ])
     je_id = posted.json()["je_id"]
 
     v = await client.post(f"/accounting/journal-entries/{je_id}/void", headers=_h(tok),
@@ -1367,24 +1678,64 @@ async def test_void_manual_je_fx_preserves_stored_foreign_amounts(client):
 
     entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)
     assert entry["status"] == "void"
-    assert entry["fx"] == {"currency": "USD", "rate": 35.0}
-    assert next(l for l in entry["lines"] if l["fx_debit"])["fx_debit"] == 10.0
+    line = next(l for l in entry["lines"] if l["fx_debit"])
+    assert line["fx_debit"] == 10.0 and line["fx_currency"] == "USD"
     # Out of the books: a voided entry contributes nothing to the totals.
     assert (await _journal(client, tok))["total_debit"] == 0.0
 
 
-async def test_cross_report_consistency_with_fx_and_rounding(client):
-    """The journal, trial balance, and general ledger agree once a foreign
-    entry and its rounding line are in the period."""
+async def test_an_entry_posted_before_per_line_currency_still_reads_back(client, session):
+    """Stored events are immutable, so an entry recorded when the currency and
+    rate belonged to the whole entry has to render now. Its lines inherit it."""
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+    from sqlalchemy import select as _select
+
+    tok = await _reg(client)
+    await _thb(client, tok)
+    company_id = (await session.execute(_select(Company.id))).scalars().first()
+    je_id = f"je:manual:{uuid.uuid4().hex}"
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=je_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.created",
+        data={
+            "ts": "2026-01-15", "memo": "Historic", "status": "posted", "je_type": "manual",
+            "entries": [
+                {"account": "1111", "debit": 350.0, "credit": 0.0, "fx_debit": 10.0},
+                {"account": "4100", "debit": 0.0, "credit": 350.0, "fx_credit": 10.0},
+            ],
+            "fx": {"currency": "USD", "rate": 35.0},
+        },
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=uuid.uuid4().hex,
+        metadata_={},
+    )
+    await session.commit()
+
+    entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)
+    assert all(l["fx_currency"] == "USD" and l["fx_rate"] == 35.0 for l in entry["lines"])
+    assert next(l for l in entry["lines"] if l["debit"])["fx_debit"] == 10.0
+
+
+async def test_cross_report_consistency_with_line_fx(client):
+    """The journal, trial balance, and general ledger agree once an entry with
+    foreign lines and an author-written difference is in the period."""
     tok = await _reg(client)
     await _thb(client, tok)
     await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10")
-    await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], ts="2026-01-11", fx={"currency": "USD", "rate": 3.0025})
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "6100", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6200", "debit": 33.33, "credit": 0}, "USD", 3.0025),
+        _fx({"account": "6300", "debit": 33.34, "credit": 0}, "USD", 3.0025),
+        {"account": "6960", "debit": 0.01, "credit": 0},
+        _fx({"account": "1111", "debit": 0, "credit": 100.00}, "USD", 3.0025),
+    ], ts="2026-01-11")
+    assert r.status_code == 200, r.text
 
     journal = await _journal(client, tok, date_from="2026-01-01", date_to="2026-12-31")
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
@@ -1397,7 +1748,7 @@ async def test_cross_report_consistency_with_fx_and_rounding(client):
     assert gl["balanced"] is True
 
     tb_net = {l["code"]: l["net"] for l in tb["lines"]}
-    assert abs(tb_net["6960"] - 0.01) < 0.001, "the rounding plug must reach the trial balance"
+    assert abs(tb_net["6960"] - 0.01) < 0.001, "the difference line must reach the trial balance"
     for row in gl["rows"]:
         signed = row["closing"]
         if row["account_type"] not in ("asset", "expense", "cogs"):
@@ -1406,56 +1757,6 @@ async def test_cross_report_consistency_with_fx_and_rounding(client):
 
     fx_entry = next(e for e in journal["entries"] if e["ts"] == "2026-01-11")
     assert next(l for l in fx_entry["lines"] if l["account"] == "6100")["fx_debit"] == 33.33
-
-
-async def test_manual_je_fx_token_reuse_conflicts_when_rate_rounds_to_same_local(client):
-    """Two rates can convert to identical local figures. Comparing only those
-    would read a corrected rate as a retry and silently post nothing."""
-    tok = await _reg(client)
-    await _thb(client, tok)
-    token = uuid.uuid4().hex
-    first = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 1.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 1.0},
-    ], token=token, fx={"currency": "USD", "rate": 35.001})
-    assert first.status_code == 200, first.text
-
-    second = await _post_manual_je(client, tok, [
-        {"account": "1111", "debit": 1.0, "credit": 0},
-        {"account": "4100", "debit": 0, "credit": 1.0},
-    ], token=token, fx={"currency": "USD", "rate": 35.004})
-    assert second.status_code == 409, second.text
-
-
-async def test_manual_je_fx_rounding_line_claims_no_foreign_amount(client):
-    """The plug is local-only: it must not carry a foreign figure, because the
-    author never typed one in any currency."""
-    tok = await _reg(client)
-    await _thb(client, tok)
-    await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], fx={"currency": "USD", "rate": 3.0025})
-
-    plug = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
-                if l["account"] == "6960")
-    assert plug["fx_debit"] == 0.0 and plug["fx_credit"] == 0.0
-
-
-async def test_manual_je_fx_residual_stays_within_its_bound(client):
-    """A large rate scales the bound with it, so an honest conversion never
-    trips the sanity check that guards the plug."""
-    tok = await _reg(client)
-    await _thb(client, tok)
-    r = await _post_manual_je(client, tok, [
-        {"account": "6100", "debit": 33.33, "credit": 0},
-        {"account": "6200", "debit": 33.33, "credit": 0},
-        {"account": "6300", "debit": 33.34, "credit": 0},
-        {"account": "1111", "debit": 0, "credit": 100.00},
-    ], fx={"currency": "USD", "rate": 300.25})
-    assert r.status_code == 200, r.text
 
 
 async def test_creating_an_account_with_an_unknown_type_is_rejected(client):

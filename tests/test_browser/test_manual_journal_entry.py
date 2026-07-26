@@ -9,6 +9,9 @@ Proves:
 3. Posting lands back on the Journal tab with the entry visible.
 4. A line posted with a party reaches that party's statement.
 5. Voiding the entry marks it voided on the journal.
+6. Foreign currency is collapsed out of the way until it is asked for.
+7. Each line converts at its own rate, and an entry that does not balance in
+   the company currency is refused rather than plugged.
 """
 from __future__ import annotations
 
@@ -62,9 +65,33 @@ def _pick_party(page, idx: int, contact_id: str, name: str) -> None:
     opt.click()
 
 
+def _pick_currency(page, idx: int, code: str) -> None:
+    """Choose the currency on journal line `idx`, in the cell after the credit."""
+    cell = page.locator("#je-lines tr").nth(idx).locator("td").nth(4)
+    box = cell.locator(".combobox-input")
+    box.click()
+    cell.locator(".combobox-list.open").wait_for(state="visible", timeout=3000)
+    box.fill(code)
+    opt = cell.locator(f'.combobox-list.open .combobox-option[data-value="{code}"]').first
+    opt.wait_for(state="visible", timeout=3000)
+    opt.click()
+
+
+def _clear_currency(page, idx: int) -> None:
+    """Empty the currency on journal line `idx`, making it a company-currency line."""
+    cell = page.locator("#je-lines tr").nth(idx).locator("td").nth(4)
+    cell.locator(".combobox-input").fill("")
+    page.fill(f'#je-lines [name="rate_{idx}"]', "")
+
+
 def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart, party):
     page.goto(f"{ui_server}/accounting/journal/new", wait_until="domcontentloaded")
     page.wait_for_selector("#je-lines", timeout=10000)
+
+    # Foreign currency is a reveal, not a column set everybody carries: an
+    # accountant who never posts in another currency sees the form they always
+    # saw, and the currency and rate cells are not on it until they ask.
+    assert page.locator("#je-lines tr").first.locator("td").nth(4).is_hidden()
 
     page.fill('input[name="ts"]', "2026-06-15")
     page.fill('input[name="memo"]', "Browser test adjustment")
@@ -111,31 +138,29 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart, party):
     page.wait_for_selector("tr.payment-voided .badge--void", timeout=10000)
 
 
-def test_manual_je_fx_journey_posts_converts_and_shows_rounding_line(
+def test_manual_je_fx_journey_converts_per_line_and_refuses_to_plug(
     page, ui_server, seeded_chart
 ):
-    """The foreign-currency journey: convert live, disclose the rounding line
-    before posting, and show the typed foreign figures on the journal."""
+    """The foreign-currency journey.
+
+    Each line converts at its own rate and shows what it will post before it
+    posts. When the converted figures do not foot, nothing is written to make
+    them foot: the gap is named, the entry is refused, and the difference line
+    is the author's own to write.
+    """
     page.goto(f"{ui_server}/accounting/journal/new", wait_until="domcontentloaded")
     page.wait_for_selector("#je-lines", timeout=10000)
 
     page.fill('input[name="ts"]', "2026-06-16")
     page.fill('input[name="memo"]', "Browser test foreign entry")
 
-    # Open the reveal and choose a currency other than the company's own
-    # (this fixture's company is USD); the control is collapsed by default.
+    # Opening the reveal is what puts the per-line currency and rate cells on
+    # the form; this fixture's company is USD, so EUR is a foreign line.
     page.locator("details.je-fx-reveal summary").first.click()
-    cur = page.locator('.je-fx-reveal .combobox-input').first
-    cur.click()
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
-    cur.fill("EUR")
-    eur = page.locator('.combobox-list.open .combobox-option[data-value="EUR"]').first
-    eur.wait_for(state="visible", timeout=3000)
-    eur.click()
-    page.fill('input[name="rate"]', "3.0025")
+    page.wait_for_selector("#je-lines tr td:nth-child(5):visible", timeout=3000)
 
-    # Three foreign debits against one credit: they foot in USD but not once
-    # each line converts, so a one-cent difference has to go somewhere.
+    # Three foreign debits against one credit: they foot in EUR but not once
+    # each line converts, which is exactly the case that used to be plugged.
     page.click('button:has-text("Add line")')
     page.click('button:has-text("Add line")')
     for idx, (code, amount) in enumerate(
@@ -146,23 +171,48 @@ def test_manual_je_fx_journey_posts_converts_and_shows_rounding_line(
     _pick_account(page, 3, "1111")
     page.fill('#je-lines [name="credit_3"]', "100.00")
 
+    # One currency typed once: the rest of the lines pick it up, so an entry in
+    # a single foreign currency is not four identical decisions.
+    _pick_currency(page, 0, "EUR")
+    page.fill('#je-lines [name="rate_0"]', "3.0025")
+    page.wait_for_function(
+        "document.querySelector('#je-lines [name=\"rate_3\"]').value === '3.0025'",
+        timeout=3000,
+    )
+
     # The book columns show what will actually be posted, before posting.
     page.wait_for_function(
-        "Array.from(document.querySelectorAll('.je-local-debit, .je-local-credit'))"
+        "Array.from(document.querySelectorAll('.je-base-debit, .je-base-credit'))"
         ".some(function(c) { return c.textContent.indexOf('100.07') !== -1; })",
         timeout=3000,
     )
-    # GDR 2d: the rounding line is disclosed with its account and amount.
-    preview = page.locator("#je-rounding-preview")
-    preview.wait_for(state="visible", timeout=3000)
-    assert "6960" in preview.text_content()
-    assert "0.01" in preview.text_content()
+    # GDR 2d: the gap is named where it can still be fixed, with the side that
+    # is short and the amount, in the currency the books are kept in.
+    note = page.locator("#je-imbalance-note")
+    page.wait_for_function(
+        "document.getElementById('je-imbalance-note').textContent.indexOf('0.01') !== -1",
+        timeout=3000,
+    )
+    assert "Debit" in note.text_content()
+    assert "6960" not in note.text_content(), "nothing names an account to post to"
 
+    # Posting anyway is refused, and the refusal names the same gap. Nothing is
+    # written to the books to make the entry foot.
+    page.click('button[type="submit"]')
+    page.wait_for_selector("text=out of balance in USD", timeout=10000)
+    assert page.locator('#je-lines [name="debit_0"]').input_value() == "33.33", \
+        "a refused entry comes back with what was typed, not an empty form"
+
+    # The author writes the difference line themselves, in the company currency.
+    page.click('button:has-text("Add line")')
+    _pick_account(page, 4, "6960")
+    _clear_currency(page, 4)
+    page.fill('#je-lines [name="debit_4"]', "0.01")
     page.wait_for_function(
         "document.getElementById('je-balance-chip').className === 'val-chip'", timeout=3000)
 
     page.click('button[type="submit"]')
     page.wait_for_url("**/accounting?tab=journal*", timeout=10000)
     page.wait_for_selector("text=Browser test foreign entry", timeout=10000)
-    # The typed foreign figure and the rate ride the journal row.
+    # The typed foreign figure and the rate ride the line they were typed on.
     page.wait_for_selector("text=3.0025", timeout=10000)

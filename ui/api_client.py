@@ -883,6 +883,11 @@ async def get_journal(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/journal", params=params or {})).json()
 
 
+async def get_extended_journal(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/extended-journal", params=params or {})).json()
+
+
 async def get_general_ledger(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()

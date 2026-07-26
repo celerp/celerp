@@ -794,20 +794,27 @@ class JELine(BaseModel):
     account: str | None = ""
     debit: float | None = 0
     credit: float | None = 0
-    # The foreign amounts the author actually typed, when the entry carries a
+    # The foreign amounts the author actually typed, when the line carries a
     # rate. Stored rather than derived so the journal shows the document's own
     # figure: dividing the local amount back out can read 99.99 against a
     # 100.00 invoice, which is exactly what an auditor is tying back.
     fx_debit: float | None = None
     fx_credit: float | None = None
+    # What currency those figures are in and what one unit of it was worth in
+    # base currency. Absent on an ordinary base-currency line, which is why the
+    # posted amounts are the only ones such a line carries.
+    fx_currency: str | None = None
+    fx_rate: float | None = None
 
 
 class AccJournalEntryFx(BaseModel):
     """The currency and rate one whole entry was recorded in.
 
-    Both sides tolerate absence: this validates the shape of an already-stored
-    event, and a malformed or partial fx read back from history must degrade to
-    a blank cell rather than refuse to load the journal.
+    Nothing writes this shape any more: currency and rate live on the line. It
+    stays because stored events are immutable, so entries posted before the move
+    still have to validate and render. Both sides tolerate absence: a malformed
+    or partial fx read back from history must degrade to a blank cell rather
+    than refuse to load the journal.
     """
 
     currency: str | None = None
@@ -823,8 +830,8 @@ class AccJournalEntryCreated(BaseModel):
     status: str | None = None
     je_type: str | None = None
     entries: list[JELine] = Field(default_factory=list)
-    # Absent on an ordinary base-currency entry. Its absence is the correct
-    # representation of such an entry, not a compatibility branch.
+    # Read-only history: entries posted before currency and rate moved onto the
+    # line carry one pair here for the whole entry. Nothing emits it now.
     fx: AccJournalEntryFx | None = None
 
 

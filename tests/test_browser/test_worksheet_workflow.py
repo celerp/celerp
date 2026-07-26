@@ -9,8 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from .inline_edit import set_cell, settled
+
 pytestmark = pytest.mark.browser
 
+SCOPE = "#workflow-section"
 SHOTS = Path("context/reviews/worksheet")
 
 _PNG = base64.b64decode(
@@ -32,47 +35,11 @@ def _wait(api, item, pred, timeout=8.0):
 
 
 def _settled(page):
-    """Wait until no cell editor is open in the workflow table.
-
-    Committing a cell fires an HTMX post and a row swap. The API confirms the
-    new value before that swap lands, so opening the next editor immediately can
-    double-click a row that is being replaced, and the `.last` editor lookup can
-    then find the previous cell's input instead of the new one. The edit goes to
-    a detached node, nothing is saved, and the next wait times out. Settling
-    between edits removes the window rather than widening a timeout.
-    """
-    page.wait_for_function(
-        "!document.querySelector('#workflow-section [name=\"value\"]')",
-        timeout=8000,
-    )
+    return settled(page, SCOPE)
 
 
-def _set_cell(page, col, value, is_select=False, is_textarea=False):
-    """Double-click a workflow cell, edit it, commit (input/select named 'value')."""
-    for attempt in range(2):
-        try:
-            _settled(page)
-            page.dblclick(f'td[data-col="{col}"]')
-            if is_select:
-                sel = page.locator('#workflow-section select[name=value]').last
-                sel.wait_for(state="visible", timeout=4000)
-                sel.select_option(value)
-            elif is_textarea:
-                ta = page.locator('#workflow-section textarea[name=value]').last
-                ta.wait_for(state="visible", timeout=4000)
-                ta.fill(str(value))
-                ta.blur()  # textarea saves on blur (Enter inserts a newline)
-            else:
-                inp = page.locator('#workflow-section input[name=value]').last
-                inp.wait_for(state="visible", timeout=4000)
-                inp.fill(str(value))
-                inp.press("Enter")
-            _settled(page)
-            return
-        except Exception:
-            if attempt:
-                raise
-            page.wait_for_timeout(600)
+def _set_cell(page, col, value, **kw):
+    return set_cell(page, col, value, scope=SCOPE, **kw)
 
 
 def _pick_station(page, col, value):
@@ -110,14 +77,14 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     _wait(api, item, lambda s: s[0].get("station") == "Casting")
 
     # Instructions is a multi-line text box: line breaks are preserved.
-    _set_cell(page, "workflow__0__instructions", "Pour the melt\nThen cool", is_textarea=True)
+    _set_cell(page, "workflow__0__instructions", "Pour the melt\nThen cool", kind="textarea")
     _wait(api, item, lambda s: s[0].get("instructions") == "Pour the melt\nThen cool")
     _set_cell(page, "workflow__0__time_value", "12")
     _wait(api, item, lambda s: float(s[0].get("time_value") or 0) == 12.0)
 
     # Changing the unit must NOT reload the page: a JS marker survives the edit.
     page.evaluate("window.__wfReloadMarker = 'alive'")
-    _set_cell(page, "workflow__0__time_unit", "hr", is_select=True)
+    _set_cell(page, "workflow__0__time_unit", "hr", kind="select")
     _wait(api, item, lambda s: float(s[0].get("time_minutes") or 0) == 720.0)
     assert page.evaluate("window.__wfReloadMarker") == "alive", "unit change reloaded the page"
 
@@ -131,7 +98,7 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     # Second step, then drag-reorder it above the first.
     page.click("#workflow-section button:has-text('+ Add step')")
     page.wait_for_selector('td[data-col="workflow__1__instructions"]', timeout=8000)
-    _set_cell(page, "workflow__1__instructions", "Polish", is_textarea=True)
+    _set_cell(page, "workflow__1__instructions", "Polish", kind="textarea")
     _wait(api, item, lambda s: len(s) == 2 and s[1].get("instructions") == "Polish")
     order_before = [s["id"] for s in _steps(api, item)]
     page.locator("#workflow-section .wf-drag").nth(1).drag_to(page.locator("#workflow-section tr.wf-row").nth(0))

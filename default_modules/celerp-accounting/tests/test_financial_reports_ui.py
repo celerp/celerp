@@ -94,11 +94,34 @@ _JOURNAL = {
                            {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 60.0}]}],
 }
 
+# The same period as the journal above, with the item detail the extended view
+# adds: one entry split into its items, one left whole because its figures did
+# not tie, so the page renders both the item rows and the note about the rest.
+_EXTENDED_JOURNAL = {
+    "date_from": "", "date_to": "", "total_debit": 60.0, "total_credit": 60.0,
+    "entries": [
+        {"je_id": "je:doc:1", "ts": "2026-01-15", "memo": "Auto JE for doc:1 finalized",
+         "status": "posted", "je_type": "auto", "void_reason": None,
+         "source_doc": {"doc_id": "doc:1", "doc_ref": "INV-0001", "doc_type": "invoice"},
+         "fx": None, "items_expanded": True,
+         "lines": [{"account": "1120", "name": "Accounts Receivable", "debit": 60.0, "credit": 0.0},
+                   {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 60.0,
+                    "item": "WIDGET-1", "quantity": 2, "unit_price": 30.0}]},
+        {"je_id": "je:doc:2", "ts": "2026-01-16", "memo": "Auto JE for doc:2 finalized",
+         "status": "posted", "je_type": "auto", "void_reason": None,
+         "source_doc": {"doc_id": "doc:2", "doc_ref": "INV-0002", "doc_type": "invoice"},
+         "fx": None, "items_expanded": False,
+         "lines": [{"account": "1120", "name": "Accounts Receivable", "debit": 10.0, "credit": 0.0},
+                   {"account": "4100", "name": "Sales", "debit": 0.0, "credit": 10.0}]},
+    ],
+}
+
 _DEFAULTS = {
     "get_company": _COMPANY, "list_contacts": _CONTACTS, "get_chart": _CHART,
     "get_soa": _SOA, "get_ledger": _LEDGER, "get_pnl": _PNL, "get_balance_sheet": _BS,
     "get_trial_balance": _TB, "get_general_ledger": _GL, "get_cash_flow": _CASH_FLOW,
     "get_ar_aging": _AGING, "get_ap_aging": _AGING, "get_journal": _JOURNAL,
+    "get_extended_journal": _EXTENDED_JOURNAL,
 }
 
 
@@ -229,8 +252,29 @@ async def test_reports_index_lists_the_financial_reports(ui_client):
     r = await _get(ui_client, "/reports")
     assert r.status_code == 200
     for key in ("pnl", "balance-sheet", "cash-flow", "trial-balance",
-                "general-ledger", "statement"):
+                "general-ledger", "extended-journal", "statement"):
         assert REPORTS[key][0] in r.text, key
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_page_shows_what_each_posting_was_for(ui_client):
+    """The whole point of the report: the item, how many, and at what price,
+    on the posting line itself."""
+    r = await _get(ui_client, "/reports/extended-journal")
+    assert r.status_code == 200
+    assert "WIDGET-1" in r.text
+    assert "฿30.00" in r.text
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_page_names_the_entries_it_could_not_expand(ui_client):
+    """An entry from a document with no item detail shown is called out by id.
+    Reading past it as though the document had no items would be worse than
+    saying nothing, so the report says which entries it could not account for."""
+    r = await _get(ui_client, "/reports/extended-journal")
+    note = r.text.split("Item detail is not shown")[-1][:200]
+    assert "je:doc:2" in note
+    assert "je:doc:1" not in note
 
 
 @pytest.mark.asyncio
