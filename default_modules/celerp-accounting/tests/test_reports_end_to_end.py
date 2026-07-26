@@ -155,6 +155,10 @@ _VOLATILE = [
     # Document references carry the month they were raised in, which is the month
     # the test runs, not the month the invoice is dated.
     (re.compile(r"\b([A-Z]{2,4})-\d{4}-\d{4}\b"), r"\1-<ref>"),
+    # A print sheet stamps the day it was printed, which is the day the test runs,
+    # not a date the report is about. It is the reader's date and must not pin the
+    # golden, or every print golden fails the day after it is generated.
+    (re.compile(r"Printed: \d{4}-\d\d-\d\d"), "Printed: <date>"),
 ]
 
 
