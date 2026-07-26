@@ -33,7 +33,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import round_exchange_rate, round_money, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
@@ -164,15 +164,24 @@ class DocPaymentBody(BaseModel):
 
     @field_validator("conversion_rate")
     @classmethod
-    def _rate_must_be_positive(cls, v: float | None) -> float | None:
+    def _rate_positive_and_within_the_ceiling(cls, v: float | None) -> float | None:
         """A rate divides an amount, so zero and negatives are not slow paths,
         they are wrong answers. Checked here rather than on the input, which a
-        currency worth a small fraction of the base needs left wide open."""
+        currency worth a small fraction of the base needs left wide open.
+
+        Then held to the same ceiling a journal line's rate is, so one rate is
+        one stored fact whichever door it came through. The journal shows a rate
+        at that many places; a payment kept finer than what it displays would
+        post a base amount no reader could reproduce from the rate in front of
+        them. Rounding belongs here, at the request boundary, and never in the
+        projection: the projection replays stored events, so rounding there
+        would restate documents that are already posted.
+        """
         if v is None:
             return v
         if not math.isfinite(v) or v <= 0:
             raise ValueError("conversion_rate must be greater than zero")
-        return v
+        return to_stored_float(round_exchange_rate(v))
 
 
 class ReceivedItem(BaseModel):

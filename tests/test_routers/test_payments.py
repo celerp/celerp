@@ -425,6 +425,40 @@ async def test_payment_conversion_rate_stored(client):
 
 
 @pytest.mark.asyncio
+async def test_payment_conversion_rate_is_held_to_the_exchange_rate_ceiling(client):
+    """A payment's rate is stored at the same ceiling a journal line's rate is.
+
+    The journal shows a rate at twelve places. A payment stored with more
+    precision than that posts a base amount nobody can reproduce from the rate
+    they are shown, so the two have to hold the same ceiling. Twelve places is
+    what a double carries exactly; digits past it are noise, not a finer rate.
+    """
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111",
+                                "conversion_rate": 0.00001117318355})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    # Half up at the thirteenth place: ...18355 -> ...183840e-5, not truncated.
+    assert doc["payments"][0]["conversion_rate"] == 0.000011173184
+
+
+@pytest.mark.asyncio
+async def test_payment_conversion_rate_within_the_ceiling_is_untouched(client):
+    """Rounding is a ceiling, not a reformat: an ordinary rate stores verbatim."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": 0.000011173})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0]["conversion_rate"] == 0.000011173
+
+
+@pytest.mark.asyncio
 async def test_payment_conversion_rate_optional(client):
     """Omitting conversion_rate succeeds and stores None."""
     token = await _register(client)
