@@ -453,7 +453,7 @@ async def test_extended_journal_splits_a_sale_into_one_row_per_item(client):
                                 [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
 
     entry = _entry_for(await _extended(client, tok), doc)
-    assert entry["items_expanded"] is True
+    assert entry["items_status"] == "expanded"
     sold = [l for l in entry["lines"] if l.get("item")]
     assert [(l["item"], l["quantity"], l["unit_price"], l["credit"]) for l in sold] == [
         ("WIDGET", 2, 30.0, 60.0), ("GIZMO", 1, 40.0, 40.0)]
@@ -468,7 +468,7 @@ async def test_extended_journal_names_the_item_on_each_line_of_a_purchase(client
                                 [("BOLT", 10, 1.5), ("NUT", 20, 0.25)])
 
     entry = _entry_for(await _extended(client, tok), doc)
-    assert entry["items_expanded"] is True
+    assert entry["items_status"] == "expanded"
     bought = [l for l in entry["lines"] if l.get("item")]
     assert [(l["item"], l["quantity"], l["debit"]) for l in bought] == [
         ("BOLT", 10, 15.0), ("NUT", 20, 5.0)]
@@ -482,7 +482,7 @@ async def test_extended_journal_leaves_a_manual_entry_untouched(client):
     je_id = (await _post_manual_je(client, tok, _bal(10.0))).json()["je_id"]
 
     entry = [e for e in (await _extended(client, tok))["entries"] if e["je_id"] == je_id][0]
-    assert entry["items_expanded"] is False
+    assert entry["items_status"] == "no_items"
     assert all("item" not in l for l in entry["lines"])
 
 
@@ -494,7 +494,7 @@ async def test_extended_journal_withholds_item_detail_when_amounts_do_not_tie(cl
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)], shipping=40.0)
 
     entry = _entry_for(await _extended(client, tok), doc)
-    assert entry["items_expanded"] is False
+    assert entry["items_status"] == "untied"
     assert all("item" not in l for l in entry["lines"])
 
 
@@ -510,7 +510,7 @@ async def test_extended_journal_leaves_a_payment_alone(client):
     data = await _extended(client, tok)
     pay = [e for e in data["entries"]
            if (e.get("source_doc") or {}).get("doc_id") == doc and e["ts"] == "2026-02-10"]
-    assert pay and pay[0]["items_expanded"] is False
+    assert pay and pay[0]["items_status"] == "no_items"
     assert all("item" not in l for l in pay[0]["lines"])
 
 
@@ -524,7 +524,7 @@ async def test_extended_journal_survives_a_deleted_source_document(client, sessi
     await session.commit()
 
     entry = _entry_for(await _extended(client, tok), doc)
-    assert entry["items_expanded"] is False
+    assert entry["items_status"] == "no_document"
     assert sum(l["credit"] for l in entry["lines"]) == 100.0
 
 
@@ -540,7 +540,7 @@ async def test_extended_journal_foreign_rows_foot_to_the_posting(client):
 
     ext = _entry_for(await _extended(client, tok), doc)
     classical = _entry_for(await _journal(client, tok), doc)
-    assert ext["items_expanded"] is True
+    assert ext["items_status"] == "expanded"
     rows = [l for l in ext["lines"] if l.get("item")]
     assert [l["fx_credit"] for l in rows] == [33.33, 33.33, 33.34]
     posted = [l["credit"] for l in classical["lines"] if l["account"] == "4100"][0]

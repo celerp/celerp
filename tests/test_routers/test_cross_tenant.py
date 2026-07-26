@@ -282,8 +282,8 @@ async def test_extended_journal_item_detail_not_visible_to_other_tenant(client):
     """Company A's sale, item and all, is absent from company B's extended journal.
 
     Company A is checked first, and for the item detail specifically rather than
-    for a 200: this report can decline to attach item detail (`items_expanded`
-    false) when the figures do not tie, and an absence proves nothing against a
+    for a 200: this report can decline to attach item detail
+    (`items_status` other than `expanded`) when the figures do not tie, and an absence proves nothing against a
     report that attached none for anybody.
     """
     _, ha = await _register_a(client)
@@ -294,7 +294,7 @@ async def test_extended_journal_item_detail_not_visible_to_other_tenant(client):
 
     ra = await client.get(f"/accounting/extended-journal?{_PERIOD}", headers=ha)
     assert ra.status_code == 200, ra.text
-    assert any(e["items_expanded"] for e in ra.json()["entries"]), (
+    assert any(e["items_status"] == "expanded" for e in ra.json()["entries"]), (
         f"company A's own sale was not expanded to its item, so the absence "
         f"below would prove nothing: {ra.text}"
     )
@@ -360,7 +360,9 @@ async def test_extended_journal_will_not_resolve_another_tenants_document(client
         assert a_doc_ref not in rb.text
 
     entry = next(e for e in rb.json()["entries"] if e["je_id"] == je_id)
-    assert entry["items_expanded"] is False
+    assert entry["items_status"] == "no_document", (
+        "an entry whose document the company cannot read is reported as such"
+    )
     assert entry["source_doc"]["doc_ref"] == doc_id, (
         "the reference resolved to company A's document number"
     )
