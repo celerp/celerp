@@ -47,12 +47,17 @@ _FINANCIAL_CARDS: list[tuple[str, str]] = [
     ("cash-flow", "rpt.cash_flow_desc"),
     ("trial-balance", "rpt.trial_balance_desc"),
     ("general-ledger", "rpt.general_ledger_desc"),
+    ("journal", "rpt.journal_desc"),
     ("extended-journal", "rpt.extended_journal_desc"),
     ("statement", "rpt.statement_desc"),
 ]
 
 # Report key -> (page path, print path, csv path, title key). One table so a report's
 # three URLs and its name are declared once and every caller reads them from here.
+# The journal is in the table though its page lives under /accounting: it is a
+# financial report like the rest, an accountant looks for it beside them, and every
+# sweep that reads this table (the index cards, the print and CSV checks, the
+# goldens) has to cover it.
 REPORTS: dict[str, tuple[str, str, str, str]] = {
     "pnl": ("/reports/pnl", "/reports/print/pnl", "/reports/export/pnl/csv", "acct.tab_pnl"),
     "balance-sheet": ("/reports/balance-sheet", "/reports/print/balance-sheet",
@@ -63,6 +68,8 @@ REPORTS: dict[str, tuple[str, str, str, str]] = {
                        "/reports/export/general-ledger/csv", "acct.tab_general_ledger"),
     "cash-flow": ("/reports/cash-flow", "/reports/print/cash-flow",
                   "/reports/export/cash-flow/csv", "acct.tab_cash_flow"),
+    "journal": ("/accounting", "/accounting/print/journal",
+                "/accounting/export/journal/csv", "acct.tab_journal"),
     "extended-journal": ("/reports/extended-journal", "/reports/print/extended-journal",
                          "/reports/export/extended-journal/csv", "acct.tab_extended_journal"),
     "statement": ("/reports/statement", "/reports/print/statement",

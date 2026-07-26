@@ -1,0 +1,13 @@
+date,entry_id,source_ref,item,account_code,account_name,memo,quantity,unit_price,debit,credit,fx_currency,fx_debit,fx_credit,status
+2026-02-15,je:manual:<uuid>,Manual,,1120,Accounts Receivable,Late delivery charge,,,15.0,0.0,,,,posted
+2026-02-15,je:manual:<uuid>,Manual,,4100,Sales Revenue,Late delivery charge,,,0.0,15.0,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,,1120,Accounts Receivable,Auto JE for doc:<id> finalized,,,30.0,0.0,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,Widget,4100,Sales Revenue,Auto JE for doc:<id> finalized,1.0,30.0,0.0,30.0,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,,2120,VAT Payable (Output VAT),Auto JE for doc:<id> finalized,,,0.0,0.0,,,,posted
+2026-02-01,je:manual:<uuid>,Manual,,6200,Rent,February rent,,,25.0,0.0,,,,posted
+2026-02-01,je:manual:<uuid>,Manual,,1111,Default Bank Account (Checking),February rent,,,0.0,25.0,,,,posted
+2026-01-20,je:auto:doc:<id>:pay:0,INV-<ref>,,1111,Default Bank Account (Checking),Auto JE for doc:<id> payment,,,40.0,0.0,,,,posted
+2026-01-20,je:auto:doc:<id>:pay:0,INV-<ref>,,1120,Accounts Receivable,Auto JE for doc:<id> payment,,,0.0,40.0,,,,posted
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,,1120,Accounts Receivable,Auto JE for doc:<id> finalized,,,100.0,0.0,,,,posted
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,Widget,4100,Sales Revenue,Auto JE for doc:<id> finalized,1.0,100.0,0.0,100.0,,,,posted
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,,2120,VAT Payable (Output VAT),Auto JE for doc:<id> finalized,,,0.0,0.0,,,,posted

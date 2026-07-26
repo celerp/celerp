@@ -268,7 +268,7 @@ async def test_every_report_page_renders(ui_client, key):
 async def test_reports_index_lists_the_financial_reports(ui_client):
     r = await _get(ui_client, "/reports")
     assert r.status_code == 200
-    for key in ("pnl", "balance-sheet", "cash-flow", "trial-balance",
+    for key in ("journal", "pnl", "balance-sheet", "cash-flow", "trial-balance",
                 "general-ledger", "extended-journal", "statement"):
         assert REPORTS[key][0] in r.text, key
 
@@ -906,7 +906,8 @@ _NEW_KEYS = [
     "acct.je_line_party", "acct.je_party_hint",
     "acct.cf_unbacked_opening", "acct.opening_balance_unbacked",
     "rpt.cash_flow_desc", "rpt.trial_balance_desc", "rpt.general_ledger_desc",
-    "rpt.statement_desc",
+    "rpt.statement_desc", "rpt.journal_desc",
+    "acct.items_untied", "acct.items_no_document",
 ]
 
 # Deleted with the batch print panel. Presence checks alone would not notice a key
@@ -918,6 +919,9 @@ _REMOVED_KEYS = [
     "acct.soa_source_docs",
     # Renamed: the same note now appears on the journal entry form too.
     "acct.soa_picker_more_contacts",
+    # Renamed to acct.items_untied, now that it is one of two reasons item detail
+    # can be withheld rather than the only one.
+    "acct.items_not_expanded",
 ]
 
 
