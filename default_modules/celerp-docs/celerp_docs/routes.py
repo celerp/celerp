@@ -1507,6 +1507,44 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     return {"event_id": entry.id}
 
 
+async def _posted_journal_entries(session: AsyncSession, company_id: str, entity_id: str) -> list[str]:
+    """The journal entries posted for a document, void ones included.
+
+    Void ones count. Reverting a finalized document to draft reverses its
+    postings but keeps both the entry and its reversal, because the books keep
+    their history; the document is then deletable by status while the journal
+    still names it, and deleting it leaves entries pointing at a document nothing
+    can resolve.
+
+    Entries are found by the id every automatic posting is minted with,
+    `je:auto:{doc_id}:{op}` (`celerp/services/auto_je.py`), the same prefix match
+    payment recording uses below. `_` and `%` are escaped so a document id
+    carrying either cannot widen the match. This finds entries posted FOR the
+    document, which is not the same as every entry that mentions it: a credit
+    note applied to an invoice posts under the invoice's id, and is unreachable
+    here by design, because applying a credit note requires finalising it and a
+    finalised document is refused a line earlier.
+    """
+    prefix = entity_id.replace("\\", "\\\\").replace("_", r"\_").replace("%", r"\%")
+    rows = await session.execute(
+        select(Projection.entity_id)
+        .where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.like(f"je:auto:{prefix}:%", escape="\\"),
+        )
+        .order_by(Projection.entity_id)
+    )
+    return list(rows.scalars().all())
+
+
+def _first_few(names: list[str], limit: int = 5) -> str:
+    """The names, capped, so a refusal about fifty documents is still readable."""
+    if len(names) <= limit:
+        return ", ".join(names)
+    return f"{', '.join(names[:limit])} and {len(names) - limit} more"
+
+
 @router.delete("/bulk-draft")
 async def bulk_delete_drafts(
     doc_ids: str,
@@ -1514,17 +1552,39 @@ async def bulk_delete_drafts(
     _: None = require_permission("delete_documents"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error)."""
+    """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error).
+
+    A document that has posted to the books refuses the whole batch and nothing is
+    deleted. A successful bulk delete reloads the page, so a partly done one has
+    nowhere left to say what it skipped, and the reader would be left believing
+    every ticked document is gone.
+    """
     ids = [x.strip() for x in doc_ids.split(",") if x.strip()]
     if not ids:
         raise HTTPException(status_code=422, detail="No document IDs specified")
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
-    deleted = []
+    drafts = []
     for eid in ids:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
         if row is None or row.state.get("status") != "draft":
             continue
+        drafts.append(row)
+
+    posted = [row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
+              for row in drafts
+              if await _posted_journal_entries(session, company_id, row.entity_id)]
+    if posted:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nothing was deleted. These documents have journal entries in the books, "
+                   f"so deleting them would leave the entries unattributable: {_first_few(posted)}. "
+                   f"Untick them and try again.",
+        )
+
+    deleted = []
+    for row in drafts:
+        eid = row.entity_id
         await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid))
         await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == eid))
         deleted.append(eid)
@@ -1537,6 +1597,13 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
+    entries = await _posted_journal_entries(session, company_id, entity_id)
+    if entries:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This document has journal entries in the books, so deleting it would leave "
+                   f"them unattributable: {_first_few(entries)}. It can stay void instead.",
+        )
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
     await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id))
