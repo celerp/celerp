@@ -123,8 +123,9 @@ async def test_truncate_resets_bootstrap(client, session):
 
 _PATCHES = dict(
     test_db="celerp.cli._test_db",
-    run_migrations="celerp.cli._run_migrations",
-    post_grants="celerp.cli._post_migration_grants",
+    # init reaches the database through this one function; patching its
+    # collaborators instead would leave the real connection attempt in place.
+    migrate="celerp.cli._migrate_to_head",
     start="celerp.cli._start",
     stop="celerp.cli._stop_servers",
 )
@@ -155,8 +156,7 @@ def test_force_init_as_root_wipes_db_and_regenerates_secret(tmp_config, written_
     runner = CliRunner()
     with patch(_PATCHES["stop"]) as mock_stop, \
          patch("celerp.cli._provision_db") as mock_prov, \
-         patch(_PATCHES["run_migrations"]), \
-         patch(_PATCHES["post_grants"]), \
+         patch(_PATCHES["migrate"]), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch(_PATCHES["start"]):
         result = runner.invoke(main, ["init", "--force", "--yes"])
@@ -181,8 +181,7 @@ def test_force_init_non_root_also_drops_db(tmp_config, written_cfg):
     with patch(_PATCHES["stop"]), \
          patch("os.getuid", return_value=1000), \
          patch("celerp.cli._provision_db") as mock_prov, \
-         patch(_PATCHES["run_migrations"]), \
-         patch(_PATCHES["post_grants"]), \
+         patch(_PATCHES["migrate"]), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch(_PATCHES["start"]):
         result = runner.invoke(main, ["init", "--force", "--yes"])

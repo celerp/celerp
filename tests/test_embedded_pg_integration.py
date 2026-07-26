@@ -261,8 +261,7 @@ def test_init_embedded_writes_marker_and_boots(config_dir):
     from celerp.cli import _read_config, main
 
     runner = CliRunner()
-    with patch("celerp.cli._run_migrations"), \
-         patch("celerp.cli._post_migration_grants"), \
+    with patch("celerp.cli._migrate_to_head"), \
          patch("celerp.cli._needs_ownership_fix", return_value=False):
         result = runner.invoke(main, ["init", "--embedded", "--no-start"])
     assert result.exit_code == 0, result.output

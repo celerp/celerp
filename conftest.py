@@ -520,6 +520,36 @@ def _reset_loaded_modules(request):
     _loaded.clear()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_live_database():
+    """Refuse a connection to the developer's own `celerp` database.
+
+    The CLI's init/start/migrate paths reach Postgres through psycopg2. A test that
+    exercises one of them without patching the migrate step connects to whatever
+    database the config names, which on a development machine is the live `celerp`
+    database: the test passes locally, applies migrations to real data on the way
+    past, and fails only in CI, where no such database exists. Refusing here makes
+    the omission fail the same way in both places.
+    """
+    import psycopg2
+
+    real_connect = psycopg2.connect
+
+    def _guarded(*args, **kwargs):
+        dbname = kwargs.get("dbname") or kwargs.get("database") or ""
+        host = kwargs.get("host") or ""
+        if dbname == "celerp" and host in ("", "localhost", "127.0.0.1", "::1"):
+            raise AssertionError(
+                "test opened a connection to the live 'celerp' database; patch the "
+                "CLI step under test (celerp.cli._migrate_to_head) instead"
+            )
+        return real_connect(*args, **kwargs)
+
+    psycopg2.connect = _guarded
+    yield
+    psycopg2.connect = real_connect
+
+
 from celerp.models.base import Base
 
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
