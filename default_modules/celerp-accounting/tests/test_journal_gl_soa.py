@@ -1083,13 +1083,20 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
 # Account codes with no chart entry
 # ---------------------------------------------------------------------------
 
-async def _import_je(client, tok, entries, ts="2026-01-10"):
+async def _import_je(client, tok, entries, ts="2026-01-10", fx=None):
     """Post straight to the projection, the only way a code with no chart entry
-    gets a posted line (manual entry refuses an account that does not exist)."""
+    gets a posted line (manual entry refuses an account that does not exist).
+
+    `fx` writes the entry-level shape used before currency moved to the line,
+    which is the only way to produce one now that the writer is gone.
+    """
+    data = {"status": "posted", "ts": ts, "entries": entries}
+    if fx is not None:
+        data["fx"] = fx
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
-        "data": {"status": "posted", "ts": ts, "entries": entries},
+        "data": data,
         "source": "test", "idempotency_key": str(uuid.uuid4()),
     }]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
@@ -1335,6 +1342,29 @@ async def test_manual_je_line_fx_converts_to_base_and_keeps_the_typed_figures(cl
     assert debit_line["debit"] == 350.0 and debit_line["fx_debit"] == 10.0
     assert credit_line["credit"] == 350.0 and credit_line["fx_credit"] == 10.0
     assert debit_line["fx_currency"] == "USD" and debit_line["fx_rate"] == 35.0
+
+
+async def test_manual_je_accepts_rate_below_one_ten_thousandth(client):
+    """A rate far below 0.0001 posts and reads back at the precision typed.
+
+    1 LBP is about 0.00001117318 THB. A four-place floor would have refused this
+    rate or flattened it to 0.0000, and the base figures derived from it would
+    have been wrong by orders of magnitude.
+    """
+    tok = await _reg(client)
+    await _thb(client, tok)
+    r = await _post_manual_je(client, tok, [
+        _fx({"account": "1111", "debit": 10_000_000.0, "credit": 0}, "LBP", 0.00001117318),
+        {"account": "4100", "debit": 0, "credit": 111.73},
+    ])
+    assert r.status_code == 200, r.text
+
+    entry = (await _journal(client, tok))["entries"][0]
+    fx_line = next(l for l in entry["lines"] if l["debit"])
+    assert fx_line["fx_rate"] == 0.00001117318, "the rate must survive the round trip intact"
+    assert fx_line["fx_debit"] == 10_000_000.0
+    # 10,000,000 LBP * 0.00001117318 = 111.7318, at THB's two places.
+    assert fx_line["debit"] == 111.73
 
 
 async def test_manual_je_carries_a_different_currency_on_each_line(client):
@@ -1596,6 +1626,25 @@ async def test_seed_chart_endpoint_backfills_the_fx_difference_account(client):
     items = chart["items"] if isinstance(chart, dict) else chart
     row = next(a for a in items if a["code"] == "6960")
     assert row["account_type"] == "expense" and row["parent_code"] == "6000"
+
+
+async def test_journal_reads_pre_change_entry_level_fx(client):
+    """An entry posted before currency moved to the line still reads correctly.
+
+    Stored events are immutable, so entries written in the old shape carry one
+    `fx` for the whole entry. Their lines inherit it on read; nothing rewrites
+    the event.
+    """
+    tok = await _reg(client)
+    await _thb(client, tok)
+    await _import_je(client, tok, [
+        {"account": "1111", "debit": 350.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 350.0},
+    ], fx={"currency": "USD", "rate": 35.0})
+
+    entry = (await _journal(client, tok))["entries"][0]
+    assert all(l["fx_currency"] == "USD" for l in entry["lines"])
+    assert all(l["fx_rate"] == 35.0 for l in entry["lines"])
 
 
 async def test_manual_je_without_fx_is_unchanged(client):

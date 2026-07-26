@@ -1391,6 +1391,29 @@ class TestAccountingPage:
         assert b"Cash" in r.content
 
     @pytest.mark.asyncio
+    async def test_je_rate_input_accepts_any_step(self, ui_client):
+        """The journal's per-line rate field must not round the rate in the browser.
+
+        Same reasoning as the document payment field: a step of 0.0001 makes a
+        rate like 0.00001117318 unenterable. The floor is enforced at function
+        level with a message naming the line, not by a control the user cannot
+        reach past (GDR 2e).
+        """
+        with patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert 'name="rate_' in html, "the journal form should offer a per-line rate"
+        for field in html.split('name="rate_')[1:]:
+            tag = field[:200]
+            assert 'step="any"' in tag, tag
+            assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
+
+    @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/pnl", cookies=_authed())
         assert r.status_code == 302

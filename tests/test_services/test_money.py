@@ -8,9 +8,11 @@ import pytest
 from celerp.services.money import (
     CURRENCY_DP,
     DEFAULT_DP,
+    EXCHANGE_RATE_DP,
     RATE_EXTRA_DP,
     currency_dp,
     rate_dp,
+    round_exchange_rate,
     round_money,
     round_rate,
     to_decimal,
@@ -198,6 +200,26 @@ def test_rate_dp_is_currency_plus_headroom():
 def test_round_rate_ceiling_half_up():
     assert round_rate("15.2849749", "USD") == Decimal("15.284975")  # 6 dp, HALF_UP
     assert round_rate("15.28", "USD") == Decimal("15.280000")        # value unchanged, just precision
+
+
+def test_round_exchange_rate_keeps_twelve_places():
+    """A rate belongs to neither currency, so it needs its own ceiling.
+
+    1 LBP is about 0.00001117318 USD. Six places round that to 0.000011 and
+    lose three significant figures, which is why rate_dp cannot express a rate.
+    """
+    assert EXCHANGE_RATE_DP == 12
+    assert round_exchange_rate("0.00001117318") == Decimal("0.000011173180")
+    # The smallest rate the ceiling can carry, and a whole one, both survive.
+    assert round_exchange_rate("0.000000000001") == Decimal("0.000000000001")
+    assert round_exchange_rate(35) == Decimal("35.000000000000")
+
+
+def test_round_exchange_rate_is_half_up_at_the_ceiling():
+    """Half rounds away from zero at the twelfth place, matching round_money."""
+    assert round_exchange_rate("0.0000000000005") == Decimal("0.000000000001")
+    assert round_exchange_rate("0.0000000000004") == Decimal("0.000000000000")
+    assert round_exchange_rate("1.2345678901235") == Decimal("1.234567890124")
 
 
 def test_unit_price_from_total_the_reported_bug():
