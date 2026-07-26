@@ -530,8 +530,8 @@ async def test_filtered_page_says_it_is_filtered(ui_client, page, call):
     # see and adjust it rather than re-typing it.
     assert 'value="rent"' in html
     assert "journal-search" in html and t("acct.journal_search") in html
-    # ESC empties the box (GDR 2j) and Enter appends a comma (the inventory pattern).
-    assert "Escape" in html and "Enter" in html
+    # ESC empties the box (GDR 2j); Enter submits the form natively (no comma-append here).
+    assert "Escape" in html
     # The one search reached the API with the period, and the three old field
     # names are gone from the call.
     params = spy.await_args.args[1]

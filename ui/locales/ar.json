@@ -39,7 +39,7 @@
   "acct.filter_clear": "مسح عوامل التصفية",
   "acct.filtered_totals": "مُصفّى",
   "acct.journal_search": "بحث عن حساب أو مبلغ أو نص…",
-  "acct.journal_search_hint": "استخدم فاصلة أو مفتاح الإدخال لعملية OR. كل مصطلح يطابق رمز حساب أو مبلغًا أو أي نص.",
+  "acct.journal_search_hint": "استخدم فاصلة لعملية OR. كل مصطلح يطابق رمز حساب أو مبلغًا أو أي نص.",
   "acct.fiscal_year_end_date_is_required": "تاريخ نهاية السنة المالية مطلوب.",
   "acct.fx_per_line_hint": "لكل سطر عملته وسعر صرفه. تحفظ الدفاتر المبالغ بعد التحويل، لذا يجب أن يتوازن القيد بعملة الشركة.",
   "acct.gross_profit": "إجمالي الربح",

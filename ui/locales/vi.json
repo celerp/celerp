@@ -39,7 +39,7 @@
   "acct.filter_clear": "Xóa bộ lọc",
   "acct.filtered_totals": "Đã lọc",
   "acct.journal_search": "Tìm kiếm tài khoản, số tiền hoặc văn bản…",
-  "acct.journal_search_hint": "Dùng dấu phẩy hoặc Enter cho điều kiện HOẶC. Mỗi từ khớp với mã tài khoản, số tiền hoặc bất kỳ văn bản nào.",
+  "acct.journal_search_hint": "Dùng dấu phẩy cho điều kiện HOẶC. Mỗi từ khớp với mã tài khoản, số tiền hoặc bất kỳ văn bản nào.",
   "acct.fiscal_year_end_date_is_required": "Ngày kết thúc năm tài chính là bắt buộc.",
   "acct.fx_per_line_hint": "Mỗi dòng có đồng tiền và tỷ giá riêng. Sổ sách lưu số tiền đã quy đổi, nên bút toán phải cân bằng theo đồng tiền của công ty.",
   "acct.gross_profit": "Lợi Nhuận Gộp",

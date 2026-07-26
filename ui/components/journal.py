@@ -99,20 +99,19 @@ def journal_filter_bar(base_url: str, filters: dict, carried: dict,
     One box, not three: account, figure and free text were three fields that ANDed
     together, which is three ways to ask one question. Now a comma separates terms
     that OR together and each term is tried against all three, the way the inventory
-    search box reads a run of scanned codes (GDR 2h, one way everywhere). Enter
-    appends a comma so terms can be typed one after another without submitting.
+    search box reads a run of scanned codes. Inventory appends a comma on Enter so a
+    barcode scanner can rattle off codes without submitting; there is no scanner here,
+    so a comma is typed by hand and Enter applies the search like any other form.
 
     A GET form, so the search lives in the URL and a filtered journal can be linked,
     bookmarked and reloaded (GDR 2m). It carries the period as hidden fields for the
     same reason the date bar carries its non-date params: a GET form submits its own
     fields and nothing else, so applying a search would otherwise reset the period.
     """
-    # Enter appends a comma (the inventory multi-term pattern) rather than
-    # submitting; Escape clears the box. Both leave submission to the Apply button.
+    # Escape clears the box; Enter submits the form (applies the search) natively,
+    # since there is no scanner here that needs Enter to chain terms with a comma.
     keydown = (
-        "if(event.key==='Enter'){event.preventDefault();"
-        "var v=this.value;if(v.length&&v[v.length-1]!==','){this.value=v+',';}}"
-        "else if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}"
+        "if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}"
     )
     controls: list = [
         Input(type="hidden", name=k, value=v) for k, v in carried.items() if v

@@ -39,7 +39,7 @@
   "acct.filter_clear": "Filter zurücksetzen",
   "acct.filtered_totals": "Gefiltert",
   "acct.journal_search": "Konto, Betrag oder Text suchen…",
-  "acct.journal_search_hint": "Komma oder Enter für ODER. Jeder Begriff trifft auf eine Kontonummer, einen Betrag oder beliebigen Text zu.",
+  "acct.journal_search_hint": "Komma für ODER. Jeder Begriff trifft auf eine Kontonummer, einen Betrag oder beliebigen Text zu.",
   "acct.fiscal_year_end_date_is_required": "Das Enddatum des Geschäftsjahres ist erforderlich.",
   "acct.fx_per_line_hint": "Jede Zeile hat ihre eigene Währung und ihren eigenen Kurs. Die Bücher führen die umgerechneten Beträge, die Buchung muss also in der Unternehmenswährung ausgeglichen sein.",
   "acct.gross_profit": "Bruttogewinn",
