@@ -318,10 +318,12 @@ async def test_extended_journal_page_says_nothing_about_entries_with_no_items(ui
     own, so naming it would send a reader hunting for detail that was never meant
     to exist. It appears in the report like any other entry and in neither note."""
     r = await _get(ui_client, "/reports/extended-journal")
-    # The rows carry the memo, not the entry id: an id on the page at all means a
-    # note named it.
+    # The rows carry the memo, not the entry id. The id is on the page once, as
+    # the value of that row's selection box, which is not text anybody reads: a
+    # second occurrence anywhere means something named the entry.
     assert "Payment received for doc:1" in r.text
-    assert "je:doc:1:pay:0" not in r.text
+    assert r.text.count("je:doc:1:pay:0") == 1
+    assert 'value="je:doc:1:pay:0" class="bulk-select"' in r.text
     assert "je:doc:1:pay:0" not in _note(r.text, _UNTIED)
     assert "je:doc:1:pay:0" not in _note(r.text, _NO_DOCUMENT)
 
@@ -899,7 +901,7 @@ _NEW_KEYS = [
     "acct.cf_investing", "acct.cf_financing", "acct.cf_opening_cash",
     "acct.cf_closing_cash", "acct.cf_net_change", "acct.cf_methods_disagree",
     "acct.reports_moved_notice", "acct.soa_source_ledger",
-    "acct.soa_pick_placeholder", "acct.soa_selected_count", "acct.soa_pick_ar_balance",
+    "acct.soa_pick_placeholder", "acct.soa_pick_ar_balance",
     "acct.soa_pick_ap_balance", "acct.soa_pick_all_customers",
     "acct.picker_more_contacts",
     "label.account", "label.vendor_bill", "acct.soa_kind_journal",
@@ -923,6 +925,9 @@ _REMOVED_KEYS = [
     # Renamed to acct.items_untied, now that it is one of two reasons item detail
     # can be withheld rather than the only one.
     "acct.items_not_expanded",
+    # The same words as label.n_selected, which the shared toolbar and the shared
+    # multi-select both count with now. This copy was never translated.
+    "acct.soa_selected_count",
 ]
 
 

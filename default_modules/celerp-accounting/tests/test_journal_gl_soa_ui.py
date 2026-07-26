@@ -225,6 +225,163 @@ async def test_void_control_shown_for_auto_entries(ui_client):
     assert r.text.count("/void") >= 2
 
 
+# ---------------------------------------------------------------------------
+# Voiding entries from the page: one at a time, or a selection
+# ---------------------------------------------------------------------------
+
+_VOID_ONE = {"je_id": "je:manual:abc", "status": "void", "void_reason": "Keyed twice"}
+_VOID_BATCH = {"results": [{"je_id": "je:manual:abc", "status": "void",
+                            "void_reason": "Duplicate batch"}],
+               "voided": 1, "refused": 0}
+
+
+def _toast(response) -> dict:
+    return json.loads(response.headers["hx-trigger"])["celerpToast"]
+
+
+@pytest.mark.asyncio
+async def test_journal_page_selects_entries_not_postings(ui_client):
+    """A selection is of entries: the fixture holds two posted entries with four
+    postings between them, and offers two boxes, on the entry rows."""
+    r = await _get(ui_client, "/accounting")
+    assert r.status_code == 200
+    assert r.text.count('class="bulk-select"') == 2
+    assert 'value="je:manual:abc"' in r.text
+    # The header box that ticks them all, and the bar that acts on them.
+    assert "bulk-select-all" in r.text
+    assert t("acct.bulk_void") in r.text
+    assert "/accounting/journal/bulk-void" in r.text
+
+
+@pytest.mark.asyncio
+async def test_journal_page_offers_no_boxes_on_voided_entries(ui_client):
+    """A voided entry has nothing left to void, so it keeps the column and
+    leaves it empty rather than offering an action that would be refused."""
+    voided = json.loads(json.dumps(_JOURNAL))
+    for entry in voided["entries"]:
+        entry["status"] = "void"
+        entry["void_reason"] = "Reversed"
+    r = await _get(ui_client, "/accounting", get_journal=voided)
+    assert r.status_code == 200
+    assert 'class="bulk-select"' not in r.text
+    # The column is still there, so the rows still line up under the header.
+    assert "col-checkbox" in r.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_posts_every_ticked_entry_once(ui_client):
+    """The ids the reader ticked and the reason from the bar reach the API as
+    they were given: the bar's field travels with the selection."""
+    calls = []
+
+    async def _capture(token, je_ids, reason=None):
+        calls.append((list(je_ids), reason))
+        return {"results": [{"je_id": i, "status": "void"} for i in je_ids],
+                "voided": len(je_ids), "refused": 0}
+
+    ps = _patches()
+    ps.append(patch("ui.api_client.bulk_void_journal_entries", new=_capture))
+    for p in ps:
+        p.start()
+    try:
+        r = await ui_client.post(
+            "/accounting/journal/bulk-void?date_from=2026-01-01&date_to=2026-01-31",
+            cookies=_cookies(),
+            data={"selected": ["je:manual:abc", "je:auto:doc1:fin"],
+                  "reason": "Duplicate batch"})
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert calls == [(["je:manual:abc", "je:auto:doc1:fin"], "Duplicate batch")]
+
+
+@pytest.mark.asyncio
+async def test_journal_bulk_void_refreshes_the_totals(ui_client):
+    """The figures over the rows come back with the rows, out of band, so a void
+    cannot leave the totals from before it standing over the table after it."""
+    r = await _post(ui_client,
+                    "/accounting/journal/bulk-void?date_from=2026-01-01&date_to=2026-01-31",
+                    {"selected": "je:manual:abc", "reason": "Duplicate batch"},
+                    bulk_void_journal_entries=_VOID_BATCH)
+    assert r.status_code == 200
+    assert 'id="journal-table"' in r.text
+    assert 'id="journal-totals"' in r.text and 'hx-swap-oob="true"' in r.text
+    # The classical book asked, so the classical book comes back.
+    assert "Unit Price" not in r.text
+    assert _toast(r) == {"message": t("acct.bulk_void_result", n=1), "type": "success"}
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_toast_states_what_was_refused(ui_client):
+    """A batch where something was refused is an error, and says how many and
+    why in the words of the rule that refused it. The rest were still voided,
+    and the count says so rather than leaving the reader to re-tick and retry."""
+    detail = "Only manual journal entries can be voided here. Undo the source document instead."
+    mixed = {"results": [{"je_id": "je:manual:abc", "status": "void", "void_reason": None},
+                         {"je_id": "je:auto:doc1:fin", "status": "refused", "detail": detail}],
+             "voided": 1, "refused": 1}
+    r = await _post(ui_client, "/accounting/journal/bulk-void",
+                    {"selected": "je:manual:abc"}, bulk_void_journal_entries=mixed)
+    assert r.status_code == 200
+    toast = _toast(r)
+    assert toast["type"] == "error"
+    assert t("acct.bulk_void_result", n=1) in toast["message"]
+    assert detail in toast["message"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_refusal_from_the_api_reaches_the_reader(ui_client):
+    """A refusal of the whole request, such as a selection over the cap, is
+    reported in the API's own words and swaps nothing away."""
+    denied = AsyncMock(side_effect=APIError(422, "Too many journal entries in one request: 201."))
+    ps = _patches()
+    ps.append(patch("ui.api_client.bulk_void_journal_entries", new=denied))
+    for p in ps:
+        p.start()
+    try:
+        r = await ui_client.post("/accounting/journal/bulk-void", cookies=_cookies(),
+                                 data={"selected": "je:manual:abc"})
+    finally:
+        for p in ps:
+            p.stop()
+    assert r.status_code == 200
+    assert r.headers["hx-reswap"] == "none"
+    assert "201" in _toast(r)["message"]
+
+
+@pytest.mark.asyncio
+async def test_single_void_swaps_the_view_instead_of_reloading(ui_client):
+    """One entry is a batch of one: it answers with the table and its totals and
+    reports the same way, rather than reloading the page under the reader."""
+    r = await _post(ui_client,
+                    "/accounting/journal/je:manual:abc/void?date_from=2026-01-01&account=1111",
+                    {"reason": "Keyed twice"}, void_journal_entry=_VOID_ONE)
+    assert r.status_code == 200
+    assert "hx-redirect" not in {k.lower() for k in r.headers}
+    assert 'id="journal-table"' in r.text
+    assert 'id="journal-totals"' in r.text and 'hx-swap-oob="true"' in r.text
+    assert _toast(r) == {"message": t("acct.bulk_void_result", n=1), "type": "success"}
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_response_keeps_the_filter_and_the_item_mode(ui_client):
+    """The answer re-reads the journal the reader was looking at: the extended
+    book when the void came from there, narrowed the way it was narrowed, with
+    the way back pointing at the page it was fired from."""
+    filtered = {**json.loads(json.dumps(_JOURNAL)), "filtered": True}
+    r = await _post(
+        ui_client,
+        "/accounting/journal/bulk-void?items=1&date_from=2026-01-01&account=1111",
+        {"selected": "je:manual:abc"},
+        bulk_void_journal_entries=_VOID_BATCH, get_extended_journal=filtered)
+    assert r.status_code == 200
+    # Item, quantity and unit price: the extended book, not the classical one.
+    assert "Unit Price" in r.text
+    assert f'{t("label.account")} = 1111' in r.text
+    assert "/reports/extended-journal" in r.text
+
+
 @pytest.mark.asyncio
 async def test_je_form_renders(ui_client):
     r = await _get(ui_client, "/accounting/journal/new")
@@ -496,6 +653,8 @@ _NEW_KEYS = [
     "acct.record_foreign_currency", "acct.currency_base_hint",
     "acct.imbalance_note", "acct.fx_per_line_hint",
     "acct.err_currency_unknown", "acct.err_rate_positive",
+    "acct.bulk_void", "acct.bulk_void_confirm", "acct.bulk_void_result",
+    "acct.bulk_void_refused", "label.n_selected", "label.select_all",
 ]
 
 
