@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Erro ao carregar entradas",
   "acct.filter_clear": "Limpar filtros",
   "acct.filtered_totals": "Filtrado",
+  "acct.journal_search": "Pesquisar conta, valor ou texto…",
+  "acct.journal_search_hint": "Vírgula ou Enter para OU. Cada termo corresponde a um código de conta, um valor ou qualquer texto.",
   "acct.fiscal_year_end_date_is_required": "A data de término do ano fiscal é obrigatória.",
   "acct.fx_per_line_hint": "Cada linha tem a sua moeda e a sua taxa. Os livros guardam os valores convertidos, por isso o lançamento tem de saldar na moeda da empresa.",
   "acct.gross_profit": "Lucro Bruto",

@@ -23,13 +23,13 @@ from celerp.services.money import EXCHANGE_RATE_DP, to_decimal
 from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
-from ui.components.table import EMPTY, bulk_toolbar, fmt_money, searchable_select
+from ui.components.table import EMPTY, bulk_toolbar, fmt_money
 from ui.i18n import t
 
-# What the journal can be narrowed by. The API takes these three names and both
-# books read them back under the same names, so a filtered page, its print sheet
-# and its export cannot end up narrowing to different things.
-JOURNAL_FILTER_KEYS = ("account", "q", "amount")
+# What the journal can be narrowed by: one search box. The API takes this name and
+# both books read it back under it, so a filtered page, its print sheet and its
+# export cannot end up narrowing to different things.
+JOURNAL_FILTER_KEYS = ("q",)
 
 # The rendered table's id, written once. The selection toolbar reads its rows
 # through it and an action swaps the table it posted from, so the toolbar, the
@@ -66,16 +66,10 @@ def journal_filter_words(filters: dict, lang: str | None = None) -> str:
     Both read it from here, so a printed page says exactly what the screen it came
     from said, and neither can be mistaken for the whole book.
     """
-    if not filters:
+    q = filters.get("q")
+    if not q:
         return ""
-    parts = []
-    if filters.get("account"):
-        parts.append(f'{t("label.account", lang)} = {filters["account"]}')
-    if filters.get("q"):
-        parts.append(f'{t("label.search", lang)} = "{filters["q"]}"')
-    if filters.get("amount"):
-        parts.append(f'{t("label.amount", lang)} = {filters["amount"]}')
-    return f'{t("acct.filtered_totals", lang)}: {", ".join(parts)}'
+    return f'{t("acct.filtered_totals", lang)}: {t("label.search", lang)} = "{q}"'
 
 
 def journal_print_subtitle(d_from: str, d_to: str, filters: dict,
@@ -99,35 +93,35 @@ def journal_export_name(stem: str, d_from: str, d_to: str, filters: dict) -> str
 
 
 def journal_filter_bar(base_url: str, filters: dict, carried: dict,
-                       accounts: list[dict], lang: str | None = None) -> FT:
-    """The three journal filters as one GET form, beside the date bar.
+                       lang: str | None = None) -> FT:
+    """The journal's one search box, as a GET form beside the date bar.
 
-    A GET form, so the filters live in the URL and a filtered journal can be
-    linked, bookmarked and reloaded (GDR 2m). It carries the period as hidden
-    fields for the same reason the date bar carries its non-date params: a GET form
-    submits its own fields and nothing else, so applying a filter would otherwise
-    reset the period the reader was looking at.
+    One box, not three: account, figure and free text were three fields that ANDed
+    together, which is three ways to ask one question. Now a comma separates terms
+    that OR together and each term is tried against all three, the way the inventory
+    search box reads a run of scanned codes (GDR 2h, one way everywhere). Enter
+    appends a comma so terms can be typed one after another without submitting.
 
-    The amount is a text field, not a number field: "1,000" has to reach the server
-    and come back refused with a message saying why, rather than being silently
-    unenterable (GDR 2e).
+    A GET form, so the search lives in the URL and a filtered journal can be linked,
+    bookmarked and reloaded (GDR 2m). It carries the period as hidden fields for the
+    same reason the date bar carries its non-date params: a GET form submits its own
+    fields and nothing else, so applying a search would otherwise reset the period.
     """
-    esc = "if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}"
-    options = [(a["code"], f"{a['code']} {a.get('name', '')}".strip())
-               for a in accounts if a.get("code")]
+    # Enter appends a comma (the inventory multi-term pattern) rather than
+    # submitting; Escape clears the box. Both leave submission to the Apply button.
+    keydown = (
+        "if(event.key==='Enter'){event.preventDefault();"
+        "var v=this.value;if(v.length&&v[v.length-1]!==','){this.value=v+',';}}"
+        "else if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}"
+    )
     controls: list = [
         Input(type="hidden", name=k, value=v) for k, v in carried.items() if v
     ]
     controls += [
-        searchable_select("account", options, value=filters.get("account", ""),
-                          placeholder=t("label.account", lang),
-                          cls_extra="form-input--sm"),
-        Input(type="text", name="q", value=filters.get("q", ""),
-              placeholder=t("label.search", lang),
-              cls="form-input form-input--sm", onkeydown=esc),
-        Input(type="text", name="amount", value=filters.get("amount", ""),
-              placeholder=t("label.amount", lang),
-              cls="form-input form-input--sm", onkeydown=esc),
+        Input(type="search", name="q", value=filters.get("q", ""),
+              placeholder=t("acct.journal_search", lang),
+              title=t("acct.journal_search_hint", lang),
+              cls="form-input form-input--sm journal-search", onkeydown=keydown),
         Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
     ]
     if filters:
@@ -252,10 +246,13 @@ def journal_bulk_toolbar(params: dict, carried: dict, *, items: bool = False) ->
     """The selection toolbar over a journal: void what is ticked, with a reason.
 
     The reason is a field in the bar rather than a popup, so voiding a batch is
-    entered on the page like every other routine entry (GDR 2f). The confirm step
-    states how many entries are about to be struck, because a mis-ticked box in a
-    long journal is the mistake worth catching before the write, not after: a void
-    stays on the record and the way back from a wrong one is another entry.
+    entered on the page like every other routine entry (GDR 2f). It stays out of
+    the way until it is wanted: picking "void" from the action list reveals the
+    optional reason below the bar with its own confirm button, rather than firing
+    the void the instant the action is chosen. The confirm step states how many
+    entries are about to be struck, because a mis-ticked box in a long journal is
+    the mistake worth catching before the write, not after: a void stays on the
+    record and the way back from a wrong one is another entry.
 
     The period and the filters travel in the URL so the answer can re-read exactly
     the journal the reader was looking at, and the preset travels with them so the
@@ -273,8 +270,9 @@ def journal_bulk_toolbar(params: dict, carried: dict, *, items: bool = False) ->
     return bulk_toolbar(
         JOURNAL_TABLE_ID,
         [{"value": "void", "label": t("acct.bulk_void"), "method": "post",
-          "url": post_url, "confirm": t("acct.bulk_void_confirm")}],
-        fields=[Input(type="text", name="reason", cls="form-input form-input--sm bulk-field",
+          "url": post_url, "confirm": t("acct.bulk_void_confirm"), "fields": True}],
+        fields=[Input(type="text", name="reason",
+                      cls="form-input form-input--sm bulk-field bulk-field--reason",
                       placeholder=t("acct.void_reason_optional"), onkeydown=esc)],
     )
 

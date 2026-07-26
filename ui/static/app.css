@@ -2002,6 +2002,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* ── Bulk payment panel ───────────────────────────────────────────────────── */
 .bulk-action-bar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; padding: 0.5rem 0; }
 .bulk-count { font-size: 0.85rem; color: var(--c-text-muted); font-weight: 500; }
+/* Fields for an action that takes a value (a void reason): hidden until the action is
+   chosen, then wraps to its own line below the bar via flex-basis: 100%. */
+.bulk-fields { display: none; flex-basis: 100%; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.bulk-fields--open { display: flex; }
+.bulk-field--reason { width: 260px; max-width: 100%; }
 .bulk-payment-panel { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 1rem; margin-top: 0.75rem; background: var(--c-bg-alt, #f8f9fa); }
 .bulk-payment-panel .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; }
 .bulk-payment-panel .form-group { flex: 1; min-width: 140px; max-width: 220px; }

@@ -519,39 +519,45 @@ class _JournalFilter:
     One home for the matching rule, because the journal, the extended journal and
     both of their exports all narrow through this and a second copy of the rule
     would eventually disagree with the first.
+
+    The reader gets one search box, not three. A comma separates terms and widens
+    the answer (an OR): "1200, coffee, 90.00" returns every entry touching account
+    1200, or naming coffee, or posting 90.00. Each term is tried against the three
+    things a term could mean - an account code, free text, or a figure - so the
+    reader never has to say which of them they meant.
     """
 
-    account: str | None = None
-    q: str | None = None
-    amount: Decimal | None = None
+    terms: tuple[str, ...] = ()
 
     @property
     def active(self) -> bool:
-        return bool(self.account or self.q or self.amount is not None)
+        return bool(self.terms)
 
     def matches(self, entry: dict) -> bool:
         """Whether an entry belongs in a filtered journal.
 
-        Every filter given has to match, so adding one always narrows the answer.
-        A filter matches on any one of the entry's lines, and the entry is then
-        emitted whole: emitting only the matching lines would print half an entry,
-        which does not balance and is not a journal.
+        Any one term matching keeps the entry (the commas are ORs), and a term
+        matches on any one of the entry's lines. The entry is then emitted whole:
+        emitting only the matching lines would print half an entry, which does not
+        balance and is not a journal.
         """
+        if not self.terms:
+            return True
         lines = entry.get("lines") or []
-        if self.account and not any(l.get("account") == self.account for l in lines):
-            return False
-        if self.q:
-            haystack = [entry.get("memo") or "",
-                        (entry.get("source_doc") or {}).get("doc_ref") or ""]
-            for l in lines:
-                haystack += [l.get("account") or "", l.get("name") or ""]
-            if not any(self.q in h.lower() for h in haystack):
-                return False
-        if self.amount is not None and not any(
-                to_decimal(l.get("debit") or 0) == self.amount
-                or to_decimal(l.get("credit") or 0) == self.amount for l in lines):
-            return False
-        return True
+        haystack = [(entry.get("memo") or "").lower(),
+                    ((entry.get("source_doc") or {}).get("doc_ref") or "").lower()]
+        figures: list[Decimal] = []
+        for l in lines:
+            haystack += [(l.get("account") or "").lower(), (l.get("name") or "").lower()]
+            figures += [to_decimal(l.get("debit") or 0), to_decimal(l.get("credit") or 0)]
+        return any(self._term_matches(term, haystack, figures) for term in self.terms)
+
+    @staticmethod
+    def _term_matches(term: str, haystack: list[str], figures: list[Decimal]) -> bool:
+        if any(term in h for h in haystack):
+            return True
+        figure = _parse_amount(term)
+        return figure is not None and any(f == figure for f in figures)
 
 
 def _require_q(q: str) -> None:
@@ -564,76 +570,36 @@ def _require_q(q: str) -> None:
         )
 
 
-def _require_amount(value: str) -> Decimal | None:
-    """The amount filter as a number, or 422 saying why it is not one.
+def _parse_amount(term: str) -> Decimal | None:
+    """A search term as a positive, finite figure, or None if it is not one.
 
-    A figure that cannot be read is refused rather than ignored, because a
-    silently dropped amount filter answers with the whole book under a heading
-    that says it was narrowed.
+    Quiet by design: a term that is not a number is simply not tried as one, it
+    is still tried as text. `nan` and `inf` parse as decimals but are not figures
+    (one raises on every comparison, the other matches nothing while claiming to),
+    and a negative reads as nothing, since journal figures are posted positive on
+    one side, so all three fall back to a text-only term.
     """
-    if not value:
-        return None
     try:
-        amount = to_decimal(value)
+        figure = to_decimal(term)
     except (ArithmeticError, TypeError, ValueError):
-        amount = None
-    # `nan` and `inf` parse as decimals but are not figures: one raises on every
-    # comparison, the other matches nothing while claiming to be a filter.
-    if amount is None or not amount.is_finite():
-        raise HTTPException(
-            status_code=422,
-            detail=f"Amount filter {value} is not a number.",
-        )
-    if amount < 0:
-        raise HTTPException(
-            status_code=422,
-            detail=("Amount filter cannot be negative. Journal figures are "
-                    "posted as a debit or a credit, both positive."),
-        )
-    return amount
+        return None
+    if figure is None or not figure.is_finite() or figure < 0:
+        return None
+    return figure
 
 
-async def _require_account(
-    session: AsyncSession, company_id: uuid.UUID, code: str
-) -> None:
-    """Check the journal's account filter names a real account.
+def _journal_filter(q: str | None) -> _JournalFilter:
+    """Parse the journal's one search box into the rule that matches.
 
-    Refused as 422 for the reason `_require_contact_filter` gives: the report is
-    there, it is the filter that cannot be applied, and a mistyped code would
-    otherwise answer with an empty journal that reads as a quiet period.
+    A comma separates terms; blank terms (a trailing comma, a double comma) are
+    dropped rather than matching everything. The whole string is length-guarded
+    before it is split, so a pathological query is refused once, not per term.
+    Clearing the box submits it empty, which is no filter, never a refusal.
     """
-    if not code:
-        return
-    found = (await session.execute(
-        select(Account.id).where(Account.company_id == company_id, Account.code == code)
-    )).scalar_one_or_none()
-    if found is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No account matches code {code}.",
-        )
-
-
-async def _journal_filter(
-    session: AsyncSession, company_id: uuid.UUID,
-    account: str | None, q: str | None, amount: str | None,
-) -> _JournalFilter:
-    """Validate the three journal filters and hand back the one that matches.
-
-    Blank values are dropped before validating, not refused: clearing a filter
-    field submits it empty, and answering that with 422 would refuse the act of
-    clearing a filter.
-    """
-    account = (account or "").strip()
     q = (q or "").strip()
-    amount = (amount or "").strip()
-    await _require_account(session, company_id, account)
     _require_q(q)
-    return _JournalFilter(
-        account=account or None,
-        q=q.lower() or None,
-        amount=_require_amount(amount),
-    )
+    terms = tuple(t for t in (part.strip().lower() for part in q.split(",")) if t)
+    return _JournalFilter(terms=terms)
 
 
 # Account types whose balance is credit-normal. Every other type, including the
@@ -1096,9 +1062,7 @@ async def _journal_payload(
 async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
-    account: str | None = None,
     q: str | None = None,
-    amount: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
@@ -1108,10 +1072,11 @@ async def journal(
     Voided entries stay visible flagged status="void" - a journal is a record, and
     hiding voids would misstate it - but they are excluded from the period totals.
 
-    `account`, `q` and `amount` narrow the entries; a narrowed answer says so in
+    `q` is the one search box: comma-separated terms that OR together, each tried
+    against an account code, free text, or a figure. A narrowed answer says so in
     `filtered` and its totals are the totals of what it returned.
     """
-    filt = await _journal_filter(session, company_id, account, q, amount)
+    filt = _journal_filter(q)
     payload, _refs, _base = await _journal_payload(
         session, company_id, date_from, date_to, filt)
     return payload
@@ -1265,9 +1230,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
 async def extended_journal(
     date_from: str | None = None,
     date_to: str | None = None,
-    account: str | None = None,
     q: str | None = None,
-    amount: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
@@ -1283,11 +1246,11 @@ async def extended_journal(
     so a reader can tell "no item here" from "the item detail was not
     trustworthy" from "the document is gone".
 
-    The filters are the classical journal's, applied to the same entries before
-    any item detail is derived, so a filter can never give the two books
+    The search is the classical journal's, applied to the same entries before
+    any item detail is derived, so a search can never give the two books
     different entry sets.
     """
-    filt = await _journal_filter(session, company_id, account, q, amount)
+    filt = _journal_filter(q)
     payload, refs, base = await _journal_payload(
         session, company_id, date_from, date_to, filt)
     for entry in payload["entries"]:

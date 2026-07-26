@@ -43,7 +43,7 @@ from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
 from ui.routes.reports import (
-    _date_filter_bar, _filter_accounts, _get_fiscal, _page_or_fragment, _parse_dates,
+    _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
 
@@ -115,7 +115,6 @@ def setup_routes(app):
             filters = journal_filters(request)
             params = {**_date_params(d_from, d_to), **filters}
             data = await api.get_journal(token, params)
-            accounts = await _filter_accounts(token)
             # What the period is, in the terms the reader set it: a preset stays a
             # preset through a filter change, so the button they picked stays lit.
             carried = ({"preset": preset} if preset and preset != "custom"
@@ -125,7 +124,7 @@ def setup_routes(app):
                 _date_filter_bar("/accounting", d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),
-                journal_filter_bar("/accounting", filters, carried, accounts,
+                journal_filter_bar("/accounting", filters, carried,
                                    get_lang(request)),
                 _journal_totals(data, currency,
                                 filter_words=journal_filter_words(filters, get_lang(request)),

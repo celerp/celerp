@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Erreur lors du chargement des entrées",
   "acct.filter_clear": "Effacer les filtres",
   "acct.filtered_totals": "Filtré",
+  "acct.journal_search": "Rechercher un compte, un montant ou du texte…",
+  "acct.journal_search_hint": "Virgule ou Entrée pour OU. Chaque terme correspond à un numéro de compte, un montant ou n'importe quel texte.",
   "acct.fiscal_year_end_date_is_required": "La date de fin d’exercice est requise.",
   "acct.fx_per_line_hint": "Chaque ligne a sa devise et son taux. Les livres contiennent les montants convertis, l'écriture doit donc être équilibrée dans la devise de la société.",
   "acct.gross_profit": "Bénéfice brut",

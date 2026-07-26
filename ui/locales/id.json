@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Terjadi kesalahan saat memuat entri",
   "acct.filter_clear": "Hapus filter",
   "acct.filtered_totals": "Difilter",
+  "acct.journal_search": "Cari akun, jumlah, atau teks…",
+  "acct.journal_search_hint": "Koma atau Enter untuk OR. Setiap istilah cocok dengan kode akun, jumlah, atau teks apa pun.",
   "acct.fiscal_year_end_date_is_required": "Tanggal akhir tahun fiskal wajib diisi.",
   "acct.fx_per_line_hint": "Setiap baris punya mata uang dan kursnya sendiri. Pembukuan menyimpan nilai hasil konversi, jadi jurnal harus seimbang dalam mata uang perusahaan.",
   "acct.gross_profit": "Laba Kotor",

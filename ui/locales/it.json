@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Errore nel caricamento delle voci",
   "acct.filter_clear": "Cancella filtri",
   "acct.filtered_totals": "Filtrato",
+  "acct.journal_search": "Cerca conto, importo o testo…",
+  "acct.journal_search_hint": "Virgola o Invio per OR. Ogni termine corrisponde a un codice conto, un importo o qualsiasi testo.",
   "acct.fiscal_year_end_date_is_required": "La data di fine anno fiscale è obbligatoria.",
   "acct.fx_per_line_hint": "Ogni riga ha la propria valuta e il proprio cambio. I libri contengono gli importi convertiti, quindi la scrittura deve quadrare nella valuta aziendale.",
   "acct.gross_profit": "Utile lordo",

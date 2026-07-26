@@ -49,19 +49,6 @@ async def _get_fiscal(token: str) -> str:
     return fy
 
 
-async def _filter_accounts(token: str) -> list[dict]:
-    """The chart of accounts, for an account filter's options; empty on any error.
-
-    The options are a convenience beside a report that has already loaded. A chart
-    that cannot be read must cost the reader the contents of one dropdown and not
-    the report itself, so this degrades the same way the fiscal year above does.
-    """
-    try:
-        return (await api.get_chart(token)).get("items", [])
-    except Exception:
-        return []
-
-
 def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 

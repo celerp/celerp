@@ -254,6 +254,24 @@ async def test_journal_page_selects_entries_not_postings(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_void_reason_hides_below_the_bar_until_void_is_chosen(ui_client):
+    """The optional reason is not a popup and does not crowd the action list: it
+    sits in a hidden group below the bar, and the void action is marked so the JS
+    reveals that group only when the reader picks void, with its own confirm."""
+    r = await _get(ui_client, "/accounting")
+    assert r.status_code == 200
+    # The reason is a narrowed field inside the reveal group, not inline in the bar.
+    assert "bulk-fields" in r.text
+    assert "bulk-field--reason" in r.text
+    assert t("acct.void_reason_optional") in r.text
+    # The action is flagged so the toolbar defers instead of firing at once, and
+    # the group carries its own way to confirm and to back out.
+    assert '"fields": true' in r.text
+    assert "bulk-apply" in r.text and "bulk-cancel" in r.text
+    assert "bulk-fields--open" in r.text  # the JS that reveals it ships on the page
+
+
+@pytest.mark.asyncio
 async def test_journal_page_offers_no_boxes_on_voided_entries(ui_client):
     """A voided entry has nothing left to void, so it keeps the column and
     leaves it empty rather than offering an action that would be refused."""
@@ -355,7 +373,7 @@ async def test_single_void_swaps_the_view_instead_of_reloading(ui_client):
     """One entry is a batch of one: it answers with the table and its totals and
     reports the same way, rather than reloading the page under the reader."""
     r = await _post(ui_client,
-                    "/accounting/journal/je:manual:abc/void?date_from=2026-01-01&account=1111",
+                    "/accounting/journal/je:manual:abc/void?date_from=2026-01-01&q=1111",
                     {"reason": "Keyed twice"}, void_journal_entry=_VOID_ONE)
     assert r.status_code == 200
     assert "hx-redirect" not in {k.lower() for k in r.headers}
@@ -372,13 +390,13 @@ async def test_bulk_void_response_keeps_the_filter_and_the_item_mode(ui_client):
     filtered = {**json.loads(json.dumps(_JOURNAL)), "filtered": True}
     r = await _post(
         ui_client,
-        "/accounting/journal/bulk-void?items=1&date_from=2026-01-01&account=1111",
+        "/accounting/journal/bulk-void?items=1&date_from=2026-01-01&q=1111",
         {"selected": "je:manual:abc"},
         bulk_void_journal_entries=_VOID_BATCH, get_extended_journal=filtered)
     assert r.status_code == 200
     # Item, quantity and unit price: the extended book, not the classical one.
     assert "Unit Price" in r.text
-    assert f'{t("label.account")} = 1111' in r.text
+    assert t("label.search") in r.text and "1111" in r.text
     assert "/reports/extended-journal" in r.text
 
 
@@ -464,7 +482,7 @@ async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
 # Journal filters
 # ---------------------------------------------------------------------------
 
-_FILTERS_QS = "account=4100&q=rent&amount=350"
+_FILTERS_QS = "q=rent"
 # On-screen pages take the period as from/to; print sheets and exports take it as
 # date_from/date_to, which is the convention across every report here.
 _FILTER_QS = f"from=2026-01-01&to=2026-03-31&{_FILTERS_QS}"
@@ -472,7 +490,7 @@ _EXPORT_QS = f"date_from=2026-01-01&date_to=2026-03-31&{_FILTERS_QS}"
 
 
 def _filtered_payload(*, entries: int = 1) -> dict:
-    """What the API answers for a filter that matched `entries` of the two."""
+    """What the API answers for a search that matched `entries` of the two."""
     out = json.loads(json.dumps(_JOURNAL))
     # The INV-1 entry: account 4100, 350.00, so the payload agrees with the filter
     # the tests ask for.
@@ -499,23 +517,26 @@ async def _get_spied(ui_client, url, name, mock):
 @pytest.mark.parametrize("page,call", [("/accounting", "get_journal"),
                                        ("/reports/extended-journal", "get_extended_journal")])
 async def test_filtered_page_says_it_is_filtered(ui_client, page, call):
-    """A filtered page must never read as the whole book: it states the filter in
+    """A filtered page must never read as the whole book: it states the search in
     words, offers the way back, and the totals it shows are of what it shows."""
     spy = AsyncMock(return_value=_filtered_payload())
     r = await _get_spied(ui_client, f"{page}?{_FILTER_QS}", call, spy)
     assert r.status_code == 200
     html = r.text
     assert t("acct.filtered_totals") in html
-    assert "Account = 4100" in html and "Amount = 350" in html and "rent" in html
+    assert "rent" in html
     assert t("acct.filter_clear") in html
-    # The filter bar comes back holding what was asked for, so the reader can see
-    # and adjust it rather than re-typing it.
-    assert 'value="4100"' in html and 'value="rent"' in html and 'value="350"' in html
-    # ESC empties a filter field (GDR 2j).
-    assert "Escape" in html
-    # The three filters reached the API, and the period went with them.
+    # The one search box comes back holding what was asked for, so the reader can
+    # see and adjust it rather than re-typing it.
+    assert 'value="rent"' in html
+    assert "journal-search" in html and t("acct.journal_search") in html
+    # ESC empties the box (GDR 2j) and Enter appends a comma (the inventory pattern).
+    assert "Escape" in html and "Enter" in html
+    # The one search reached the API with the period, and the three old field
+    # names are gone from the call.
     params = spy.await_args.args[1]
-    assert params["account"] == "4100" and params["q"] == "rent" and params["amount"] == "350"
+    assert params["q"] == "rent"
+    assert "account" not in params and "amount" not in params
     assert params["date_from"] == "2026-01-01" and params["date_to"] == "2026-03-31"
 
 
@@ -554,38 +575,21 @@ async def test_journal_print_and_csv_carry_the_filter(ui_client, stem, print_url
     r = await _get_spied(ui_client, f"{print_url}?{_EXPORT_QS}", call, spy)
     assert r.status_code == 200
     assert t("acct.filtered_totals") in r.text
-    assert "Account = 4100" in r.text
-    assert spy.await_args.args[1]["account"] == "4100"
+    assert "rent" in r.text
+    assert spy.await_args.args[1]["q"] == "rent"
 
     spy = AsyncMock(return_value=_filtered_payload())
     r = await _get_spied(ui_client, f"{csv_url}?{_EXPORT_QS}", call, spy)
     assert r.status_code == 200
-    # The filename says it is a slice; the filter values stay out of the header,
+    # The filename says it is a slice; the search text stays out of the header,
     # and the single header row stays what a spreadsheet reads as column names.
     assert f'filename="{stem}_2026-01-01_2026-03-31_filtered.csv"' in \
         r.headers["content-disposition"]
     assert "rent" not in r.headers["content-disposition"]
     assert r.text.strip().splitlines()[0].startswith("date,")
-    assert spy.await_args.args[1]["amount"] == "350"
+    assert spy.await_args.args[1]["q"] == "rent"
     # Only the filtered entry is in the file: one entry, two postings.
     assert len([row for row in r.text.strip().splitlines() if row]) == 3
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("page", ["/accounting", "/reports/extended-journal"])
-async def test_journal_page_survives_an_unreadable_chart(ui_client, page):
-    """The account options are a convenience beside a book that already loaded. A
-    chart that cannot be read costs the reader one dropdown's contents, not the
-    page, and the list comes back empty rather than invented."""
-    broken = AsyncMock(side_effect=APIError(500, "chart is down"))
-    r = await _get_spied(ui_client, page, "get_chart", broken)
-    assert r.status_code == 200
-    assert "Adjustment" in r.text and "INV-1" in r.text
-    # The control is there and says it has nothing to offer, rather than offering
-    # accounts it could not read.
-    assert "combobox-option--empty" in r.text
-    assert 'data-value="1111"' not in r.text and 'data-value="4100"' not in r.text
-    assert "chart is down" not in r.text
 
 
 @pytest.mark.asyncio
@@ -593,15 +597,15 @@ async def test_journal_page_survives_an_unreadable_chart(ui_client, page):
     ("/accounting/export/journal/csv", "get_journal"),
     ("/reports/export/extended-journal/csv", "get_extended_journal"),
 ])
-async def test_journal_csv_rejects_a_bad_amount_with_422(ui_client, csv_url, call):
-    """A typed filter the server refuses is the reader's to correct. Answering it
-    as a 500 turns a typo into something they report as an outage."""
-    refused = AsyncMock(side_effect=APIError(422, "Amount filter abc is not a number."))
-    r = await _get_spied(ui_client, f"{csv_url}?amount=abc", call, refused)
-    # The route has to hand the filter over to be refused in the first place.
-    assert refused.await_args.args[1]["amount"] == "abc"
+async def test_journal_csv_rejects_an_over_long_search_with_422(ui_client, csv_url, call):
+    """A search the server refuses (only the length cap can refuse one now) is the
+    reader's to correct. Answering it as a 500 turns a typo into an outage."""
+    refused = AsyncMock(side_effect=APIError(422, "Search text is 201 characters, longer than the 200 the journal searches."))
+    r = await _get_spied(ui_client, f"{csv_url}?q={'x' * 201}", call, refused)
+    # The route has to hand the search over to be refused in the first place.
+    assert refused.await_args.args[1]["q"] == "x" * 201
     assert r.status_code == 422
-    assert "not a number" in r.text
+    assert "longer than" in r.text
 
 
 def test_date_filter_bar_carries_encoded_values():
@@ -649,6 +653,7 @@ _NEW_KEYS = [
     "acct.not_authorized", "acct.soa_pick_contact", "acct.soa_title",
     "acct.closing_balance", "acct.err_amounts_numeric", "acct.memo_hint",
     "acct.void_reason_optional", "acct.soa_kind_payment",
+    "acct.journal_search", "acct.journal_search_hint",
     "acct.no_entries_for_account",
     "acct.record_foreign_currency", "acct.currency_base_hint",
     "acct.imbalance_note", "acct.fx_per_line_hint",
@@ -820,9 +825,9 @@ def test_plain_error_response_keeps_a_4xx_status():
     from ui.api_client import APIError
     from ui.components.report_kit import plain_error_response
 
-    refused = plain_error_response(APIError(422, "Amount filter abc is not a number."))
+    refused = plain_error_response(APIError(422, "Search text is 201 characters, longer than the 200 the journal searches."))
     assert refused.status_code == 422
-    assert b"not a number" in refused.body
+    assert b"longer than" in refused.body
     assert plain_error_response(APIError(404, "gone")).status_code == 404
     # Anything the reader cannot correct still reads as a server error.
     assert plain_error_response(APIError(503, "upstream")).status_code == 500

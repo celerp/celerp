@@ -14,67 +14,7 @@
 <button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
 <form enctype="multipart/form-data" action="/reports/extended-journal" method="get" class="journal-filter-bar flex-row gap-sm mb-md">      <input type="hidden" name="from" value="2026-01-01">
       <input type="hidden" name="to" value="2026-03-31">
-      <div class="combobox-wrap">
-        <input type="text" value="" placeholder="Account" autocomplete="off" class="combobox-input form-input--sm">
-        <input type="hidden" name="account" data-name="account" value="">
-        <div class="combobox-list">
-          <div data-value="1000" class="combobox-option">1000 Assets</div>
-          <div data-value="1100" class="combobox-option">1100 Current Assets</div>
-          <div data-value="1110" class="combobox-option">1110 Cash and Cash Equivalents</div>
-          <div data-value="1111" class="combobox-option">1111 Default Bank Account (Checking)</div>
-          <div data-value="1120" class="combobox-option">1120 Accounts Receivable</div>
-          <div data-value="1130" class="combobox-option">1130 Inventory</div>
-          <div data-value="1130-DTY" class="combobox-option">1130-DTY Inventory - Import Duty Clearing</div>
-          <div data-value="1130-FRT" class="combobox-option">1130-FRT Inventory - Freight Clearing</div>
-          <div data-value="1130-INS" class="combobox-option">1130-INS Inventory - Insurance Clearing</div>
-          <div data-value="1130-IVT" class="combobox-option">1130-IVT Inventory - Non-Recoverable Import VAT Clearing</div>
-          <div data-value="1130-OB" class="combobox-option">1130-OB Inventory - Opening Balance</div>
-          <div data-value="1130-P" class="combobox-option">1130-P Inventory - Purchased</div>
-          <div data-value="1140" class="combobox-option">1140 Prepaid Expenses</div>
-          <div data-value="1150" class="combobox-option">1150 VAT Receivable (Input VAT)</div>
-          <div data-value="1200" class="combobox-option">1200 Non-Current Assets</div>
-          <div data-value="1210" class="combobox-option">1210 Property, Plant and Equipment</div>
-          <div data-value="1220" class="combobox-option">1220 Accumulated Depreciation</div>
-          <div data-value="1230" class="combobox-option">1230 Intangible Assets</div>
-          <div data-value="2000" class="combobox-option">2000 Liabilities</div>
-          <div data-value="2100" class="combobox-option">2100 Current Liabilities</div>
-          <div data-value="2110" class="combobox-option">2110 Accounts Payable</div>
-          <div data-value="2120" class="combobox-option">2120 VAT Payable (Output VAT)</div>
-          <div data-value="2130" class="combobox-option">2130 Withholding Tax Payable</div>
-          <div data-value="2140" class="combobox-option">2140 Accrued Expenses</div>
-          <div data-value="2150" class="combobox-option">2150 Social Security Payable</div>
-          <div data-value="2200" class="combobox-option">2200 Non-Current Liabilities</div>
-          <div data-value="2210" class="combobox-option">2210 Long-term Loans</div>
-          <div data-value="3000" class="combobox-option">3000 Equity</div>
-          <div data-value="3100" class="combobox-option">3100 Registered Capital</div>
-          <div data-value="3200" class="combobox-option">3200 Retained Earnings</div>
-          <div data-value="3300" class="combobox-option">3300 Current Year Earnings</div>
-          <div data-value="4000" class="combobox-option">4000 Revenue</div>
-          <div data-value="4100" class="combobox-option">4100 Sales Revenue</div>
-          <div data-value="4200" class="combobox-option">4200 Service Revenue</div>
-          <div data-value="4300" class="combobox-option">4300 Other Income</div>
-          <div data-value="4400" class="combobox-option">4400 Interest Income</div>
-          <div data-value="5000" class="combobox-option">5000 Cost of Goods Sold</div>
-          <div data-value="5100" class="combobox-option">5100 Cost of Goods Sold</div>
-          <div data-value="5200" class="combobox-option">5200 Direct Labor</div>
-          <div data-value="5300" class="combobox-option">5300 Manufacturing Overhead</div>
-          <div data-value="6000" class="combobox-option">6000 Operating Expenses</div>
-          <div data-value="6100" class="combobox-option">6100 Salaries and Wages</div>
-          <div data-value="6200" class="combobox-option">6200 Rent</div>
-          <div data-value="6300" class="combobox-option">6300 Utilities</div>
-          <div data-value="6400" class="combobox-option">6400 Depreciation</div>
-          <div data-value="6500" class="combobox-option">6500 Professional Fees</div>
-          <div data-value="6600" class="combobox-option">6600 Marketing and Advertising</div>
-          <div data-value="6700" class="combobox-option">6700 Insurance</div>
-          <div data-value="6800" class="combobox-option">6800 Office Supplies</div>
-          <div data-value="6900" class="combobox-option">6900 Travel and Transportation</div>
-          <div data-value="6950" class="combobox-option">6950 Miscellaneous Expenses</div>
-          <div data-value="6960" class="combobox-option">6960 Foreign Exchange Difference</div>
-          <div class="combobox-option combobox-option--empty" style="display:none">No results</div>
-        </div>
-      </div>
-      <input type="text" name="q" value="" placeholder="Search" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm">
-      <input type="text" name="amount" value="" placeholder="Amount" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm">
+      <input type="search" name="q" value="" placeholder="Search account, amount or text… (comma or Enter = OR)" onkeydown="if(event.key==='Enter'){event.preventDefault();var v=this.value;if(v.length&amp;&amp;v[v.length-1]!==','){this.value=v+',';}}else if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm journal-search" title="Use a comma or Enter for OR. Each term matches an account code, an amount, or any text.">
 <button type="submit" class="btn btn--secondary btn--sm">Apply</button></form>    <div id="journal-totals" class="valuation-bar">
 <span class="val-chip">Total Debit: ฿210.00</span><span class="val-chip">Total Credit: ฿210.00</span><span class="val-chip">Balanced ✓</span>    </div>
     <div class="flex-row mt-md mb-md">
@@ -82,8 +22,10 @@
 <a href="/reports/export/extended-journal/csv?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/extended-journal?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
     </div>
     <div data-table="journal-table" data-count-label="{n} selected" id="bulkbar-journal-table" class="bulkbar bulk-action-bar">
-<span class="bulk-count">0 selected</span><button type="button" class="btn btn--xs btn--ghost bulk-clear">Clear</button>      <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm bulk-field">
-<select disabled data-actions='[{"value": "void", "label": "Void selected", "method": "post", "url": "/accounting/journal/bulk-void?date_from=2026-01-01&amp;date_to=2026-03-31&amp;items=1", "confirm": "Void the selected journal entries ({n})? A void stays on the record and cannot be undone."}]' class="bulk-action-select"><option value="" disabled selected>Action...</option><option value="void">Void selected</option></select><script>
+<span class="bulk-count">0 selected</span><button type="button" class="btn btn--xs btn--ghost bulk-clear">Clear</button><select disabled data-actions='[{"value": "void", "label": "Void selected", "method": "post", "url": "/accounting/journal/bulk-void?date_from=2026-01-01&amp;date_to=2026-03-31&amp;items=1", "confirm": "Void the selected journal entries ({n})? A void stays on the record and cannot be undone.", "fields": true}]' class="bulk-action-select"><option value="" disabled selected>Action...</option><option value="void">Void selected</option></select>      <div class="bulk-fields">
+        <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm bulk-field bulk-field--reason">
+<button type="button" class="btn btn--xs btn--primary bulk-apply">Apply</button><button type="button" class="btn btn--xs btn--ghost bulk-cancel">Cancel</button>      </div>
+<script>
 (function(){
   if(window.__celerpBulkbar)return;window.__celerpBulkbar=true;
   function table(bar){return document.getElementById(bar.getAttribute('data-table'));}
@@ -91,23 +33,26 @@
     t.querySelectorAll('tbody tr.data-row:not(.dp-row-hidden) .bulk-select'));}
   function checkedIds(t){var seen={},out=[];visBoxes(t).forEach(function(c){
     if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
+  function fieldsBox(bar){return bar.querySelector('.bulk-fields');}
+  function closeFields(bar){var fb=fieldsBox(bar);if(fb)fb.classList.remove('bulk-fields--open');
+    bar.removeAttribute('data-pending');var sel=bar.querySelector('.bulk-action-select');if(sel)sel.selectedIndex=0;}
   function refresh(bar){
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
     var cnt=bar.querySelector('.bulk-count');
     if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
     var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
+    if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
   }
   function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
   window.celerpBulkRefresh=refreshAll;
-  function doAction(sel){
-    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
-    var ids=checkedIds(t),val=sel.value;sel.selectedIndex=0;
-    if(!ids.length||!val)return;
-    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
-    for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
-    if(!a)return;
+  function findAction(bar,val){
+    var sel=bar.querySelector('.bulk-action-select');if(!sel)return null;
+    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]');
+    for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
+  function runAction(bar,a){
+    var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
     if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
@@ -119,6 +64,17 @@
     htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
       .then(function(){form.remove();},function(){form.remove();});
   }
+  // Field-bearing actions (e.g. void, which takes an optional reason) reveal their
+  // inputs below the bar and wait for the confirm button; field-less actions fire at once.
+  function doAction(sel){
+    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
+    var val=sel.value;if(!checkedIds(t).length||!val){sel.selectedIndex=0;return;}
+    var a=findAction(bar,val);if(!a){sel.selectedIndex=0;return;}
+    var fb=fieldsBox(bar);
+    if(a.fields&&fb){fb.classList.add('bulk-fields--open');bar.setAttribute('data-pending',val);
+      var f0=fb.querySelector('.bulk-field');if(f0)f0.focus();return;}
+    sel.selectedIndex=0;runAction(bar,a);
+  }
   document.addEventListener('change',function(e){
     var el=e.target;if(!el||!el.classList)return;
     if(el.classList.contains('bulk-select-all')){var t=el.closest('table');
@@ -128,7 +84,16 @@
   });
   document.addEventListener('click',function(e){
     var clr=e.target.closest&&e.target.closest('.bulk-clear');
-    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();}
+    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();return;}
+    var ap=e.target.closest&&e.target.closest('.bulk-apply');
+    if(ap){var bar=ap.closest('.bulkbar');var val=bar.getAttribute('data-pending');
+      var a=val?findAction(bar,val):null;closeFields(bar);if(a)runAction(bar,a);return;}
+    var cx=e.target.closest&&e.target.closest('.bulk-cancel');
+    if(cx){closeFields(cx.closest('.bulkbar'));return;}
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;var fb=e.target.closest&&e.target.closest('.bulk-fields');
+    if(fb)closeFields(fb.closest('.bulkbar'));
   });
   document.addEventListener('htmx:afterSwap',function(){refreshAll();});
   refreshAll();

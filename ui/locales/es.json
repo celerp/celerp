@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Error al cargar entradas",
   "acct.filter_clear": "Borrar filtros",
   "acct.filtered_totals": "Filtrado",
+  "acct.journal_search": "Buscar cuenta, importe o texto…",
+  "acct.journal_search_hint": "Coma o Intro para O. Cada término coincide con un código de cuenta, un importe o cualquier texto.",
   "acct.fiscal_year_end_date_is_required": "Se requiere la fecha de finalización del año fiscal.",
   "acct.fx_per_line_hint": "Cada línea tiene su propia moneda y su tipo de cambio. Los libros guardan los importes convertidos, así que el asiento debe cuadrar en la moneda de la empresa.",
   "acct.gross_profit": "Utilidad bruta",

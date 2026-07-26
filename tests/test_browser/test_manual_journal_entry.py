@@ -289,11 +289,18 @@ def test_journal_bulk_void_confirms_then_posts(page, ui_server, api, two_posted_
         page.locator(f'#journal-table .bulk-select[value="{je_id}"]').check()
 
     bar = page.locator("#bulkbar-journal-table")
-    bar.locator('.bulk-field[name="reason"]').fill("Duplicate batch")
 
     dialogs = []
     page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+
+    # The optional reason stays hidden below the bar until void is chosen, then
+    # appears with its own confirm rather than firing the instant void is picked.
+    reason = bar.locator('.bulk-field[name="reason"]')
+    assert not reason.is_visible(), "the reason field showed before void was chosen"
     bar.locator(".bulk-action-select").select_option("void")
+    reason.wait_for(state="visible", timeout=3000)
+    reason.fill("Duplicate batch")
+    bar.locator(".bulk-apply").click()
 
     page.wait_for_selector(".toast-container .toast", timeout=10000)
     assert len(dialogs) == 1, f"Expected one confirm, got {dialogs}"

@@ -136,23 +136,26 @@ BULK_TOOLBAR_JS = """
     t.querySelectorAll('tbody tr.data-row:not(.dp-row-hidden) .bulk-select'));}
   function checkedIds(t){var seen={},out=[];visBoxes(t).forEach(function(c){
     if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
+  function fieldsBox(bar){return bar.querySelector('.bulk-fields');}
+  function closeFields(bar){var fb=fieldsBox(bar);if(fb)fb.classList.remove('bulk-fields--open');
+    bar.removeAttribute('data-pending');var sel=bar.querySelector('.bulk-action-select');if(sel)sel.selectedIndex=0;}
   function refresh(bar){
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
     var cnt=bar.querySelector('.bulk-count');
     if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
     var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
+    if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
   }
   function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
   window.celerpBulkRefresh=refreshAll;
-  function doAction(sel){
-    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
-    var ids=checkedIds(t),val=sel.value;sel.selectedIndex=0;
-    if(!ids.length||!val)return;
-    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
-    for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
-    if(!a)return;
+  function findAction(bar,val){
+    var sel=bar.querySelector('.bulk-action-select');if(!sel)return null;
+    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]');
+    for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
+  function runAction(bar,a){
+    var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
     if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
@@ -164,6 +167,17 @@ BULK_TOOLBAR_JS = """
     htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
       .then(function(){form.remove();},function(){form.remove();});
   }
+  // Field-bearing actions (e.g. void, which takes an optional reason) reveal their
+  // inputs below the bar and wait for the confirm button; field-less actions fire at once.
+  function doAction(sel){
+    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
+    var val=sel.value;if(!checkedIds(t).length||!val){sel.selectedIndex=0;return;}
+    var a=findAction(bar,val);if(!a){sel.selectedIndex=0;return;}
+    var fb=fieldsBox(bar);
+    if(a.fields&&fb){fb.classList.add('bulk-fields--open');bar.setAttribute('data-pending',val);
+      var f0=fb.querySelector('.bulk-field');if(f0)f0.focus();return;}
+    sel.selectedIndex=0;runAction(bar,a);
+  }
   document.addEventListener('change',function(e){
     var el=e.target;if(!el||!el.classList)return;
     if(el.classList.contains('bulk-select-all')){var t=el.closest('table');
@@ -173,7 +187,16 @@ BULK_TOOLBAR_JS = """
   });
   document.addEventListener('click',function(e){
     var clr=e.target.closest&&e.target.closest('.bulk-clear');
-    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();}
+    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();return;}
+    var ap=e.target.closest&&e.target.closest('.bulk-apply');
+    if(ap){var bar=ap.closest('.bulkbar');var val=bar.getAttribute('data-pending');
+      var a=val?findAction(bar,val):null;closeFields(bar);if(a)runAction(bar,a);return;}
+    var cx=e.target.closest&&e.target.closest('.bulk-cancel');
+    if(cx){closeFields(cx.closest('.bulkbar'));return;}
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;var fb=e.target.closest&&e.target.closest('.bulk-fields');
+    if(fb)closeFields(fb.closest('.bulkbar'));
   });
   document.addEventListener('htmx:afterSwap',function(){refreshAll();});
   refreshAll();
@@ -189,18 +212,28 @@ def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None)
     header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
 
     `confirm` text may contain `{n}`, replaced with the number selected at click time.
-    `fields` are extra inputs shown in the bar; any of them carrying class `bulk-field`
-    and a name is posted alongside the ids, so an action can take a value (a void
-    reason, a location) without a popup."""
+    `fields` are extra inputs for an action that takes a value (a void reason). They
+    sit hidden in a `.bulk-fields` group below the action list and only appear when an
+    action marked `"fields": True` is chosen, revealed with its own Apply/Cancel rather
+    than a popup (GDR 2f); any input carrying class `bulk-field` and a name is posted
+    alongside the ids. A field-less action still fires the instant it is chosen."""
     import json as _json
     opts = [Option(t("inv.action"), value="", disabled=True, selected=True)]
     opts += [Option(a["label"], value=a["value"]) for a in actions]
+    field_group = ()
+    if fields:
+        field_group = (Div(
+            *fields,
+            Button(t("btn.apply"), type="button", cls="btn btn--xs btn--primary bulk-apply"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--xs btn--ghost bulk-cancel"),
+            cls="bulk-fields",
+        ),)
     return Div(
         Span(t("label.n_selected", n=0), cls="bulk-count"),
         Button(t("btn.clear"), type="button", cls="btn btn--xs btn--ghost bulk-clear"),
-        *(fields or []),
         Select(*opts, cls="bulk-action-select", disabled=True,
                **{"data-actions": _json.dumps(actions)}),
+        *field_group,
         Script(BULK_TOOLBAR_JS),
         cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
         **{"data-table": table_id, "data-count-label": t("label.n_selected")},

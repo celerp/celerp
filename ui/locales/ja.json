@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "エントリのロード中にエラーが発生しました",
   "acct.filter_clear": "フィルターをクリア",
   "acct.filtered_totals": "絞り込み済み",
+  "acct.journal_search": "勘定科目、金額、テキストを検索…",
+  "acct.journal_search_hint": "カンマまたはEnterでOR検索。各語は勘定科目コード、金額、または任意のテキストに一致します。",
   "acct.fiscal_year_end_date_is_required": "会計年度末日は必須です。",
   "acct.fx_per_line_hint": "各行に通貨と換算レートを設定できます。帳簿には換算後の金額が入るため、仕訳は自社通貨で一致している必要があります。",
   "acct.gross_profit": "粗利益",

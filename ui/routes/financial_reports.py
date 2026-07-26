@@ -36,7 +36,7 @@ from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from celerp.services.money import to_decimal
 from ui.routes.reports import (
-    OPERATIONAL_REPORTS, _date_filter_bar, _filter_accounts, _get_fiscal, _parse_dates,
+    OPERATIONAL_REPORTS, _date_filter_bar, _get_fiscal, _parse_dates,
     _resolve_preset,
 )
 
@@ -984,7 +984,6 @@ def setup_routes(app):
             filters = journal_filters(request)
             params = {**date_params(d_from, d_to), **filters}
             data = await api.get_extended_journal(token, params)
-            accounts = await _filter_accounts(token)
             path = _report_path("extended-journal")
             # The period as the reader set it, so applying a filter does not turn
             # their preset into a fixed range that no longer moves with the year.
@@ -995,7 +994,7 @@ def setup_routes(app):
                 _date_filter_bar(path, d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),
-                journal_filter_bar(path, filters, carried, accounts, get_lang(request)),
+                journal_filter_bar(path, filters, carried, get_lang(request)),
                 journal_totals(data, currency,
                                filter_words=journal_filter_words(filters, get_lang(request)),
                                clear_href=href(path, carried)),

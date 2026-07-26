@@ -38,6 +38,8 @@
   "acct.error_loading_entries": "Error loading entries",
   "acct.filter_clear": "Clear filters",
   "acct.filtered_totals": "Filtered",
+  "acct.journal_search": "Search account, amount or text… (comma or Enter = OR)",
+  "acct.journal_search_hint": "Use a comma or Enter for OR. Each term matches an account code, an amount, or any text.",
   "acct.fiscal_year_end_date_is_required": "Fiscal year end date is required.",
   "acct.fx_per_line_hint": "Each line has its own currency and rate. The books hold the converted amounts, so the entry must balance in the company currency.",
   "acct.gross_profit": "Gross Profit",
