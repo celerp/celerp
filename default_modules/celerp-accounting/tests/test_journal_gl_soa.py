@@ -7,6 +7,8 @@ Covers:
     line shape), period lock, idempotent double-submit, role gates
   - POST /accounting/journal-entries/{id}/void: manual-only, period lock,
     idempotent re-void, reports drop voided entries
+  - POST /accounting/journal-entries/bulk-void: per-entry refusals, the batch
+    carrying on past one, the selection cap, idempotence, the permission gate
   - GET /accounting/journal: filtering, deterministic order, totals, doc refs,
     FX resolution (doc-level and per-payment rates), source typing
   - GET /accounting/general-ledger: opening/period/closing math, sign
@@ -318,6 +320,164 @@ async def test_role_gates_on_new_endpoints(client, session):
     r = await client.post(f"/accounting/journal-entries/{je_id}/void",
                           headers=_h(operator), json={})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Manual journal entries: bulk void
+# ---------------------------------------------------------------------------
+
+async def _bulk_void(client, tok, je_ids, reason=None):
+    return await client.post("/accounting/journal-entries/bulk-void",
+                             headers=_h(tok), json={"je_ids": je_ids, "reason": reason})
+
+
+def _by_id(body: dict) -> dict:
+    return {r["je_id"]: r for r in body["results"]}
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_voids_every_manual_entry(client):
+    tok = await _reg(client)
+    a = (await _post_manual_je(client, tok, _bal(15.0))).json()["je_id"]
+    b = (await _post_manual_je(client, tok, _bal(25.0))).json()["je_id"]
+
+    r = await _bulk_void(client, tok, [a, b], reason="Duplicated batch")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["voided"], body["refused"]) == (2, 0)
+    assert all(x["status"] == "void" for x in body["results"])
+
+    entries = {e["je_id"]: e for e in (await _journal(client, tok))["entries"]}
+    for je_id in (a, b):
+        assert entries[je_id]["status"] == "void"
+        assert entries[je_id]["void_reason"] == "Duplicated batch"
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_refuses_document_driven_entries_per_entry(client):
+    """A refusal is recorded against its own entry and the rest of the batch proceeds."""
+    tok = await _reg(client)
+    manual = (await _post_manual_je(client, tok, _bal(20.0))).json()["je_id"]
+    inv = await _invoice(client, tok)
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    auto = [e["je_id"] for e in (await _journal(client, tok))["entries"]
+            if e["je_type"] != "manual"]
+    assert auto, "finalize should have posted an automatic entry"
+
+    r = await _bulk_void(client, tok, [manual, auto[0]], reason="Cleanup")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["voided"], body["refused"]) == (1, 1)
+    results = _by_id(body)
+    assert results[manual]["status"] == "void"
+    assert results[auto[0]]["status"] == "refused"
+    # The entry is named by its own je_id, which for an automatic entry carries the
+    # document it mirrors, and the detail says what to do with it instead.
+    assert "document" in results[auto[0]]["detail"].lower()
+
+    entries = {e["je_id"]: e for e in (await _journal(client, tok))["entries"]}
+    assert entries[manual]["status"] == "void"
+    assert entries[auto[0]]["status"] != "void"
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_respects_the_period_lock(client):
+    tok = await _reg(client)
+    locked = (await _post_manual_je(client, tok, _bal(30.0), ts="2026-01-15")).json()["je_id"]
+    await client.post("/accounting/period-lock", headers=_h(tok),
+                      json={"lock_date": "2026-01-31"})
+
+    r = await _bulk_void(client, tok, [locked], reason="too late")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["voided"], body["refused"]) == (0, 1)
+    assert "locked" in body["results"][0]["detail"].lower()
+    assert "2026-01-31" in body["results"][0]["detail"]
+
+    entry = [e for e in (await _journal(client, tok))["entries"] if e["je_id"] == locked][0]
+    assert entry["status"] == "posted"
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_continues_after_a_locked_period_entry(client, session):
+    """The middle entry is refused; the two around it are voided.
+
+    A refusal in the middle of a selection has to leave the entries after it alone.
+    The order matters: an implementation that raised on the first refusal, or that
+    left the session unusable for the entries behind it, would void the first and
+    lose the third.
+    """
+    tok = await _reg(client)
+    first = (await _post_manual_je(client, tok, _bal(11.0), ts="2026-03-05")).json()["je_id"]
+    middle = (await _post_manual_je(client, tok, _bal(12.0), ts="2026-01-20")).json()["je_id"]
+    last = (await _post_manual_je(client, tok, _bal(13.0), ts="2026-03-07")).json()["je_id"]
+    await client.post("/accounting/period-lock", headers=_h(tok),
+                      json={"lock_date": "2026-01-31"})
+
+    r = await _bulk_void(client, tok, [first, middle, last], reason="Reversed")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["voided"], body["refused"]) == (2, 1)
+    results = _by_id(body)
+    assert results[first]["status"] == "void"
+    assert results[middle]["status"] == "refused"
+    assert results[last]["status"] == "void"
+
+    entries = {e["je_id"]: e for e in (await _journal(client, tok))["entries"]}
+    assert entries[first]["status"] == "void"
+    assert entries[middle]["status"] == "posted"
+    assert entries[last]["status"] == "void"
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_is_idempotent(client, session):
+    """The same request twice leaves one void event, and the second is not an error."""
+    from sqlalchemy import select
+    from celerp.models.ledger import LedgerEntry
+
+    tok = await _reg(client)
+    je_id = (await _post_manual_je(client, tok, _bal(40.0))).json()["je_id"]
+
+    first = await _bulk_void(client, tok, [je_id], reason="Once")
+    assert first.status_code == 200, first.text
+    second = await _bulk_void(client, tok, [je_id], reason="Twice")
+    assert second.status_code == 200, second.text
+    assert second.json()["voided"] == 1
+    assert second.json()["results"][0]["void_reason"] == "Once"
+
+    events = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.entity_id == je_id,
+        LedgerEntry.event_type == "acc.journal_entry.voided"))).scalars().all()
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_requires_manage_accounting(client, session):
+    """Reading the books is not changing them: a report-only grant cannot void."""
+    from test_helpers import grant_permission
+    admin = await _reg(client)
+    je_id = (await _post_manual_je(client, admin, _bal(10.0))).json()["je_id"]
+    reader = await _user_with_role(client, session, admin, "operator")
+    await grant_permission(client, _h(admin), "view_financial_reports", "operator")
+    assert (await client.get("/accounting/journal", headers=_h(reader))).status_code == 200
+
+    r = await _bulk_void(client, reader, [je_id], reason="Not mine to void")
+    assert r.status_code == 403, r.text
+    assert "manage_accounting" in r.json()["detail"]
+    entry = [e for e in (await _journal(client, admin))["entries"] if e["je_id"] == je_id][0]
+    assert entry["status"] == "posted"
+
+
+@pytest.mark.asyncio
+async def test_bulk_void_caps_the_selection(client):
+    """Over the cap is refused with the count and the limit, not truncated silently."""
+    tok = await _reg(client)
+    r = await _bulk_void(client, tok, [f"je:manual:{i}" for i in range(201)])
+    assert r.status_code == 422, r.text
+    assert "201" in r.json()["detail"] and "200" in r.json()["detail"]
+
+    empty = await _bulk_void(client, tok, [" ", ""])
+    assert empty.status_code == 422, empty.text
 
 
 # ---------------------------------------------------------------------------

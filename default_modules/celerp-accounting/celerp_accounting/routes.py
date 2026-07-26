@@ -1328,6 +1328,17 @@ class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
 
 
+# A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
+# selection cannot turn into an unbounded write loop holding a connection. A larger
+# selection is refused with the count and the limit, not silently truncated.
+_BULK_VOID_LIMIT = 200
+
+
+class BulkJEVoidPayload(BaseModel):
+    je_ids: list[str]
+    reason: str | None = None
+
+
 @router.post("/journal-entries")
 async def create_manual_journal_entry(
     payload: ManualJECreate,
@@ -1508,17 +1519,17 @@ async def create_manual_journal_entry(
     }
 
 
-@router.post("/journal-entries/{entity_id}/void")
-async def void_manual_journal_entry(
-    entity_id: str,
-    payload: ManualJEVoidPayload | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Void a manual journal entry. The voided entry stays on the record - accounting
-    requires the full trail, so entries are never deleted."""
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+    """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
+
+    Both the single-entry route and the bulk route go through here, so a rule about
+    what may be voided cannot hold on one and not the other.
+
+    The actor arrives as an id rather than the user object because the bulk route
+    rolls a refused entry back, and a rollback expires every instance the session
+    holds - including the authenticated user, whose next attribute read would then
+    try to load lazily and fail outside the async context.
+    """
     row = await session.get(Projection, (company_id, entity_id))
     if not row or row.entity_type != "journal_entry":
         raise HTTPException(status_code=404, detail="Journal entry not found")
@@ -1533,7 +1544,6 @@ async def void_manual_journal_entry(
     if state.get("status") == "void":
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
-    reason = payload.reason if payload else None
     data = je_void_data(reason, state)
     await emit_event(
         session,
@@ -1542,7 +1552,7 @@ async def void_manual_journal_entry(
         entity_type="journal_entry",
         event_type="acc.journal_entry.voided",
         data=data,
-        actor_id=user.id,
+        actor_id=actor_id,
         location_id=None,
         source="manual",
         idempotency_key=f"{entity_id}:void",
@@ -1550,6 +1560,72 @@ async def void_manual_journal_entry(
     )
     await session.commit()
     return {"je_id": entity_id, "status": "void", "void_reason": reason}
+
+
+@router.post("/journal-entries/bulk-void")
+async def bulk_void_journal_entries(
+    payload: BulkJEVoidPayload,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Void several manual journal entries, reporting each one's outcome.
+
+    Every entry is voided by the same code the single-entry route uses, one at a
+    time, and each one commits on its own. A refusal is recorded against the entry
+    it belongs to and the rest of the selection carries on: refusing four valid
+    voids because the fifth sits in a locked period would leave the reader to
+    re-tick the four and try again, having been told nothing about which was which.
+    """
+    je_ids = list(dict.fromkeys(x.strip() for x in payload.je_ids if x.strip()))
+    if not je_ids:
+        raise HTTPException(status_code=422, detail="No journal entries selected.")
+    if len(je_ids) > _BULK_VOID_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many journal entries in one request: {len(je_ids)}. "
+                   f"The limit is {_BULK_VOID_LIMIT}; void them in smaller batches.",
+        )
+
+    actor_id = user.id
+    results = []
+    for entity_id in je_ids:
+        try:
+            results.append(await _void_one(
+                session, company_id=company_id, actor_id=actor_id,
+                entity_id=entity_id, reason=payload.reason,
+            ))
+        except HTTPException as exc:
+            # Every entry starts from a clean session, whatever the one before it
+            # left behind. Today's refusals are all raised before anything is
+            # written - the period lock is checked ahead of the insert
+            # (celerp/events/engine.py:130) and the insert itself is nested
+            # (:139) - so this discards nothing. It is here so that the next
+            # entry's commit can never carry a refused entry's half-written work
+            # into the books along with its own.
+            await session.rollback()
+            results.append({"je_id": entity_id, "status": "refused", "detail": exc.detail})
+
+    voided = sum(1 for r in results if r["status"] == "void")
+    return {"results": results, "voided": voided, "refused": len(results) - voided}
+
+
+@router.post("/journal-entries/{entity_id}/void")
+async def void_manual_journal_entry(
+    entity_id: str,
+    payload: ManualJEVoidPayload | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Void a manual journal entry. The voided entry stays on the record - accounting
+    requires the full trail, so entries are never deleted."""
+    return await _void_one(
+        session, company_id=company_id, actor_id=user.id,
+        entity_id=entity_id, reason=payload.reason if payload else None,
+    )
 
 
 @router.get("/ledger/{account_code}")
