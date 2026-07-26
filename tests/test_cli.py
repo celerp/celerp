@@ -256,11 +256,17 @@ def test_status_not_initialized(tmp_config):
 def test_status_initialized(tmp_config, valid_cfg):
     _write_config(valid_cfg)
     runner = CliRunner()
+    # Patch the methods, not the class objects. Replacing the whole
+    # ScriptDirectory (or MigrationContext) binding leaks: alembic.command does
+    # `from .script import ScriptDirectory` at import time, so if alembic.command
+    # is first imported while the class is swapped for a mock, command.upgrade
+    # rebinds to that mock for the life of the process and every later migration
+    # silently no-ops. Patching from_config leaves the class object intact.
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
          patch("sqlalchemy.create_engine"), \
-         patch("alembic.script.ScriptDirectory") as mock_script, \
-         patch("alembic.runtime.migration.MigrationContext"):
-        mock_script.from_config.return_value.get_current_head.return_value = "abc123"
+         patch("alembic.script.ScriptDirectory.from_config") as mock_from_config, \
+         patch("alembic.runtime.migration.MigrationContext.configure"):
+        mock_from_config.return_value.get_current_head.return_value = "abc123"
         result = runner.invoke(main, ["status"])
     assert result.exit_code == 0
     assert "8000" in result.output
