@@ -15,12 +15,121 @@ callers still choose between.
 
 from __future__ import annotations
 
+from urllib.parse import quote_plus
+
 from fasthtml.common import *
 
 from celerp.services.money import EXCHANGE_RATE_DP, to_decimal
-from ui.components.report_kit import fx_line_amounts, je_source_label
-from ui.components.table import EMPTY, fmt_money
+from ui.components.report_kit import (
+    fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
+)
+from ui.components.table import EMPTY, fmt_money, searchable_select
 from ui.i18n import t
+
+# What the journal can be narrowed by. The API takes these three names and both
+# books read them back under the same names, so a filtered page, its print sheet
+# and its export cannot end up narrowing to different things.
+JOURNAL_FILTER_KEYS = ("account", "q", "amount")
+
+
+def journal_filters(request) -> dict:
+    """The filters a request is asking for, blanks dropped.
+
+    A cleared filter field submits empty, which means no filter; dropping it here
+    keeps the export URLs and the API call free of parameters that say nothing.
+    """
+    out = {}
+    for key in JOURNAL_FILTER_KEYS:
+        value = (request.query_params.get(key) or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
+def journal_filter_qs(filters: dict) -> str:
+    """The filters as query-string tail, for the date bar to carry through.
+
+    The date bar is its own GET form, so without this the act of changing the
+    period would clear the filters the reader had set.
+    """
+    return "".join(f"&{k}={quote_plus(v)}" for k, v in filters.items() if v)
+
+
+def journal_filter_words(filters: dict, lang: str | None = None) -> str:
+    """The filters in words, for the page and the print sheet to state.
+
+    Both read it from here, so a printed page says exactly what the screen it came
+    from said, and neither can be mistaken for the whole book.
+    """
+    if not filters:
+        return ""
+    parts = []
+    if filters.get("account"):
+        parts.append(f'{t("label.account", lang)} = {filters["account"]}')
+    if filters.get("q"):
+        parts.append(f'{t("label.search", lang)} = "{filters["q"]}"')
+    if filters.get("amount"):
+        parts.append(f'{t("label.amount", lang)} = {filters["amount"]}')
+    return f'{t("acct.filtered_totals", lang)}: {", ".join(parts)}'
+
+
+def journal_print_subtitle(d_from: str, d_to: str, filters: dict,
+                           lang: str | None = None) -> str:
+    """A print sheet's subtitle: the period, and what it was narrowed to."""
+    words = journal_filter_words(filters, lang)
+    period = period_subtitle(d_from, d_to)
+    return f"{period}  |  {words}" if words else period
+
+
+def journal_export_name(stem: str, d_from: str, d_to: str, filters: dict) -> str:
+    """An export filename, saying when the file is not the whole book.
+
+    The filter values themselves cannot go in it: a filename lands in a
+    Content-Disposition header and raw query text must never reach one, which is
+    what `fname_date` exists for. A fixed suffix carries the fact instead, and the
+    header row stays the single row a spreadsheet reads as column names.
+    """
+    tail = "_filtered" if filters else ""
+    return f"{stem}_{fname_date(d_from)}_{fname_date(d_to)}{tail}.csv"
+
+
+def journal_filter_bar(base_url: str, filters: dict, carried: dict,
+                       accounts: list[dict], lang: str | None = None) -> FT:
+    """The three journal filters as one GET form, beside the date bar.
+
+    A GET form, so the filters live in the URL and a filtered journal can be
+    linked, bookmarked and reloaded (GDR 2m). It carries the period as hidden
+    fields for the same reason the date bar carries its non-date params: a GET form
+    submits its own fields and nothing else, so applying a filter would otherwise
+    reset the period the reader was looking at.
+
+    The amount is a text field, not a number field: "1,000" has to reach the server
+    and come back refused with a message saying why, rather than being silently
+    unenterable (GDR 2e).
+    """
+    esc = "if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}"
+    options = [(a["code"], f"{a['code']} {a.get('name', '')}".strip())
+               for a in accounts if a.get("code")]
+    controls: list = [
+        Input(type="hidden", name=k, value=v) for k, v in carried.items() if v
+    ]
+    controls += [
+        searchable_select("account", options, value=filters.get("account", ""),
+                          placeholder=t("label.account", lang),
+                          cls_extra="form-input--sm"),
+        Input(type="text", name="q", value=filters.get("q", ""),
+              placeholder=t("label.search", lang),
+              cls="form-input form-input--sm", onkeydown=esc),
+        Input(type="text", name="amount", value=filters.get("amount", ""),
+              placeholder=t("label.amount", lang),
+              cls="form-input form-input--sm", onkeydown=esc),
+        Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
+    ]
+    if filters:
+        controls.append(A(t("acct.filter_clear", lang), href=href(base_url, carried),
+                          cls="btn btn--ghost btn--sm"))
+    return Form(*controls, action=base_url, method="get",
+                cls="journal-filter-bar flex-row gap-sm mb-md")
 
 
 def journal_rows(data: dict, *, items: bool, newest_first: bool = True) -> list[dict]:
@@ -262,15 +371,20 @@ def _headers(*, items: bool, has_fx: bool, void_action: bool) -> list:
 
 
 def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
-                  params: dict | None = None, void_action: bool = False) -> FT:
+                  params: dict | None = None, void_action: bool = False,
+                  filtered: bool = False) -> FT:
     """The journal as a table, in whichever of its two shapes the caller asked for.
 
     `params` is the view the reader is looking at, carried into the void form so
     voiding an entry returns them to the same view. `void_action` adds the column
     holding that control, which the print sheet and the extended journal do without.
+    `filtered` is what the payload said about itself, so an empty answer says which
+    kind of empty it is: a period with no entries in it, or filters that matched
+    none of the entries there are.
     """
     if not rows:
-        return P(t("acct.no_journal_entries"), cls="empty-state")
+        return P(t("acct.no_matches") if filtered else t("acct.no_journal_entries"),
+                 cls="empty-state")
     # The foreign columns appear only when the period actually holds a foreign
     # transaction, so a single-currency journal stays as narrow as it has always been.
     has_fx = any(r.get("fx_currency") for r in rows)

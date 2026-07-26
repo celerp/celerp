@@ -908,6 +908,7 @@ _NEW_KEYS = [
     "rpt.cash_flow_desc", "rpt.trial_balance_desc", "rpt.general_ledger_desc",
     "rpt.statement_desc", "rpt.journal_desc",
     "acct.items_untied", "acct.items_no_document",
+    "acct.filter_clear", "acct.filtered_totals", "acct.no_matches",
 ]
 
 # Deleted with the batch print panel. Presence checks alone would not notice a key

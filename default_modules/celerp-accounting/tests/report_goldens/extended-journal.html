@@ -10,7 +10,70 @@
 <form enctype="multipart/form-data" action="/reports/extended-journal" method="get" class="date-custom-form">        <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
 <span class="date-sep">--</span>        <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
 <button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
-    <div class="valuation-bar">
+<form enctype="multipart/form-data" action="/reports/extended-journal" method="get" class="journal-filter-bar flex-row gap-sm mb-md">      <input type="hidden" name="from" value="2026-01-01">
+      <input type="hidden" name="to" value="2026-03-31">
+      <div class="combobox-wrap">
+        <input type="text" value="" placeholder="Account" autocomplete="off" class="combobox-input form-input--sm">
+        <input type="hidden" name="account" data-name="account" value="">
+        <div class="combobox-list">
+          <div data-value="1000" class="combobox-option">1000 Assets</div>
+          <div data-value="1100" class="combobox-option">1100 Current Assets</div>
+          <div data-value="1110" class="combobox-option">1110 Cash and Cash Equivalents</div>
+          <div data-value="1111" class="combobox-option">1111 Default Bank Account (Checking)</div>
+          <div data-value="1120" class="combobox-option">1120 Accounts Receivable</div>
+          <div data-value="1130" class="combobox-option">1130 Inventory</div>
+          <div data-value="1130-DTY" class="combobox-option">1130-DTY Inventory - Import Duty Clearing</div>
+          <div data-value="1130-FRT" class="combobox-option">1130-FRT Inventory - Freight Clearing</div>
+          <div data-value="1130-INS" class="combobox-option">1130-INS Inventory - Insurance Clearing</div>
+          <div data-value="1130-IVT" class="combobox-option">1130-IVT Inventory - Non-Recoverable Import VAT Clearing</div>
+          <div data-value="1130-OB" class="combobox-option">1130-OB Inventory - Opening Balance</div>
+          <div data-value="1130-P" class="combobox-option">1130-P Inventory - Purchased</div>
+          <div data-value="1140" class="combobox-option">1140 Prepaid Expenses</div>
+          <div data-value="1150" class="combobox-option">1150 VAT Receivable (Input VAT)</div>
+          <div data-value="1200" class="combobox-option">1200 Non-Current Assets</div>
+          <div data-value="1210" class="combobox-option">1210 Property, Plant and Equipment</div>
+          <div data-value="1220" class="combobox-option">1220 Accumulated Depreciation</div>
+          <div data-value="1230" class="combobox-option">1230 Intangible Assets</div>
+          <div data-value="2000" class="combobox-option">2000 Liabilities</div>
+          <div data-value="2100" class="combobox-option">2100 Current Liabilities</div>
+          <div data-value="2110" class="combobox-option">2110 Accounts Payable</div>
+          <div data-value="2120" class="combobox-option">2120 VAT Payable (Output VAT)</div>
+          <div data-value="2130" class="combobox-option">2130 Withholding Tax Payable</div>
+          <div data-value="2140" class="combobox-option">2140 Accrued Expenses</div>
+          <div data-value="2150" class="combobox-option">2150 Social Security Payable</div>
+          <div data-value="2200" class="combobox-option">2200 Non-Current Liabilities</div>
+          <div data-value="2210" class="combobox-option">2210 Long-term Loans</div>
+          <div data-value="3000" class="combobox-option">3000 Equity</div>
+          <div data-value="3100" class="combobox-option">3100 Registered Capital</div>
+          <div data-value="3200" class="combobox-option">3200 Retained Earnings</div>
+          <div data-value="3300" class="combobox-option">3300 Current Year Earnings</div>
+          <div data-value="4000" class="combobox-option">4000 Revenue</div>
+          <div data-value="4100" class="combobox-option">4100 Sales Revenue</div>
+          <div data-value="4200" class="combobox-option">4200 Service Revenue</div>
+          <div data-value="4300" class="combobox-option">4300 Other Income</div>
+          <div data-value="4400" class="combobox-option">4400 Interest Income</div>
+          <div data-value="5000" class="combobox-option">5000 Cost of Goods Sold</div>
+          <div data-value="5100" class="combobox-option">5100 Cost of Goods Sold</div>
+          <div data-value="5200" class="combobox-option">5200 Direct Labor</div>
+          <div data-value="5300" class="combobox-option">5300 Manufacturing Overhead</div>
+          <div data-value="6000" class="combobox-option">6000 Operating Expenses</div>
+          <div data-value="6100" class="combobox-option">6100 Salaries and Wages</div>
+          <div data-value="6200" class="combobox-option">6200 Rent</div>
+          <div data-value="6300" class="combobox-option">6300 Utilities</div>
+          <div data-value="6400" class="combobox-option">6400 Depreciation</div>
+          <div data-value="6500" class="combobox-option">6500 Professional Fees</div>
+          <div data-value="6600" class="combobox-option">6600 Marketing and Advertising</div>
+          <div data-value="6700" class="combobox-option">6700 Insurance</div>
+          <div data-value="6800" class="combobox-option">6800 Office Supplies</div>
+          <div data-value="6900" class="combobox-option">6900 Travel and Transportation</div>
+          <div data-value="6950" class="combobox-option">6950 Miscellaneous Expenses</div>
+          <div data-value="6960" class="combobox-option">6960 Foreign Exchange Difference</div>
+          <div class="combobox-option combobox-option--empty" style="display:none">No results</div>
+        </div>
+      </div>
+      <input type="text" name="q" value="" placeholder="Search" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm">
+      <input type="text" name="amount" value="" placeholder="Amount" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button></form>    <div class="valuation-bar">
 <span class="val-chip">Total Debit: ฿210.00</span><span class="val-chip">Total Credit: ฿210.00</span><span class="val-chip">Balanced ✓</span>    </div>
     <div class="flex-row mt-md mb-md">
       <div class="page-actions flex-row gap-sm ml-auto">

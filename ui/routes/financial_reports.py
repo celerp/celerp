@@ -23,7 +23,11 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
-from ui.components.journal import journal_csv_rows, journal_rows, journal_table
+from ui.components.journal import (
+    journal_csv_rows, journal_export_name, journal_filter_bar, journal_filter_qs,
+    journal_filter_words, journal_filters, journal_print_subtitle, journal_rows,
+    journal_table,
+)
 from ui.components.report_kit import (
     action_bar, csv_response, date_params, fname_date, href, journal_totals,
     period_subtitle, plain_error_response, print_shell, report_header, totals_chips,
@@ -32,7 +36,8 @@ from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from celerp.services.money import to_decimal
 from ui.routes.reports import (
-    OPERATIONAL_REPORTS, _date_filter_bar, _get_fiscal, _parse_dates, _resolve_preset,
+    OPERATIONAL_REPORTS, _date_filter_bar, _filter_accounts, _get_fiscal, _parse_dates,
+    _resolve_preset,
 )
 
 # Financial report cards on the /reports index, in reading order: the summary
@@ -931,15 +936,27 @@ def setup_routes(app):
             company = await api.get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
-            params = date_params(d_from, d_to)
+            filters = journal_filters(request)
+            params = {**date_params(d_from, d_to), **filters}
             data = await api.get_extended_journal(token, params)
+            accounts = await _filter_accounts(token)
+            path = _report_path("extended-journal")
+            # The period as the reader set it, so applying a filter does not turn
+            # their preset into a fixed range that no longer moves with the year.
+            carried = ({"preset": preset} if preset and preset != "custom"
+                       else {"from": d_from, "to": d_to})
             content = Div(
-                _date_filter_bar(_report_path("extended-journal"), d_from, d_to, preset,
-                                 settings_link="/settings/general?tab=company"),
-                journal_totals(data, currency),
+                _date_filter_bar(path, d_from, d_to, preset,
+                                 settings_link="/settings/general?tab=company",
+                                 extra_params=journal_filter_qs(filters)),
+                journal_filter_bar(path, filters, carried, accounts, get_lang(request)),
+                journal_totals(data, currency,
+                               filter_words=journal_filter_words(filters, get_lang(request)),
+                               clear_href=href(path, carried)),
                 Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
                 _unexpanded_note(data),
-                journal_table(journal_rows(data, items=True), items=True, currency=currency),
+                journal_table(journal_rows(data, items=True), items=True, currency=currency,
+                              filtered=bool(data.get("filtered"))),
             )
         except APIError as e:
             if e.status == 401:
@@ -1253,14 +1270,16 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         try:
             company, currency, d_from, d_to = await _print_ctx(request, token)
-            data = await api.get_extended_journal(token, date_params(d_from, d_to))
+            filters = journal_filters(request)
+            data = await api.get_extended_journal(
+                token, {**date_params(d_from, d_to), **filters})
         except APIError as e:
             return plain_error_response(e)
         body = Div(journal_totals(data, currency), _unexpanded_note(data),
                    journal_table(journal_rows(data, items=True), items=True,
-                                 currency=currency))
+                                 currency=currency, filtered=bool(data.get("filtered"))))
         return print_shell(company, t("acct.tab_extended_journal"),
-                           period_subtitle(d_from, d_to), body)
+                           journal_print_subtitle(d_from, d_to, filters), body)
 
     @app.get("/reports/print/statement")
     async def statement_print(request: Request):
@@ -1346,11 +1365,13 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            data = await api.get_extended_journal(token, date_params(d_from, d_to))
+            filters = journal_filters(request)
+            data = await api.get_extended_journal(
+                token, {**date_params(d_from, d_to), **filters})
         except APIError as e:
             return plain_error_response(e)
         return csv_response(journal_csv_rows(data, items=True),
-                            f"extended_journal_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+                            journal_export_name("extended_journal", d_from, d_to, filters))
 
     @app.get("/reports/export/cash-flow/csv")
     async def cash_flow_csv(request: Request):
