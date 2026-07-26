@@ -1031,6 +1031,63 @@ class TestInventoryPage:
         assert b"Ruby" in r.content
 
     @pytest.mark.asyncio
+    async def test_inventory_on_memo_scope_shows_quoted_value(self, ui_client):
+        """Landing from the contact card: the scope is passed to the API, the banner names
+        the basis, and the per-row value is the quoted price (not the catalog price)."""
+        captured: dict = {}
+
+        async def _fake_list_items(token, params=None):
+            captured.update(params or {})
+            return {"items": [{**_ITEM, "holding_value": 4200.0}], "total": 1, "value_total": 4200.0}
+
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory?on_memo_to=ct:1", cookies=_authed())
+        assert r.status_code == 200
+        assert captured.get("on_memo_to") == "ct:1", "scope must reach the API call"
+        body = r.content
+        assert b"Out on memo to this customer" in body
+        assert b"price quoted to the customer" in body
+        assert b"4,200.00" in body
+
+    @pytest.mark.asyncio
+    async def test_inventory_consigned_scope_shows_cost_basis(self, ui_client):
+        captured: dict = {}
+
+        async def _fake_list_items(token, params=None):
+            captured.update(params or {})
+            return {"items": [{**_ITEM, "holding_value": 1750.5}], "total": 1, "value_total": 1750.5}
+
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory?consigned_from=ct:9", cookies=_authed())
+        assert r.status_code == 200
+        assert captured.get("consigned_from") == "ct:9"
+        assert b"Held on consignment from this supplier" in r.content
+        assert b"1,750.50" in r.content
+
+    @pytest.mark.asyncio
+    async def test_inventory_unscoped_has_no_holdings_banner(self, ui_client):
+        """The banner and the scope column appear only under a contact scope."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        assert b"holdings-scope-banner" not in r.content
+
+    @pytest.mark.asyncio
     async def test_inventory_empty_values_show_double_dash(self, ui_client):
         """Empty cell values must render as '--' not '-' or blank."""
         item_empty = {"entity_id": "gc:999", "name": "", "status": "", "total_cost": ""}
@@ -1122,6 +1179,50 @@ class TestCRMPage:
             r = await ui_client.get("/contacts/ct:1", cookies=_authed())
         assert r.status_code == 200
         assert b"Alice" in r.content
+
+    @pytest.mark.asyncio
+    async def test_contact_detail_holdings_cards(self, ui_client):
+        """On Memo / Consignment cards show the live holdings value and link to that
+        exact filtered inventory list, so the number and the list cannot disagree."""
+        contact = {**_CONTACTS[0], "contact_type": "both"}
+
+        async def _fake_list_items(token, params=None):
+            params = params or {}
+            if params.get("on_memo_to"):
+                return {"items": [], "total": 0, "value_total": 4200.0}
+            if params.get("consigned_from"):
+                return {"items": [], "total": 0, "value_total": 1750.5}
+            return {"items": [], "total": 0}
+
+        with (
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_fake_list_items)),
+        ):
+            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content
+        assert b"On Memo" in body
+        assert b"4,200.00" in body and b"1,750.50" in body
+        assert b"/inventory?on_memo_to=ct:1" in body
+        assert b"/inventory?consigned_from=ct:1" in body
+
+    @pytest.mark.asyncio
+    async def test_contact_detail_holdings_unavailable_falls_back(self, ui_client):
+        """When the holdings figure cannot be fetched the page still renders, and the
+        Consignment card falls back to the document-derived total."""
+        contact = {**_CONTACTS[0], "contact_type": "vendor"}
+        docs = [{"doc_type": "consignment_in", "status": "received", "total_amount": 900.0}]
+        with (
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": docs, "total": 1})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=RuntimeError("api down"))),
+        ):
+            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b"900.00" in r.content
+        # Falls back to the document list, not a broken holdings link.
+        assert b"/docs?type=consignment_in" in r.content
 
     @pytest.mark.asyncio
     async def test_crm_empty_values_show_double_dash(self, ui_client):

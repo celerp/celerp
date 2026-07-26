@@ -290,6 +290,36 @@ class TestDrainMiddleware:
             assert r.status_code == 200
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(15)
+    async def test_write_request_does_not_deadlock_on_held_singleton(self, client, session):
+        """Regression: a write request must not deadlock when the request session
+        already holds the SystemRuntimeState singleton row uncommitted.
+
+        Each test runs inside one uncommitted outer transaction on a single
+        connection (the `session` fixture). DrainMiddleware runs is_draining on
+        every write; if it opens its own session on a *separate* connection, its
+        _get_or_create INSERT of the singleton blocks forever on the request
+        session's uncommitted insert of the same row - a self-deadlock that hangs
+        to the per-test timeout. It only surfaces on CI because the 1s in-process
+        drain cache usually skips the DB. Middleware must share the request
+        transaction so this completes.
+        """
+        from celerp.services.runtime_state import (
+            get_runtime_state, _drain_cache_bust, _SINGLETON_ID)
+        from celerp.models.auth import SystemRuntimeState
+
+        # Request session (connection A) creates + holds the singleton uncommitted.
+        await get_runtime_state(session)
+        assert await session.get(SystemRuntimeState, _SINGLETON_ID) is not None
+        # Force the next write's is_draining to hit the DB rather than the 1s cache
+        # - the exact window the CI flake needs.
+        _drain_cache_bust()
+
+        # DrainMiddleware runs is_draining here; a second connection would deadlock.
+        r = await client.post("/auth/login", json={"email": "x@x.com", "password": "wrong"})
+        assert r.status_code != 503
+
+    @pytest.mark.asyncio
     async def test_drain_middleware_fail_open(self, client):
         """DrainMiddleware passes request when DB raises an exception."""
         with patch("celerp.middleware.is_draining", new_callable=AsyncMock, side_effect=Exception("DB down")):

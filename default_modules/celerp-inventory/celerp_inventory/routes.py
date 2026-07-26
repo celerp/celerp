@@ -317,6 +317,8 @@ async def list_items(
     location_id: str | None = None,
     source: str | None = None,
     filter: str | None = None,
+    on_memo_to: str | None = None,
+    consigned_from: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -328,6 +330,12 @@ async def list_items(
     category: exact category to filter on.
     filter: semantic filter. "low_stock" keeps only items at or below their
             reorder point (see celerp.services.reorder.is_below_reorder).
+    on_memo_to: customer contact_id. Scope to items currently out on memo to that
+            customer, valued (holding_value) at the price they were quoted.
+    consigned_from: supplier contact_id. Scope to items currently held on
+            consignment from that supplier, valued (holding_value) at cost.
+            When a contact scope is active the response also carries value_total,
+            the sum of holding_value over the whole scoped set (pre-pagination).
     """
     from celerp.services.reorder import is_below_reorder
     from celerp.models.company import Company, Location
@@ -362,6 +370,38 @@ async def list_items(
         result = [r for r in result if str(r.get("status") or "").lower() == status.lower()]
     else:
         result = [r for r in result if str(r.get("status") or "").lower() not in _HIDDEN_STATUSES]
+
+    # Contact-scoped holdings: memo out to a customer, or consignment in from a supplier.
+    # Membership is derived from that contact's docs (celerp.services.holdings), and is
+    # authoritative: it narrows result on its own. The per-item scope value (quoted memo
+    # price / consignment cost) is attached after cost-visibility gating, below.
+    holding_scoped = bool(on_memo_to or consigned_from)
+    scope_value: dict[str, float] = {}
+    if holding_scoped:
+        from celerp.services.holdings import consignment_holdings, memo_holdings
+        items_state = [(r.entity_id, r.state) for r in rows]
+        scope_doc_type = "memo" if on_memo_to else "consignment_in"
+        scope_contact = on_memo_to or consigned_from
+        scope_docs = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "doc",
+                    Projection.state["doc_type"].as_string() == scope_doc_type,
+                    Projection.state["contact_id"].as_string() == scope_contact,
+                )
+            )
+        ).scalars().all()
+        # Only issued docs contribute; a draft or voided doc must not seed the set.
+        issued = [
+            (d.entity_id, d.state) for d in scope_docs
+            if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
+        ]
+        scope_value = (
+            memo_holdings(items_state, issued) if on_memo_to
+            else consignment_holdings(items_state, issued)
+        )
+        result = [r for r in result if r.get("id") in scope_value]
 
     if category:
         cats = {c.strip() for c in category.split(",") if c.strip()}
@@ -450,6 +490,14 @@ async def list_items(
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     result = apply_field_visibility(result, role, field_schema, can_see_costs)
 
+    # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
+    # The consignment value is cost, so it is gated by view_inventory_costs exactly like
+    # every other cost figure; the memo value is a quoted sale price and is not gated.
+    gate_cost = bool(consigned_from) and not can_see_costs
+    if holding_scoped:
+        for r in result:
+            r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"), 0.0)
+
     # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
     # so staff always see the items that need to be picked/sold first at the top.
     if company and (company.settings or {}).get("inventory_method") == "fefo":
@@ -483,8 +531,13 @@ async def list_items(
         result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
     total = len(result)
-    return {"items": result[offset: offset + limit], "total": total,
-            "attribute_facets": attribute_facets}
+    resp: dict = {"items": result[offset: offset + limit], "total": total,
+                  "attribute_facets": attribute_facets}
+    if holding_scoped and not gate_cost:
+        # Total over the whole scoped set (post-filter, pre-pagination) so the contact
+        # card reads it directly and reconciles with the list at the same value basis.
+        resp["value_total"] = round(sum(float(scope_value.get(r.get("id"), 0.0)) for r in result), 2)
+    return resp
 
 
 @router.get("/valuation")

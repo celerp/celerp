@@ -371,6 +371,10 @@ def _parse_params(request: Request) -> dict:
         "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
         "source": q.get("source", ""),  # connector source filter (e.g. ?source=shopify)
         "filter": q.get("filter", ""),  # semantic filter (e.g. ?filter=low_stock)
+        # Contact-scoped holdings: goods out on memo to a customer, or held on
+        # consignment from a supplier. Backs the contact page's On Memo / Consignment cards.
+        "on_memo_to": q.get("on_memo_to", ""),
+        "consigned_from": q.get("consigned_from", ""),
         # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
         "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
@@ -382,7 +386,8 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "source", "filter", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "source", "filter",
+              "on_memo_to", "consigned_from", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     for akey, aval in (p.get("attr_filters") or {}).items():
@@ -395,6 +400,32 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     if include_page and p.get("page", 1) > 1:
         state["page"] = str(p["page"])
     return state
+
+
+def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str | None) -> FT:
+    """Banner for the contact-scoped holdings views, with a way back to all inventory.
+
+    Under a scope the Value column is not the catalog price: for memo it is the price the
+    customer was quoted, for consignment it is what the goods cost us. Say so, so the
+    figure is never read as a list price.
+    """
+    from ui.components.table import fmt_money
+
+    on_memo, consigned = p.get("on_memo_to", ""), p.get("consigned_from", "")
+    if not (on_memo or consigned):
+        return ""
+    if on_memo:
+        label, basis = "Out on memo to this customer", "Value shown is the price quoted to the customer."
+    else:
+        label, basis = "Held on consignment from this supplier", "Value shown is cost."
+    total_el = (Span(fmt_money(holdings_total, currency), cls="holdings-scope-total")
+                if holdings_total is not None else "")
+    return Div(
+        Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
+        Div(basis, cls="holdings-scope-basis"),
+        A("Clear filter", href="/inventory", cls="btn btn--xs btn--secondary"),
+        cls="holdings-scope-banner",
+    )
 
 
 def _inventory_column_filters(eff_schema: list[dict], global_schema: list[dict], locations: list[dict],
@@ -462,6 +493,10 @@ async def _inventory_content(
             params["source"] = p["source"]
         if p.get("filter"):
             params["filter"] = p["filter"]
+        if p.get("on_memo_to"):
+            params["on_memo_to"] = p["on_memo_to"]
+        if p.get("consigned_from"):
+            params["consigned_from"] = p["consigned_from"]
         for akey, aval in (p.get("attr_filters") or {}).items():
             if aval:
                 params[f"attr.{akey}"] = aval
@@ -477,6 +512,8 @@ async def _inventory_content(
         # valuation's unfiltered item_count — otherwise a search shows pages that don't exist
         # and clicking them lands on a blank page.
         list_total = items_resp.get("total", len(items))
+        # Present only under a contact holdings scope: the value of the whole scoped set.
+        holdings_total = items_resp.get("value_total")
         attribute_facets = items_resp.get("attribute_facets", {})
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
         units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
@@ -487,6 +524,7 @@ async def _inventory_content(
     except APIError:
         valuation, items, unit_names, units_map, category_label_map, attribute_facets = {}, [], [], {}, {}, {}
         list_total = 0
+        holdings_total = None
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -503,7 +541,27 @@ async def _inventory_content(
         else f
         for f in eff_schema
     ]
+    # Under a contact holdings scope the meaningful per-row value is the scope value the
+    # total is summed from (quoted memo price / consignment cost), not the catalog price.
+    # Surface it as a read-only column so the rows visibly add up to the banner figure.
+    scope_value_label = ""
+    if p.get("on_memo_to"):
+        scope_value_label = "Quoted"
+    elif p.get("consigned_from"):
+        scope_value_label = "Cost"
+    if scope_value_label and any(i.get("holding_value") is not None for i in items):
+        eff_schema = eff_schema + [{
+            "key": "holding_value", "label": scope_value_label, "type": "money",
+            "editable": False, "required": False, "options": [], "visible_to_roles": [],
+            "position": 99, "show_in_table": True,
+        }]
+    else:
+        scope_value_label = ""
+
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
+    if scope_value_label and "holding_value" not in visible_cols:
+        # Saved column prefs predate this column, so make sure the scope value is shown.
+        visible_cols = visible_cols + ["holding_value"]
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
     p_with_cols = {**p, "cols": visible_cols}
@@ -511,6 +569,7 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
+        _holdings_scope_banner(p, holdings_total, currency),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),

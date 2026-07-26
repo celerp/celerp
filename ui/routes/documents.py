@@ -3450,10 +3450,21 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        import re as _re_qty
         form = await request.form()
         line_entity_ids = list(form.getlist("selected"))
+        # qty[<entity_id>] marks a line where only part of the lot is coming back.
+        quantities: dict[str, float] = {}
+        for key, value in form.multi_items():
+            m = _re_qty.match(r"qty\[(.+)\]$", key)
+            if not m or not str(value).strip():
+                continue
+            try:
+                quantities[m.group(1)] = float(value)
+            except (TypeError, ValueError):
+                return _action_error(f"Invalid returned quantity for {m.group(1)}")
         try:
-            await api.unfulfill_lines(token, entity_id, line_entity_ids)
+            await api.unfulfill_lines(token, entity_id, line_entity_ids, quantities=quantities or None)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -5420,7 +5431,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_post=f"/docs/{entity_id}/revert-lines",
                     hx_swap="none",
                     hx_confirm=f"{_revert_label}?",
-                    onsubmit="return submitLiBulkAction(this)",
+                    onsubmit="return submitLiRevertAction(this)",
                 ),
             ]
     return Div(
@@ -6207,7 +6218,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if pol["counting"]:
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
+                # data-* carries what the line currently has out, so a revert can offer to take
+                # back part of it instead of writing the whole lot off as returned.
+                Td(Input(type="checkbox", cls="li-select", value=li_entity_id,
+                         **{"data-item-status": str((item_status_map or {}).get(li_entity_id, "")),
+                            "data-out-qty": f"{float(li.get('quantity') or 0):g}"}),
+                   cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
                    cls="col-sku"),
@@ -7700,6 +7716,25 @@ async function celerpCsvImport(input, entityId) {{
       var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=cb.value;
       formEl.appendChild(inp);
     }});
+    return true;
+  }};
+  // Revert: when a single memo line is selected, offer to take back part of it. Anything
+  // not returned stays out with the customer instead of being written off as back in stock.
+  window.submitLiRevertAction=function(formEl){{
+    formEl.querySelectorAll('input[name^="qty["]').forEach(function(el){{el.remove();}});
+    if(!submitLiBulkAction(formEl)) return false;
+    var checked=table?Array.prototype.slice.call(table.querySelectorAll('.li-select:checked')):[];
+    if(checked.length!==1) return true;
+    var cb=checked[0];
+    var outQty=parseFloat(cb.getAttribute('data-out-qty')||'0');
+    if(cb.getAttribute('data-item-status')!=='memo_out'||!(outQty>1)) return true;
+    var answer=window.prompt('How many are coming back? Leave as '+outQty+' to take back all of it. Anything less stays out with the customer.',String(outQty));
+    if(answer===null) return false;
+    var qty=parseFloat(answer);
+    if(!(qty>0)||qty>outQty){{ alert('Enter a quantity between 0 and '+outQty+'.'); return false; }}
+    if(qty===outQty) return true;
+    var inp=document.createElement('input');inp.type='hidden';inp.name='qty['+cb.value+']';inp.value=String(qty);
+    formEl.appendChild(inp);
     return true;
   }};
 }})();

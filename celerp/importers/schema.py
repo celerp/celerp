@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from celerp.compat import StrEnum
 
 
 CIF_VERSION = "1"

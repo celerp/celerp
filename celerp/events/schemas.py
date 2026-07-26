@@ -79,6 +79,14 @@ class ItemQuantityAdjusted(BaseModel):
     reason: str | None = None
     source_list_id: str | None = None
     prior_qty: float | None = None
+    # Set only when returning consigned goods to a supplier: None once nothing is left on
+    # hand, "in" while a partial balance remains. Omitted by ordinary stock adjustments,
+    # which must leave the item's consignment status untouched.
+    consignment_flag: str | None = None
+    # Set only when returning goods to a supplier: the lot's goods cost rescaled to the
+    # quantity still on hand, since the returned units take their share of the cost with
+    # them. Omitted by ordinary stock adjustments, which leave the lot's cost alone.
+    cost_base: float | None = None
 
 
 class ItemLandedCostApplied(BaseModel):
@@ -597,6 +605,14 @@ class DocFulfilled(BaseModel):
     total_cogs: float
 
 
+class DocItemsReturned(BaseModel):
+    """Goods sent back to a supplier off a consignment_in / bill / purchase_order."""
+    items: list[dict[str, Any]]
+    returned_by: str
+    returned_at: str = ""
+    notes: str | None = None
+
+
 class DocReturnReceived(BaseModel):
     items: list[dict[str, Any]]
     received_by: str
@@ -630,6 +646,10 @@ class DocFulfillmentReversed(BaseModel):
     reversed_items: list[dict[str, Any]]
     reversed_by: str
     reason: str
+    # Lots that came back in part: the new in-stock parcel split off each part-returned
+    # line. Named apart from reversed_items because those lines are still out, for the
+    # balance the customer kept.
+    partially_returned_items: list[dict[str, Any]] = []
 
 
 class DocPartiallyReverted(BaseModel):
@@ -638,6 +658,7 @@ class DocPartiallyReverted(BaseModel):
     reversed_items: list[dict[str, Any]]
     reversed_by: str
     reason: str
+    partially_returned_items: list[dict[str, Any]] = []
 
 
 # -----------------
@@ -1086,6 +1107,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
     "doc.partially_reverted": DocPartiallyReverted,
+    "doc.items_returned": DocItemsReturned,
     "doc.return_received": DocReturnReceived,
     "doc.return_undone": DocReturnUndone,
     "doc.receive_undone": DocReceiveUndone,

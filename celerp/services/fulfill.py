@@ -10,7 +10,7 @@ and by the fulfillment module's toggle/pick screen.
 from __future__ import annotations
 
 import uuid as _uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +47,7 @@ async def execute_fulfill(
 
     Returns: {fulfillment_status, fulfilled_items, total_cogs}
     """
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     fulfilled_items: list[dict] = []
     total_cogs = 0.0
     cid = _to_uuid(company_id)

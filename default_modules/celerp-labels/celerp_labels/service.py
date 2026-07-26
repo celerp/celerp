@@ -131,10 +131,11 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
     - pieces on a pieces-sold item -> quantity
     - unit -> the item's sell_by
     - qr / barcode / barcode_text -> the item's barcode, falling back to SKU
-    - measurements -> the stored value, else "length x width x height" composed
-      from the dimension attributes only when all three are present (a partial
-      join like "6.5 x  x 4.0" would read as a complete measurement of a
-      different shape)
+    - measurements -> the stored value, else the dimension attributes composed
+      in natural order length -> width -> height, stopping at the first missing
+      one, so a two-dimension item prints "L x W" but a middle-gap string like
+      "6.5 x  x 4.0" (which would read as a complete measurement of a different
+      shape) is never emitted
     """
     sell_by = item.get("sell_by")
     if key in ("qr", "barcode", "barcode_text"):
@@ -150,8 +151,12 @@ def resolve_field_value(item: dict[str, Any], key: str, unit_map: dict[str, dict
         stored = _item_val(item, key)
         if stored:
             return stored
-        dims = [_item_val(item, d) for d in ("length", "width", "height")]
-        return " x ".join(dims) if all(dims) else ""
+        present: list[str] = []
+        for d in (_item_val(item, dim) for dim in ("length", "width", "height")):
+            if not d:
+                break  # stop at the first gap: never emit "L x  x H"
+            present.append(d)
+        return " x ".join(present)
     return _item_val(item, key)
 
 
