@@ -117,12 +117,18 @@ def csv_response(rows: list[list], filename: str) -> StreamingResponse:
 
 
 def plain_error_response(e: APIError):
-    """Error mapping for print/export routes (non-shell responses)."""
+    """Error mapping for print/export routes (non-shell responses).
+
+    A 4xx keeps its own status: a report asked for with an amount filter that is
+    not a number is an input error the reader can correct, and reporting it as a
+    500 turns a typo into what reads as an outage.
+    """
     if e.status == 401:
         return RedirectResponse("/login", status_code=302)
     if e.status == 403:
         return PlainTextResponse(t("acct.not_authorized"), status_code=403)
-    return PlainTextResponse(f"Error: {e.detail}", status_code=500)
+    status = e.status if 400 <= e.status < 500 else 500
+    return PlainTextResponse(f"Error: {e.detail}", status_code=status)
 
 
 def date_params(d_from: str, d_to: str) -> dict:
