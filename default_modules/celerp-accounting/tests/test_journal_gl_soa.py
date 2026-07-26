@@ -570,6 +570,182 @@ async def test_extended_journal_requires_view_financial_reports(client, session)
 
 
 # ---------------------------------------------------------------------------
+# Journal filters
+# ---------------------------------------------------------------------------
+
+async def _two_entries(client, tok) -> tuple[str, str]:
+    """A receivable sale and an unrelated bank payment, in that order."""
+    sale = (await _post_manual_je(client, tok, [
+        {"account": "1120", "debit": 40.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 40.0},
+    ], ts="2026-01-10", memo="Quarterly retainer")).json()["je_id"]
+    bank = (await _post_manual_je(client, tok, [
+        {"account": "2110", "debit": 25.0, "credit": 0},
+        {"account": "1111", "debit": 0, "credit": 25.0},
+    ], ts="2026-01-11", memo="Supplier settled")).json()["je_id"]
+    return sale, bank
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_by_account_returns_whole_entries(client):
+    """An entry is shown whole or not at all: half an entry does not balance."""
+    tok = await _reg(client)
+    sale, bank = await _two_entries(client, tok)
+
+    data = await _journal(client, tok, account="4100")
+    assert [e["je_id"] for e in data["entries"]] == [sale]
+    assert bank not in [e["je_id"] for e in data["entries"]]
+    assert sorted(l["account"] for l in data["entries"][0]["lines"]) == ["1120", "4100"]
+    assert data["filtered"] is True
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_totals_are_the_filtered_totals(client):
+    """The totals foot to what was shown, so a filtered page cross-foots."""
+    tok = await _reg(client)
+    await _two_entries(client, tok)
+
+    data = await _journal(client, tok, account="4100")
+    assert abs(data["total_debit"] - 40.0) < 0.01
+    assert abs(data["total_credit"] - 40.0) < 0.01
+    whole = await _journal(client, tok)
+    assert abs(whole["total_debit"] - 65.0) < 0.01
+    assert whole["filtered"] is False
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_q_matches_memo_account_and_document(client):
+    """Free text reaches the three places a reader would look for an entry."""
+    tok = await _reg(client)
+    sale, bank = await _two_entries(client, tok)
+    doc_id = await _doc_with_items(client, tok, "invoice", [("Widget", 1, 30.0)],
+                                   issue_date="2026-01-12")
+    ref = _entry_for(await _journal(client, tok), doc_id)["source_doc"]["doc_ref"]
+
+    by_memo = await _journal(client, tok, q="RETAINER")
+    assert [e["je_id"] for e in by_memo["entries"]] == [sale]
+
+    by_account_name = await _journal(client, tok, q="accounts payable")
+    assert [e["je_id"] for e in by_account_name["entries"]] == [bank]
+
+    by_doc = await _journal(client, tok, q=ref.lower())
+    assert [(e.get("source_doc") or {}).get("doc_id") for e in by_doc["entries"]] == [doc_id]
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_by_amount_matches_either_side(client):
+    """A reader chasing a figure does not know which side it was posted on."""
+    tok = await _reg(client)
+    sale, bank = await _two_entries(client, tok)
+
+    assert [e["je_id"] for e in (await _journal(client, tok, amount="40"))["entries"]] == [sale]
+    assert [e["je_id"] for e in (await _journal(client, tok, amount="25.00"))["entries"]] == [bank]
+    none = await _journal(client, tok, amount="99")
+    assert none["entries"] == []
+    assert none["total_debit"] == 0
+    assert none["filtered"] is True
+
+
+@pytest.mark.asyncio
+async def test_journal_filters_narrow_together(client):
+    """Two filters narrow; they do not widen each other."""
+    tok = await _reg(client)
+    sale, _bank = await _two_entries(client, tok)
+
+    assert [e["je_id"] for e in
+            (await _journal(client, tok, account="4100", amount="40"))["entries"]] == [sale]
+    assert (await _journal(client, tok, account="4100", amount="25"))["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_blank_filters_are_no_filter(client):
+    """Clearing a filter field submits it empty, which is not an invalid value."""
+    tok = await _reg(client)
+    await _two_entries(client, tok)
+
+    data = await _journal(client, tok, account="", q="", amount="")
+    assert len(data["entries"]) == 2
+    assert data["filtered"] is False
+    # Whitespace is what a cleared field can also carry, and reads the same way.
+    spaces = await _journal(client, tok, account=" ", q="  ", amount=" ")
+    assert len(spaces["entries"]) == 2
+    assert spaces["filtered"] is False
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_unknown_account_is_422(client):
+    """A mistyped code would otherwise answer with an empty book."""
+    tok = await _reg(client)
+    await _two_entries(client, tok)
+
+    r = await client.get("/accounting/journal", headers=_h(tok), params={"account": "9999"})
+    assert r.status_code == 422, r.text
+    assert "9999" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_q_cap_is_422(client):
+    """The search is capped, and the refusal says what the cap is."""
+    tok = await _reg(client)
+    r = await client.get("/accounting/journal", headers=_h(tok), params={"q": "x" * 201})
+    assert r.status_code == 422, r.text
+    assert "200" in r.json()["detail"]
+    assert (await client.get("/accounting/journal", headers=_h(tok),
+                             params={"q": "x" * 200})).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_bad_amount_is_422(client):
+    """An unreadable or negative figure is refused, never quietly dropped."""
+    tok = await _reg(client)
+    for bad in ("abc", "1,000", "nan", "inf"):
+        r = await client.get("/accounting/journal", headers=_h(tok), params={"amount": bad})
+        assert r.status_code == 422, f"{bad}: {r.text}"
+        assert "not a number" in r.json()["detail"]
+    neg = await client.get("/accounting/journal", headers=_h(tok), params={"amount": "-5"})
+    assert neg.status_code == 422, neg.text
+    assert "negative" in neg.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_extended_journal_applies_the_same_filters(client):
+    """The twin narrows identically, or the two books disagree under a filter."""
+    tok = await _reg(client)
+    sale, _bank = await _two_entries(client, tok)
+
+    data = await _extended(client, tok, account="4100")
+    assert [e["je_id"] for e in data["entries"]] == [sale]
+    assert data["filtered"] is True
+    classical = await _journal(client, tok, account="4100")
+    assert [e["je_id"] for e in data["entries"]] == [e["je_id"] for e in classical["entries"]]
+    assert data["total_debit"] == classical["total_debit"]
+    assert data["total_credit"] == classical["total_credit"]
+
+    r = await client.get("/accounting/extended-journal", headers=_h(tok),
+                         params={"account": "9999"})
+    assert r.status_code == 422, r.text
+    blank = await _extended(client, tok, account="", q="", amount="")
+    assert len(blank["entries"]) == 2
+    assert blank["filtered"] is False
+
+
+@pytest.mark.asyncio
+async def test_journal_filter_keeps_voids_out_of_the_totals(client):
+    """A filter changes which entries are shown, not how a void is counted."""
+    tok = await _reg(client)
+    sale, _bank = await _two_entries(client, tok)
+    assert (await client.post(f"/accounting/journal-entries/{sale}/void",
+                              headers=_h(tok),
+                              json={"reason": "Duplicated"})).status_code == 200
+
+    data = await _journal(client, tok, account="4100")
+    assert [e["je_id"] for e in data["entries"]] == [sale]
+    assert data["entries"][0]["status"] == "void"
+    assert data["total_debit"] == 0
+    assert data["total_credit"] == 0
+
+
+# ---------------------------------------------------------------------------
 # General ledger
 # ---------------------------------------------------------------------------
 

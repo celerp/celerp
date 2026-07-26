@@ -508,6 +508,21 @@ def test_fx_line_amounts_blank_when_currency_missing():
     assert fx_line_amounts(100.0, 0, {"fx_rate": 35.0}) == (None, None)
 
 
+def test_plain_error_response_keeps_a_4xx_status():
+    """A print or export asked for with a bad filter is an input error the reader
+    can correct, and reporting it as a 500 turns a typo into an outage."""
+    from ui.api_client import APIError
+    from ui.components.report_kit import plain_error_response
+
+    refused = plain_error_response(APIError(422, "Amount filter abc is not a number."))
+    assert refused.status_code == 422
+    assert b"not a number" in refused.body
+    assert plain_error_response(APIError(404, "gone")).status_code == 404
+    # Anything the reader cannot correct still reads as a server error.
+    assert plain_error_response(APIError(503, "upstream")).status_code == 500
+    assert plain_error_response(APIError(403, "no")).status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_je_form_keeps_line_currency_and_rate_after_a_failed_submit(ui_client):
     """A rejected entry re-renders with the foreign values still typed in and

@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -505,6 +506,136 @@ def _require_date_range(date_from: str | None, date_to: str | None) -> None:
         )
 
 
+# The longest free-text search the journal accepts. Long enough for a memo or a
+# document reference, short enough that the value cannot be used to make the
+# server read every entry against a pathological pattern.
+_JOURNAL_Q_MAX = 200
+
+
+@dataclass(frozen=True)
+class _JournalFilter:
+    """What the journal was asked to narrow itself to, and the rule that does it.
+
+    One home for the matching rule, because the journal, the extended journal and
+    both of their exports all narrow through this and a second copy of the rule
+    would eventually disagree with the first.
+    """
+
+    account: str | None = None
+    q: str | None = None
+    amount: Decimal | None = None
+
+    @property
+    def active(self) -> bool:
+        return bool(self.account or self.q or self.amount is not None)
+
+    def matches(self, entry: dict) -> bool:
+        """Whether an entry belongs in a filtered journal.
+
+        Every filter given has to match, so adding one always narrows the answer.
+        A filter matches on any one of the entry's lines, and the entry is then
+        emitted whole: emitting only the matching lines would print half an entry,
+        which does not balance and is not a journal.
+        """
+        lines = entry.get("lines") or []
+        if self.account and not any(l.get("account") == self.account for l in lines):
+            return False
+        if self.q:
+            haystack = [entry.get("memo") or "",
+                        (entry.get("source_doc") or {}).get("doc_ref") or ""]
+            for l in lines:
+                haystack += [l.get("account") or "", l.get("name") or ""]
+            if not any(self.q in h.lower() for h in haystack):
+                return False
+        if self.amount is not None and not any(
+                to_decimal(l.get("debit") or 0) == self.amount
+                or to_decimal(l.get("credit") or 0) == self.amount for l in lines):
+            return False
+        return True
+
+
+def _require_q(q: str) -> None:
+    """Refuse a search longer than the journal reads."""
+    if len(q) > _JOURNAL_Q_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Search text is {len(q)} characters, longer than the "
+                    f"{_JOURNAL_Q_MAX} the journal searches."),
+        )
+
+
+def _require_amount(value: str) -> Decimal | None:
+    """The amount filter as a number, or 422 saying why it is not one.
+
+    A figure that cannot be read is refused rather than ignored, because a
+    silently dropped amount filter answers with the whole book under a heading
+    that says it was narrowed.
+    """
+    if not value:
+        return None
+    try:
+        amount = to_decimal(value)
+    except (ArithmeticError, TypeError, ValueError):
+        amount = None
+    # `nan` and `inf` parse as decimals but are not figures: one raises on every
+    # comparison, the other matches nothing while claiming to be a filter.
+    if amount is None or not amount.is_finite():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Amount filter {value} is not a number.",
+        )
+    if amount < 0:
+        raise HTTPException(
+            status_code=422,
+            detail=("Amount filter cannot be negative. Journal figures are "
+                    "posted as a debit or a credit, both positive."),
+        )
+    return amount
+
+
+async def _require_account(
+    session: AsyncSession, company_id: uuid.UUID, code: str
+) -> None:
+    """Check the journal's account filter names a real account.
+
+    Refused as 422 for the reason `_require_contact_filter` gives: the report is
+    there, it is the filter that cannot be applied, and a mistyped code would
+    otherwise answer with an empty journal that reads as a quiet period.
+    """
+    if not code:
+        return
+    found = (await session.execute(
+        select(Account.id).where(Account.company_id == company_id, Account.code == code)
+    )).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No account matches code {code}.",
+        )
+
+
+async def _journal_filter(
+    session: AsyncSession, company_id: uuid.UUID,
+    account: str | None, q: str | None, amount: str | None,
+) -> _JournalFilter:
+    """Validate the three journal filters and hand back the one that matches.
+
+    Blank values are dropped before validating, not refused: clearing a filter
+    field submits it empty, and answering that with 422 would refuse the act of
+    clearing a filter.
+    """
+    account = (account or "").strip()
+    q = (q or "").strip()
+    amount = (amount or "").strip()
+    await _require_account(session, company_id, account)
+    _require_q(q)
+    return _JournalFilter(
+        account=account or None,
+        q=q.lower() or None,
+        amount=_require_amount(amount),
+    )
+
+
 # Account types whose balance is credit-normal. Every other type, including the
 # unknown type of a code with no chart entry, is reported on the debit side.
 _CREDIT_NORMAL_TYPES = frozenset({"liability", "equity", "revenue"})
@@ -855,12 +986,14 @@ def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, 
 async def _journal_payload(
     session: AsyncSession, company_id: uuid.UUID,
     date_from: str | None, date_to: str | None,
+    filt: _JournalFilter | None = None,
 ) -> tuple[dict, dict, str]:
     """The journal, its source-doc refs and the base currency.
 
     The classical journal is the whole of this. The extended journal is this plus
     item detail attached afterwards, so the two can never show different entries,
-    different lines or different totals for the same period.
+    different lines or different totals for the same period. The filter is applied
+    here for the same reason: both books, and both of their exports, narrow alike.
     """
     _require_date_range(date_from, date_to)
     rows = await _je_rows(session, company_id, include_void=True)
@@ -898,6 +1031,11 @@ async def _journal_payload(
         # immutable, so an entry posted then still has to render now.
         entry_fx = ref["fx"] if ref else state.get("fx")
         lines = []
+        # Kept per entry and folded into the running totals only once the entry
+        # has passed the filter, so the totals are the totals of the entries
+        # shown by construction rather than by a second pass over them.
+        entry_debit = Decimal(0)
+        entry_credit = Decimal(0)
         for entry in state.get("entries", []):
             code = entry.get("account")
             amounts = _line_amounts(entry)
@@ -907,8 +1045,8 @@ async def _journal_payload(
             if not code or amounts is None:
                 continue
             if posted:
-                total_debit += amounts[0]
-                total_credit += amounts[1]
+                entry_debit += amounts[0]
+                entry_credit += amounts[1]
             line_currency = entry.get("fx_currency") or (entry_fx or {}).get("currency")
             line_rate = entry.get("fx_rate") or (entry_fx or {}).get("rate")
             lines.append({
@@ -924,7 +1062,7 @@ async def _journal_payload(
                 "fx_currency": line_currency,
                 "fx_rate": float(line_rate) if line_rate else None,
             })
-        entries_out.append({
+        out = {
             "je_id": je_id,
             "ts": ts,
             "memo": state.get("memo", ""),
@@ -934,7 +1072,12 @@ async def _journal_payload(
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
             "fx": entry_fx,
-        })
+        }
+        if filt is not None and not filt.matches(out):
+            continue
+        total_debit += entry_debit
+        total_credit += entry_credit
+        entries_out.append(out)
 
     return ({
         "date_from": date_from,
@@ -942,6 +1085,10 @@ async def _journal_payload(
         "entries": entries_out,
         "total_debit": to_stored_float(round_money(total_debit, base)),
         "total_credit": to_stored_float(round_money(total_credit, base)),
+        # Stated by the payload rather than worked out again by each reader, so
+        # the page, the print sheet and the CSV cannot disagree about whether
+        # what they are showing is the whole book.
+        "filtered": bool(filt and filt.active),
     }, refs, base)
 
 
@@ -949,6 +1096,9 @@ async def _journal_payload(
 async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
+    account: str | None = None,
+    q: str | None = None,
+    amount: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
@@ -957,8 +1107,13 @@ async def journal(
 
     Voided entries stay visible flagged status="void" - a journal is a record, and
     hiding voids would misstate it - but they are excluded from the period totals.
+
+    `account`, `q` and `amount` narrow the entries; a narrowed answer says so in
+    `filtered` and its totals are the totals of what it returned.
     """
-    payload, _refs, _base = await _journal_payload(session, company_id, date_from, date_to)
+    filt = await _journal_filter(session, company_id, account, q, amount)
+    payload, _refs, _base = await _journal_payload(
+        session, company_id, date_from, date_to, filt)
     return payload
 
 
@@ -1110,6 +1265,9 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
 async def extended_journal(
     date_from: str | None = None,
     date_to: str | None = None,
+    account: str | None = None,
+    q: str | None = None,
+    amount: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
@@ -1124,8 +1282,14 @@ async def extended_journal(
     `expanded`, `no_items`, `no_document` or `untied` (see `_expand_item_lines`),
     so a reader can tell "no item here" from "the item detail was not
     trustworthy" from "the document is gone".
+
+    The filters are the classical journal's, applied to the same entries before
+    any item detail is derived, so a filter can never give the two books
+    different entry sets.
     """
-    payload, refs, base = await _journal_payload(session, company_id, date_from, date_to)
+    filt = await _journal_filter(session, company_id, account, q, amount)
+    payload, refs, base = await _journal_payload(
+        session, company_id, date_from, date_to, filt)
     for entry in payload["entries"]:
         lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
         entry["lines"] = lines
