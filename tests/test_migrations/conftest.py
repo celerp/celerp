@@ -5,9 +5,14 @@
 
 Runs against Postgres (the production engine) so each migration's real SQL is
 exercised. alembic op.get_bind() is sync, so a sync psycopg2 engine is used,
-with every test isolated in its own schema. Two tables get a harness each,
-because a migration writes to one or the other: projections for item state,
-accounts for the chart.
+with every test isolated in its own schema.
+
+Three harnesses, for the two shapes of migration test. `mig_db` and `acc_db` each
+build one table in their own schema, for exercising a single migration's SQL; a
+migration writes to one or the other, projections for item state or accounts for
+the chart. `fresh_db` provisions a whole throwaway database, for the tests that run
+the real migration path end to end and so need alembic_version and every table
+alembic creates.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 
 def _run_migration(engine, module_name: str, fn: str) -> None:
@@ -162,3 +168,62 @@ def acc_db():
     with admin.connect() as c:
         c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
     admin.dispose()
+
+
+def head_rev() -> str:
+    """The current alembic head revision id."""
+    from alembic.script import ScriptDirectory
+
+    from celerp.alembic_config import build_alembic_config
+
+    return ScriptDirectory.from_config(build_alembic_config()).get_current_head()
+
+
+def swap_db(url: str, dbname: str) -> str:
+    """Replace the database name in a SQLAlchemy URL.
+
+    Parsed rather than string-split: a socket DSN carries its directory in a
+    query parameter (?host=/var/run/postgresql), so splitting on the last "/"
+    rewrites the socket path instead of the database.
+    """
+    return make_url(url).set(database=dbname).render_as_string(hide_password=False)
+
+
+@pytest.fixture()
+def fresh_db():
+    """Provision a throwaway database, yield (async_url, sync_url), then drop it.
+
+    Restores os.environ['DATABASE_URL'] on teardown - `_run_migrations` mutates
+    it, which would otherwise leak the throwaway DB into later tests.
+    """
+    base_async = os.environ["DATABASE_URL"]
+    base_sync = base_async.replace("+asyncpg", "+psycopg2")
+    saved_env = os.environ.get("DATABASE_URL")
+    dbname = f"advtest_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE DATABASE "{dbname}"'))
+    admin.dispose()
+
+    try:
+        yield swap_db(base_async, dbname), swap_db(base_sync, dbname)
+    finally:
+        if saved_env is not None:
+            os.environ["DATABASE_URL"] = saved_env
+        admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            # Only client backends: this sweep exists to kill leaked test
+            # connection pools. Autovacuum workers run as the superuser cluster
+            # owner, which a non-superuser test role cannot signal; DROP
+            # DATABASE evicts them itself.
+            c.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :d AND pid <> pg_backend_pid() "
+                    "AND backend_type = 'client backend'"
+                ),
+                {"d": dbname},
+            )
+            c.execute(text(f'DROP DATABASE IF EXISTS "{dbname}"'))
+        admin.dispose()
