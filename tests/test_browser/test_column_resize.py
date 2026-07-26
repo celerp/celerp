@@ -49,17 +49,31 @@ def _visible_data_keys(page):
     )
 
 
-def _drag_handle(page, th_sel, dx):
-    handle = page.locator(f"{th_sel} .col-resize-handle").first
+def _drag_right(page, handle, dx):
+    """Press a resize handle and drag it `dx` to the right.
+
+    Hovers the handle instead of moving the mouse to a coordinate measured
+    earlier. A resize handle is 5px wide, and the topbar polls on an interval
+    (relay-dot-wrap, topbar-company-switcher); when one of those swaps lands it
+    reflows the page and shifts the table a few pixels, which is enough to move a
+    5px target out from under a coordinate read a moment ago. The press then goes
+    to whatever took that spot, no drag starts, and the column never widens.
+
+    hover() waits for the handle to hold still and to be the element that
+    actually receives events there before pointing at it, so the press cannot be
+    aimed at a stale position. The box is read afterwards, only for the distance.
+    """
     handle.scroll_into_view_if_needed()
+    handle.hover()
     box = handle.bounding_box()
-    assert box is not None, f"no .col-resize-handle inside {th_sel}"
-    cx = box["x"] + box["width"] / 2
-    cy = box["y"] + box["height"] / 2
-    page.mouse.move(cx, cy)
+    assert box is not None, "resize handle has no bounding box"
     page.mouse.down()
-    page.mouse.move(cx + dx, cy, steps=12)
+    page.mouse.move(box["x"] + box["width"] / 2 + dx, box["y"] + box["height"] / 2, steps=12)
     page.mouse.up()
+
+
+def _drag_handle(page, th_sel, dx):
+    _drag_right(page, page.locator(f"{th_sel} .col-resize-handle").first, dx)
 
 
 def _run_resize_check(page, ui_server, path, storage_key):
@@ -78,9 +92,16 @@ def _run_resize_check(page, ui_server, path, storage_key):
     col_before = _col_width(page, col)
     neighbor_before = _col_width(page, neighbor)
 
-    # drag the first column's handle well to the right
-    _drag_handle(page, col, 250)
-    col_after = _col_width(page, col)
+    # Drag the first column's handle well to the right. Retried once, and only
+    # when the width did not move at all: that is the signature of a press that
+    # missed the handle outright (a poll shifted the row mid-gesture), where a
+    # second attempt starts from the same state. A drag that did move the column
+    # is reported as-is rather than dragged again.
+    for _ in range(2):
+        _drag_handle(page, col, 250)
+        col_after = _col_width(page, col)
+        if col_after != col_before:
+            break
     neighbor_after = _col_width(page, neighbor)
 
     assert col_after > col_before + 120, (
@@ -128,15 +149,7 @@ def test_files_table_columns_resize(page, ui_server, api):
     th.scroll_into_view_if_needed()
     w_before = th.evaluate("el => el.getBoundingClientRect().width")
 
-    handle = th.locator(".col-resize-handle").first
-    box = handle.bounding_box()
-    assert box is not None, "no resize handle on the files table header"
-    cx = box["x"] + box["width"] / 2
-    cy = box["y"] + box["height"] / 2
-    page.mouse.move(cx, cy)
-    page.mouse.down()
-    page.mouse.move(cx + 200, cy, steps=12)
-    page.mouse.up()
+    _drag_right(page, th.locator(".col-resize-handle").first, 200)
 
     w_after = th.evaluate("el => el.getBoundingClientRect().width")
     assert w_after > w_before + 100, (
