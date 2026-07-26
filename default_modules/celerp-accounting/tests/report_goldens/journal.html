@@ -1,0 +1,200 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Accounting</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div class="info-banner mb-md">
+<span>These reports have moved to Reports:</span><span> </span><a href="/reports/pnl" class="drilldown-link">P&amp;L</a><a href="/reports/balance-sheet" class="drilldown-link">Balance Sheet</a><a href="/reports/trial-balance" class="drilldown-link">Trial Balance</a><a href="/reports/general-ledger" class="drilldown-link">General Ledger</a><a href="/reports/statement" class="drilldown-link">Statement of Account</a><a href="/reports" class="drilldown-link">Reports</a>    </div>
+    <div class="date-filter-bar">
+      <div class="preset-bar">
+<a href="/accounting?preset=this_month" class="preset-btn ">This month</a><a href="/accounting?preset=last_3m" class="preset-btn ">Last 3 months</a><a href="/accounting?preset=last_6m" class="preset-btn ">Last 6 months</a><a href="/accounting?preset=last_12m" class="preset-btn ">Last 12 months</a><a href="/accounting?preset=this_fy" class="preset-btn ">This fiscal year</a><a href="/accounting?preset=last_fy" class="preset-btn ">Last fiscal year</a><a href="/accounting?preset=all" class="preset-btn ">All time</a>      </div>
+<form enctype="multipart/form-data" action="/accounting" method="get" class="date-custom-form">        <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
+<span class="date-sep">--</span>        <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
+    <div class="valuation-bar">
+<span class="val-chip">Total Debit: ฿210.00</span><span class="val-chip">Total Credit: ฿210.00</span><span class="val-chip">Balanced ✓</span>    </div>
+    <div class="flex-row flex-between mt-md mb-md">
+<a href="/accounting/journal/new?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--primary">New entry</a>      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/accounting/export/journal/csv?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/accounting/print/journal?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Source</th>
+          <th>Description</th>
+          <th class="cell--number">Debit</th>
+          <th class="cell--number">Credit</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cell--mono">2026-02-15</td>
+          <td>Manual</td>
+          <td class="cell--muted">
+<span>Late delivery charge</span>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td>
+<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:manual:<uuid>/void" hx-swap="none" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
+                <input type="hidden" name="date_from" value="2026-01-01">
+                <input type="hidden" name="date_to" value="2026-03-31">
+<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1120 Accounts Receivable</td>
+          <td class="cell--number">฿15.00</td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">4100 Sales Revenue</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿15.00</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-02-10</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td class="cell--muted">
+<span>Auto JE for doc:<id> finalized</span>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td>
+<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:fin/void" hx-swap="none" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
+                <input type="hidden" name="date_from" value="2026-01-01">
+                <input type="hidden" name="date_to" value="2026-03-31">
+<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1120 Accounts Receivable</td>
+          <td class="cell--number">฿30.00</td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">4100 Sales Revenue</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿30.00</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">2120 VAT Payable (Output VAT)</td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-02-01</td>
+          <td>Manual</td>
+          <td class="cell--muted">
+<span>February rent</span>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td>
+<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:manual:<uuid>/void" hx-swap="none" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
+                <input type="hidden" name="date_from" value="2026-01-01">
+                <input type="hidden" name="date_to" value="2026-03-31">
+<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">6200 Rent</td>
+          <td class="cell--number">฿25.00</td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1111 Default Bank Account (Checking)</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿25.00</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-01-20</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td class="cell--muted">
+<span>Auto JE for doc:<id> payment</span>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td>
+<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:pay:0/void" hx-swap="none" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
+                <input type="hidden" name="date_from" value="2026-01-01">
+                <input type="hidden" name="date_to" value="2026-03-31">
+<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1111 Default Bank Account (Checking)</td>
+          <td class="cell--number">฿40.00</td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1120 Accounts Receivable</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿40.00</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="cell--mono">2026-01-05</td>
+          <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>          </td>
+          <td class="cell--muted">
+<span>Auto JE for doc:<id> finalized</span>          </td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td>
+<details class="void-section"><summary class="btn btn--danger btn--sm">Void</summary><form enctype="multipart/form-data" hx-post="/accounting/journal/je:auto:doc:<id>:fin/void" hx-swap="none" class="inline-form">                <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}" class="form-input form-input--sm">
+                <input type="hidden" name="date_from" value="2026-01-01">
+                <input type="hidden" name="date_to" value="2026-03-31">
+<button type="submit" class="btn btn--danger btn--sm" style="margin-top:0.5rem;">Confirm Void</button></form></details>          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">1120 Accounts Receivable</td>
+          <td class="cell--number">฿100.00</td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">4100 Sales Revenue</td>
+          <td class="cell--number"></td>
+          <td class="cell--number">฿100.00</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td style="padding-left:2rem">2120 VAT Payable (Output VAT)</td>
+          <td class="cell--number"></td>
+          <td class="cell--number"></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>

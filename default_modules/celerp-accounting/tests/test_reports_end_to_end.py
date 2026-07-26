@@ -20,6 +20,7 @@ with UPDATE_REPORT_GOLDENS=1, read the diff, and commit it with the change.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import uuid
@@ -110,6 +111,14 @@ async def _seed(client) -> tuple[str, str]:
 # every one of them.
 GOLDEN_KEYS = list(REPORTS) + ["ledger"]
 
+# The print sheet and the CSV of the two journal pages get goldens of their own.
+# The consolidation rewrites what those pages render, and a reader who prints the
+# journal or opens it in a spreadsheet is as entitled to an unchanged render as one
+# reading it on screen; neither surface is covered by the on-screen golden.
+_EXPORT_KEYS = [f"{key}:{kind}" for key in ("journal", "extended-journal")
+                for kind in ("print", "csv")]
+GOLDEN_KEYS += _EXPORT_KEYS
+
 
 def _urls(contact: str) -> dict[str, str]:
     """The URL each report is read at."""
@@ -126,6 +135,14 @@ def _urls(contact: str) -> dict[str, str]:
         else:
             urls[key] = f"{path}?{period}"
     urls["ledger"] = f"{ledger_path('1120')}?{period}"
+    # A print sheet and a CSV take the period as date_from/date_to, the names
+    # report_kit.date_params writes into the links a reader clicks; the on-screen
+    # pages take from/to. Asked with the wrong names, an export renders the whole
+    # book and its golden pins something nobody asked for.
+    export_period = "&".join(f"date_{k}={v}" for k, v in PERIOD)
+    for key in _EXPORT_KEYS:
+        report, kind = key.split(":")
+        urls[key] = f"{REPORTS[report][1 if kind == 'print' else 2]}?{export_period}"
     return urls
 
 
@@ -144,7 +161,31 @@ _VOLATILE = [
 def _normalise(html: str) -> str:
     for pattern, replacement in _VOLATILE:
         html = pattern.sub(replacement, html)
-    return html.strip() + "\n"
+    # A CSV goes out with CRLF line endings, which reading the golden back in text
+    # mode turns into LF. Compare the rows, not the bytes that end them.
+    return html.replace("\r\n", "\n").strip() + "\n"
+
+
+def _golden_path(key: str) -> Path:
+    """Where a key's golden lives. A colon is not a filename, and a CSV is not HTML."""
+    suffix = ".csv" if key.endswith(":csv") else ".html"
+    return GOLDEN_DIR / f"{key.replace(':', '-')}{suffix}"
+
+
+_TBODY = re.compile(r"<tbody.*?</tbody>", re.S)
+
+# Every seeded report renders at least this many rows of figures. Without a floor, a
+# golden generated against a period holding nothing would be a set of column
+# headings, would match itself forever, and would report a report that stopped
+# working as unchanged.
+_ROW_FLOOR = 2
+
+
+def _rows(key: str, text: str) -> int:
+    """Rows of figures in a render: table rows for HTML, lines under the header for CSV."""
+    if key.endswith(":csv"):
+        return max(len([line for line in text.splitlines() if line.strip()]) - 1, 0)
+    return sum(block.count("<tr") for block in _TBODY.findall(text))
 
 
 @pytest_asyncio.fixture
@@ -154,10 +195,25 @@ async def seeded(client):
     from ui.app import app as ui_app
 
     tok, contact = await _seed(client)
+    one_at_a_time = asyncio.Lock()
+
+    class _SerialTransport(ASGITransport):
+        """One API request in flight at a time.
+
+        The API under test answers every request from the single session the `client`
+        fixture holds open, so two requests at once make SQLAlchemy refuse the second.
+        A UI route that fans its API calls out concurrently, as the CSV exports do, is
+        still exercised whole here; its calls just queue. Nothing in production shares
+        a session between requests, so this queue exists only in the harness.
+        """
+
+        async def handle_async_request(self, request):
+            async with one_at_a_time:
+                return await super().handle_async_request(request)
 
     def _bridged(token, timeout=10.0):
         return AsyncClient(
-            transport=ASGITransport(app=api_app),
+            transport=_SerialTransport(app=api_app),
             base_url="http://test",
             headers={"Authorization": f"Bearer {token}"},
             follow_redirects=True,
@@ -294,15 +350,20 @@ async def test_the_subledger_ties_to_its_control_account_on_the_rendered_page(se
 async def test_report_html_matches_its_golden(seeded, key):
     """The rendered report, against the last render that was read and agreed.
 
-    Compared as the HTMX fragment rather than the whole page, so the golden holds
-    the report and not the sidebar: a nav entry added elsewhere in the application
-    is not a change to the balance sheet and should not have to be re-agreed as one.
+    On-screen reports are compared as the HTMX fragment rather than the whole page,
+    so the golden holds the report and not the sidebar: a nav entry added elsewhere
+    in the application is not a change to the balance sheet and should not have to be
+    re-agreed as one. A print sheet and a CSV have no fragment to ask for and are
+    compared whole, which is what a reader gets.
     """
     ui, tok, contact = seeded
     url = _urls(contact)[key]
-    rendered = _normalise(await _fetch(ui, tok, url, fragment=True))
+    rendered = _normalise(await _fetch(ui, tok, url, fragment=":" not in key))
+    assert _rows(key, rendered) >= _ROW_FLOOR, (
+        f"{key} rendered {_rows(key, rendered)} rows of figures from books that hold "
+        f"several, so this render is not the report and must not become its golden")
 
-    golden = GOLDEN_DIR / f"{key}.html"
+    golden = _golden_path(key)
     if os.environ.get("UPDATE_REPORT_GOLDENS"):
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         golden.write_text(rendered)

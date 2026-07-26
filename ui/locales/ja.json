@@ -1092,6 +1092,7 @@
   "rpt.expiring_desc": "30日以内に期限切れになるアイテム",
   "rpt.extended_journal_desc": "The journal with the item, quantity and unit price behind each posting",
   "rpt.general_ledger_desc": "Opening, movement and closing balance per account",
+  "rpt.journal_desc": "Every journal entry in the period, with the postings behind it",
   "rpt.pnl_desc": "期間の損益計算書",
   "rpt.purchases_desc": "仕入先・品目・期間別支出",
   "rpt.sales_desc": "顧客・品目・期間別売上",

@@ -40,7 +40,9 @@ from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path
-from ui.routes.reports import _date_filter_bar, _get_fiscal, _parse_dates
+from ui.routes.reports import (
+    _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
+)
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, EXCHANGE_RATE_DP, currency_dp
 
 
@@ -156,12 +158,14 @@ def setup_routes(app):
             else:
                 content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
 
-        return await base_shell(
+        # The journal answers HX-Request with the page body alone, like every other
+        # report page, so a caller can swap it into #main-content.
+        return await _page_or_fragment(
+            request,
             page_header(t("page.accounting", get_lang(request))),
             content,
             title="Accounting - Celerp",
             nav_active="accounting",
-            request=request,
         )
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,

@@ -1,0 +1,13 @@
+date,entry_id,source_ref,memo,account_code,account_name,debit,credit,currency,fx_currency,fx_debit,fx_credit,exchange_rate,status
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,1120,Accounts Receivable,100.0,0.0,THB,,,,,posted
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,4100,Sales Revenue,0.0,100.0,THB,,,,,posted
+2026-01-05,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,2120,VAT Payable (Output VAT),0.0,0.0,THB,,,,,posted
+2026-01-20,je:auto:doc:<id>:pay:0,INV-<ref>,Auto JE for doc:<id> payment,1111,Default Bank Account (Checking),40.0,0.0,THB,,,,,posted
+2026-01-20,je:auto:doc:<id>:pay:0,INV-<ref>,Auto JE for doc:<id> payment,1120,Accounts Receivable,0.0,40.0,THB,,,,,posted
+2026-02-01,je:manual:<uuid>,Manual,February rent,6200,Rent,25.0,0.0,THB,,,,,posted
+2026-02-01,je:manual:<uuid>,Manual,February rent,1111,Default Bank Account (Checking),0.0,25.0,THB,,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,1120,Accounts Receivable,30.0,0.0,THB,,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,4100,Sales Revenue,0.0,30.0,THB,,,,,posted
+2026-02-10,je:auto:doc:<id>:fin,INV-<ref>,Auto JE for doc:<id> finalized,2120,VAT Payable (Output VAT),0.0,0.0,THB,,,,,posted
+2026-02-15,je:manual:<uuid>,Manual,Late delivery charge,1120,Accounts Receivable,15.0,0.0,THB,,,,,posted
+2026-02-15,je:manual:<uuid>,Manual,Late delivery charge,4100,Sales Revenue,0.0,15.0,THB,,,,,posted
