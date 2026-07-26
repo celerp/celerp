@@ -138,7 +138,8 @@ BULK_TOOLBAR_JS = """
     if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
   function refresh(bar){
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
-    var cnt=bar.querySelector('.bulk-count');if(cnt)cnt.textContent=n+' selected';
+    var cnt=bar.querySelector('.bulk-count');
+    if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
     var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
@@ -152,10 +153,13 @@ BULK_TOOLBAR_JS = """
     var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
     for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
     if(!a)return;
-    if(a.confirm&&!confirm(a.confirm))return;
+    if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
+      var inp=document.createElement('input');inp.type='hidden';
+      inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
     document.body.appendChild(form);
     htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
       .then(function(){form.remove();},function(){form.remove();});
@@ -177,23 +181,29 @@ BULK_TOOLBAR_JS = """
 """
 
 
-def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
-    """Standard bulk-action toolbar: [N selected] [Clear] [Action ▾].
+def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None) -> FT:
+    """Standard bulk-action toolbar: [N selected] [Clear] [fields…] [Action ▾].
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
     url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
-    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there)."""
+    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
+
+    `confirm` text may contain `{n}`, replaced with the number selected at click time.
+    `fields` are extra inputs shown in the bar; any of them carrying class `bulk-field`
+    and a name is posted alongside the ids, so an action can take a value (a void
+    reason, a location) without a popup."""
     import json as _json
-    opts = [Option("Action…", value="", disabled=True, selected=True)]
+    opts = [Option(t("inv.action"), value="", disabled=True, selected=True)]
     opts += [Option(a["label"], value=a["value"]) for a in actions]
     return Div(
-        Span("0 selected", cls="bulk-count"),
-        Button("Clear", type="button", cls="btn btn--xs btn--ghost bulk-clear"),
+        Span(t("label.n_selected", n=0), cls="bulk-count"),
+        Button(t("btn.clear"), type="button", cls="btn btn--xs btn--ghost bulk-clear"),
+        *(fields or []),
         Select(*opts, cls="bulk-action-select", disabled=True,
                **{"data-actions": _json.dumps(actions)}),
         Script(BULK_TOOLBAR_JS),
         cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
-        **{"data-table": table_id},
+        **{"data-table": table_id, "data-count-label": t("label.n_selected")},
     )
 
 
@@ -557,7 +567,7 @@ def searchable_select(
     search_url: str = "",
     multiple: bool = False,
     values: list[str] | None = None,
-    count_label: str = "{n} selected",
+    count_label: str = "",
     **htmx_attrs,
 ) -> FT:
     """
@@ -575,9 +585,12 @@ def searchable_select(
         current selection as `values`. Callers that leave this off render exactly
         what they rendered before it existed.
     count_label: summary shown in the closed input when several are selected;
-        "{n}" is replaced with the count. Callers pass a translated string.
+        "{n}" is replaced with the count. Defaults to the same `label.n_selected`
+        the bulk toolbar counts with, so a caller passes one only to say something
+        other than "N selected".
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
+    count_label = count_label or t("label.n_selected")
     normalized = [
         (o, o) if isinstance(o, str) else (o[0], o[1])
         for o in options
@@ -1162,7 +1175,7 @@ def data_table(
         return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
                    title="Drag to reorder columns", style=th_style)
 
-    checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
+    checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
         *checkbox_th,
         *[_th(f) for f in visible],

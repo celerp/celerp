@@ -17,7 +17,7 @@ from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, RedirectResponse, PlainTextResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -29,9 +29,9 @@ from ui.components.report_kit import (
     plain_error_response as _plain_error_response, print_shell as _print_shell,
 )
 from ui.components.journal import (
-    JOURNAL_FILTER_KEYS, journal_csv_rows, journal_export_name, journal_filter_bar,
+    journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
     journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
-    journal_rows, journal_table,
+    journal_rows, journal_table, journal_void_toast,
 )
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
@@ -161,10 +161,10 @@ def setup_routes(app):
                                params),
                     cls="flex-row flex-between mt-md mb-md",
                 ),
+                journal_bulk_toolbar(params, carried),
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
-                              params={"date_from": d_from or "", "date_to": d_to or "",
-                                      **filters},
-                              void_action=True, filtered=bool(data.get("filtered"))),
+                              params=params, void_action=True, select=True,
+                              filtered=bool(data.get("filtered"))),
             )
         except APIError as e:
             if e.status == 401:
@@ -334,6 +334,45 @@ def setup_routes(app):
                                           idem_token=idem_token, error=error,
                                           date_from=d_from, date_to=d_to)
 
+    async def _journal_void_answer(request: Request, token: str, result: dict):
+        """The answer to a void: the table it changed, its totals, and what happened.
+
+        The figures are re-read from the API rather than adjusted here, so the totals
+        over the rows cannot drift from the rows under them. They travel out of band
+        because they sit above the table with the page's own furniture in between,
+        and only these two regions changed: nothing else on the page has to move for
+        a void, and the reader keeps the view they narrowed to.
+
+        Which book asked is what `items` says, so a void fired from the extended
+        journal comes back as the extended journal.
+        """
+        items = request.query_params.get("items") == "1"
+        d_from = request.query_params.get("date_from", "")
+        d_to = request.query_params.get("date_to", "")
+        preset = request.query_params.get("preset", "")
+        filters = journal_filters(request)
+        params = {**_date_params(d_from, d_to), **filters}
+        company = await api.get_company(token)
+        currency = company.get("currency")
+        data = (await api.get_extended_journal(token, params) if items
+                else await api.get_journal(token, params))
+        carried = ({"preset": preset} if preset and preset != "custom"
+                   else {"from": d_from, "to": d_to})
+        base = REPORTS["extended-journal"][0] if items else "/accounting"
+        # The classical journal carries a per-entry void control and the extended
+        # journal does not, so each book comes back the shape it went out in.
+        table = journal_table(journal_rows(data, items=items), items=items,
+                              currency=currency, params=params, void_action=not items,
+                              select=True, filtered=bool(data.get("filtered")))
+        totals = _journal_totals(
+            data, currency, oob=True,
+            filter_words=journal_filter_words(filters, get_lang(request)),
+            clear_href=_href(base, carried))
+        return HTMLResponse(
+            to_xml(table) + to_xml(totals),
+            headers={"HX-Trigger": _json.dumps({"celerpToast": journal_void_toast(result)})},
+        )
+
     @app.post("/accounting/journal/{je_id}/void")
     async def journal_void(request: Request, je_id: str):
         from starlette.responses import Response as _R
@@ -343,21 +382,40 @@ def setup_routes(app):
         form = await request.form()
         reason = str(form.get("reason", "")).strip() or None
         try:
-            await api.void_journal_entry(token, je_id, reason)
+            voided = await api.void_journal_entry(token, je_id, reason)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
-        # Back to the view the void was pressed from, filters and all: a reader who
-        # narrowed the journal to find an entry should not be handed the whole book
-        # back the moment they act on it.
-        target = _href("/accounting", {
-            "tab": "journal",
-            "from": str(form.get("date_from") or ""),
-            "to": str(form.get("date_to") or ""),
-            **{k: str(form.get(k) or "") for k in JOURNAL_FILTER_KEYS},
-        })
-        return _R("", status_code=204, headers={"HX-Redirect": target})
+        # One entry is a batch of one: it answers the way a batch does, so the reader
+        # is told the same thing either way and the page does not reload under them.
+        return await _journal_void_answer(request, token, {"results": [voided]})
+
+    @app.post("/accounting/journal/bulk-void")
+    async def journal_bulk_void(request: Request):
+        """Void every entry the reader ticked, and report what happened to each.
+
+        The API decides what may be voided and answers per entry, so a refusal in
+        the middle of a selection stops nothing: the entries around it are voided
+        and the reader is told, in the words of the rule that refused it, which were
+        not. The refreshed table shows them still standing unstruck.
+        """
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            # Blanks, duplicates and an oversized selection are the API's rules to
+            # apply; it refuses in its own words, which the toast then states.
+            result = await api.bulk_void_journal_entries(
+                token, form.getlist("selected"), reason)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
+        return await _journal_void_answer(request, token, result)
 
     # ── Print (PDF) routes ─────────────────────────────────────────────────
 

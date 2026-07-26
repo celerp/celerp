@@ -4629,7 +4629,7 @@ def _doc_table(
             cls="data-row",
         )
 
-    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
+    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
 
     # Bulk action bar (hidden by default, shown when checkboxes selected)
     # Uses the same dropdown-then-confirm pattern as _li_bulk_toolbar for consistency.

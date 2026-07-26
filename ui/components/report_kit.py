@@ -155,7 +155,7 @@ def period_subtitle(d_from: str, d_to: str) -> str:
 
 
 def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None,
-                 extra: list | None = None) -> FT:
+                 extra: list | None = None, **attrs) -> FT:
     return Div(
         Span(f"{t('acct.total_debit')}: {fmt_money(total_debit, currency)}", cls="val-chip"),
         Span(f"{t('acct.total_credit')}: {fmt_money(total_credit, currency)}", cls="val-chip"),
@@ -163,11 +163,15 @@ def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None
              cls="val-chip" if balanced else "val-chip val-chip--alert"),
         *(extra or []),
         cls="valuation-bar",
+        **attrs,
     )
 
 
+JOURNAL_TOTALS_ID = "journal-totals"
+
+
 def journal_totals(data: dict, currency: str | None = None, *,
-                   filter_words: str = "", clear_href: str = "") -> FT:
+                   filter_words: str = "", clear_href: str = "", oob: bool = False) -> FT:
     """The debit, credit and balance chips over a journal.
 
     The classical journal and the extended one are the same postings, so they read
@@ -178,6 +182,11 @@ def journal_totals(data: dict, currency: str | None = None, *,
     period. Whether it was narrowed is what the payload said, never worked out
     again here. `clear_href` offers the way back to the whole book, and the print
     sheet leaves it off: there is nothing to click on paper.
+
+    `oob` makes the block replace itself wherever it already sits on the page. A
+    void answers with the table it changed, and the totals stand above it with the
+    page's own furniture in between; sending them out of band refreshes the figures
+    over the rows without either page having to rearrange itself around the swap.
     """
     total_debit = float(data.get("total_debit", 0) or 0)
     total_credit = float(data.get("total_credit", 0) or 0)
@@ -188,7 +197,8 @@ def journal_totals(data: dict, currency: str | None = None, *,
         if clear_href:
             extra.append(A(t("acct.filter_clear"), href=clear_href, cls="btn btn--ghost btn--sm"))
     return totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01,
-                        currency, extra)
+                        currency, extra, id=JOURNAL_TOTALS_ID,
+                        **({"hx_swap_oob": "true"} if oob else {}))
 
 
 def je_source_label(entry: dict, csv_export: bool = False) -> str:

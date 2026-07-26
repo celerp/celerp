@@ -12,8 +12,12 @@ Proves:
 6. Foreign currency is collapsed out of the way until it is asked for.
 7. Each line converts at its own rate, and an entry that does not balance in
    the company currency is refused rather than plugged.
+8. The selection toolbar counts entries, not the postings under them.
+9. Voiding a selection asks first, then voids every entry in it at once.
 """
 from __future__ import annotations
+
+import uuid
 
 import pytest
 
@@ -33,6 +37,28 @@ def party(api):
                  json={"name": "Browser Party Co", "contact_type": "customer"})
     assert r.status_code == 200, r.text
     return r.json()["id"]
+
+
+@pytest.fixture(scope="module")
+def two_posted_entries(api, seeded_chart):
+    """Two hand-posted entries, and the search term that isolates them.
+
+    Posted through the API rather than the form: these tests are about selecting
+    and voiding, and the form has its own journey above. Both carry a tag of
+    their own in the memo, which the tests search on, so what the page holds is
+    these two entries and nothing else the suite happened to post that day.
+    """
+    tag = f"bulkvoid{uuid.uuid4().hex[:8]}"
+    ids = []
+    for amount in ("11.11", "22.22"):
+        r = api.post("/accounting/journal-entries", json={
+            "ts": "2026-06-20", "memo": f"Browser bulk void {tag} {amount}",
+            "entries": [{"account": "6200", "debit": float(amount), "credit": 0},
+                        {"account": "1111", "debit": 0, "credit": float(amount)}],
+            "idempotency_token": uuid.uuid4().hex})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["je_id"])
+    return tag, ids
 
 
 def _pick_account(page, idx: int, code: str) -> None:
@@ -216,3 +242,73 @@ def test_manual_je_fx_journey_converts_per_line_and_refuses_to_plug(
     page.wait_for_selector("text=Browser test foreign entry", timeout=10000)
     # The typed foreign figure and the rate ride the line they were typed on.
     page.wait_for_selector("text=3.0025", timeout=10000)
+
+
+def test_journal_bulk_toolbar_counts_entries_not_postings(
+    page, ui_server, two_posted_entries
+):
+    """An entry is one thing to void, however many postings it is made of.
+
+    The journal shows an entry row and then a row per posting under it, so a
+    toolbar counting rows would offer to void six things where there are two.
+    """
+    tag, _ = two_posted_entries
+    page.goto(f"{ui_server}/accounting?from=2026-06-20&to=2026-06-20&q={tag}",
+              wait_until="domcontentloaded")
+    page.wait_for_selector("#journal-table", timeout=10000)
+
+    boxes = page.locator("#journal-table .bulk-select")
+    rows = page.locator("#journal-table tbody tr")
+    assert boxes.count() == 2, f"Expected a box per entry, got {boxes.count()}"
+    assert rows.count() > boxes.count(), (
+        f"Expected postings to be rows too, got {rows.count()} rows for "
+        f"{boxes.count()} entries"
+    )
+
+    bar = page.locator("#bulkbar-journal-table")
+    assert bar.locator(".bulk-action-select").is_disabled(), \
+        "the action list is live with nothing selected"
+
+    page.locator("#journal-table thead .bulk-select-all").click()
+    assert bar.locator(".bulk-count").inner_text().strip() == "2 selected"
+    assert not bar.locator(".bulk-action-select").is_disabled()
+
+
+def test_journal_bulk_void_confirms_then_posts(page, ui_server, api, two_posted_entries):
+    """Voiding a selection asks once, then voids the whole selection in place.
+
+    A void cannot be undone, so the count is named before anything is written.
+    Afterwards the page swaps the table it posted from rather than reloading, and
+    says what happened.
+    """
+    tag, je_ids = two_posted_entries
+    page.goto(f"{ui_server}/accounting?from=2026-06-20&to=2026-06-20&q={tag}",
+              wait_until="domcontentloaded")
+    page.wait_for_selector("#journal-table", timeout=10000)
+    for je_id in je_ids:
+        page.locator(f'#journal-table .bulk-select[value="{je_id}"]').check()
+
+    bar = page.locator("#bulkbar-journal-table")
+    bar.locator('.bulk-field[name="reason"]').fill("Duplicate batch")
+
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+    bar.locator(".bulk-action-select").select_option("void")
+
+    page.wait_for_selector(".toast-container .toast", timeout=10000)
+    assert len(dialogs) == 1, f"Expected one confirm, got {dialogs}"
+    assert "2" in dialogs[0], f"the confirm did not name the count: {dialogs[0]!r}"
+    assert "2" in page.locator(".toast-container .toast").inner_text()
+    assert "from=2026-06-20" in page.url, "the void reloaded the page instead of swapping"
+
+    # Both entries are voided, with the reason typed in the bar, and both rows say
+    # so where they stood.
+    assert page.locator("#journal-table tr.payment-voided .badge--void").count() == 2
+    entries = api.get("/accounting/journal",
+                      params={"date_from": "2026-06-20", "date_to": "2026-06-20",
+                              "q": tag}).json()
+    voided = {e["je_id"]: e for e in entries["entries"]}
+    assert sorted(voided) == sorted(je_ids), f"Expected both entries back, got {list(voided)}"
+    for je_id in je_ids:
+        assert voided[je_id]["status"] == "void", voided[je_id]
+        assert voided[je_id].get("void_reason") == "Duplicate batch", voided[je_id]

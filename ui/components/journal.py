@@ -23,13 +23,18 @@ from celerp.services.money import EXCHANGE_RATE_DP, to_decimal
 from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
-from ui.components.table import EMPTY, fmt_money, searchable_select
+from ui.components.table import EMPTY, bulk_toolbar, fmt_money, searchable_select
 from ui.i18n import t
 
 # What the journal can be narrowed by. The API takes these three names and both
 # books read them back under the same names, so a filtered page, its print sheet
 # and its export cannot end up narrowing to different things.
 JOURNAL_FILTER_KEYS = ("account", "q", "amount")
+
+# The rendered table's id, written once. The selection toolbar reads its rows
+# through it and an action swaps the table it posted from, so the toolbar, the
+# table and the response after a void all have to name the same element.
+JOURNAL_TABLE_ID = "journal-table"
 
 
 def journal_filters(request) -> dict:
@@ -179,13 +184,16 @@ def _voided(row: dict) -> bool:
     return row.get("status") == "void"
 
 
-def _row(cells: list, row: dict) -> FT:
+def _row(cells: list, row: dict, *, data_row: bool = False) -> FT:
     """A table row, dimmed when the entry behind it was voided.
 
     The class attribute is written only when there is a class, so an ordinary row
-    renders exactly as it did before this was shared.
+    renders exactly as it did before this was shared. `data_row` marks the rows a
+    selection counts: one per entry, never one per posting.
     """
-    return Tr(*cells, cls="payment-voided") if _voided(row) else Tr(*cells)
+    classes = " ".join(c for c in ("data-row" if data_row else "",
+                                   "payment-voided" if _voided(row) else "") if c)
+    return Tr(*cells, cls=classes) if classes else Tr(*cells)
 
 
 def _source_cell(row: dict):
@@ -225,6 +233,75 @@ def fmt_exchange_rate(rate) -> str:
     return s or "0"
 
 
+def _select_cell(row: dict, selectable: bool) -> FT:
+    """The selection box for one entry, or the empty cell under it.
+
+    A selection is of entries, not of postings: a void acts on an entry, and one
+    entry can hold a dozen postings. So the box sits on the entry's first row and
+    the rows beneath it keep the column and leave it empty, which is also what
+    makes the count read entries. A voided entry has nothing left to void, so it
+    keeps the column and leaves it empty too.
+    """
+    if not selectable or row.get("status") != "posted":
+        return Td("", cls="col-checkbox")
+    return Td(Input(type="checkbox", cls="bulk-select", name="selected",
+                    value=row.get("je_id", "")), cls="col-checkbox")
+
+
+def journal_bulk_toolbar(params: dict, carried: dict, *, items: bool = False) -> FT:
+    """The selection toolbar over a journal: void what is ticked, with a reason.
+
+    The reason is a field in the bar rather than a popup, so voiding a batch is
+    entered on the page like every other routine entry (GDR 2f). The confirm step
+    states how many entries are about to be struck, because a mis-ticked box in a
+    long journal is the mistake worth catching before the write, not after: a void
+    stays on the record and the way back from a wrong one is another entry.
+
+    The period and the filters travel in the URL so the answer can re-read exactly
+    the journal the reader was looking at, and the preset travels with them so the
+    way back to the whole book still moves with the year rather than freezing into
+    the dates the preset happens to mean today. `items` says which of the two books
+    is asking, because that is what the answer has to render.
+    """
+    esc = ("if(event.key==='Escape'){this.value='';this.blur();"
+           "event.preventDefault();}")
+    post_url = href("/accounting/journal/bulk-void", {
+        **params,
+        **({"preset": carried["preset"]} if carried.get("preset") else {}),
+        **({"items": "1"} if items else {}),
+    })
+    return bulk_toolbar(
+        JOURNAL_TABLE_ID,
+        [{"value": "void", "label": t("acct.bulk_void"), "method": "post",
+          "url": post_url, "confirm": t("acct.bulk_void_confirm")}],
+        fields=[Input(type="text", name="reason", cls="form-input form-input--sm bulk-field",
+                      placeholder=t("acct.void_reason_optional"), onkeydown=esc)],
+    )
+
+
+def journal_void_toast(result: dict) -> dict:
+    """What to tell the reader after a void, read from the API's own answer.
+
+    Both void paths report through here, so one entry and forty are described the
+    same way. Refusals are stated with the count and the API's own words for why,
+    and the refreshed table below says which entries they were: those are the ones
+    still standing unstruck. The whole thing is an error the moment anything was
+    refused, so a batch that half worked cannot be read as a batch that worked.
+
+    What was voided is counted from the per-entry answers rather than read from the
+    count beside them, so the sentence and the rows it describes come from the same
+    facts.
+    """
+    results = result.get("results") or []
+    refused = [r for r in results if r.get("status") != "void"]
+    message = t("acct.bulk_void_result", n=len(results) - len(refused))
+    if refused:
+        reasons = " ".join(dict.fromkeys(
+            str(r.get("detail") or "").strip() for r in refused if r.get("detail")))
+        message = f"{message} {t('acct.bulk_void_refused', n=len(refused), reasons=reasons)}"
+    return {"message": message.strip(), "type": "error" if refused else "success"}
+
+
 def _void_control(row: dict, params: dict) -> FT:
     """The void control for one entry, carrying the view it was pressed from.
 
@@ -232,6 +309,11 @@ def _void_control(row: dict, params: dict) -> FT:
     explanation naming the source document. Removing the button instead would leave
     the reader guessing why an entry cannot be voided (GDR 2e: validate at the
     function level, never restrict the interface).
+
+    The view travels in the URL, the same way the selection toolbar sends it, so
+    both void paths read where the reader was from one place. The answer swaps the
+    table in place: a reader who narrowed the journal to find an entry keeps the
+    view they narrowed to, and the page does not reload under them.
     """
     if row.get("status") != "posted":
         return Td("")
@@ -241,11 +323,10 @@ def _void_control(row: dict, params: dict) -> FT:
             Input(type="text", name="reason", placeholder=t("acct.void_reason_optional"),
                   cls="form-input form-input--sm",
                   onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
-            *[Input(type="hidden", name=k, value=v) for k, v in params.items()],
             Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--sm",
                    style="margin-top:0.5rem;"),
-            hx_post=f"/accounting/journal/{row.get('je_id', '')}/void",
-            hx_swap="none", cls="inline-form",
+            hx_post=href(f"/accounting/journal/{row.get('je_id', '')}/void", params),
+            hx_target=f"#{JOURNAL_TABLE_ID}", hx_swap="outerHTML", cls="inline-form",
         ),
         cls="void-section",
     ))
@@ -333,7 +414,7 @@ def _item_cells(row: dict, currency: str | None, has_fx: bool) -> list:
     return cells
 
 
-def _headers(*, items: bool, has_fx: bool, void_action: bool) -> list:
+def _headers(*, items: bool, has_fx: bool, void_action: bool, select: bool) -> list:
     """The header row. Headers over figures are right-aligned, above the digits they
     name (HTML/CSS 4a)."""
     if items:
@@ -367,20 +448,25 @@ def _headers(*, items: bool, has_fx: bool, void_action: bool) -> list:
             headers.append(Th(t("th.rate"), cls="cell--number"))
     if void_action:
         headers.append(Th(""))
+    if select:
+        headers.insert(0, Th(Input(type="checkbox", cls="bulk-select-all",
+                                   title=t("label.select_all")), cls="col-checkbox"))
     return headers
 
 
 def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
                   params: dict | None = None, void_action: bool = False,
-                  filtered: bool = False) -> FT:
+                  filtered: bool = False, select: bool = False) -> FT:
     """The journal as a table, in whichever of its two shapes the caller asked for.
 
     `params` is the view the reader is looking at, carried into the void form so
     voiding an entry returns them to the same view. `void_action` adds the column
     holding that control, which the print sheet and the extended journal do without.
-    `filtered` is what the payload said about itself, so an empty answer says which
-    kind of empty it is: a period with no entries in it, or filters that matched
-    none of the entries there are.
+    `select` adds the selection column the bulk toolbar reads, which the print
+    sheets do without: there is nothing to tick on paper. `filtered` is what the
+    payload said about itself, so an empty answer says which kind of empty it is: a
+    period with no entries in it, or filters that matched none of the entries there
+    are.
     """
     if not rows:
         return P(t("acct.no_matches") if filtered else t("acct.no_journal_entries"),
@@ -391,24 +477,39 @@ def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
     params = params or {}
 
     body = []
+    seen_entries: set[str] = set()
     for row in rows:
+        # In the extended journal every row is a posting, so the entry's first row
+        # stands in for it and carries the box; in the classical journal the entry
+        # has a heading row of its own.
+        first_of_entry = row.get("je_id", "") not in seen_entries
+        seen_entries.add(row.get("je_id", ""))
         if items:
-            body.append(_row(_item_cells(row, currency, has_fx), row))
+            cells = _item_cells(row, currency, has_fx)
+            if select:
+                cells.insert(0, _select_cell(row, first_of_entry))
+            body.append(_row(cells, row, data_row=select and first_of_entry))
             continue
         if row["kind"] == "entry":
             cells = _entry_cells(row, has_fx)
             if void_action:
                 cells.append(_void_control(row, params))
-        else:
-            cells = _line_cells(row, currency, has_fx)
-            if void_action:
-                cells.append(Td(""))
+            if select:
+                cells.insert(0, _select_cell(row, True))
+            body.append(_row(cells, row, data_row=select))
+            continue
+        cells = _line_cells(row, currency, has_fx)
+        if void_action:
+            cells.append(Td(""))
+        if select:
+            cells.insert(0, _select_cell(row, False))
         body.append(_row(cells, row))
 
     return Table(
-        Thead(Tr(*_headers(items=items, has_fx=has_fx, void_action=void_action))),
+        Thead(Tr(*_headers(items=items, has_fx=has_fx, void_action=void_action,
+                           select=select))),
         Tbody(*body),
-        cls="data-table",
+        cls="data-table", id=JOURNAL_TABLE_ID,
     )
 
 

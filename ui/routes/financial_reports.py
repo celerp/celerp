@@ -24,9 +24,9 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.components.journal import (
-    journal_csv_rows, journal_export_name, journal_filter_bar, journal_filter_qs,
-    journal_filter_words, journal_filters, journal_print_subtitle, journal_rows,
-    journal_table,
+    journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
+    journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
+    journal_rows, journal_table,
 )
 from ui.components.report_kit import (
     action_bar, csv_response, date_params, fname_date, href, journal_totals,
@@ -955,8 +955,9 @@ def setup_routes(app):
                                clear_href=href(path, carried)),
                 Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
                 _unexpanded_note(data),
+                journal_bulk_toolbar(params, carried, items=True),
                 journal_table(journal_rows(data, items=True), items=True, currency=currency,
-                              filtered=bool(data.get("filtered"))),
+                              select=True, filtered=bool(data.get("filtered"))),
             )
         except APIError as e:
             if e.status == 401:
@@ -1145,7 +1146,6 @@ def setup_routes(app):
             Label(t("label.account"), cls="form-label"),
             searchable_select("account", opts, multiple=True, values=selected,
                               placeholder=t("acct.soa_pick_placeholder"),
-                              count_label=t("acct.soa_selected_count"),
                               search_url=href(SUBJECT_OPTIONS_PATH,
                                               [("account", s) for s in selected])),
             Input(type="hidden", name="from", value=d_from or ""),
