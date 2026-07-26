@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "แสดง {shown} รายชื่อแรกจากทั้งหมด {total} รายชื่อ พิมพ์เพื่อค้นหาทั้งหมด",
   "acct.reconcile": "กระทบยอด",
   "acct.record_foreign_currency": "บันทึกเป็นสกุลเงินต่างประเทศ",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "รายงานบัญชี:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "กฎจัดประเภทรายการใบแจ้งยอดจากธนาคารที่ตรงกันโดยอัตโนมัติในระหว่างการกระทบยอด",
   "acct.section_assets": "สินทรัพย์",
   "acct.section_cogs": "ต้นทุนสินค้าขาย",

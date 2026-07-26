@@ -75,7 +75,7 @@
   "acct.picker_more_contacts": "Mostrando os primeiros {shown} de {total} contatos. Digite para pesquisar todos.",
   "acct.reconcile": "Conciliar",
   "acct.record_foreign_currency": "Registar em moeda estrangeira",
-  "acct.reports_moved_notice": "These reports have moved to Reports:",
+  "acct.reports_nav": "Relatórios contábeis:",
   "acct.rules_autocategorise_matching_bank_statement_lines": "As regras categorizam automaticamente as linhas correspondentes do extrato bancário durante a reconciliação.",
   "acct.section_assets": "Ativos",
   "acct.section_cogs": "CPV",

@@ -106,6 +106,46 @@ def _bars(key: str, params) -> FT:
     return action_bar(print_path, csv_path, params)
 
 
+def page_params(key: str, d_from: str, d_to: str) -> list[tuple[str, str]]:
+    """A period in the terms the target page reads it.
+
+    The balance sheet is a position on a date and reads `as_of`; every other
+    report covers a range and reads `from` and `to`. One helper for both, so the
+    navigation strip and the ledger's back link cannot come to disagree about how
+    a period travels between reports.
+    """
+    if key == "balance-sheet":
+        return [("as_of", d_to)] if d_to else []
+    return [(k, v) for k, v in (("from", d_from), ("to", d_to)) if v]
+
+
+def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
+    """Links from any financial report to every other, carrying the period.
+
+    An accountant reads across these reports rather than down one of them: the
+    trial balance raises a question the ledger answers, and the answer belongs two
+    clicks away, not back through the index. The page being read names itself
+    without linking, because a link to where the reader already is has nothing to
+    do; pass "" for `current_key` on a page that is not one of the eight.
+
+    The order is the order the /reports index lists them in, read from the same
+    list, so the two never drift apart. It is page furniture rather than part of a
+    report, so no print view renders it.
+    """
+    def _entry(key: str) -> FT:
+        label = t(REPORTS[key][3])
+        if key == current_key:
+            return Span(label, cls="report-nav-current")
+        return A(label, href=href(REPORTS[key][0], page_params(key, d_from, d_to)),
+                 cls="drilldown-link")
+
+    return Div(
+        Span(t("acct.reports_nav"), cls="cell--muted"),
+        *[_entry(key) for key, _desc in _FINANCIAL_CARDS],
+        id="report-nav", cls="flex-row flex-wrap gap-sm mb-md",
+    )
+
+
 def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
@@ -810,6 +850,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_pnl(token, params)
             content = Div(
+                report_nav("pnl", d_from or "", d_to or ""),
                 _date_filter_bar(_report_path("pnl"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 Div(_bars("pnl", params), cls="flex-row mt-md mb-md"),
@@ -839,6 +880,7 @@ def setup_routes(app):
                 action=_report_path("balance-sheet"), method="get", cls="date-custom-form",
             )
             content = Div(
+                report_nav("balance-sheet", "", as_of),
                 Div(as_of_form, cls="date-filter-bar"),
                 Div(_bars("balance-sheet", {"as_of": as_of}), cls="flex-row mt-md mb-md"),
                 _balance_sheet_view(data, currency, as_of=as_of),
@@ -862,6 +904,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_trial_balance(token, params)
             content = Div(
+                report_nav("trial-balance", d_from or "", d_to or ""),
                 _date_filter_bar(_report_path("trial-balance"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 _trial_balance_summary(data, currency),
@@ -888,6 +931,7 @@ def setup_routes(app):
             data = await api.get_general_ledger(token, params)
             totals = data.get("totals") or {}
             content = Div(
+                report_nav("general-ledger", d_from or "", d_to or ""),
                 _date_filter_bar(_report_path("general-ledger"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 totals_chips(float(totals.get("debit", 0) or 0),
@@ -915,6 +959,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_cash_flow(token, params)
             content = Div(
+                report_nav("cash-flow", d_from or "", d_to or ""),
                 _date_filter_bar(_report_path("cash-flow"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 Div(_bars("cash-flow", params), cls="flex-row mt-md mb-md"),
@@ -946,6 +991,7 @@ def setup_routes(app):
             carried = ({"preset": preset} if preset and preset != "custom"
                        else {"from": d_from, "to": d_to})
             content = Div(
+                report_nav("extended-journal", d_from or "", d_to or ""),
                 _date_filter_bar(path, d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),
@@ -983,9 +1029,9 @@ def setup_routes(app):
             return await _page(request, _error_content(e), title="Ledger - Celerp")
 
         back_path, _p, _c, back_key = REPORTS[origin]
-        back_qs = ([("as_of", d_to)] if origin == "balance-sheet"
-                   else [("from", d_from), ("to", d_to)])
+        back_qs = page_params(origin, d_from or "", d_to or "")
         content = Div(
+            report_nav("", d_from or "", d_to or ""),
             Div(
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
@@ -1171,6 +1217,7 @@ def setup_routes(app):
                                merged=s["merged"]) for s in sections],
             )
         content = Div(
+            report_nav("statement", d_from or "", d_to or ""),
             _date_filter_bar(_report_path("statement"), d_from, d_to, preset,
                              settings_link="/settings/general?tab=company",
                              extra_params="".join(f"&account={subject_token(k, i)}"
