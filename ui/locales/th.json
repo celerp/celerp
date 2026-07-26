@@ -738,6 +738,7 @@
   "label.method": "วิธี",
   "label.monthly": "รายเดือน",
   "label.n_selected": "เลือกแล้ว {n} รายการ",
+  "label.select_rows_first": "โปรดเลือกอย่างน้อยหนึ่งรายการก่อน",
   "label.name": "ชื่อ",
   "label.name_required": "ชื่อ *",
   "label.new_password": "รหัสผ่านใหม่",

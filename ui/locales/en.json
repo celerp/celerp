@@ -780,6 +780,7 @@
   "label.method": "Method",
   "label.monthly": "Monthly",
   "label.n_selected": "{n} selected",
+  "label.select_rows_first": "Select at least one row first.",
   "label.name": "Name",
   "label.name_required": "Name *",
   "label.new_password": "New password",

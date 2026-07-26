@@ -738,6 +738,7 @@
   "label.method": "طريقة",
   "label.monthly": "شهريا",
   "label.n_selected": "تم تحديد {n}",
+  "label.select_rows_first": "حدد صفًا واحدًا على الأقل أولاً.",
   "label.name": "اسم",
   "label.name_required": "اسم *",
   "label.new_password": "كلمة المرور الجديدة",

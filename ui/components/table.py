@@ -124,7 +124,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
     return Div(*els, cls="status-cards")
 
 
-# Shared bulk-action toolbar: [N selected] [Clear] [Action ▾]. Reused across list pages so bulk
+# Shared bulk-action toolbar: [N selected] [Action ▾] [Clear]. Reused across list pages so bulk
 # actions are consistent and extensible. Rows are `.bulk-select` checkboxes (name='selected',
 # value=id) in the table; the header `.bulk-select-all` checkbox toggles visible rows; only
 # VISIBLE (not .dp-row-hidden) rows count, so it composes with the column filters.
@@ -143,7 +143,6 @@ BULK_TOOLBAR_JS = """
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
     var cnt=bar.querySelector('.bulk-count');
     if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
-    var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
     if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
@@ -171,7 +170,12 @@ BULK_TOOLBAR_JS = """
   // inputs below the bar and wait for the confirm button; field-less actions fire at once.
   function doAction(sel){
     var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
-    var val=sel.value;if(!checkedIds(t).length||!val){sel.selectedIndex=0;return;}
+    var val=sel.value;if(!val)return;
+    // The action list is always usable so its options can be read; if nothing is
+    // ticked, say so and reset rather than silently swallowing the choice (GDR 2e).
+    if(!checkedIds(t).length){sel.selectedIndex=0;
+      if(window.celerpToast)celerpToast(bar.getAttribute('data-empty-msg')||'Select at least one row first.','error');
+      return;}
     var a=findAction(bar,val);if(!a){sel.selectedIndex=0;return;}
     var fb=fieldsBox(bar);
     if(a.fields&&fb){fb.classList.add('bulk-fields--open');bar.setAttribute('data-pending',val);
@@ -205,7 +209,7 @@ BULK_TOOLBAR_JS = """
 
 
 def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None) -> FT:
-    """Standard bulk-action toolbar: [N selected] [Clear] [fields…] [Action ▾].
+    """Standard bulk-action toolbar: [N selected] [Action ▾] [Clear] [fields…].
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
     url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
@@ -230,13 +234,14 @@ def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None)
         ),)
     return Div(
         Span(t("label.n_selected", n=0), cls="bulk-count"),
-        Button(t("btn.clear"), type="button", cls="btn btn--xs btn--ghost bulk-clear"),
-        Select(*opts, cls="bulk-action-select", disabled=True,
+        Select(*opts, cls="bulk-action-select",
                **{"data-actions": _json.dumps(actions)}),
+        Button(t("btn.clear"), type="button", cls="btn btn--xs btn--ghost bulk-clear"),
         *field_group,
         Script(BULK_TOOLBAR_JS),
         cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
-        **{"data-table": table_id, "data-count-label": t("label.n_selected")},
+        **{"data-table": table_id, "data-count-label": t("label.n_selected"),
+           "data-empty-msg": t("label.select_rows_first")},
     )
 
 

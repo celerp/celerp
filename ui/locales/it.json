@@ -738,6 +738,7 @@
   "label.method": "Metodo",
   "label.monthly": "Mensile",
   "label.n_selected": "{n} selezionate",
+  "label.select_rows_first": "Seleziona prima almeno una riga.",
   "label.name": "Nome",
   "label.name_required": "Nome *",
   "label.new_password": "Nuova password",

@@ -738,6 +738,7 @@
   "label.method": "方法",
   "label.monthly": "毎月",
   "label.n_selected": "{n} 件選択",
+  "label.select_rows_first": "先に少なくとも1行を選択してください。",
   "label.name": "名前",
   "label.name_required": "名前 *",
   "label.new_password": "新しいパスワード",

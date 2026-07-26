@@ -660,6 +660,7 @@ _NEW_KEYS = [
     "acct.err_currency_unknown", "acct.err_rate_positive",
     "acct.bulk_void", "acct.bulk_void_confirm", "acct.bulk_void_result",
     "acct.bulk_void_refused", "label.n_selected", "label.select_all",
+    "label.select_rows_first",
 ]
 
 

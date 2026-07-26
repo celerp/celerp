@@ -266,8 +266,9 @@ def test_journal_bulk_toolbar_counts_entries_not_postings(
     )
 
     bar = page.locator("#bulkbar-journal-table")
-    assert bar.locator(".bulk-action-select").is_disabled(), \
-        "the action list is live with nothing selected"
+    # The action list is usable before anything is ticked so its options can be read (GDR 2e).
+    assert not bar.locator(".bulk-action-select").is_disabled(), \
+        "the action list should be usable with nothing selected"
 
     page.locator("#journal-table thead .bulk-select-all").click()
     assert bar.locator(".bulk-count").inner_text().strip() == "2 selected"

@@ -13,8 +13,9 @@ Covers (Phase 1 bulk_toolbar design):
   and per-value checkboxes. Unchecking a value immediately hides matching rows (.dp-row-hidden)
   WITHOUT a page reload; the funnel gets .colfilter--active; hidden rows are deselected.
 - All status values including Covered are visible by default (no server-side status pre-filter).
-- The new shared bulk toolbar (.bulkbar) is present with a disabled .bulk-action-select;
-  .bulk-count shows "0 selected"; .bulk-select-all is present in the table header.
+- The new shared bulk toolbar (.bulkbar) is present with a usable .bulk-action-select
+  (readable before any selection, GDR 2e); .bulk-count shows "0 selected"; .bulk-select-all
+  is present in the table header.
   Only VISIBLE rows count toward the selection total.
 
 - Make: tick a row, the toolbar enables, choose "Make selected" from the Action dropdown ->
@@ -168,10 +169,10 @@ def test_demand_planning_interactions(page, ui_server, api):
     bulkbar = page.locator(".bulkbar")
     assert bulkbar.count() >= 1, ".bulkbar not found on /manufacturing"
 
-    # .bulk-action-select is present and initially disabled (no selection yet).
+    # .bulk-action-select is present and usable before any selection, so its options can be read (GDR 2e).
     action_select = page.locator(".bulk-action-select")
     assert action_select.count() >= 1, ".bulk-action-select not found in bulk toolbar"
-    assert action_select.is_disabled(), ".bulk-action-select should be disabled with nothing selected"
+    assert not action_select.is_disabled(), ".bulk-action-select should stay usable so its options are discoverable before selecting"
 
     # .bulk-count shows "0 selected" initially.
     count_el = page.locator(".bulk-count")
@@ -328,12 +329,12 @@ def test_demand_planning_interactions(page, ui_server, api):
     page.screenshot(path=str(SHOTS / "manufacturing-requirements.png"), full_page=True)
 
     # ── 3. Make via the bulk toolbar -> verify a run is created ────────────────
-    # Drive the real UI: tick the row, confirm the toolbar enables, choose the action.
+    # Drive the real UI: tick the row, confirm the count updates, choose the action.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table:has-text('DP-WIRE')", timeout=8000)
-    assert page.locator(".bulk-action-select").is_disabled(), "action select must start disabled"
+    assert not page.locator(".bulk-action-select").is_disabled(), "action select must stay usable so options are discoverable"
     page.locator("#mfg-table tr.data-row:has-text('DP-WIRE') .bulk-select").first.check()
-    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    page.wait_for_function("/1 selected/.test((document.querySelector('.bulk-count')||{}).textContent||'')", timeout=3000)
     assert "1 selected" in page.locator(".bulk-count").inner_text()
     page.screenshot(path=str(SHOTS / "demand-planning-selected.png"), full_page=True)
 
@@ -357,7 +358,7 @@ def test_demand_planning_interactions(page, ui_server, api):
     page.wait_for_selector("#mfg-table:has-text('DP-PENDANT')", timeout=8000)
     page.on("dialog", lambda d: d.accept())
     page.locator("#mfg-table tr.data-row:has-text('DP-PENDANT') .bulk-select").first.check()
-    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    page.wait_for_function("/1 selected/.test((document.querySelector('.bulk-count')||{}).textContent||'')", timeout=3000)
     page.locator(".bulk-action-select").select_option(value="make_complete")
 
     assert _has(lambda o: o.get("output_item_id") == pendant and o.get("status") == "completed"), (

@@ -21,8 +21,8 @@
 <a href="/accounting/journal/new?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--primary">New entry</a>      <div class="page-actions flex-row gap-sm ml-auto">
 <a href="/accounting/export/journal/csv?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/accounting/print/journal?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
     </div>
-    <div data-table="journal-table" data-count-label="{n} selected" id="bulkbar-journal-table" class="bulkbar bulk-action-bar">
-<span class="bulk-count">0 selected</span><button type="button" class="btn btn--xs btn--ghost bulk-clear">Clear</button><select disabled data-actions='[{"value": "void", "label": "Void selected", "method": "post", "url": "/accounting/journal/bulk-void?date_from=2026-01-01&amp;date_to=2026-03-31", "confirm": "Void the selected journal entries ({n})? A void stays on the record and cannot be undone.", "fields": true}]' class="bulk-action-select"><option value="" disabled selected>Action...</option><option value="void">Void selected</option></select>      <div class="bulk-fields">
+    <div data-table="journal-table" data-count-label="{n} selected" data-empty-msg="Select at least one row first." id="bulkbar-journal-table" class="bulkbar bulk-action-bar">
+<span class="bulk-count">0 selected</span><select data-actions='[{"value": "void", "label": "Void selected", "method": "post", "url": "/accounting/journal/bulk-void?date_from=2026-01-01&amp;date_to=2026-03-31", "confirm": "Void the selected journal entries ({n})? A void stays on the record and cannot be undone.", "fields": true}]' class="bulk-action-select"><option value="" disabled selected>Action...</option><option value="void">Void selected</option></select><button type="button" class="btn btn--xs btn--ghost bulk-clear">Clear</button>      <div class="bulk-fields">
         <input type="text" name="reason" placeholder="Void reason (optional)" onkeydown="if(event.key==='Escape'){this.value='';this.blur();event.preventDefault();}" class="form-input form-input--sm bulk-field bulk-field--reason">
 <button type="button" class="btn btn--xs btn--primary bulk-apply">Apply</button><button type="button" class="btn btn--xs btn--ghost bulk-cancel">Cancel</button>      </div>
 <script>
@@ -40,7 +40,6 @@
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
     var cnt=bar.querySelector('.bulk-count');
     if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
-    var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
     if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
@@ -68,7 +67,12 @@
   // inputs below the bar and wait for the confirm button; field-less actions fire at once.
   function doAction(sel){
     var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
-    var val=sel.value;if(!checkedIds(t).length||!val){sel.selectedIndex=0;return;}
+    var val=sel.value;if(!val)return;
+    // The action list is always usable so its options can be read; if nothing is
+    // ticked, say so and reset rather than silently swallowing the choice (GDR 2e).
+    if(!checkedIds(t).length){sel.selectedIndex=0;
+      if(window.celerpToast)celerpToast(bar.getAttribute('data-empty-msg')||'Select at least one row first.','error');
+      return;}
     var a=findAction(bar,val);if(!a){sel.selectedIndex=0;return;}
     var fb=fieldsBox(bar);
     if(a.fields&&fb){fb.classList.add('bulk-fields--open');bar.setAttribute('data-pending',val);

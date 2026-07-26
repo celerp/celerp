@@ -738,6 +738,7 @@
   "label.method": "Phương pháp",
   "label.monthly": "hàng tháng",
   "label.n_selected": "Đã chọn {n}",
+  "label.select_rows_first": "Vui lòng chọn ít nhất một dòng trước.",
   "label.name": "Tên",
   "label.name_required": "Tên *",
   "label.new_password": "Mật khẩu mới",

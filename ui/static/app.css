@@ -2988,7 +2988,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   padding: 4px 8px; border: 1px solid var(--c-border); border-radius: 4px;
   font-size: 13px; background: var(--c-bg, #fff); color: var(--c-text); cursor: pointer;
 }
-.bulk-action-select:disabled { opacity: 0.5; cursor: default; }
 
 /* ── Work-order table action dropdown (item Manufacturing tab) ── */
 .wo-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--c-text2); }
