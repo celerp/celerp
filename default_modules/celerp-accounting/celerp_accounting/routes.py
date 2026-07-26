@@ -22,7 +22,10 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.je_keys import je_void_data
-from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
+from celerp.services.line_measures import line_label
+from celerp.services.money import (
+    currency_dp, round_exchange_rate, round_money, to_base, to_decimal, to_stored_float,
+)
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -86,13 +89,8 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
-    {"code": "6960", "name": "Foreign Exchange Rounding", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
 ]
-
-# Absorbs the cents left over when each line of a foreign-currency entry rounds
-# independently. Not the FX revaluation of open balances over time, which is a
-# different concern handled elsewhere.
-FX_ROUNDING_ACCOUNT = "6960"
 
 
 # The sections of the cash flow statement, and the values an account may be
@@ -632,38 +630,52 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return (company.settings or {}).get("currency", "USD") if company else "USD"
 
 
-async def _validated_fx(
-    session: AsyncSession, company_id: uuid.UUID, fx: "ManualJEFx | None"
-) -> "ManualJEFx | None":
-    """Check a manual entry's currency and rate, or return None for an ordinary
-    base-currency entry.
+def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str, Decimal] | None:
+    """(currency, rate) for a line typed in a foreign currency, or None for a
+    line already in base currency.
 
-    Every message names the field at fault: an accountant who mistypes a rate
-    should be told which value was refused, not handed a generic rejection.
+    Every message names the line at fault: an accountant who mistypes a rate on
+    the fourth line of an entry should be told which line was refused, not handed
+    a rejection they have to search for.
     """
-    if fx is None:
+    where = f"Line {index + 1}"
+    currency = (line.currency or "").upper()
+    if not currency and line.rate is None:
         return None
-    currency = (fx.currency or "").upper()
+    if not currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{where} has an exchange rate but no currency. A rate needs the currency it converts from.",
+        )
     if currency not in ISO_4217_CURRENCIES:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown currency {fx.currency}. Use a three-letter ISO 4217 code.",
+            detail=f"{where}: unknown currency {line.currency}. Use a three-letter ISO 4217 code.",
         )
-    base = await _base_currency(session, company_id)
     if currency == base:
+        # The company's own currency converts at 1 by definition. An explicit 1 is
+        # accepted and dropped so the stored line looks like every other base-
+        # currency line; anything else would silently restate the amount.
+        if line.rate is not None and to_decimal(line.rate) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{where}: {currency} is this company's own currency, so its rate "
+                    f"is 1, not {line.rate}."
+                ),
+            )
+        return None
+    if line.rate is None:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"{currency} is this company's own currency. Leave the foreign "
-                "currency blank to post an ordinary entry."
-            ),
+            detail=f"{where} is in {currency} but has no exchange rate.",
         )
-    if not math.isfinite(fx.rate) or fx.rate <= 0:
+    if not math.isfinite(line.rate) or line.rate <= 0:
         raise HTTPException(
             status_code=422,
-            detail=f"Exchange rate must be greater than zero, not {fx.rate}.",
+            detail=f"{where}: exchange rate must be greater than zero, not {line.rate}.",
         )
-    return ManualJEFx(currency=currency, rate=fx.rate)
+    return currency, round_exchange_rate(line.rate)
 
 
 def _id_chunks(ids: list[str], size: int = 10_000):
@@ -683,6 +695,11 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     empty rather than guessing. Payment JEs (metadata carries payment_index)
     resolve currency/rate from that specific payment, since a payment may
     legitimately use a different rate than its invoice.
+
+    The document's own figures - its line items, its currency, its rate and its
+    total - travel with the ref so the extended journal can name what was bought
+    or sold on each posting. The projection row is already loaded whole here, so
+    carrying them costs no extra read.
     """
     from celerp.models.ledger import LedgerEntry
 
@@ -765,6 +782,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "contact_id": contact_id,
             "doc_type": _DOC_TYPE_ALIASES.get(doc_type, doc_type),
             "is_payment": isinstance(payment_index, int),
+            "doc": state,
         }
     return refs
 
@@ -836,18 +854,15 @@ def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, 
     return balances
 
 
-@router.get("/journal")
-async def journal(
-    date_from: str | None = None,
-    date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("view_financial_reports"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Journal: every entry with its lines, source-doc link, and FX info.
+async def _journal_payload(
+    session: AsyncSession, company_id: uuid.UUID,
+    date_from: str | None, date_to: str | None,
+) -> tuple[dict, dict, str]:
+    """The journal, its source-doc refs and the base currency.
 
-    Voided entries stay visible flagged status="void" - a journal is a record, and
-    hiding voids would misstate it - but they are excluded from the period totals.
+    The classical journal is the whole of this. The extended journal is this plus
+    item detail attached afterwards, so the two can never show different entries,
+    different lines or different totals for the same period.
     """
     _require_date_range(date_from, date_to)
     rows = await _je_rows(session, company_id, include_void=True)
@@ -876,6 +891,14 @@ async def journal(
     entries_out = []
     for je_id, state, ts in rows:
         posted = state.get("status") == "posted"
+        ref = refs.get(je_id)
+        # A document-linked entry carries its rate on the source doc, which is
+        # one currency for the whole document; a manual entry carries a currency
+        # and rate on each line. Manual entries posted before per-line currency
+        # existed carry one `fx` for the entry instead, so their lines inherit it
+        # here. This is the only place the older shape is read: stored events are
+        # immutable, so an entry posted then still has to render now.
+        entry_fx = ref["fx"] if ref else state.get("fx")
         lines = []
         for entry in state.get("entries", []):
             code = entry.get("account")
@@ -888,18 +911,21 @@ async def journal(
             if posted:
                 total_debit += amounts[0]
                 total_credit += amounts[1]
+            line_currency = entry.get("fx_currency") or (entry_fx or {}).get("currency")
+            line_rate = entry.get("fx_rate") or (entry_fx or {}).get("rate")
             lines.append({
                 "account": code,
                 "name": account_names.get(code, code),
                 "debit": float(amounts[0]),
                 "credit": float(amounts[1]),
-                # Present only on a foreign-currency line. The rounding plug and
-                # every base-currency line carry None, which the view renders as
-                # an empty cell rather than a guessed figure.
+                # Present only on a foreign-currency line. A base-currency line
+                # carries None, which the view renders as an empty cell rather
+                # than a guessed figure.
                 "fx_debit": entry.get("fx_debit"),
                 "fx_credit": entry.get("fx_credit"),
+                "fx_currency": line_currency,
+                "fx_rate": float(line_rate) if line_rate else None,
             })
-        ref = refs.get(je_id)
         entries_out.append({
             "je_id": je_id,
             "ts": ts,
@@ -909,18 +935,183 @@ async def journal(
             "void_reason": state.get("void_reason"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
-            # A document-linked entry carries its rate on the source doc; a
-            # manual entry carries its own, typed by the author.
-            "fx": ref["fx"] if ref else state.get("fx"),
+            "fx": entry_fx,
         })
 
-    return {
+    return ({
         "date_from": date_from,
         "date_to": date_to,
         "entries": entries_out,
         "total_debit": to_stored_float(round_money(total_debit, base)),
         "total_credit": to_stored_float(round_money(total_credit, base)),
+    }, refs, base)
+
+
+@router.get("/journal")
+async def journal(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Journal: every entry with its lines, source-doc link, and FX info.
+
+    Voided entries stay visible flagged status="void" - a journal is a record, and
+    hiding voids would misstate it - but they are excluded from the period totals.
+    """
+    payload, _refs, _base = await _journal_payload(session, company_id, date_from, date_to)
+    return payload
+
+
+# Which side of the books a document's items post to: a sale credits what it
+# earned, a purchase debits what it bought, and a credit note reverses the sale
+# it cancels. A document type absent here is one the books do not post item by
+# item, so its entries are shown exactly as the classical journal shows them.
+_ITEM_SIDE: dict[str, str] = {
+    "invoice": "credit",
+    "credit_note": "debit",
+    "bill": "debit",
+    "purchase_order": "debit",
+}
+
+
+def _doc_item_lines(doc: dict, base: str) -> list[dict]:
+    """A document's items, each with what it is worth in its own currency and in
+    the books'.
+
+    Both figures are derived exactly as `celerp/services/auto_je.py` derived them
+    when it posted the entry, down to the same rounding and the same skipping of
+    lines worth nothing, so a line that footed there foots here. A line the
+    arithmetic cannot read abandons the whole document rather than reporting a
+    partial set of items as if it were the full one.
+    """
+    currency = doc.get("currency") or base
+    rate = doc.get("conversion_rate") or 1
+    out: list[dict] = []
+    for li in doc.get("line_items") or []:
+        try:
+            net = (to_decimal(li.get("line_total") or 0)
+                   or to_decimal(li.get("quantity") or 0) * to_decimal(li.get("unit_price") or 0))
+            line_total = round_money(net, currency)
+        except (ArithmeticError, TypeError, ValueError):
+            return []
+        if line_total <= 0:
+            continue
+        out.append({
+            "item": line_label(li),
+            "quantity": li.get("quantity"),
+            "unit_price": li.get("unit_price"),
+            "fx_amount": to_stored_float(line_total),
+            "amount": to_decimal(to_base(to_stored_float(line_total), rate, base)),
+        })
+    return out
+
+
+def _doc_net_posted(doc: dict, base: str) -> Decimal:
+    """What a document's items are posted for in one line, in the books' currency:
+    its total less its tax, converted the way auto_je converts it."""
+    currency = doc.get("currency") or base
+    rate = doc.get("conversion_rate") or 1
+    try:
+        net = round_money(to_decimal(doc.get("total") or 0), currency) - round_money(
+            to_decimal(doc.get("tax") or 0), currency)
+    except (ArithmeticError, TypeError, ValueError):
+        return Decimal(0)
+    return to_decimal(to_base(to_stored_float(round_money(net, currency)), rate, base))
+
+
+def _item_row(line: dict, side: str, doc_line: dict, amount: Decimal) -> dict:
+    """One extended-journal row: the posting, narrowed to the one item it is for.
+
+    The foreign figure is the document line's own total, which is the figure the
+    supplier or the customer sees, rather than the book amount divided back out.
+    """
+    other = "credit" if side == "debit" else "debit"
+    return {
+        **line,
+        side: float(amount),
+        other: 0.0,
+        f"fx_{side}": doc_line["fx_amount"] if line.get("fx_currency") else None,
+        f"fx_{other}": None,
+        "item": doc_line["item"],
+        "quantity": doc_line["quantity"],
+        "unit_price": doc_line["unit_price"],
     }
+
+
+def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[list[dict], bool]:
+    """The entry's lines with the item each one is for attached, and whether that
+    could be done.
+
+    Two shapes are recognised, and the money is checked before anything is
+    attached: one posting covering the whole document, which becomes a row per
+    item, and one posting per document line in document order, which is already a
+    row per item. Anything else is left as the classical journal shows it, because
+    item detail that does not tie to the posting is worse than no item detail.
+
+    Where a single posting splits, the rows are the document's own line totals
+    converted one by one; converting each and converting their sum can differ by
+    a unit, so that difference lands on the last row and the rows always foot to
+    the posting they came from. Only a difference that small is absorbed. A wider
+    gap is a posting the lines do not account for, most often a document-level
+    charge that is not one of its lines, and it refuses rather than inflating an
+    item to swallow it.
+    """
+    if not ref or ref.get("is_payment"):
+        return lines, False
+    side = _ITEM_SIDE.get(ref.get("doc_type") or "")
+    doc = ref.get("doc") or {}
+    doc_lines = _doc_item_lines(doc, base)
+    if not side or not doc_lines:
+        return lines, False
+    other = "credit" if side == "debit" else "debit"
+
+    posted = _doc_net_posted(doc, base)
+    amounts = [d["amount"] for d in doc_lines]
+    residual = posted - sum(amounts, Decimal(0))
+    rounding_room = (Decimal(10) ** -currency_dp(base)) * len(doc_lines)
+    if posted > 0 and abs(residual) <= rounding_room:
+        for i, line in enumerate(lines):
+            if to_decimal(line.get(side) or 0) == posted and not to_decimal(line.get(other) or 0):
+                amounts[-1] += residual
+                rows = [_item_row(line, side, d, a) for d, a in zip(doc_lines, amounts)]
+                return lines[:i] + rows + lines[i + 1:], True
+
+    on_side = [l for l in lines if to_decimal(l.get(side) or 0) > 0]
+    head = on_side[:len(doc_lines)]
+    if len(head) == len(doc_lines) and all(
+            to_decimal(h.get(side) or 0) == d["amount"] for h, d in zip(head, doc_lines)):
+        paired = {id(h): d for h, d in zip(head, doc_lines)}
+        return [_item_row(l, side, paired[id(l)], paired[id(l)]["amount"]) if id(l) in paired else l
+                for l in lines], True
+
+    return lines, False
+
+
+@router.get("/extended-journal")
+async def extended_journal(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The journal with the item behind each posting named, where it can be.
+
+    The same entries, the same lines and the same totals as the classical
+    journal: nothing is posted, stored or recomputed here. A sale posted as one
+    revenue line becomes a row per item sold, a purchase already posted line by
+    line gains the item on each, and an entry whose figures do not tie to its
+    document is shown as it stands with `items_expanded` false, so a reader can
+    tell "no item here" from "the item detail was not trustworthy".
+    """
+    payload, refs, base = await _journal_payload(session, company_id, date_from, date_to)
+    for entry in payload["entries"]:
+        lines, expanded = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
+        entry["lines"] = lines
+        entry["items_expanded"] = expanded
+    return payload
 
 
 class ManualJELine(BaseModel):
@@ -934,14 +1125,13 @@ class ManualJELine(BaseModel):
     # bucket, and the party's statement would not show a movement its own
     # balance includes.
     contact: str | None = None
-
-
-class ManualJEFx(BaseModel):
-    """The currency and rate for a whole entry. The author types the foreign
-    amounts on each line; the server converts them to base currency."""
-
-    currency: str
-    rate: float
+    # The currency this line's amounts were typed in, and what one unit of it is
+    # worth in base currency. Both absent on an ordinary base-currency line,
+    # which is every line of most entries. Carried per line rather than per entry
+    # because settling an invoice in one currency with cash in another is one
+    # transaction, and the books already store every posting in base currency.
+    currency: str | None = None
+    rate: float | None = None
 
 
 class ManualJECreate(BaseModel):
@@ -949,9 +1139,6 @@ class ManualJECreate(BaseModel):
     memo: str = ""
     entries: list[ManualJELine]
     idempotency_token: str
-    # Absent for an ordinary base-currency entry, which is the common case and
-    # is untouched by any of the conversion below.
-    fx: ManualJEFx | None = None
 
 
 class ManualJEVoidPayload(BaseModel):
@@ -975,7 +1162,6 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
     await _check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
-    fx = await _validated_fx(session, company_id, payload.fx)
 
     accounts = (
         await session.execute(
@@ -989,16 +1175,14 @@ async def create_manual_journal_entry(
             children_of.setdefault(a.parent_code, []).append(a.code)
 
     base = await _base_currency(session, company_id)
-    # With a rate, the author typed foreign amounts: they are validated and
-    # balanced at the foreign currency's precision, then converted. Without one
-    # the amounts are already base currency and nothing below changes.
-    amount_currency = fx.currency if fx else base
+    # Every posting is stored in base currency, so the entry is balanced there,
+    # on the same converted figures the author is looking at while typing. A line
+    # in a foreign currency is validated and rounded at that currency's precision
+    # first, then converted; a line without one is already base currency.
     total_debit = Decimal(0)
     total_credit = Decimal(0)
-    local_debit = Decimal(0)
-    local_credit = Decimal(0)
     entries: list[dict] = []
-    for line in payload.entries:
+    for index, line in enumerate(payload.entries):
         acc = account_map.get(line.account)
         if not acc:
             raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
@@ -1016,28 +1200,32 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
+        line_fx = _validated_line_fx(base, line, index)
+        amount_currency = line_fx[0] if line_fx else base
         d = round_money(line.debit, amount_currency)
         c = round_money(line.credit, amount_currency)
         if d > 0 and c > 0:
             raise HTTPException(status_code=422, detail="Each line must have an amount on only one side, debit or credit.")
         if d == 0 and c == 0:
             raise HTTPException(status_code=422, detail="Each line needs a debit or credit amount.")
-        total_debit += d
-        total_credit += c
-        if fx:
-            ld = round_money(d * to_decimal(fx.rate), base)
-            lc = round_money(c * to_decimal(fx.rate), base)
-            local_debit += ld
-            local_credit += lc
+        if line_fx:
+            currency, rate = line_fx
+            bd = round_money(d * rate, base)
+            bc = round_money(c * rate, base)
             stored = {
                 "account": line.account,
-                "debit": to_stored_float(ld),
-                "credit": to_stored_float(lc),
+                "debit": to_stored_float(bd),
+                "credit": to_stored_float(bc),
                 "fx_debit": to_stored_float(d) if d else None,
                 "fx_credit": to_stored_float(c) if c else None,
+                "fx_currency": currency,
+                "fx_rate": to_stored_float(rate),
             }
         else:
-            stored = {"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)}
+            bd, bc = d, c
+            stored = {"account": line.account, "debit": to_stored_float(bd), "credit": to_stored_float(bc)}
+        total_debit += bd
+        total_credit += bc
         # Only lines that name a party carry the key, so an entry with no party
         # stores exactly what it stored before.
         if line.contact:
@@ -1045,59 +1233,20 @@ async def create_manual_journal_entry(
         entries.append(stored)
 
     if total_debit != total_credit:
-        where = f" in {fx.currency}" if fx else ""
+        # The gap is named, not just the two totals: when lines are in different
+        # currencies the difference is the exchange difference the author still
+        # has to post, and it is the figure they need rather than one to work out.
+        gap = abs(total_debit - total_credit)
+        short = "credit" if total_debit > total_credit else "debit"
         raise HTTPException(
             status_code=422,
-            detail=f"Entry is out of balance{where}: debits {total_debit} do not equal credits {total_credit}.",
+            detail=(
+                f"Entry is out of balance in {base}: debits {total_debit} do not equal "
+                f"credits {total_credit}. The {short} side is short by {gap}."
+            ),
         )
     if total_debit == 0:
         raise HTTPException(status_code=422, detail="Entry total must be greater than zero.")
-
-    if fx:
-        # Each line converts and rounds independently, so a set of foreign
-        # amounts that balance exactly can convert to local amounts that do not.
-        # The difference is posted as its own visible line rather than folded
-        # into a real account, where it would silently misstate that account.
-        residual = local_credit - local_debit
-        # Provably bounded: each line rounds by at most half a smallest unit of
-        # the foreign currency before conversion, and by at most half a smallest
-        # unit of the base currency after it. Breaching this would mean the
-        # conversion arithmetic is wrong, not that the user typed something odd,
-        # so it fails as a server error rather than posting a number that failed
-        # its own sanity check.
-        half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
-        half_base = Decimal(10) ** -currency_dp(base) / 2
-        ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
-        if abs(residual) > ceiling:
-            # Raised rather than asserted: `python -O` strips assert statements,
-            # and a guard on a posted money figure must not depend on how the
-            # interpreter was launched.
-            raise RuntimeError(
-                f"exchange rounding residual {residual} exceeds the bound {ceiling} "
-                f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
-            )
-        if residual != 0:
-            rounding = account_map.get(FX_ROUNDING_ACCOUNT)
-            if not rounding or not rounding.is_active:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Account {FX_ROUNDING_ACCOUNT} is needed to post the "
-                        "exchange-rate rounding difference and is missing or "
-                        "inactive. Re-seed the chart of accounts in Settings."
-                    ),
-                )
-            entries.append({
-                "account": FX_ROUNDING_ACCOUNT,
-                "debit": to_stored_float(residual) if residual > 0 else 0.0,
-                "credit": to_stored_float(-residual) if residual < 0 else 0.0,
-                # 0.0 rather than null on both sides: the display prefers a
-                # stored foreign amount over deriving one, and a null pair would
-                # fall through to division and invent a foreign figure for a
-                # line the author never typed in any currency.
-                "fx_debit": 0.0,
-                "fx_credit": 0.0,
-            })
 
     je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
@@ -1109,7 +1258,6 @@ async def create_manual_journal_entry(
         data={
             "memo": payload.memo, "ts": payload.ts, "entries": entries,
             "je_type": "manual", "status": "posted",
-            **({"fx": {"currency": fx.currency, "rate": fx.rate}} if fx else {}),
         },
         actor_id=user.id,
         location_id=None,
@@ -1128,9 +1276,10 @@ async def create_manual_journal_entry(
         def _norm(lines: list) -> list:
             # Compare money as rounded Decimals so a byte-identical retry never
             # trips on float representation differences across storage layers.
-            # The foreign amounts come along: two different rates can convert to
-            # the same local figures, and comparing only those would read a
-            # corrected rate as an identical retry and silently post nothing.
+            # The foreign amounts and the rate that converted them come along: two
+            # different rates can convert to the same base figures, and comparing
+            # only those would read a corrected rate as an identical retry and
+            # silently post nothing.
             out = []
             for l in lines or []:
                 amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
@@ -1138,18 +1287,13 @@ async def create_manual_journal_entry(
                     l.get("account"),
                     round_money(amounts[0], base), round_money(amounts[1], base),
                     l.get("fx_debit"), l.get("fx_credit"),
+                    (l.get("fx_currency") or "").upper(),
+                    to_decimal(l.get("fx_rate") or 0),
                 ))
             return out
 
-        def _norm_fx(f: dict | None) -> tuple | None:
-            if not f:
-                return None
-            return ((f.get("currency") or "").upper(), to_decimal(f.get("rate") or 0))
-
-        submitted_fx = {"currency": fx.currency, "rate": fx.rate} if fx else None
         if (orig.get("ts") != payload.ts
                 or (orig.get("memo") or "") != (payload.memo or "")
-                or _norm_fx(orig.get("fx")) != _norm_fx(submitted_fx)
                 or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,

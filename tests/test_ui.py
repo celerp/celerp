@@ -3657,6 +3657,26 @@ class TestSprint4Payment:
         assert b"Record Payment" in r.content or b"payment" in r.content.lower()
 
     @pytest.mark.asyncio
+    async def test_document_payment_rate_inputs_accept_any_step(self, ui_client):
+        """A rate is a ratio, and a four-decimal step is not enough of one.
+
+        A currency quoted around 89,500 to the unit converts at 0.00001117, and
+        a step of 0.0001 rounds that to nothing. The step and floor are opened
+        up so the field accepts what the rate actually is; a rate of zero is
+        refused by the server with a message, not by a control the user cannot
+        reach past (GDR 2e).
+        """
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        html = r.content.decode()
+        i = html.find('name="conversion_rate"')
+        assert i != -1, "the payment section should offer a conversion rate"
+        for field in html.split('name="conversion_rate"')[1:]:
+            tag = field[:200]
+            assert 'step="any"' in tag, tag
+            assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
+
+    @pytest.mark.asyncio
     async def test_payment_section_not_visible_for_draft(self, ui_client):
         """Draft invoice has no Record Payment section."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):

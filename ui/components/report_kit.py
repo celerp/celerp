@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from fasthtml.common import *
 from starlette.responses import PlainTextResponse, RedirectResponse
 
+from celerp.services.money import round_money, to_decimal
 from ui.api_client import APIError
 from ui.components.table import fmt_money
 from ui.i18n import t
@@ -135,6 +136,61 @@ def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None
              cls="val-chip" if balanced else "val-chip val-chip--alert"),
         cls="valuation-bar",
     )
+
+
+def journal_totals(data: dict, currency: str | None = None) -> FT:
+    """The debit, credit and balance chips over a journal.
+
+    The classical journal and the extended one are the same postings, so they read
+    their totals through one function and can never disagree about them.
+    """
+    total_debit = float(data.get("total_debit", 0) or 0)
+    total_credit = float(data.get("total_credit", 0) or 0)
+    return totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01, currency)
+
+
+def je_source_label(entry: dict, csv_export: bool = False) -> str:
+    """Source label for a journal entry without a source document, keyed off je_type.
+
+    CSV exports always use the English label so the exported data is locale-stable.
+    """
+    je_type = str(entry.get("je_type") or "")
+    if je_type == "manual":
+        key = "acct.source_manual"
+    elif je_type == "transfer":
+        key = "acct.source_transfer"
+    elif je_type.startswith("recon"):
+        key = "acct.source_reconciliation"
+    else:
+        key = "acct.source_system"
+    return t(key, "en") if csv_export else t(key)
+
+
+def fx_line_amounts(debit: float, credit: float, line: dict) -> tuple[float | None, float | None]:
+    """A journal line's foreign-currency amounts, or (None, None) when the line
+    carries no rate.
+
+    A manually entered foreign line stores the figures the author actually
+    typed, and those win: they are what the source document says, and dividing
+    the local amount back out can land a cent away from it. Only a
+    document-linked line, which stores no foreign amounts of its own, is
+    derived from the recorded rate. Without a rate nothing is shown: a guessed
+    figure on an audited journal is worse than a blank.
+    """
+    fx_debit = line.get("fx_debit")
+    fx_credit = line.get("fx_credit")
+    if fx_debit is not None or fx_credit is not None:
+        return (fx_debit, fx_credit)
+    rate = line.get("fx_rate") or 0
+    fx_currency = line.get("fx_currency")
+    # A rate with no currency cannot be formatted: the amount would be rounded
+    # at a defaulted precision and shown under a currency nobody recorded.
+    if not rate or not fx_currency:
+        return (None, None)
+    rate_d = to_decimal(rate)
+    fx_debit = float(round_money(to_decimal(debit) / rate_d, fx_currency)) if debit else None
+    fx_credit = float(round_money(to_decimal(credit) / rate_d, fx_currency)) if credit else None
+    return (fx_debit, fx_credit)
 
 
 def report_header(company: dict, title: str, subtitle: str = "") -> FT:

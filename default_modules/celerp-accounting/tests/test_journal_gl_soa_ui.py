@@ -61,9 +61,13 @@ _JOURNAL = {
             "status": "posted", "je_type": None, "void_reason": None,
             "source_doc": {"doc_id": "doc1", "doc_ref": "INV-1"},
             "lines": [
-                {"account": "1120", "name": "Accounts Receivable", "debit": 350.0, "credit": 0.0},
-                {"account": "4100", "name": "Sales Revenue", "debit": 0.0, "credit": 350.0},
+                {"account": "1120", "name": "Accounts Receivable", "debit": 350.0, "credit": 0.0,
+                 "fx_currency": "USD", "fx_rate": 35.0},
+                {"account": "4100", "name": "Sales Revenue", "debit": 0.0, "credit": 350.0,
+                 "fx_currency": "USD", "fx_rate": 35.0},
             ],
+            # A document-linked entry is one currency for the whole document, so
+            # every line carries the same pair.
             "fx": {"currency": "USD", "rate": 35.0},
         },
     ],
@@ -192,6 +196,9 @@ async def test_journal_tab_hides_fx_columns_without_fx(ui_client):
     plain = json.loads(json.dumps(_JOURNAL))
     for entry in plain["entries"]:
         entry["fx"] = None
+        for line in entry["lines"]:
+            line["fx_currency"] = None
+            line["fx_rate"] = None
     r = await _get(ui_client, "/accounting?tab=journal", get_journal=plain)
     assert r.status_code == 200
     assert "FX Debit" not in r.text and "FX Credit" not in r.text
@@ -340,7 +347,8 @@ _NEW_KEYS = [
     "acct.void_reason_optional", "acct.soa_kind_payment",
     "acct.no_entries_for_account",
     "acct.record_foreign_currency", "acct.currency_base_hint",
-    "acct.rounding_line_preview", "acct.err_currency_unknown", "acct.err_rate_positive",
+    "acct.imbalance_note", "acct.fx_per_line_hint",
+    "acct.err_currency_unknown", "acct.err_rate_positive",
 ]
 
 
@@ -400,25 +408,28 @@ async def test_je_form_shows_foreign_currency_control(ui_client):
     assert r.status_code == 200
     html = r.text
     assert "Record in a foreign currency" in html
-    assert 'name="currency"' in html and 'name="rate"' in html
-    assert 'value="1.0000"' in html
+    # Currency and rate belong to the line, not the entry: an entry can carry
+    # more than one currency.
+    assert 'name="currency_0"' in html and 'name="rate_0"' in html
+    assert 'name="currency"' not in html and 'name="rate"' not in html
     # Collapsed: a <details> with no open attribute on the reveal itself.
     assert "je-fx-reveal" in html
     assert "<details open" not in html.replace("<details  open", "<details open")
 
 
 @pytest.mark.asyncio
-async def test_je_form_rate_input_exits_on_escape(ui_client):
-    """GDR 2j: Escape closes the whole disclosure, matching the void control."""
+async def test_je_form_line_rate_input_exits_on_escape(ui_client):
+    """GDR 2j: Escape exits the per-line rate field like every other field."""
     r = await _get(ui_client, "/accounting/journal/new")
     import re as _re
-    m = _re.search(r'<input[^>]*name="rate"[^>]*>', r.text)
-    assert m and "Escape" in m.group(0), m.group(0) if m else "no rate input"
+    m = _re.search(r'<input[^>]*name="rate_0"[^>]*>', r.text)
+    assert m and "Escape" in m.group(0), m.group(0) if m else "no line rate input"
 
 
 @pytest.mark.asyncio
-async def test_je_form_submit_sends_fx_only_when_currency_chosen(ui_client):
-    """An untouched reveal posts an ordinary entry with no fx key at all."""
+async def test_je_form_submit_sends_line_fx_only_when_a_currency_is_chosen(ui_client):
+    """A line with no currency posts the request it posted before the columns
+    existed: no currency key and no rate key."""
     from unittest.mock import AsyncMock, patch
 
     base = {
@@ -427,13 +438,34 @@ async def test_je_form_submit_sends_fx_only_when_currency_chosen(ui_client):
         "account_1": "4100", "debit_1": "", "credit_1": "10",
     }
     with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
-        await _post(ui_client, "/accounting/journal/new", {**base, "currency": "USD", "rate": "35"})
-        payload = m.call_args[0][1]
-        assert payload["fx"] == {"currency": "USD", "rate": 35.0}
+        await _post(ui_client, "/accounting/journal/new", {
+            **base, "currency_0": "USD", "rate_0": "35"})
+        entries = m.call_args[0][1]["entries"]
+        assert entries[0]["currency"] == "USD" and entries[0]["rate"] == 35.0
+        assert "currency" not in entries[1] and "rate" not in entries[1]
+        assert "fx" not in m.call_args[0][1]
 
     with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
         await _post(ui_client, "/accounting/journal/new", {**base, "idempotency_token": "tok-fx-2"})
-        assert "fx" not in m.call_args[0][1]
+        entries = m.call_args[0][1]["entries"]
+        assert all("currency" not in e and "rate" not in e for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_je_form_carries_a_different_currency_on_each_line(ui_client):
+    """Two currencies in one entry is the case the per-line columns exist for."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
+        await _post(ui_client, "/accounting/journal/new", {
+            "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-mixed",
+            "account_0": "1111", "debit_0": "100", "credit_0": "",
+            "currency_0": "USD", "rate_0": "35",
+            "account_1": "4100", "debit_1": "", "credit_1": "3000",
+            "currency_1": "JPY", "rate_1": "0.23",
+        })
+        entries = m.call_args[0][1]["entries"]
+        assert entries[0]["currency"] == "USD" and entries[1]["currency"] == "JPY"
 
 
 @pytest.mark.asyncio
@@ -445,7 +477,7 @@ async def test_je_form_rejects_unknown_currency_without_calling_the_api(ui_clien
             "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-3",
             "account_0": "1111", "debit_0": "10", "credit_0": "",
             "account_1": "4100", "debit_1": "", "credit_1": "10",
-            "currency": "QQQ", "rate": "35",
+            "currency_0": "QQQ", "rate_0": "35",
         })
         assert r.status_code == 200
         assert m.await_count == 0
@@ -455,8 +487,8 @@ def test_fx_line_amounts_prefers_stored_over_derived():
     """A typed foreign figure is what the document says; division can miss it."""
     from ui.routes.accounting import _fx_line_amounts
 
-    stored = _fx_line_amounts(300.25, 0, {"currency": "USD", "rate": 3.0025},
-                              100.0, None)
+    stored = _fx_line_amounts(300.25, 0, {"fx_currency": "USD", "fx_rate": 3.0025,
+                                          "fx_debit": 100.0, "fx_credit": None})
     assert stored == (100.0, None)
 
 
@@ -464,24 +496,7 @@ def test_fx_line_amounts_blank_when_rate_absent():
     """No rate means no figure, not a guessed one."""
     from ui.routes.accounting import _fx_line_amounts
 
-    assert _fx_line_amounts(100.0, 0, {"currency": "USD", "rate": 0}) == (None, None)
-
-
-@pytest.mark.asyncio
-async def test_je_form_keeps_currency_and_rate_after_a_failed_submit(ui_client):
-    """A rejected entry re-renders with the foreign values still typed in and
-    the control open, rather than silently discarding them."""
-    r = await _post(ui_client, "/accounting/journal/new", {
-        "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-keep-1",
-        "account_0": "1111", "debit_0": "10", "credit_0": "",
-        "account_1": "4100", "debit_1": "", "credit_1": "10",
-        "currency": "QQQ", "rate": "35.5",
-    })
-    assert r.status_code == 200
-    html = r.text
-    # The reveal is reopened so the user can see what was refused.
-    assert '<details open class="je-fx-reveal"' in html
-    assert 'value="35.5"' in html
+    assert _fx_line_amounts(100.0, 0, {"fx_currency": "USD", "fx_rate": 0}) == (None, None)
 
 
 def test_fx_line_amounts_blank_when_currency_missing():
@@ -489,49 +504,63 @@ def test_fx_line_amounts_blank_when_currency_missing():
     precision and showing it under an unknown currency is a fabricated figure."""
     from ui.routes.accounting import _fx_line_amounts
 
-    assert _fx_line_amounts(100.0, 0, {"currency": None, "rate": 35.0}) == (None, None)
-    assert _fx_line_amounts(100.0, 0, {"rate": 35.0}) == (None, None)
+    assert _fx_line_amounts(100.0, 0, {"fx_currency": None, "fx_rate": 35.0}) == (None, None)
+    assert _fx_line_amounts(100.0, 0, {"fx_rate": 35.0}) == (None, None)
 
-
-# ---------------------------------------------------------------------------
-# FX entry form: split book-currency columns
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_je_form_splits_book_columns_and_ids_the_headers(ui_client):
-    """The book side reads like a journal: two computed debit/credit columns,
-    not one merged amount, and every currency-bearing header carries an id the
-    script can label with the currency code."""
+async def test_je_form_keeps_line_currency_and_rate_after_a_failed_submit(ui_client):
+    """A rejected entry re-renders with the foreign values still typed in and
+    the control open, rather than silently discarding them."""
+    r = await _post(ui_client, "/accounting/journal/new", {
+        "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-keep-1",
+        "account_0": "1111", "debit_0": "10", "credit_0": "",
+        "account_1": "4100", "debit_1": "", "credit_1": "10",
+        "currency_0": "QQQ", "rate_0": "35.5",
+    })
+    assert r.status_code == 200
+    html = r.text
+    # The reveal is reopened so the user can see what was refused.
+    import re as _re
+    tag = _re.search(r'<details[^>]*id="je-fx-reveal"[^>]*>', html)
+    assert tag and "open" in tag.group(0), tag.group(0) if tag else "no reveal"
+    assert 'value="35.5"' in html
+
+
+@pytest.mark.asyncio
+async def test_je_form_splits_book_columns_and_names_the_book_currency(ui_client):
+    """The book side reads like a journal: two computed debit/credit columns in
+    the company currency, each header naming it, not one merged amount."""
     r = await _get(ui_client, "/accounting/journal/new")
     assert r.status_code == 200
     html = r.text
-    for hid in ("je-debit-head", "je-credit-head",
-                "je-local-debit-head", "je-local-credit-head"):
-        assert f'id="{hid}"' in html, hid
-    assert 'id="je-local-head"' not in html
-    assert "je-local-debit" in html and "je-local-credit" in html
+    assert "je-base-debit" in html and "je-base-credit" in html
+    assert f'{t("th.debit")} (THB)' in html and f'{t("th.credit")} (THB)' in html
     # The merged cell class is gone entirely.
     assert 'je-local"' not in html
+    assert "je-local-debit" not in html and "je-total-local-debit" not in html
 
 
 @pytest.mark.asyncio
-async def test_je_form_js_knows_the_book_currency(ui_client):
-    """The book-column labels need the company currency; it is injected
-    server-side, never guessed client-side."""
+async def test_je_form_js_knows_the_book_currency_and_its_decimals(ui_client):
+    """The preview rounds each converted amount where the server will, so the
+    decimal places come from the server rather than a hardcoded two."""
     r = await _get(ui_client, "/accounting/journal/new")
-    assert 'celerpJeBase = "THB"' in r.text
+    html = r.text
+    assert 'celerpJeBase = "THB"' in html
+    assert '"JPY": 0' in html and '"KWD": 3' in html
+    # The old fixed-cent arithmetic is gone.
+    assert "* 100)" not in html.split("celerpJeTotals")[-1]
 
 
 @pytest.mark.asyncio
-async def test_je_form_renders_hidden_book_total_chips(ui_client):
-    """Book totals exist as chips the script reveals only under a rate, so the
-    plain form shows no empty pills."""
-    import re as _re
+async def test_je_form_hides_the_foreign_columns_until_the_reveal_opens(ui_client):
+    """Discretion: the columns exist in the markup but the script hides them
+    while the reveal is shut, so the plain form looks exactly as it did."""
     r = await _get(ui_client, "/accounting/journal/new")
-    for cid in ("je-total-local-debit", "je-total-local-credit"):
-        m = _re.search(rf'<span[^>]*id="{cid}"[^>]*>', r.text)
-        assert m, cid
-        assert "hidden" in m.group(0), m.group(0)
+    html = r.text
+    assert "je-fx-col" in html
+    assert "cell.hidden = !details.open" in html
 
 
 # ---------------------------------------------------------------------------

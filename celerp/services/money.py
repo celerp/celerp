@@ -101,6 +101,38 @@ def round_rate(v: _MoneyInput, currency: str) -> Decimal:
     return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
 
 
+# ---------------------------------------------------------------------------
+# Exchange rates.
+# An exchange rate is a ratio between two currencies and belongs to neither, so
+# rate_dp (scaled by one currency) cannot express it. Currencies whose unit is a
+# small fraction of another need many places: 1 LBP is about 0.0000112 USD, and
+# the rial and the dong are smaller still. Twelve places holds those with several
+# significant figures to spare and stays inside what an IEEE 754 double carries
+# exactly, so a stored rate survives the round trip through JSON without drift.
+# ---------------------------------------------------------------------------
+EXCHANGE_RATE_DP: int = 12
+
+
+def round_exchange_rate(v: _MoneyInput) -> Decimal:
+    """Round a currency-to-currency exchange rate to EXCHANGE_RATE_DP using HALF_UP.
+
+    Use for storing any entered or derived exchange rate. Amounts converted with it
+    still go through round_money at the currency they land in.
+    """
+    quant = Decimal(10) ** -EXCHANGE_RATE_DP
+    return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float:
+    """A document-currency amount expressed in the books' currency, ready to store.
+
+    One multiplication and one rounding, in one place, so a posting and any report
+    that re-derives it can never land a unit apart. A rate of 1 returns the amount
+    rounded at the base currency, which is what a base-currency document needs.
+    """
+    return to_stored_float(round_money(to_decimal(amount) * to_decimal(rate), base_currency))
+
+
 def unit_price_from_total(total: _MoneyInput, qty: _MoneyInput, currency: str) -> Decimal:
     """Derive the unit price from a target line/lot total at the FEWEST decimals (currency_dp..rate_dp)
     such that ``round_money(unit * qty) == round_money(total)``.

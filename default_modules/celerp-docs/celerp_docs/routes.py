@@ -11,6 +11,8 @@ from datetime import datetime, timezone, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+import math
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select, func as _func
 import sqlalchemy as _sa
@@ -24,6 +26,7 @@ from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
+from celerp.services.line_measures import line_label
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -154,10 +157,22 @@ class DocPaymentBody(BaseModel):
     method: str | None = None
     reference: str | None = None
     bank_account: str | None = None
-    conversion_rate: float | None = None  # pass-through for premium multicurrency module
+    conversion_rate: float | None = None
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
+
+    @field_validator("conversion_rate")
+    @classmethod
+    def _rate_must_be_positive(cls, v: float | None) -> float | None:
+        """A rate divides an amount, so zero and negatives are not slow paths,
+        they are wrong answers. Checked here rather than on the input, which a
+        currency worth a small fraction of the base needs left wide open."""
+        if v is None:
+            return v
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("conversion_rate must be greater than zero")
+        return v
 
 
 class ReceivedItem(BaseModel):
@@ -262,7 +277,7 @@ def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
     out: list[dict] = []
     for e in eids:
         li = by_id.get(e, {})
-        out.append({"item_id": e, "sku": li.get("sku") or li.get("description") or "", "quantity": li.get("quantity")})
+        out.append({"item_id": e, "sku": line_label(li), "quantity": li.get("quantity")})
     return out
 
 

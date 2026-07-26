@@ -26,10 +26,11 @@ from starlette.responses import (
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import empty_state_cta, fmt_money, searchable_select
+from ui.components.table import EMPTY, empty_state_cta, fmt_money, searchable_select
 from ui.components.report_kit import (
-    action_bar, csv_row, date_params, fname_date, href, period_subtitle,
-    plain_error_response, print_shell, report_header, totals_chips,
+    action_bar, csv_row, date_params, fname_date, fx_line_amounts, href,
+    je_source_label, journal_totals, period_subtitle, plain_error_response,
+    print_shell, report_header, totals_chips,
 )
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
@@ -46,6 +47,7 @@ _FINANCIAL_CARDS: list[tuple[str, str]] = [
     ("cash-flow", "rpt.cash_flow_desc"),
     ("trial-balance", "rpt.trial_balance_desc"),
     ("general-ledger", "rpt.general_ledger_desc"),
+    ("extended-journal", "rpt.extended_journal_desc"),
     ("statement", "rpt.statement_desc"),
 ]
 
@@ -61,6 +63,8 @@ REPORTS: dict[str, tuple[str, str, str, str]] = {
                        "/reports/export/general-ledger/csv", "acct.tab_general_ledger"),
     "cash-flow": ("/reports/cash-flow", "/reports/print/cash-flow",
                   "/reports/export/cash-flow/csv", "acct.tab_cash_flow"),
+    "extended-journal": ("/reports/extended-journal", "/reports/print/extended-journal",
+                         "/reports/export/extended-journal/csv", "acct.tab_extended_journal"),
     "statement": ("/reports/statement", "/reports/print/statement",
                   "/reports/export/statement/csv", "acct.soa_title"),
 }
@@ -522,6 +526,116 @@ def _general_ledger_view(data: dict, currency: str | None = None,
     )
 
 
+# ── Extended journal ────────────────────────────────────────────────────────
+
+def _extended_rows(data: dict) -> list[dict]:
+    """The journal flattened to one row per posting, newest first.
+
+    The classical journal indents its lines under an entry heading, which reads
+    well and pivots badly. This report exists to be pulled apart by item, so
+    every row carries its own date, source and memo and stands on its own.
+    """
+    out: list[dict] = []
+    for entry in reversed(list(data.get("entries", []))):
+        source = entry.get("source_doc") or {}
+        for line in entry.get("lines", []):
+            out.append({
+                **line,
+                "ts": str(entry.get("ts") or "")[:10],
+                "je_id": entry.get("je_id", ""),
+                "doc_id": source.get("doc_id", ""),
+                "source": source.get("doc_ref") or source.get("doc_id") or je_source_label(entry),
+                "source_csv": (source.get("doc_ref") or source.get("doc_id")
+                               or je_source_label(entry, csv_export=True)),
+                "memo": entry.get("memo", ""),
+                "status": entry.get("status"),
+            })
+    return out
+
+
+def _extended_journal_view(data: dict, currency: str | None = None) -> FT:
+    rows = _extended_rows(data)
+    if not rows:
+        return P(t("acct.no_journal_entries"), cls="empty-state")
+    # The foreign columns appear only when the period actually holds a foreign
+    # transaction, exactly as the classical journal decides it.
+    has_fx = any(r.get("fx_currency") for r in rows)
+
+    def _money(val, cur=None) -> str:
+        # The unused side of a posting is left blank, the way the classical
+        # journal and the general ledger leave it: a journal reads down one
+        # money column at a time, and filling the other with a marker fights it.
+        return fmt_money(val, cur) if val else ""
+
+    def _attr(val, cur=None) -> str:
+        # An item attribute is not a posting. A row with no unit price has none
+        # to show, so it says so rather than going blank and reading as a cell
+        # that failed to load.
+        return fmt_money(val, cur) if val else EMPTY
+
+    body = []
+    for r in rows:
+        debit = float(r.get("debit") or 0)
+        credit = float(r.get("credit") or 0)
+        fx_debit, fx_credit = fx_line_amounts(debit, credit, r)
+        fx_currency = r.get("fx_currency")
+        qty = r.get("quantity")
+        source_cell = (A(r["source"], href=f"/docs/{r['doc_id']}", cls="drilldown-link")
+                       if r.get("doc_id") else r["source"])
+        cells = [
+            Td(r["ts"], cls="cell--mono"),
+            Td(source_cell),
+            Td(r.get("item") or EMPTY),
+            Td(f"{r.get('account', '')} {r.get('name', '')}".strip()),
+            Td(r.get("memo", ""), cls="cell--muted"),
+            Td(fx_currency or currency or EMPTY, cls="cell--mono"),
+            Td(f"{to_decimal(qty).normalize():f}" if qty else EMPTY, cls="cell--number"),
+            Td(_attr(r.get("unit_price"), fx_currency or currency), cls="cell--number"),
+            Td(_money(debit, currency), cls="cell--number"),
+            Td(_money(credit, currency), cls="cell--number"),
+        ]
+        if has_fx:
+            cells += [
+                Td(_money(fx_debit, fx_currency), cls="cell--number"),
+                Td(_money(fx_credit, fx_currency), cls="cell--number"),
+            ]
+        body.append(Tr(*cells, cls="payment-voided") if r.get("status") == "void" else Tr(*cells))
+
+    headers = [
+        Th(t("th.date")),
+        Th(t("th.source")),
+        Th(t("th.item")),
+        Th(t("th.account")),
+        Th(t("th.description")),
+        Th(t("th.currency")),
+        # HTML/CSS 4a: a header over figures sits right, above the digits it names.
+        Th(t("th.quantity"), cls="cell--number"),
+        Th(t("th.unit_price"), cls="cell--number"),
+        Th(t("th.debit"), cls="cell--number"),
+        Th(t("th.credit"), cls="cell--number"),
+    ]
+    if has_fx:
+        headers += [
+            Th(t("th.fx_debit"), cls="cell--number"),
+            Th(t("th.fx_credit"), cls="cell--number"),
+        ]
+    return Table(Thead(Tr(*headers)), Tbody(*body), cls="data-table")
+
+
+def _unexpanded_note(data: dict) -> FT | None:
+    """Names the entries whose item detail could not be shown, and why.
+
+    An accountant reading a report about items has to be able to tell an entry
+    with no items from one whose items were withheld, so the ones that were
+    withheld are listed rather than silently rendered like the rest.
+    """
+    missing = [e.get("je_id", "") for e in data.get("entries", [])
+               if e.get("source_doc") and not e.get("items_expanded")]
+    if not missing:
+        return None
+    return Div(f"{t('acct.items_not_expanded')} {', '.join(missing)}", cls="report-section cell--muted")
+
+
 # ── Statement of account ────────────────────────────────────────────────────
 
 # Every kind a statement row can carry: the document types that post to a control
@@ -886,6 +1000,32 @@ def setup_routes(app):
         return await _page(request, page_header(t("acct.tab_cash_flow", get_lang(request))),
                            content, title="Cash Flow - Celerp")
 
+    @app.get("/reports/extended-journal")
+    async def extended_journal_report(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+            d_from, d_to, preset = await _dates(request, token)
+            params = date_params(d_from, d_to)
+            data = await api.get_extended_journal(token, params)
+            content = Div(
+                _date_filter_bar(_report_path("extended-journal"), d_from, d_to, preset,
+                                 settings_link="/settings/general?tab=company"),
+                journal_totals(data, currency),
+                Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
+                _unexpanded_note(data),
+                _extended_journal_view(data, currency),
+            )
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            content = _error_content(e)
+        return await _page(request, page_header(t("acct.tab_extended_journal", get_lang(request))),
+                           content, title="Extended Journal - Celerp")
+
     @app.get("/reports/ledger/{account_code}")
     async def account_ledger_page(request: Request, account_code: str):
         token = _token(request)
@@ -1184,6 +1324,21 @@ def setup_routes(app):
         return print_shell(company, t("acct.tab_cash_flow"), period_subtitle(d_from, d_to),
                            _cash_flow_view(data, currency))
 
+    @app.get("/reports/print/extended-journal")
+    async def extended_journal_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company, currency, d_from, d_to = await _print_ctx(request, token)
+            data = await api.get_extended_journal(token, date_params(d_from, d_to))
+        except APIError as e:
+            return plain_error_response(e)
+        body = Div(journal_totals(data, currency), _unexpanded_note(data),
+                   _extended_journal_view(data, currency))
+        return print_shell(company, t("acct.tab_extended_journal"),
+                           period_subtitle(d_from, d_to), body)
+
     @app.get("/reports/print/statement")
     async def statement_print(request: Request):
         token = _token(request)
@@ -1271,6 +1426,39 @@ def setup_routes(app):
                              line.get("memo", ""), float(debit), float(credit), float(running)])
             rows.append([code, name, "", "", "Closing balance", "", "", row.get("closing", 0)])
         return _csv_response(rows, f"general_ledger_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+
+    @app.get("/reports/export/extended-journal/csv")
+    async def extended_journal_csv(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            d_from = request.query_params.get("date_from", "")
+            d_to = request.query_params.get("date_to", "")
+            data = await api.get_extended_journal(token, date_params(d_from, d_to))
+        except APIError as e:
+            return plain_error_response(e)
+        rows: list[list] = [["date", "entry_id", "source_ref", "item", "account_code",
+                             "account_name", "memo", "quantity", "unit_price", "debit", "credit",
+                             "fx_currency", "fx_debit", "fx_credit", "status"]]
+        # Rows stay newest first, as the screen shows them: this export is read as
+        # the report it came from, not replayed as a ledger.
+        for r in _extended_rows(data):
+            debit = float(r.get("debit") or 0)
+            credit = float(r.get("credit") or 0)
+            fx_debit, fx_credit = fx_line_amounts(debit, credit, r)
+            has_amount = bool(fx_debit) or bool(fx_credit)
+            rows.append([
+                r["ts"], r.get("je_id", ""), r["source_csv"], r.get("item") or "",
+                r.get("account", ""), r.get("name", ""), r.get("memo", ""),
+                r.get("quantity") if r.get("quantity") else "",
+                r.get("unit_price") if r.get("unit_price") else "",
+                debit, credit,
+                (r.get("fx_currency") or "") if has_amount else "",
+                fx_debit if fx_debit else "", fx_credit if fx_credit else "",
+                r.get("status") or "",
+            ])
+        return _csv_response(rows, f"extended_journal_{fname_date(d_from)}_{fname_date(d_to)}.csv")
 
     @app.get("/reports/export/cash-flow/csv")
     async def cash_flow_csv(request: Request):
