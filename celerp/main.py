@@ -135,10 +135,14 @@ async def _try_auto_activate() -> None:
             )
         except Exception:
             pass
-        # Start gateway WS client (single construction site, idempotent)
-        from celerp.gateway import ensure_running
-        ensure_running()
-        _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
+        # Start gateway WS client, but only where the tunnel has something to serve:
+        # a paid instance (public_url granted) or a free instance with a live share.
+        # A free instance holds no persistent gateway connection; a later share-create
+        # brings the tunnel up on demand through the relay_share seam.
+        from celerp.gateway import ensure_running, has_active_share
+        if public_url or await has_active_share():
+            ensure_running()
+            _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
         # Start backup scheduler
         if _s.backup_enabled and _s.backup_encryption_key:
             from celerp.services import backup_scheduler
