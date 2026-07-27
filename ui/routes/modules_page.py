@@ -520,7 +520,7 @@ async def _build_marketplace_panel(token: str, lang: str) -> FT:
         status = {}
     if status.get("email_verified") and status.get("email") and not status.get("error"):
         children.insert(0, P(t("account.signed_in_as", lang, email=status["email"]),
-                             cls="text-muted small"))
+                             cls="text-muted small mb-sm"))
     if from_cache:
         children.append(Div(t("marketplace.from_cache", lang), cls="flash flash--warning"))
     if not trusted:
