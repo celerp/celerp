@@ -101,6 +101,7 @@ async def test_cloud_status_connected_relay_unreachable(client):
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
         patch.object(gw_state, "_session_token", "sess"),
+        patch.object(gw_state, "_subscription_tier", ""),
         patch("celerp.config.settings.gateway_instance_id", "inst-123"),
         patch("celerp.config.settings.gateway_http_url", ""),
         patch("httpx.AsyncClient", return_value=mock_inner_client),
@@ -113,6 +114,56 @@ async def test_cloud_status_connected_relay_unreachable(client):
     assert data["tier"] is None
     assert data["email_quota"] == 0
     assert data["email_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client):
+    """The gateway's own WS push (subscription_updated) already told us the tier;
+    a free instance's session_token may never resolve a live /billing/status call,
+    so tier must not silently fall back to None when the WS already supplied it
+    (regression: this used to hide the free-tier note whenever the HTTP round trip
+    to the relay failed or session_token wasn't set)."""
+    with (
+        patch("celerp.config.settings.gateway_token", "tok"),
+        patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
+        patch.object(gw_state, "_session_token", ""),
+        patch.object(gw_state, "_subscription_tier", "free"),
+        patch.object(gw_state, "_subscription_status", "active"),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["connected"] is True
+    assert data["tier"] == "free"
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client):
+    """The relay's live /billing/status answer (e.g. after an upgrade) still wins
+    over a WS-pushed tier that may be stale until the next subscription_updated push."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"tier": "team", "email_quota": 1000, "email_used": 42}
+
+    mock_inner_client = AsyncMock()
+    mock_inner_client.get = AsyncMock(return_value=mock_response)
+    mock_inner_client.__aenter__ = AsyncMock(return_value=mock_inner_client)
+    mock_inner_client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("celerp.config.settings.gateway_token", "tok"),
+        patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
+        patch("celerp.gateway.state.get_session_token", return_value="sess-token"),
+        patch.object(gw_state, "_subscription_tier", "free"),
+        patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
+        patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
+        patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    assert r.json()["tier"] == "team"
 
 
 @pytest.mark.asyncio

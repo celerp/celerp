@@ -32,9 +32,11 @@ def client():
 @pytest.fixture(autouse=True)
 def reset_session_token():
     original = gw_state.get_session_token()
+    original_sub = gw_state.get_subscription_state()
     gw_state.set_session_token("")
     yield
     gw_state.set_session_token(original)
+    gw_state.set_subscription_state(*original_sub)
 
 
 # ── C4: relay-state sentinel on stdout (consumed by the Electron host) ─────────

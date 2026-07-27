@@ -3887,6 +3887,10 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                 Li(t("cloud.free_b4")),
                 style="margin:6px 0 0;padding-left:20px;",
             ),
+            Button(t("btn.link_subscription"), type="button",
+                   hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
+                   hx_target="#account-gate-host", hx_swap="outerHTML",
+                   cls="btn btn--sm btn--outline", style="margin-top:8px;"),
             style="margin-top:12px;",
         ) if tier == "free" else ""
 

@@ -89,8 +89,13 @@ async def cloud_status() -> dict:
     if not connected:
         return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
 
-    # Try to fetch relay status from cloud
-    tier: str | None = None
+    # Tier comes from the gateway's own WS push (set_subscription_state, on the
+    # "subscription_updated" message) whenever that's arrived - it needs no extra
+    # round trip and is available as soon as the tunnel is up. last_backup/email
+    # quota aren't carried over WS, so those still come from the relay HTTP call.
+    from celerp.gateway.state import get_subscription_state
+    ws_tier, _ws_status = get_subscription_state()
+    tier: str | None = ws_tier or None
     last_backup: str | None = None
     email_quota: int = 0
     email_used: int = 0
@@ -107,7 +112,7 @@ async def cloud_status() -> dict:
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    tier = data.get("tier")
+                    tier = data.get("tier") or tier
                     last_backup = data.get("last_backup")
                     email_quota = int(data.get("email_quota", 0))
                     email_used = int(data.get("email_used", 0))

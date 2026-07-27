@@ -9744,6 +9744,12 @@ class TestWebAccessPlansAd:
         assert "Download community modules" in r.text
         assert "Access the module marketplace" in r.text
         assert "Next DB backup" not in r.text
+        # A connected free account still needs a way to sign in / link a paid
+        # subscription (regression: once auto-connected via a document share,
+        # this was the only entry point left, since the not-connected landing
+        # page's claim form never renders once gw_ok is true).
+        assert "/account/panel?intent=claim" in r.text
+        assert "account-gate-host" in r.text
 
     @pytest.mark.asyncio
     async def test_paid_tier_no_free_tier_note_shows_backup_card(self, ui_client):
