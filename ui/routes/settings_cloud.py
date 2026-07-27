@@ -16,6 +16,7 @@ from ui.routes.settings import (
     _check_permission,
     _token,
     _cloud_relay_tab,
+    PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
 
@@ -496,10 +497,10 @@ def setup_routes(app):
                      _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the
-            # plans are exactly what the free tier is missing. Only on the
-            # relay's affirmative "free" (an unknown tier degrades to no ad,
-            # never an upsell shown to a paying customer).
-            if tier == "free":
+            # plans are exactly what the free tier is missing. An unknown tier
+            # (status round trip failed/pending) degrades to showing the ad,
+            # never to silently hiding it - only a confirmed paid tier suppresses it.
+            if tier not in PAID_TIERS:
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(ensure_instance_id(), lang=lang))
             content = Div(*parts)

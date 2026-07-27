@@ -3821,14 +3821,22 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
+# Billing tiers above free. Any tier NOT in this set (including "", None, and
+# "free" itself) is treated as free - an unconfirmed tier must default to the
+# more restrictive, upsell-showing state, never silently hide the free-tier
+# note and sales funnel because a status round trip hasn't landed yet.
+PAID_TIERS = frozenset({"cloud", "ai", "team"})
+
+
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
                       tier: str | None = None) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
-    tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); None when
-    unknown (e.g. mid-reconnect fragments), which simply omits the free-tier note.
+    tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); anything
+    other than a known paid tier (including None/"" while unknown) is treated
+    as free, so the free-tier note degrades to shown, never hidden.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3892,7 +3900,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                    hx_target="#account-gate-host", hx_swap="outerHTML",
                    cls="btn btn--sm btn--outline", style="margin-top:8px;"),
             style="margin-top:12px;",
-        ) if tier == "free" else ""
+        ) if tier not in PAID_TIERS else ""
 
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),

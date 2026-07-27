@@ -9713,8 +9713,10 @@ class TestFilesExcelFunnels:
 class TestWebAccessPlansAd:
     """The Web Access page shows the paid-plan advertisement (feature cards +
     plan cards) to connected free-tier accounts below the status tab - the
-    free tabs stay, the pitch a not-connected visitor sees stays too. Paid
-    tiers and unknown tiers never see the upsell."""
+    free tabs stay, the pitch a not-connected visitor sees stays too. Only a
+    confirmed paid tier suppresses the upsell; an unknown tier (status round
+    trip failed/pending) defaults to showing it rather than risk hiding the
+    sales funnel from a free user."""
 
     def _mocks(self, tier, relay_status="active", public_url=""):
         from contextlib import ExitStack
@@ -9777,13 +9779,15 @@ class TestWebAccessPlansAd:
         assert "cloud-plans" not in r.text
 
     @pytest.mark.asyncio
-    async def test_unknown_tier_degrades_to_no_ad(self, ui_client):
-        """A failed tier lookup must never show the upsell to a possibly
-        paying customer - neutral state, no plan cards."""
+    async def test_unknown_tier_degrades_to_showing_the_ad(self, ui_client):
+        """A failed/pending tier lookup (e.g. before the relay round trip lands)
+        must never hide the free-tier note and sales funnel - only a confirmed
+        paid tier suppresses it (regression: this previously hid the upsell
+        entirely whenever tier came back empty)."""
         with self._mocks(tier=None):
             r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "cloud-plans" not in r.text
+        assert "cloud-plans" in r.text
 
     @pytest.mark.asyncio
     async def test_not_connected_still_gets_full_value_prop(self, ui_client):
