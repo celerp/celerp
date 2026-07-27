@@ -277,12 +277,12 @@ async def cloud_activate_api() -> dict:
         return {"error": f"Could not reach relay: {type(exc).__name__}: {exc}"}
 
     if r.status_code == 404:
-        body = ""
-        try:
-            body = r.json().get("detail", "")
-        except Exception:
-            body = r.text[:120]
-        return {"error": f"No active subscription found for this instance ({iid}). {body} Subscribe first, or link by email below.", "instance_id": iid}
+        return {
+            "error": f"No active subscription found for this instance ({iid}). "
+                     "Complete checkout first, or if you need to move your subscription "
+                     "to this instance, use the Link Subscription field below.",
+            "instance_id": iid,
+        }
     if r.status_code == 402:
         return {"error": r.json().get("detail", "Subscription not active.")}
     if r.status_code != 200:

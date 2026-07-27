@@ -95,6 +95,42 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
+async def test_activate_404_message_points_to_link_subscription_field():
+    """A 404 from relay /auth/activate means no subscription is bound to this
+    instance yet. The message must not repeat itself or tell the user to
+    call an API endpoint directly (/billing/claim) - it should point at the
+    on-page Link Subscription field instead."""
+    resp = MagicMock()
+    resp.status_code = 404
+    resp.json = MagicMock(return_value={"detail": "No subscription found for this instance_id."})
+    resp.text = "not used"
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value=resp)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=ctx)
+
+    with (
+        patch("celerp.config.settings.gateway_instance_id", "bc25a5d4-9b2e-465c-be50-3e491914795e"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import cloud_activate_api
+        data = await cloud_activate_api()
+
+    assert data["instance_id"] == "bc25a5d4-9b2e-465c-be50-3e491914795e"
+    assert data["error"] == (
+        "No active subscription found for this instance "
+        "(bc25a5d4-9b2e-465c-be50-3e491914795e). Complete checkout first, "
+        "or if you need to move your subscription to this instance, use "
+        "the Link Subscription field below."
+    )
+    assert "/billing/claim" not in data["error"]
+
+
+@pytest.mark.asyncio
 async def test_account_methods_proxy_reports_free_email_quota():
     """The methods proxy passes through the relay's advertised free email
     quota, defaulting to 0 when absent or unreachable."""
