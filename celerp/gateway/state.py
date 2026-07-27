@@ -79,6 +79,23 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
+async def fetch_relay_bearer(http_client) -> str:
+    """Exchange the instance API key (gateway_token) for a short-lived relay
+    bearer JWT via POST /auth/token.
+
+    Single source of the relay auth handshake every relay REST call needs.
+    Callers pass their own httpx client so they own the timeout and connection
+    lifecycle, and reuse it for the follow-up request. Raises RuntimeError on a
+    non-200 so each caller degrades in one place.
+    """
+    from celerp.config import settings
+    resp = await http_client.post(
+        f"{relay_http_url()}/auth/token", json={"api_key": settings.gateway_token})
+    if resp.status_code != 200:
+        raise RuntimeError(f"relay auth failed ({resp.status_code})")
+    return resp.json()["access_token"]
+
+
 def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dict:
     """Build the /auth/activate request body.
 
