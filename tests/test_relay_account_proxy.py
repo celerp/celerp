@@ -95,48 +95,10 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
-async def test_cloud_claim_sends_bearer_when_gateway_token_present():
-    """An already-activated instance (holds a gateway_token) proves current
-    ownership to the relay's /billing/claim by exchanging it for a JWT and
-    sending it alongside X-Instance-ID - this is what lets an already-paid
-    instance move itself to a different verified subscription."""
-    claim_resp = MagicMock()
-    claim_resp.status_code = 200
-    claim_resp.json = MagicMock(return_value={"tier": "free", "status": "active"})
-    token_resp = MagicMock()
-    token_resp.status_code = 200
-    token_resp.json = MagicMock(return_value={"access_token": "jwt-xyz"})
-
-    async def _post(url, **kw):
-        return token_resp if url.endswith("/auth/token") else claim_resp
-
-    client = MagicMock()
-    client.post = AsyncMock(side_effect=_post)
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=client)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    factory = MagicMock(return_value=ctx)
-
-    with (
-        patch("celerp.config.settings.gateway_token", "api-key-123"),
-        patch("celerp.config.ensure_instance_id", return_value="i-1"),
-        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
-        patch("httpx.AsyncClient", factory),
-        patch("celerp.gateway.state.activate_payload", return_value={}),
-    ):
-        from celerp.routers.health import cloud_claim_api
-        data = await cloud_claim_api({"email": "o@shop.example", "otp_code": "111222"})
-
-    assert data.get("linked") or data.get("connected")
-    claim_call = next(c for c in client.post.call_args_list if c[0][0].endswith("/billing/claim"))
-    assert claim_call[1]["headers"]["Authorization"] == "Bearer jwt-xyz"
-    assert claim_call[1]["headers"]["X-Instance-ID"] == "i-1"
-
-
-@pytest.mark.asyncio
-async def test_cloud_claim_skips_bearer_without_gateway_token():
-    """A never-activated instance has no gateway_token to exchange - the
-    claim proceeds by email/OTP alone, unchanged from before this fix."""
+async def test_cloud_claim_sends_only_instance_id_no_extra_proof():
+    """The claim proxy sends X-Instance-ID and the email/OTP payload only -
+    the OTP is relay's entire authority to bind or move a subscription, so
+    no other credential is exchanged or attached here."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json = MagicMock(return_value={"tier": "cloud", "status": "active"})
@@ -148,7 +110,6 @@ async def test_cloud_claim_skips_bearer_without_gateway_token():
     factory = MagicMock(return_value=ctx)
 
     with (
-        patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.ensure_instance_id", return_value="i-1"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
@@ -159,6 +120,7 @@ async def test_cloud_claim_skips_bearer_without_gateway_token():
 
     claim_call = next(c for c in client.post.call_args_list if c[0][0].endswith("/billing/claim"))
     assert "Authorization" not in claim_call[1]["headers"]
+    assert claim_call[1]["headers"]["X-Instance-ID"] == "i-1"
     assert not any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
 
 

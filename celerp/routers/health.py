@@ -492,16 +492,12 @@ async def cloud_send_otp_api(payload: dict) -> dict:
 async def cloud_claim_api(payload: dict) -> dict:
     """Proxy /billing/claim to relay using API-process instance_id, then activate.
 
-    When this instance already holds a gateway_token (it's currently an
-    active paid instance), exchange it for a short-lived JWT and send it
-    alongside X-Instance-ID. That proves to the relay that we ARE this
-    instance right now, not just quoting its UUID - the signal that lets an
-    already-paid instance move itself onto a different subscription the
-    caller verifies by email/OTP below. Without a token (never activated, or
-    a lapsed/free instance), the claim proceeds by email/OTP alone, as before.
+    The OTP verifies control of the target email; that's relay's entire
+    authority to bind or move this instance's subscription, so no other
+    proof is sent here.
     """
     import httpx
-    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.config import ensure_instance_id
 
     email = payload.get("email", "").strip()
     subscription_id = payload.get("subscription_id") or None
@@ -522,11 +518,6 @@ async def cloud_claim_api(payload: dict) -> dict:
     headers = {"X-Instance-ID": iid}
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            api_key = _s.gateway_token
-            if api_key:
-                tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
-                if tok_r.status_code == 200:
-                    headers["Authorization"] = f"Bearer {tok_r.json()['access_token']}"
             r = await c.post(
                 f"{relay_base}/billing/claim",
                 json=claim_payload,
