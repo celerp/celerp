@@ -408,20 +408,109 @@ async def test_payment_projection_stores_bank_account_not_default(client):
 
 # ---------------------------------------------------------------------------
 # Issue 3: conversion_rate stored on payment
+#
+# A payment carries its own rate because the rate moves between issuing a
+# foreign-currency invoice and being paid for it, so these use an invoice that
+# can legitimately hold one: the books are in THB and the invoice is in USD.
 # ---------------------------------------------------------------------------
+
+
+async def _foreign_invoice(client, token: str, total: float = 100.0) -> str:
+    """A finalized USD invoice in a company whose books are in THB."""
+    r = await client.patch("/companies/me", headers=_h(token), json={"settings": {"currency": "THB"}})
+    assert r.status_code == 200, r.text
+    data = {"doc_type": "invoice", "currency": "USD", "conversion_rate": 35.0, "total": total,
+            "line_items": [{"name": "X", "quantity": 1, "unit_price": total, "line_total": total}]}
+    r = await client.post("/docs", headers=_h(token), json=data)
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))).status_code == 200
+    return doc_id
 
 
 @pytest.mark.asyncio
 async def test_payment_conversion_rate_stored(client):
     """conversion_rate is persisted in the payment projection."""
     token = await _register(client)
-    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    inv = await _foreign_invoice(client, token, 100.0)
     r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
                           json={"payment_date": "2026-01-15", "amount": 100.0,
                                 "bank_account": "1111", "conversion_rate": 35.5})
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["payments"][0]["conversion_rate"] == 35.5
+
+
+@pytest.mark.asyncio
+async def test_payment_on_a_base_currency_doc_refuses_a_rate_other_than_one(client):
+    """There is nothing to convert on a document already in the books' currency,
+    so a rate of 35 would bank 3500 for a receipt of 100. The form offers the
+    field on every payment, which is exactly why the refusal lives on the
+    endpoint rather than in the page.
+    """
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": 35.0})
+    assert r.status_code == 422, r.text
+    assert "converts at 1" in r.json()["detail"]
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc.get("payments", []) == [], "the refused payment must not have been recorded"
+
+    # An explicit 1 is the correct rate here and still goes through.
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": 1})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_payment_conversion_rate_is_held_to_the_exchange_rate_ceiling(client):
+    """A payment's rate is stored at the same ceiling a journal line's rate is.
+
+    The journal shows a rate at twelve places. A payment stored with more
+    precision than that posts a base amount nobody can reproduce from the rate
+    they are shown, so the two have to hold the same ceiling.
+    """
+    token = await _register(client)
+    inv = await _foreign_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111",
+                                "conversion_rate": 0.00001117318355})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    # Half up at the thirteenth place: ...18355 -> ...184, not truncated.
+    assert doc["payments"][0]["conversion_rate"] == 0.000011173184
+
+
+@pytest.mark.asyncio
+async def test_payment_conversion_rate_within_the_ceiling_is_untouched(client):
+    """Rounding is a ceiling, not a reformat: an ordinary rate stores verbatim."""
+    token = await _register(client)
+    inv = await _foreign_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": 0.000011173})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0]["conversion_rate"] == 0.000011173
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -35.5])
+async def test_payment_conversion_rate_must_be_a_usable_rate(client, bad):
+    """A payment's rate divides the receipt into base currency, so zero and
+    negative are wrong answers rather than slow paths, and the door says so."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": bad})
+    assert r.status_code == 422, r.text
+    assert "greater than zero" in r.text
 
 
 @pytest.mark.asyncio

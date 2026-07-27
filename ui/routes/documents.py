@@ -4629,7 +4629,7 @@ def _doc_table(
             cls="data-row",
         )
 
-    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
+    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
 
     # Bulk action bar (hidden by default, shown when checkboxes selected)
     # Uses the same dropdown-then-confirm pattern as _li_bulk_toolbar for consistency.
@@ -5020,10 +5020,10 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                 Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                             Div(Label(t("label.bank_account"), cls="form-label"),
                                 Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                            Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which refund was issued (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
-                                Input(type="number", name="conversion_rate", value="1.0000",
-                                      step="0.0001", min="0.0001", cls="form-input"),
-                                cls="form-group"),
+                            # No conversion rate field: a refund is issued at the
+                            # rate the credit note itself carries, which the
+                            # endpoint reads from the note. An input here would
+                            # invite a rate the refund never uses.
                             Div(Label(t("label.reference"), cls="form-label"),
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
@@ -5076,8 +5076,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which payment was received (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
-                            Input(type="number", name="conversion_rate", value="1.0000",
-                                  step="0.0001", min="0.0001", cls="form-input"),
+                            Input(type="number", name="conversion_rate", value="1",
+                                  step="any", min="0", cls="form-input"),
                             cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),

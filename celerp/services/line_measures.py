@@ -100,6 +100,18 @@ def qty_label(line: dict) -> str:
     return f"{_g(qty)} {unit}".strip()
 
 
+def line_label(line: dict) -> str:
+    """What to call a document line in a single cell.
+
+    The SKU first, because that is the identifier a catalogue line is filed
+    under. A service line has none, and a line posted through the API may carry
+    only a name, so both of those are tried before the line goes unnamed.
+    Anything that names a line elsewhere (an event brief, a report) names it
+    from here, so the same line never appears under two different labels.
+    """
+    return str(line.get("sku") or line.get("description") or line.get("name") or "")
+
+
 LINE_IDENTIFIER_MODES: tuple[str, ...] = ("sku", "barcode", "barcode_sku")
 
 

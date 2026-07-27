@@ -543,14 +543,14 @@ async def test_ledger_date_filter_excludes_outside_range(client):
 
 
 @pytest.mark.asyncio
-async def test_ledger_empty_for_unknown_account(client):
-    """Account with no JEs returns empty lines list."""
+async def test_ledger_404s_for_a_code_with_no_account_and_no_entries(client):
+    """A code that exists in neither the chart nor the books is a wrong
+    question, not an empty account. Answering it with a ledger headed "9999"
+    invents a chart entry the company never created.
+    """
     tok = await _reg(client)
     r = await client.get("/accounting/ledger/9999", headers=_h(tok))
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["lines"] == []
-    assert data["account_code"] == "9999"
+    assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio

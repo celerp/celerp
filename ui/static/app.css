@@ -550,7 +550,6 @@ a:hover { text-decoration: underline; }
 .cell-textarea { white-space: pre-wrap; display: block; max-height: 4.6em; overflow: hidden; }
 .cell-textarea-input { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; line-height: 1.4; }
 .wf-table td.cell--textarea, .wf-table th:nth-child(3) { min-width: 220px; max-width: 380px; }
-.data-table thead th.cell--number { text-align: right; }
 /* Section header: title on the left, running section total right-aligned. */
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .recipe-section-head .section-title { margin-bottom: 0; }
@@ -612,6 +611,27 @@ a:hover { text-decoration: underline; }
 .recipe-save-status.error { color: var(--c-red); }
 /* Pinned combobox action options (add-new, scope toggles): always visible, set apart. */
 .combobox-option--pinned { border-top: 1px solid var(--c-border); color: var(--c-text2); font-style: italic; }
+/* Multi-select combobox: a checkbox drawn in CSS, so the option list needs no
+   extra markup and single-select comboboxes are untouched. */
+.combobox-wrap[data-multiple] .combobox-option { padding-left: 26px; position: relative; }
+.combobox-wrap[data-multiple] .combobox-option::before {
+    content: ""; position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+    width: 13px; height: 13px; border: 1px solid var(--c-border); border-radius: 3px;
+    background: var(--c-bg);
+}
+.combobox-wrap[data-multiple] .combobox-option--empty { padding-left: 10px; }
+.combobox-wrap[data-multiple] .combobox-option--empty::before { display: none; }
+.combobox-wrap[data-multiple] .combobox-option--selected::before {
+    background: var(--c-accent); border-color: var(--c-accent);
+}
+.combobox-wrap[data-multiple] .combobox-option--selected::after {
+    content: ""; position: absolute; left: 11px; top: 50%;
+    width: 4px; height: 8px; margin-top: -6px;
+    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+/* Quick-picks under the subject picker: distinct buttons rather than options in
+   the list, so one control never mixes "tick a box" with "run an action". */
+.picker-quickpicks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 /* Ghost "add" row: a permanent affordance at the bottom of each recipe table. */
 .recipe-add-row td { background: var(--c-bg2); }
 .recipe-add-row input::placeholder, .recipe-add-row .combobox-input::placeholder { font-style: italic; color: var(--c-text-muted); }
@@ -760,8 +780,8 @@ a:hover { text-decoration: underline; }
 /* Shipment section: all header fields the two printouts need, one visible grid. */
 .shipment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem 1.5rem; }
 /* All line-table headers are centered. !important + higher specificity beats both the per-column
-   right-align rules and the global `.data-table th.cell--number { text-align:right !important }`
-   (the Total header carries cell--number); cell bodies keep their own alignment. */
+   right-align rules and the global `.data-table th.cell--number, .data-table th.cell--right`
+   right-align (the Total header carries cell--number); cell bodies keep their own alignment. */
 .data-table.doc-lines thead th { text-align: center !important; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
@@ -777,6 +797,8 @@ a:hover { text-decoration: underline; }
 .section-total { font-size: 12px; padding: 6px 10px; text-align: right; border-top: 1px solid var(--c-border); color: var(--c-text2); }
 .drilldown-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
 .drilldown-link:hover { color: var(--c-accent); }
+/* The report being read, in the strip that links to the others: named, not linked. */
+.report-nav-current { font-weight: 600; }
 .cell--negative { color: var(--c-danger, #b91c1c); }
 .report-subtotal { padding: 8px 10px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); margin-bottom: 12px; font-size: 13px; }
 .report-total { margin-top: 16px; padding: 12px 16px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); }
@@ -1751,9 +1773,17 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac/combobox cells */
 .data-table td:has(.catalog-ac-wrap),
 .data-table td:has(.combobox-wrap) { overflow: visible; }
-/* Total column: th right-align (!important beats base th{text-align:center}) */
-.data-table th.cell--number { text-align: right !important; }
-/* col-total header alignment: right-aligned (consolidated in doc-lines block above) */
+/* A header over a right-aligned column is right-aligned too, so it sits over its own
+   figures instead of drifting towards the neighbouring column. Both right-aligning
+   cell classes are listed here, and only here, so screen matches print.
+   (!important beats base th{text-align:center}) */
+.data-table th.cell--number,
+.data-table th.cell--right { text-align: right !important; }
+/* The figures under that header, declared once for both cases. A bare `.cell--right`
+   loses to `.data-table td { text-align: left }`, which left counts and percentages
+   hugging the wrong edge on screen while print right-aligned them. */
+.data-table td.cell--right,
+.cell--right { text-align: right; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 /* Editable line identifier: the SKU input row, with the barcode stacked BELOW it on
    its own full-width line — the same shape the finalized view uses. Keeping the
@@ -1972,6 +2002,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* ── Bulk payment panel ───────────────────────────────────────────────────── */
 .bulk-action-bar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; padding: 0.5rem 0; }
 .bulk-count { font-size: 0.85rem; color: var(--c-text-muted); font-weight: 500; }
+/* Fields for an action that takes a value (a void reason): hidden until the action is
+   chosen, then wraps to its own line below the bar via flex-basis: 100%. */
+.bulk-fields { display: none; flex-basis: 100%; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.bulk-fields--open { display: flex; }
+.bulk-field--reason { width: 260px; max-width: 100%; }
 .bulk-payment-panel { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 1rem; margin-top: 0.75rem; background: var(--c-bg-alt, #f8f9fa); }
 .bulk-payment-panel .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; }
 .bulk-payment-panel .form-group { flex: 1; min-width: 140px; max-width: 220px; }
@@ -2587,7 +2622,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .report-kpi__value { font-size: 15px; font-weight: 700; color: var(--c-text); }
 .report-kpi__value--positive { color: var(--c-success, #16a34a); }
 .report-kpi__value--negative { color: var(--c-danger, #dc2626); }
-.cell--right { text-align: right; }
 .cell--muted { color: var(--c-text2); font-size: 12px; }
 
 /* ── Connector Cards ──────────────────────────────────────────────────────── */
@@ -2954,7 +2988,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   padding: 4px 8px; border: 1px solid var(--c-border); border-radius: 4px;
   font-size: 13px; background: var(--c-bg, #fff); color: var(--c-text); cursor: pointer;
 }
-.bulk-action-select:disabled { opacity: 0.5; cursor: default; }
 
 /* ── Work-order table action dropdown (item Manufacturing tab) ── */
 .wo-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--c-text2); }
@@ -2965,6 +2998,11 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 /* Status indicators with an explanatory tooltip show the help cursor on hover. */
 .badge[title], .status-card[title] { cursor: help; }
+
+/* The extended journal marks a posting whose item detail was withheld: the empty
+   `--` in its item column carries the reason as a tooltip, dotted-underlined so a
+   reader knows there is something to hover rather than an ordinary empty cell. */
+.item-note { border-bottom: 1px dotted var(--c-text-muted, #888); cursor: help; }
 
 /* ── Client-side sortable headers + windowed pagination (enhanced tables) ── */
 .sortable-th { cursor: pointer; user-select: none; }

@@ -983,14 +983,16 @@ def setup_routes(app):
     async def contacts_search_options(request: Request):
         """HTMX: combobox option fragments for the contact picker server-side search.
 
-        Used by documents.py searchable_select (search_url= param).
+        Used by documents.py and the journal entry form (search_url= param).
         Returns empty body when q is blank so JS can restore the static list.
         When q is set, searches all contacts (no 500-cap) and returns option HTML.
 
         Query params:
           q            - search string
-          contact_type - 'customer' or 'vendor' (default: 'customer')
+          contact_type - 'customer', 'vendor', or 'all' (default: 'customer')
           field        - 'contact_company_name' or anything else (default: contact_id behaviour)
+          add_new      - '0' drops the add-new option, for pickers with nowhere to
+                         put a half-made contact. Anything else keeps it.
         """
         from starlette.responses import Response as _R
         token = _token(request)
@@ -1000,11 +1002,17 @@ def setup_routes(app):
         if not q:
             return _R(status_code=200, content="")
         contact_type = request.query_params.get("contact_type", "customer")
-        if contact_type not in ("customer", "vendor"):
+        if contact_type not in ("customer", "vendor", "all"):
             contact_type = "customer"
         field = request.query_params.get("field", "contact_id")
+        add_new = request.query_params.get("add_new", "1") != "0"
+        query = {"q": q}
+        # "all" is a party search: a journal line can name either side of the
+        # books, so it asks for the whole contact list rather than one type of it.
+        if contact_type != "all":
+            query["contact_type"] = contact_type
         try:
-            resp = await api.list_contacts(token, {"q": q, "contact_type": contact_type})
+            resp = await api.list_contacts(token, query)
             contacts = resp.get("items", [])
         except APIError:
             contacts = []
@@ -1019,7 +1027,8 @@ def setup_routes(app):
                 (c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "")
                 for c in contacts
             ]
-            opts.append(("__new__", "+ Add new contact"))
+            if add_new:
+                opts.append(("__new__", "+ Add new contact"))
 
         opt_els = [
             Div(label, cls="combobox-option" + (" combobox-option--new" if val.startswith("__new__") else ""), data_value=val)

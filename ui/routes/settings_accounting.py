@@ -17,6 +17,11 @@ from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, searchable_select
 
 from ui.routes.accounting_import import ACCOUNT_TYPES
+
+# The cash flow sections an account may be pinned to. The accounting API owns this
+# list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
+# two run in separate processes, so a test asserts they still match.
+CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t, get_lang
@@ -54,6 +59,11 @@ def _bank_account_row(b: dict) -> FT:
         ),
         Div(
             Span(f"{currency} {balance:,.2f}", cls=f"balance {bal_cls}"),
+            # The balance is the ledger's. Say so when an opening balance was
+            # entered here that no journal entry carries, rather than letting the
+            # figure look wrong for no stated reason.
+            *([P(t("acct.opening_balance_unbacked"), cls="flash flash--warning")]
+              if b.get("opening_unbacked") else []),
             Div(
                 A(t("btn.edit"), href=f"/settings/accounting/bank-accounts/{b['id']}/edit",
                   cls="btn btn--secondary btn--xs"),
@@ -245,6 +255,45 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
     )
 
 
+def _cash_flow_display_cell(code: str, cash_flow_category: str | None) -> FT:
+    """Read-only cash flow section cell. Click fires HTMX GET to fetch the select
+    editor in place, matching the click-to-edit cells used elsewhere (e.g. the
+    document numbering table in settings_sales.py)."""
+    display = (cash_flow_category or "").title() or EMPTY
+    return Td(
+        Div(
+            display,
+            hx_get=f"/settings/accounting/chart/{code}/cash-flow/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            title="Click to edit", cls="editable-cell",
+        ),
+    )
+
+
+def _cash_flow_edit_cell(a: dict) -> FT:
+    """Table cell in edit mode: a select of the derived option plus the three
+    cash flow sections. Fires HTMX PATCH on change, swaps itself back on save."""
+    code = a.get("code", "")
+    current = a.get("cash_flow_category") or ""
+    restore_url = f"/settings/accounting/chart/{code}/cash-flow/display"
+    esc_js = (
+        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
+        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
+    )
+    return Td(
+        Select(
+            Option(t("acct.cash_flow_derived"), value="", selected=not current),
+            *[Option(x.title(), value=x, selected=(x == current)) for x in CASH_FLOW_CATEGORIES],
+            name="value",
+            hx_patch=f"/settings/accounting/chart/{code}/cash-flow",
+            hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
+            cls="cell-input cell-input--select", autofocus=True,
+            onkeydown=esc_js,
+        ),
+        cls="cell cell--editing",
+    )
+
+
 def _chart_table(chart: list[dict]) -> FT:
     def _row(a: dict) -> FT:
         code = a.get("code", "")
@@ -253,6 +302,7 @@ def _chart_table(chart: list[dict]) -> FT:
             Td(a.get("name", "")),
             Td(Span(a.get("account_type", ""), cls=f"badge badge--{a.get('account_type', '')}")),
             Td(a.get("parent_code") or EMPTY),
+            _cash_flow_display_cell(code, a.get("cash_flow_category")),
             Td(Span("Active" if a.get("is_active", True) else "Inactive",
                     cls="badge badge--active" if a.get("is_active", True) else "badge badge--inactive")),
             Td(A(t("btn.edit"), href=f"/settings/accounting/chart/{code}/edit",
@@ -270,11 +320,12 @@ def _chart_table(chart: list[dict]) -> FT:
         accounts = by_type.get(atype, [])
         if not accounts:
             continue
-        sections.append(Tr(Th(atype.title(), colspan="6", cls="section-header")))
+        sections.append(Tr(Th(atype.title(), colspan="7", cls="section-header")))
         sections.extend(_row(a) for a in accounts)
 
     return Table(
-        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")), Th(t("th.status")), Th(""))),
+        Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")),
+                 Th(t("th.cash_flow_section")), Th(t("th.status")), Th(""))),
         Tbody(*sections),
         cls="data-table",
     )
@@ -336,6 +387,16 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
             Td(searchable_select("parent_code", parent_opts, value=v.get("parent_code") or "")),
         ),
     ]
+    rows.append(Tr(
+        Td(t("th.cash_flow_section"), cls="detail-label"),
+        Td(Select(
+            Option(t("acct.cash_flow_derived"), value="",
+                   selected=not v.get("cash_flow_category")),
+            *[Option(x.title(), value=x, selected=(x == v.get("cash_flow_category")))
+              for x in CASH_FLOW_CATEGORIES],
+            name="cash_flow_category", cls="cell-input cell-input--select",
+        )),
+    ))
     if editing:
         rows.append(Tr(
             Td(t("th.status"), cls="detail-label"),
@@ -802,6 +863,7 @@ def setup_routes(app):
                 "name": name,
                 "account_type": account_type,
                 "parent_code": parent_code or None,
+                "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
@@ -853,7 +915,56 @@ def setup_routes(app):
                 "account_type": account_type,
                 "parent_code": parent_code or None,
                 "is_active": str(form.get("is_active", "true")).strip() == "true",
+                "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
+
+    @app.get("/settings/accounting/chart/{code}/cash-flow/edit")
+    async def cash_flow_field_edit(request: Request, code: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            chart_data = await api.get_chart(token)
+            chart = chart_data.get("items", [])
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        acct = next((a for a in chart if a.get("code") == code), None)
+        if acct is None:
+            return P("Account not found", cls="cell-error")
+        return _cash_flow_edit_cell(acct)
+
+    @app.get("/settings/accounting/chart/{code}/cash-flow/display")
+    async def cash_flow_field_display(request: Request, code: str):
+        """Return the read-only display cell (used by the Escape cancel handler)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            chart_data = await api.get_chart(token)
+            chart = chart_data.get("items", [])
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        acct = next((a for a in chart if a.get("code") == code), None)
+        if acct is None:
+            return P("Account not found", cls="cell-error")
+        return _cash_flow_display_cell(code, acct.get("cash_flow_category"))
+
+    @app.patch("/settings/accounting/chart/{code}/cash-flow")
+    async def cash_flow_field_patch(request: Request, code: str):
+        """Save just the cash flow override: a partial update through the same
+        API endpoint patch_account_submit forwards to. An empty value clears the
+        override back to the derived default, and an invalid one comes back as a
+        422 whose message is shown in place rather than swallowed."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        value = str(form.get("value", "")).strip()
+        try:
+            acct = await api.patch_account(token, code, {"cash_flow_category": value})
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _cash_flow_display_cell(code, acct.get("cash_flow_category"))

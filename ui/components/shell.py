@@ -217,6 +217,12 @@ function initCombobox(wrap) {
   // Server-search mode: HTMX swaps the list innerHTML; we save original for restore.
   var isServerSearch = wrap.dataset.searchUrl === '1';
   var originalListHTML = isServerSearch ? list.innerHTML : null;
+  // Multi-select mode: values live in a bag of hidden inputs (one per selection)
+  // rather than the single hidden input, because a repeated query key is what the
+  // server reads and one input cannot carry two values.
+  var isMulti = wrap.dataset.multiple === 'true';
+  var bag = isMulti ? wrap.querySelector('.combobox-selected') : null;
+  var fieldName = hidden ? hidden.getAttribute('data-name') : '';
 
   // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
   // We set top/left/width inline on open so it tracks the input position.
@@ -262,12 +268,60 @@ function initCombobox(wrap) {
     if (next >= opts.length) next = 0;
     if (opts[next]) opts[next].classList.add('focused');
   }
+  function syncMultiLabel() {
+    var n = bag.querySelectorAll('input').length;
+    if (n === 0) { input.value = ''; input.placeholder = wrap.dataset.emptyLabel || ''; return; }
+    if (n === 1) {
+      var only = bag.querySelector('input');
+      input.value = only.getAttribute('data-label') || only.value;
+      return;
+    }
+    var tmpl = wrap.dataset.countLabel || '{n} selected';
+    input.value = tmpl.replace('{n}', n);
+  }
+
+  // The bag is the selection; the tick on an option is only a view of it. A server
+  // search swaps in options the server marked from the URL, and the restore path puts
+  // the options the page loaded with back, so neither knows about anything picked
+  // since. Both re-read the bag rather than trusting the markup that arrived.
+  function markSelected() {
+    if (!isMulti || !bag) return;
+    var chosen = Array.from(bag.querySelectorAll('input')).map(function(el) { return el.value; });
+    currentOpts().forEach(function(opt) {
+      var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
+      opt.classList.toggle('combobox-option--selected', chosen.indexOf(val) !== -1);
+    });
+  }
+
+  function toggleOpt(opt, val, label) {
+    var existing = bag.querySelector('input[value="' + CSS.escape(val) + '"]');
+    if (existing) {
+      existing.remove();
+      opt.classList.remove('combobox-option--selected');
+    } else {
+      var el = document.createElement('input');
+      el.type = 'hidden';
+      el.name = fieldName;
+      el.value = val;
+      el.setAttribute('data-label', label);
+      bag.appendChild(el);
+      opt.classList.add('combobox-option--selected');
+    }
+    syncMultiLabel();
+    // Stay open: picking several accounts in a row is the whole point of the mode.
+    positionList();
+  }
+
   function selectOpt(opt) {
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
     // __new__:URL values trigger a redirect instead of a form submission
     if (val.indexOf('__new__:') === 0) {
       window.location = val.slice('__new__:'.length);
+      return;
+    }
+    if (isMulti && bag) {
+      toggleOpt(opt, val, label);
       return;
     }
     // Show human-readable label in the visible input; store actual value in hidden
@@ -287,7 +341,10 @@ function initCombobox(wrap) {
     // Restore original static options so user sees full list on re-focus after a search
     if (isServerSearch && originalListHTML) {
       list.innerHTML = originalListHTML;
+      markSelected();
     }
+    // Clear the summary so typing searches rather than filtering against "3 selected".
+    if (isMulti) input.value = '';
     filterOpts('');
     positionList();
     list.classList.add('open');
@@ -295,25 +352,29 @@ function initCombobox(wrap) {
   input.addEventListener('input', function() {
     if (isServerSearch) {
       if (!input.value) {
-        // User cleared the search — restore static options and show all
+        // User cleared the search, so put the static options back and show them all
         list.innerHTML = originalListHTML;
+        markSelected();
         filterOpts('');
       }
       // Non-empty: HTMX fires the server request and swaps results into the list
       positionList();
       list.classList.add('open');
-      if (hidden) hidden.value = '';
+      if (hidden && !isMulti) hidden.value = '';
     } else {
       filterOpts(input.value);
       positionList();
       list.classList.add('open');
-      if (hidden) hidden.value = allowCustom ? input.value : '';
+      if (hidden && !isMulti) hidden.value = allowCustom ? input.value : '';
     }
   });
   input.addEventListener('blur', function() {
     // Allow mousedown on option to fire first
     setTimeout(function() {
       list.classList.remove('open');
+      // Typing filters the list in multi mode; the selection bag is the state,
+      // so restore the summary rather than leaving the search text behind.
+      if (isMulti) { syncMultiLabel(); return; }
       // If allow-custom and user typed something not in list, commit typed value
       if (allowCustom && input.value && !hidden.value) {
         hidden.value = input.value;
@@ -350,6 +411,9 @@ function initCombobox(wrap) {
       if (!input.value.trim()) {
         e.preventDefault();
       }
+    });
+    wrap.addEventListener('htmx:afterSwap', function(e) {
+      if (e.target === list) markSelected();
     });
   }
 }
@@ -1350,10 +1414,18 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         slot_items = []
 
     all_items_raw = sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+    # Drop what this company cannot see before deduplicating, not after. Two modules
+    # may offer the same section: accounting and reports both declare "reports",
+    # because the financial reports stay reachable when the reports module is off.
+    # Deduplicating first lets a disabled module's entry win the key and then be
+    # filtered out, taking the enabled module's entry with it and leaving the
+    # section missing from the nav altogether.
+    visible = [item for item in all_items_raw if _allowed(item) and _module_enabled(item)]
+
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
     all_items = []
-    for item in all_items_raw:
+    for item in visible:
         k = item.get("key", "")
         if k and k in seen_keys:
             continue
@@ -1361,8 +1433,6 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             seen_keys.add(k)
         all_items.append(item)
 
-    # Filter by role and enabled modules
-    all_items = [item for item in all_items if _allowed(item) and _module_enabled(item)]
     active = _resolve_active_nav_key(active, all_items, request=request)
 
     # Separate top-level (group=None) from grouped items

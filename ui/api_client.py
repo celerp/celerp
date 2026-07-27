@@ -50,9 +50,9 @@ async def _api_client(token: str, timeout: float = 10.0):
         async with _client(token, timeout=timeout) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large. Try again or reduce batch size.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large. Try again or reduce the batch size.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
@@ -62,9 +62,9 @@ async def _anon_api_client(timeout: float = 10.0):
         async with _anon_client(timeout=timeout) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
@@ -79,9 +79,9 @@ async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
         ) as c:
             yield c
     except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 def _raise(r: httpx.Response) -> httpx.Response:
@@ -883,6 +883,11 @@ async def get_journal(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/journal", params=params or {})).json()
 
 
+async def get_extended_journal(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/extended-journal", params=params or {})).json()
+
+
 async def get_general_ledger(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()
@@ -893,14 +898,20 @@ async def get_soa(token: str, contact_id: str, params: dict | None = None) -> di
         return _raise(await c.get(f"/accounting/soa/{contact_id}", params=params or {})).json()
 
 
+async def get_cash_flow(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/cash-flow", params=params or {})).json()
+
+
 async def create_journal_entry(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/journal-entries", json=data)).json()
 
 
-async def void_journal_entry(token: str, entity_id: str, reason: str | None = None) -> dict:
+async def bulk_void_journal_entries(token: str, je_ids: list[str], reason: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/journal-entries/{entity_id}/void", json={"reason": reason})).json()
+        return _raise(await c.post("/accounting/journal-entries/bulk-void",
+                                   json={"je_ids": je_ids, "reason": reason})).json()
 
 
 async def get_bank_accounts(token: str, include_inactive: bool = False) -> dict:
@@ -2187,10 +2198,10 @@ async def export_backup(token: str, backup_id: str | None = None):
         resp = await client.send(client.build_request("GET", url), stream=True)
     except httpx.TimeoutException as exc:
         await client.aclose()
-        raise APIError(504, "Backup timed out — the archive took too long to build.") from exc
+        raise APIError(504, "Backup timed out. The archive took too long to build.") from exc
     except httpx.ConnectError as exc:
         await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
     if resp.status_code >= 400:
         body = await resp.aread()
         await resp.aclose()

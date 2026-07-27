@@ -32,6 +32,9 @@ from ui.routes.csv_import import (
 )
 
 
+# The accounting API owns this list (celerp_accounting.routes.ACCOUNT_TYPES) and
+# validates against it; the two run in separate processes, so a test asserts they
+# still match.
 ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
 
 _CHART_SPEC = CsvImportSpec(
@@ -253,7 +256,7 @@ def setup_routes(app):
                 skipped=0,
                 errors=[e.detail],
                 entity_label="accounts",
-                back_href="/accounting?tab=chart",
+                back_href="/settings/accounting?tab=chart",
                 import_more_href="/accounting/import/chart",
                 has_mapping=True,
             )
@@ -268,7 +271,7 @@ def setup_routes(app):
             skipped=skipped,
             errors=errors,
             entity_label="accounts",
-            back_href="/accounting?tab=chart",
+            back_href="/settings/accounting?tab=chart",
             import_more_href="/accounting/import/chart",
             has_mapping=True,
         )

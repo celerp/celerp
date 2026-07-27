@@ -12,7 +12,15 @@ import pytest
 pytestmark = pytest.mark.browser
 
 
-def _no_crash(page, ctx=""):
+def _no_crash(page, response, ctx=""):
+    """The page was served and rendered.
+
+    The status is checked as well as the text: a 404 page carries neither a
+    traceback nor the words below, so a body-only check lets a URL that no longer
+    exists pass as a healthy page.
+    """
+    assert response is not None, f"{ctx}: no response"
+    assert response.status < 400, f"{ctx}: HTTP {response.status}"
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, f"{ctx}: 500"
     assert "Traceback (most recent call last)" not in body, f"{ctx}: traceback"
@@ -39,20 +47,20 @@ def test_freight_accounting_pages_render(page, ui_server, api):
     out = Path("context/reviews/freight"); out.mkdir(parents=True, exist_ok=True)
 
     # Balance sheet renders the inventory assets without crashing.
-    page.goto(f"{ui_server}/accounting?tab=balance-sheet", wait_until="domcontentloaded")
+    resp = page.goto(f"{ui_server}/accounting?tab=balance-sheet", wait_until="domcontentloaded")
     page.wait_for_selector("body", timeout=8000)
-    _no_crash(page, "balance-sheet")
+    _no_crash(page, resp, "balance-sheet")
     assert "Inventory" in page.locator("body").inner_text()
     page.screenshot(path=str(out / "accounting-balance-sheet.png"), full_page=True)
 
     # Freight clearing ledger: filled at finalize, drawn down at receive -> nets to zero.
-    page.goto(f"{ui_server}/accounting/ledger/1130-FRT", wait_until="domcontentloaded")
+    resp = page.goto(f"{ui_server}/reports/ledger/1130-FRT", wait_until="domcontentloaded")
     page.wait_for_selector("body", timeout=8000)
-    _no_crash(page, "freight-clearing-ledger")
+    _no_crash(page, resp, "freight-clearing-ledger")
     page.screenshot(path=str(out / "accounting-freight-clearing-ledger.png"), full_page=True)
 
     # Purchased-inventory ledger: holds goods base + capitalised landed.
-    page.goto(f"{ui_server}/accounting/ledger/1130-P", wait_until="domcontentloaded")
+    resp = page.goto(f"{ui_server}/reports/ledger/1130-P", wait_until="domcontentloaded")
     page.wait_for_selector("body", timeout=8000)
-    _no_crash(page, "inventory-ledger")
+    _no_crash(page, resp, "inventory-ledger")
     page.screenshot(path=str(out / "accounting-inventory-ledger.png"), full_page=True)

@@ -124,7 +124,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
     return Div(*els, cls="status-cards")
 
 
-# Shared bulk-action toolbar: [N selected] [Clear] [Action ▾]. Reused across list pages so bulk
+# Shared bulk-action toolbar: [N selected] [Action ▾] [Clear]. Reused across list pages so bulk
 # actions are consistent and extensible. Rows are `.bulk-select` checkboxes (name='selected',
 # value=id) in the table; the header `.bulk-select-all` checkbox toggles visible rows; only
 # VISIBLE (not .dp-row-hidden) rows count, so it composes with the column filters.
@@ -136,29 +136,51 @@ BULK_TOOLBAR_JS = """
     t.querySelectorAll('tbody tr.data-row:not(.dp-row-hidden) .bulk-select'));}
   function checkedIds(t){var seen={},out=[];visBoxes(t).forEach(function(c){
     if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
+  function fieldsBox(bar){return bar.querySelector('.bulk-fields');}
+  function closeFields(bar){var fb=fieldsBox(bar);if(fb)fb.classList.remove('bulk-fields--open');
+    bar.removeAttribute('data-pending');var sel=bar.querySelector('.bulk-action-select');if(sel)sel.selectedIndex=0;}
   function refresh(bar){
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
-    var cnt=bar.querySelector('.bulk-count');if(cnt)cnt.textContent=n+' selected';
-    var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
+    var cnt=bar.querySelector('.bulk-count');
+    if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
+    if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
   }
   function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
   window.celerpBulkRefresh=refreshAll;
-  function doAction(sel){
-    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
-    var ids=checkedIds(t),val=sel.value;sel.selectedIndex=0;
-    if(!ids.length||!val)return;
-    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
-    for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
-    if(!a)return;
-    if(a.confirm&&!confirm(a.confirm))return;
+  function findAction(bar,val){
+    var sel=bar.querySelector('.bulk-action-select');if(!sel)return null;
+    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]');
+    for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
+  function runAction(bar,a){
+    var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
+    if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
+      var inp=document.createElement('input');inp.type='hidden';
+      inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
     document.body.appendChild(form);
     htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
       .then(function(){form.remove();},function(){form.remove();});
+  }
+  // Field-bearing actions (e.g. void, which takes an optional reason) reveal their
+  // inputs below the bar and wait for the confirm button; field-less actions fire at once.
+  function doAction(sel){
+    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
+    var val=sel.value;if(!val)return;
+    // The action list is always usable so its options can be read; if nothing is
+    // ticked, say so and reset rather than silently swallowing the choice (GDR 2e).
+    if(!checkedIds(t).length){sel.selectedIndex=0;
+      if(window.celerpToast)celerpToast(bar.getAttribute('data-empty-msg')||'Select at least one row first.','error');
+      return;}
+    var a=findAction(bar,val);if(!a){sel.selectedIndex=0;return;}
+    var fb=fieldsBox(bar);
+    if(a.fields&&fb){fb.classList.add('bulk-fields--open');bar.setAttribute('data-pending',val);
+      var f0=fb.querySelector('.bulk-field');if(f0)f0.focus();return;}
+    sel.selectedIndex=0;runAction(bar,a);
   }
   document.addEventListener('change',function(e){
     var el=e.target;if(!el||!el.classList)return;
@@ -169,7 +191,16 @@ BULK_TOOLBAR_JS = """
   });
   document.addEventListener('click',function(e){
     var clr=e.target.closest&&e.target.closest('.bulk-clear');
-    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();}
+    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();return;}
+    var ap=e.target.closest&&e.target.closest('.bulk-apply');
+    if(ap){var bar=ap.closest('.bulkbar');var val=bar.getAttribute('data-pending');
+      var a=val?findAction(bar,val):null;closeFields(bar);if(a)runAction(bar,a);return;}
+    var cx=e.target.closest&&e.target.closest('.bulk-cancel');
+    if(cx){closeFields(cx.closest('.bulkbar'));return;}
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;var fb=e.target.closest&&e.target.closest('.bulk-fields');
+    if(fb)closeFields(fb.closest('.bulkbar'));
   });
   document.addEventListener('htmx:afterSwap',function(){refreshAll();});
   refreshAll();
@@ -177,23 +208,40 @@ BULK_TOOLBAR_JS = """
 """
 
 
-def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
-    """Standard bulk-action toolbar: [N selected] [Clear] [Action ▾].
+def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None) -> FT:
+    """Standard bulk-action toolbar: [N selected] [Action ▾] [Clear] [fields…].
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
     url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
-    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there)."""
+    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
+
+    `confirm` text may contain `{n}`, replaced with the number selected at click time.
+    `fields` are extra inputs for an action that takes a value (a void reason). They
+    sit hidden in a `.bulk-fields` group below the action list and only appear when an
+    action marked `"fields": True` is chosen, revealed with its own Apply/Cancel rather
+    than a popup (GDR 2f); any input carrying class `bulk-field` and a name is posted
+    alongside the ids. A field-less action still fires the instant it is chosen."""
     import json as _json
-    opts = [Option("Action…", value="", disabled=True, selected=True)]
+    opts = [Option(t("inv.action"), value="", disabled=True, selected=True)]
     opts += [Option(a["label"], value=a["value"]) for a in actions]
+    field_group = ()
+    if fields:
+        field_group = (Div(
+            *fields,
+            Button(t("btn.apply"), type="button", cls="btn btn--xs btn--primary bulk-apply"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--xs btn--ghost bulk-cancel"),
+            cls="bulk-fields",
+        ),)
     return Div(
-        Span("0 selected", cls="bulk-count"),
-        Button("Clear", type="button", cls="btn btn--xs btn--ghost bulk-clear"),
-        Select(*opts, cls="bulk-action-select", disabled=True,
+        Span(t("label.n_selected", n=0), cls="bulk-count"),
+        Select(*opts, cls="bulk-action-select",
                **{"data-actions": _json.dumps(actions)}),
+        Button(t("btn.clear"), type="button", cls="btn btn--xs btn--ghost bulk-clear"),
+        *field_group,
         Script(BULK_TOOLBAR_JS),
         cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
-        **{"data-table": table_id},
+        **{"data-table": table_id, "data-count-label": t("label.n_selected"),
+           "data-empty-msg": t("label.select_rows_first")},
     )
 
 
@@ -527,6 +575,26 @@ def empty_state_cta(
     return Div(*inner, cls="empty-state-cta")
 
 
+# A journal line's party picker: every contact, and no add-new. The forms that
+# post to a control account by hand share one search URL and one option shape, so
+# a party chosen on the reconciliation screen is the same party the manual entry
+# form would have chosen. There is nowhere on either form to finish creating a
+# contact, and a half-made one would be a party no statement could ever show.
+PARTY_SEARCH_URL = "/contacts/search-options?contact_type=all&add_new=0"
+
+# Parties drawn into a picker before anything is typed. Where the list opens, not
+# the limit of what can be chosen: typing searches the whole list server-side.
+PARTY_PRELOAD = 50
+
+
+def party_options(contacts: list[dict]) -> list[tuple[str, str]]:
+    """Contacts as picker options, labelled with the side of the books they sit on."""
+    return [
+        (c["id"], f"{c.get('name', '')} ({c.get('contact_type') or 'customer'})")
+        for c in contacts if c.get("id")
+    ]
+
+
 def searchable_select(
     name: str,
     options: list[str | tuple[str, str]],
@@ -535,6 +603,9 @@ def searchable_select(
     cls_extra: str = "",
     allow_custom: bool = False,
     search_url: str = "",
+    multiple: bool = False,
+    values: list[str] | None = None,
+    count_label: str = "",
     **htmx_attrs,
 ) -> FT:
     """
@@ -547,14 +618,33 @@ def searchable_select(
     search_url: if set, enables server-side search. The text input sends hx-get
         requests to this URL with ?q=<typed>, replacing the option list via HTMX.
         When q is empty the JS restores the original static options.
+    multiple: if True, options toggle instead of replacing and every selection is
+        submitted under the same name, so the server reads a repeated key. Pass the
+        current selection as `values`. Callers that leave this off render exactly
+        what they rendered before it existed.
+    count_label: summary shown in the closed input when several are selected;
+        "{n}" is replaced with the count. Defaults to the same `label.n_selected`
+        the bulk toolbar counts with, so a caller passes one only to say something
+        other than "N selected".
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
+    count_label = count_label or t("label.n_selected")
     normalized = [
         (o, o) if isinstance(o, str) else (o[0], o[1])
         for o in options
     ]
+    selected = list(values or [])
+    label_by_value = {val: lbl for val, lbl in normalized}
     # Current label for display
-    display_label = next((lbl for val, lbl in normalized if val == value), value)
+    if multiple:
+        if len(selected) == 1:
+            display_label = label_by_value.get(selected[0], selected[0])
+        elif selected:
+            display_label = count_label.replace("{n}", str(len(selected)))
+        else:
+            display_label = ""
+    else:
+        display_label = next((lbl for val, lbl in normalized if val == value), value)
 
     def _opt_cls(val: str) -> str:
         # "__"-prefixed values are action options (add-new, scope toggles): pinned so they
@@ -566,12 +656,25 @@ def searchable_select(
             cls += " combobox-option--new"
         return cls
 
-    opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
+    if multiple:
+        chosen = set(selected)
+        opt_els = [
+            Div(label,
+                cls=_opt_cls(val) + (" combobox-option--selected" if val in chosen else ""),
+                data_value=val)
+            for val, label in normalized
+        ]
+    else:
+        opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
     opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty", style="display:none"))
 
     wrap_attrs: dict = {"cls": "combobox-wrap"}
     if allow_custom:
         wrap_attrs["data_allow_custom"] = "true"
+    if multiple:
+        wrap_attrs["data_multiple"] = "true"
+        wrap_attrs["data_count_label"] = count_label
+        wrap_attrs["data_empty_label"] = placeholder
     if search_url:
         wrap_attrs["data_search_url"] = "1"
         wrap_attrs["hx_get"] = search_url
@@ -583,6 +686,20 @@ def searchable_select(
     text_input_extra: dict = {}
     if search_url:
         text_input_extra["name"] = "q"
+
+    if multiple:
+        # The bag carries the submitted values; the sibling hidden input carries no
+        # value of its own and exists only so the JS can read the field name.
+        return Div(
+            Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
+                  value=display_label, placeholder=placeholder, autocomplete="off", **text_input_extra),
+            Input(type="hidden", data_name=name, value="", **htmx_attrs),
+            Div(*[Input(type="hidden", name=name, value=v,
+                        data_label=label_by_value.get(v, v)) for v in selected],
+                cls="combobox-selected"),
+            Div(*opt_els, cls="combobox-list"),
+            **wrap_attrs,
+        )
 
     return Div(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
@@ -1096,7 +1213,7 @@ def data_table(
         return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
                    title="Drag to reorder columns", style=th_style)
 
-    checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
+    checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
         *checkbox_th,
         *[_th(f) for f in visible],

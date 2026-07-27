@@ -101,6 +101,63 @@ def round_rate(v: _MoneyInput, currency: str) -> Decimal:
     return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
 
 
+# ---------------------------------------------------------------------------
+# Exchange rates.
+# An exchange rate is a ratio between two currencies and belongs to neither, so
+# rate_dp (scaled by one currency) cannot express it. Currencies whose unit is a
+# small fraction of another need many places: 1 LBP is about 0.0000112 USD, and
+# the rial and the dong are smaller still. Twelve places holds those with several
+# significant figures to spare, and it is the precision the journal displays a
+# rate at, so a stored rate is one a reader can reproduce the posted base amount
+# from rather than one that rounds to what they were shown.
+# ---------------------------------------------------------------------------
+EXCHANGE_RATE_DP: int = 12
+
+
+def round_exchange_rate(v: _MoneyInput) -> Decimal:
+    """Round a currency-to-currency exchange rate to EXCHANGE_RATE_DP using HALF_UP.
+
+    Use for storing any entered or derived exchange rate. Amounts converted with it
+    still go through round_money at the currency they land in.
+    """
+    quant = Decimal(10) ** -EXCHANGE_RATE_DP
+    return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def checked_exchange_rate(v: _MoneyInput) -> Decimal:
+    """A rate ready to store, or ValueError if the value is not a usable rate.
+
+    Every door that accepts a rate goes through here, so one rate is one stored
+    fact whichever way it arrived: entered on a document, on a payment, or on a
+    manual journal line.
+
+    A rate multiplies every amount it converts, so zero, negative and non-finite
+    are not slow paths, they are wrong answers. A zero rate posts a foreign
+    amount as though it were already in the books' currency; a negative one posts
+    the mirror image of the document. ValueError rather than HTTPException so the
+    free-form doors (a patch envelope, a form field) can phrase the 422 in the
+    caller's own words, and so an unparseable value comes back as one failure
+    rather than as an ArithmeticError nobody expected.
+    """
+    try:
+        rate = to_decimal(v)
+    except (ArithmeticError, TypeError) as exc:
+        raise ValueError(f"must be a number, not {v!r}") from exc
+    if not rate.is_finite() or rate <= 0:
+        raise ValueError(f"must be greater than zero, not {v}")
+    return round_exchange_rate(rate)
+
+
+def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float:
+    """A document-currency amount expressed in the books' currency, ready to store.
+
+    One multiplication and one rounding, in one place, so a posting and any report
+    that re-derives it can never land a unit apart. A rate of 1 returns the amount
+    rounded at the base currency, which is what a base-currency document needs.
+    """
+    return to_stored_float(round_money(to_decimal(amount) * to_decimal(rate), base_currency))
+
+
 def unit_price_from_total(total: _MoneyInput, qty: _MoneyInput, currency: str) -> Decimal:
     """Derive the unit price from a target line/lot total at the FEWEST decimals (currency_dp..rate_dp)
     such that ``round_money(unit * qty) == round_money(total)``.

@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -37,8 +37,7 @@ def valid_cfg():
 # Patch targets shared across init tests
 _INIT_PATCHES = dict(
     test_db="celerp.cli._test_db",
-    run_migrations="celerp.cli._run_migrations",
-    post_grants="celerp.cli._post_migration_grants",
+    migrate="celerp.cli._migrate_to_head",
     start="celerp.cli._start",
 )
 
@@ -63,8 +62,7 @@ def test_read_config_missing_returns_empty(tmp_config):
 def test_init_defaults(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
@@ -81,8 +79,7 @@ def test_init_no_start_skips_server_launch(tmp_config):
     launching servers (headless/service-managed installs)."""
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]) as mock_start:
         result = runner.invoke(main, ["init", "--no-start"])
     assert result.exit_code == 0, result.output
@@ -95,8 +92,7 @@ def test_init_without_no_start_launches_servers(tmp_config):
     """Regression guard for the desktop one-command UX: no flag → _start runs."""
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]) as mock_start:
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
@@ -108,8 +104,7 @@ def test_init_force_no_start_skips_launch(tmp_config, valid_cfg):
     then exits without launching."""
     _write_config(valid_cfg)
     runner = CliRunner()
-    with patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+    with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]) as mock_start, \
          patch("celerp.cli._stop_servers") as mock_stop, \
          patch("celerp.cli._provision_db") as mock_prov, \
@@ -124,8 +119,7 @@ def test_init_force_no_start_skips_launch(tmp_config, valid_cfg):
 def test_init_shows_star_cta_line(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
@@ -138,8 +132,7 @@ def test_init_omits_star_cta_line_when_disabled(tmp_config, monkeypatch):
     monkeypatch.setattr(settings, "star_cta_enabled", False)
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
@@ -149,8 +142,7 @@ def test_init_omits_star_cta_line_when_disabled(tmp_config, monkeypatch):
 def test_init_custom_flags(tmp_config):
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, [
             "init",
@@ -179,8 +171,7 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
     _write_config(valid_cfg)
     old_secret = valid_cfg["auth"]["jwt_secret"]
     runner = CliRunner()
-    with patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+    with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]), \
          patch("celerp.cli._stop_servers") as mock_stop, \
          patch("celerp.cli._provision_db"), \
@@ -195,21 +186,22 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
     )
 
 
-def test_init_post_migration_grants_called(tmp_config):
-    """_post_migration_grants must be called after migrations so sequences are accessible."""
+def test_init_migrates_through_the_shared_path(tmp_config):
+    """init takes the same migrate path as start, so grants land after migrations.
+
+    Sequences and tables created by a migration are not covered by the ALTER
+    DEFAULT PRIVILEGES set during provisioning, so the order is what makes them
+    accessible. Ordering within that path is asserted where it lives, in
+    test_migrate_to_head_runs_every_step_inside_the_lock.
+    """
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["run_migrations"]) as mock_mig, \
-         patch(_INIT_PATCHES["post_grants"]) as mock_grants, \
+         patch(_INIT_PATCHES["migrate"]) as mock_migrate, \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
-    mock_mig.assert_called_once()
-    mock_grants.assert_called_once()
-    # grants must be called AFTER migrations
-    assert mock_mig.call_args_list[0].args[0] == mock_grants.call_args_list[0].args[0], (
-        "migrations and grants must use the same db_url"
-    )
+    mock_migrate.assert_called_once()
+    assert mock_migrate.call_args.args[0].startswith("postgresql")
 
 
 # The external-server tests pass --db-url, which is how the real external
@@ -234,8 +226,7 @@ def test_init_db_auto_provision_as_root(tmp_config):
     with patch(_INIT_PATCHES["test_db"]) as mock_test, \
          patch("os.getuid", return_value=0), \
          patch("celerp.cli._provision_db") as mock_prov, \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         mock_test.side_effect = ["connection refused", None]
         result = runner.invoke(main, ["init", "--db-url", _EXT_URL])
@@ -265,11 +256,17 @@ def test_status_not_initialized(tmp_config):
 def test_status_initialized(tmp_config, valid_cfg):
     _write_config(valid_cfg)
     runner = CliRunner()
+    # Patch the methods, not the class objects. Replacing the whole
+    # ScriptDirectory (or MigrationContext) binding leaks: alembic.command does
+    # `from .script import ScriptDirectory` at import time, so if alembic.command
+    # is first imported while the class is swapped for a mock, command.upgrade
+    # rebinds to that mock for the life of the process and every later migration
+    # silently no-ops. Patching from_config leaves the class object intact.
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
          patch("sqlalchemy.create_engine"), \
-         patch("alembic.script.ScriptDirectory") as mock_script, \
-         patch("alembic.runtime.migration.MigrationContext"):
-        mock_script.from_config.return_value.get_current_head.return_value = "abc123"
+         patch("alembic.script.ScriptDirectory.from_config") as mock_from_config, \
+         patch("alembic.runtime.migration.MigrationContext.configure"):
+        mock_from_config.return_value.get_current_head.return_value = "abc123"
         result = runner.invoke(main, ["status"])
     assert result.exit_code == 0
     assert "8000" in result.output
@@ -285,33 +282,136 @@ def test_migrate_not_initialized(tmp_config):
     assert "celerp init" in result.output
 
 
-def test_migrate_runs_with_grants(tmp_config, valid_cfg):
-    """migrate must run migrations, grants, then the develop→release reconcile."""
+def test_migrate_runs_the_shared_path(tmp_config, valid_cfg):
+    """migrate goes through the one path `start`, `init` and `upgrade` also use."""
     _write_config(valid_cfg)
     runner = CliRunner()
-    with patch("celerp.cli._run_migrations") as mock_mig, \
-         patch("celerp.cli._post_migration_grants") as mock_grants, \
-         patch("celerp.cli._reconcile_after_migrate") as mock_reconcile:
+    with patch("celerp.cli._migrate_to_head") as mock_migrate:
         result = runner.invoke(main, ["migrate"])
     assert result.exit_code == 0
-    mock_mig.assert_called_once_with(valid_cfg["database"]["url"])
-    mock_grants.assert_called_once_with(valid_cfg["database"]["url"])
-    mock_reconcile.assert_called_once_with(valid_cfg["database"]["url"])
+    mock_migrate.assert_called_once_with(valid_cfg["database"]["url"])
 
 
 def test_migrate_db_url_overrides_config(tmp_config):
     """`migrate --db-url` runs without a config (the packaged launcher path) and
-    threads the given URL through migrations, grants, and the reconcile."""
+    threads the given URL through."""
     url = "postgresql+asyncpg://celerp:celerp@localhost:5432/launcher"
     runner = CliRunner()
-    with patch("celerp.cli._run_migrations") as mock_mig, \
-         patch("celerp.cli._post_migration_grants") as mock_grants, \
-         patch("celerp.cli._reconcile_after_migrate") as mock_reconcile:
+    with patch("celerp.cli._migrate_to_head") as mock_migrate:
         result = runner.invoke(main, ["migrate", "--db-url", url])
     assert result.exit_code == 0, result.output
-    mock_mig.assert_called_once_with(url)
-    mock_grants.assert_called_once_with(url)
-    mock_reconcile.assert_called_once_with(url)
+    mock_migrate.assert_called_once_with(url)
+
+
+# ── _migrate_to_head: the one migrate path ───────────────────────────────────
+
+def _lock_harness(stamps):
+    """Patch _migrate_to_head's collaborators, recording call order.
+
+    Returns (order, contextmanagers). `stamps` is consumed by successive
+    _stamped_revision calls, so a test controls the before/after pair.
+    """
+    import contextlib
+    order: list[str] = []
+
+    def _record(name, *_a, **_k):
+        order.append(name)
+
+    conn = MagicMock()
+    conn.execute.side_effect = lambda stmt, params=None: order.append(
+        "lock" if "pg_advisory_lock" in str(stmt) else "unlock"
+    )
+    engine = MagicMock()
+    engine.execution_options.return_value = engine
+    engine.connect.return_value.__enter__.return_value = conn
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(patch("sqlalchemy.create_engine", return_value=engine))
+    stack.enter_context(patch("celerp.cli._stamped_revision", side_effect=list(stamps)))
+    for step in ("_run_migrations", "_post_migration_grants", "_reconcile_after_migrate"):
+        stack.enter_context(
+            patch(f"celerp.cli.{step}", side_effect=lambda *a, s=step, **k: _record(s))
+        )
+    return order, stack
+
+
+def test_migrate_to_head_runs_every_step_inside_the_lock():
+    """Grants and the reconcile are part of migrating, and nothing runs unlocked.
+
+    Two processes migrating one database concurrently is reachable from a service
+    restart overlapping a manual start, and the loser re-applies existing DDL.
+    """
+    from celerp.cli import _migrate_to_head
+
+    order, stack = _lock_harness(["abc123", "abc123"])
+    with stack:
+        _migrate_to_head("postgresql+asyncpg://celerp:celerp@localhost:5432/x")
+    assert order == [
+        "lock",
+        "_run_migrations",
+        "_post_migration_grants",
+        "_reconcile_after_migrate",
+        "unlock",
+    ]
+
+
+def test_migrate_to_head_releases_the_lock_when_a_migration_fails():
+    """A failed migration must not leave the next process waiting on the lock."""
+    from celerp.cli import _migrate_to_head
+
+    order, stack = _lock_harness(["abc123", "abc123"])
+    with stack, patch("celerp.cli._run_migrations", side_effect=SystemExit(1)):
+        with pytest.raises(SystemExit):
+            _migrate_to_head("postgresql+asyncpg://celerp:celerp@localhost:5432/x")
+    assert order == ["lock", "unlock"]
+
+
+def test_migrate_to_head_reports_the_stamp_it_moved(capsys):
+    """Changing a database's schema is never silent (GDR 2d)."""
+    from celerp.cli import _migrate_to_head
+
+    order, stack = _lock_harness(["d0e1f2a3b4c5", "d5e6f7a8b9c0"])
+    with stack:
+        _migrate_to_head("postgresql+asyncpg://celerp:celerp@localhost:5432/x")
+    out = capsys.readouterr().out
+    assert "d0e1f2a3b4c5" in out and "d5e6f7a8b9c0" in out
+
+
+def test_migrate_to_head_says_nothing_when_it_changed_nothing(capsys):
+    """So an ordinary `celerp start` is as quiet as it was before."""
+    from celerp.cli import _migrate_to_head
+
+    order, stack = _lock_harness(["d5e6f7a8b9c0", "d5e6f7a8b9c0"])
+    with stack:
+        _migrate_to_head("postgresql+asyncpg://celerp:celerp@localhost:5432/x")
+    assert "migrated" not in capsys.readouterr().out
+
+
+def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
+    """The lock is a real Postgres lock, and it is gone afterwards.
+
+    The mocked tests above prove the call order; this proves the SQL is valid and
+    that no session is left holding the key.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        pytest.skip("needs a live database")
+    import sqlalchemy as sa
+    from celerp.cli import _MIGRATION_LOCK_KEY, _migrate_to_head, _sync_url
+
+    with patch("celerp.cli._run_migrations"), \
+         patch("celerp.cli._post_migration_grants"), \
+         patch("celerp.cli._reconcile_after_migrate"):
+        _migrate_to_head(db_url)
+
+    engine = sa.create_engine(_sync_url(db_url))
+    with engine.connect() as conn:
+        held = conn.execute(sa.text(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND "
+            "((classid::bigint << 32) | objid::bigint) = :key"
+        ), {"key": _MIGRATION_LOCK_KEY}).scalar()
+    engine.dispose()
+    assert held == 0
 
 
 # ── celerp start ─────────────────────────────────────────────────────────────
@@ -321,6 +421,27 @@ def test_start_not_initialized(tmp_config):
     result = runner.invoke(main, ["start"])
     assert result.exit_code != 0
     assert "celerp init" in result.output
+
+
+def test_start_migrates_before_launching(tmp_path, valid_cfg):
+    """Installing a version and starting it is one act.
+
+    Without this, a start against a database the new code cannot read comes up
+    and serves an UndefinedColumn error from whichever pages touch the new
+    schema, which reads as a bug in the app rather than a migration not run.
+    """
+    from celerp.cli import _start
+
+    cfg = valid_cfg
+    order: list[str] = []
+    with patch("celerp.cli._migrate_to_head", side_effect=lambda url: order.append(url)), \
+         patch("celerp.cli.subprocess.Popen", side_effect=lambda *a, **k: order.append("spawn")), \
+         patch("celerp.cli._wait_ready", side_effect=RuntimeError("stop here")), \
+         patch("celerp.cli._config_path", return_value=tmp_path / "config.toml"):
+        with pytest.raises(RuntimeError):
+            _start(cfg)
+    assert order[0] == cfg["database"]["url"], "migrated before anything was spawned"
+    assert "spawn" in order
 
 
 # ── _start sentinel-based respawn ────────────────────────────────────────────
@@ -374,6 +495,9 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep", side_effect=fake_sleep),
+        # the supervisor loop is under test, not the migrate step, which would
+        # otherwise open a real connection to the configured database
+        patch("celerp.cli._migrate_to_head"),
         # readiness probing is not under test here, and its sleeps would
         # consume fake_sleep's budget before the supervisor loop runs
         patch("celerp.cli._wait_ready"),
@@ -417,6 +541,7 @@ def test_start_exits_without_sentinel(tmp_path):
         patch("celerp.cli._config_to_env", return_value={}),
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch("celerp.cli.time.sleep"),
+        patch("celerp.cli._migrate_to_head"),  # not under test; would open a real connection
         patch("celerp.cli._wait_ready"),  # not under test; would spin on closed ports
         patch("signal.signal"),
     ):
@@ -449,8 +574,7 @@ def test_init_force_yes_wipes_db_and_files(tmp_config, tmp_path, monkeypatch):
     runner = CliRunner()
     with patch("celerp.cli._provision_db") as prov, \
          patch("celerp.cli._stop_servers"), \
-         patch(_INIT_PATCHES["run_migrations"]), \
-         patch(_INIT_PATCHES["post_grants"]), \
+         patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init", "--force", "--yes", "--db-url", _EXT_URL])
     assert result.exit_code == 0, result.output

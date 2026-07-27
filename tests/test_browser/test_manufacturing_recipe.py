@@ -12,8 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from .inline_edit import set_cell
+
 pytestmark = pytest.mark.browser
 
+SCOPE = "#recipe-section"
 SHOTS = Path("context/reviews/phase1")
 
 
@@ -44,26 +47,14 @@ def _ghost_pick(page, sku):
     opt.click()
 
 
-def _set_cell(page, data_col, value):
+def _set_cell(page, data_col, value, **kw):
     """Edit a recipe value the system-standard way: double-click, type, Enter.
 
-    Retries once: rapid successive cell edits can race the previous cell's swap settling.
+    Text cells show what was typed, so they confirm the saved value by default;
+    a select renders a label instead and passes confirm=False.
     """
-    for attempt in range(2):
-        try:
-            page.dblclick(f'td[data-col="{data_col}"]')
-            inp = page.locator("input[name=value]")
-            inp.wait_for(state="visible", timeout=4000)
-            inp.fill(str(value))
-            inp.press("Enter")
-            cell = page.locator(f'td[data-col="{data_col}"]')
-            cell.wait_for(state="visible", timeout=6000)
-            if str(value) in cell.inner_text():
-                return
-        except Exception:
-            if attempt:
-                raise
-    raise AssertionError(f"cell {data_col} did not save {value}")
+    kw.setdefault("confirm", True)
+    return set_cell(page, data_col, value, scope=SCOPE, **kw)
 
 
 def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
@@ -207,9 +198,7 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     assert row.locator("td.recipe-cell--na").count() == 0  # rate-based rows hide nothing
 
     # Switch the committed row's Type to Fixed -> Qty/Rate dim, Total becomes the editable amount.
-    page.dblclick('td[data-col="recipe__labor__0__kind"]')
-    page.wait_for_selector("select[name=value]", timeout=5000)
-    page.select_option("select[name=value]", "fixed")
+    _set_cell(page, "recipe__labor__0__kind", "fixed", kind="select", confirm=False)
     page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=8000)
     assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # Qty now dimmed N/A
     assert page.locator('tr:has(td[data-col="recipe__labor__0__amount"]) td.recipe-cell--na').count() == 2

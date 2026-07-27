@@ -34,7 +34,11 @@ dependencies = [
     "httpx>=0.27",
     "slowapi>=0.1.9",
     "reportlab>=4.0",
-    "python-fasthtml>=0.12",
+    # 0.14 is the floor that works with Starlette 1.0, which dropped the
+    # on_startup/on_shutdown arguments earlier fasthtml passes. Both dependencies
+    # are otherwise unbounded, so a lower floor lets a resolve pair 0.12 with
+    # Starlette 1.x and produce an app that cannot be constructed.
+    "python-fasthtml>=0.14",
     "psutil>=5.9",
     "websockets>=12.0",
     "aiosmtplib>=3.0",
@@ -86,7 +90,12 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=30"
+# --timeout guards against a hung test wedging the run. 30s was under the real
+# cost of a page-rendering test on a slow filesystem: fixture setup alone measures
+# 8-19s per worker there, and a two-render test lands at 20-25s, so shards failed
+# on timing rather than on anything being wrong. 60s keeps the guard meaningful
+# (a genuine deadlock still trips it) with headroom for parallel runs.
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=60"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 pythonpath = [".", ".."]
 markers = [

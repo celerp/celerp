@@ -66,19 +66,6 @@ async def _page_or_fragment(request: Request, *content, title: str, nav_active: 
 
 def setup_routes(app):
 
-    @app.get("/reports")
-    async def reports_index(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        return await base_shell(
-            page_header(t("page.reports", get_lang(request))),
-            _report_index(lang=get_lang(request)),
-            title="Reports - Celerp",
-            nav_active="reports",
-            request=request,
-        )
-
     @app.get("/reports/ar-aging")
     async def ar_aging(request: Request):
         token = _token(request)
@@ -332,28 +319,16 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
     return Div(*parts, cls="date-filter-bar")
 
 
-def _report_index(lang: str = "en") -> FT:
-    reports = [
-        ("/reports/ar-aging", t("page.ar_aging", lang), t("rpt.ar_aging_desc", lang)),
-        ("/reports/ap-aging", t("page.ap_aging", lang), t("rpt.ap_aging_desc", lang)),
-        ("/reports/sales?group_by=customer", t("page.sales_report", lang), t("rpt.sales_desc", lang)),
-        ("/reports/purchases?group_by=supplier", t("page.purchases_report", lang), t("rpt.purchases_desc", lang)),
-        ("/reports/expiring?days=30", t("page.expiring_items", lang), t("rpt.expiring_desc", lang)),
-        ("/accounting/pnl", t("page.profit_loss", lang), t("rpt.pnl_desc", lang)),
-        ("/accounting/balance-sheet", t("page.balance_sheet", lang), t("rpt.balance_sheet_desc", lang)),
-    ]
-    return Div(
-        *[
-            A(
-                Strong(name),
-                P(desc, cls="quick-link-desc"),
-                href=href,
-                cls="quick-link-card",
-            )
-            for href, name, desc in reports
-        ],
-        cls="quick-links-grid",
-    )
+# Operational report cards contributed to the /reports index. The index itself is
+# owned by the accounting module, which also ships the financial reports, so the
+# section still has a landing page when this module is not installed.
+OPERATIONAL_REPORTS: list[tuple[str, str, str]] = [
+    ("/reports/ar-aging", "page.ar_aging", "rpt.ar_aging_desc"),
+    ("/reports/ap-aging", "page.ap_aging", "rpt.ap_aging_desc"),
+    ("/reports/sales?group_by=customer", "page.sales_report", "rpt.sales_desc"),
+    ("/reports/purchases?group_by=supplier", "page.purchases_report", "rpt.purchases_desc"),
+    ("/reports/expiring?days=30", "page.expiring_items", "rpt.expiring_desc"),
+]
 
 
 def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str = "desc", currency: str | None = None) -> FT:
