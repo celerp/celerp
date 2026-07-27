@@ -491,6 +491,7 @@
   "doc.revert_to_draft": "Kembalikan ke Draf",
   "doc.send_multiple_hint": "Pisahkan beberapa alamat dengan koma (,)",
   "doc.sent": "Terkirim",
+  "doc.share_online_note": "Perlu diketahui bahwa URL ini hanya akan berfungsi selama perangkat Anda daring. Dokumen Anda tetap tersimpan di komputer Anda.",
   "doc.source_doc": "Dokumen sumber",
   "doc.status": "Status:",
   "doc.stock": "Stok",

@@ -491,6 +491,7 @@
   "doc.revert_to_draft": "ドラフトに戻す",
   "doc.send_multiple_hint": "複数のアドレスはカンマ（,）で区切ってください",
   "doc.sent": "送信済み",
+  "doc.share_online_note": "この URL はお使いの端末がオンラインの間のみ有効です。書類はお使いのコンピューターに保存されたままです。",
   "doc.source_doc": "元伝票",
   "doc.status": "状態：",
   "doc.stock": "在庫",

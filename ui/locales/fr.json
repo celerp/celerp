@@ -491,6 +491,7 @@
   "doc.revert_to_draft": "Revenir au brouillon",
   "doc.send_multiple_hint": "Séparer plusieurs adresses par une virgule (,)",
   "doc.sent": "Envoyé",
+  "doc.share_online_note": "Veuillez noter que cette URL ne fonctionnera que lorsque votre appareil est en ligne. Vos documents restent sur votre ordinateur.",
   "doc.source_doc": "Document source",
   "doc.status": "Statut :",
   "doc.stock": "Stock",

@@ -527,6 +527,7 @@
   "doc.share_hint_off": "This link goes live when you press Share.",
   "doc.share_live_tip": "Link is live",
   "doc.share_off_tip": "Not shared",
+  "doc.share_online_note": "Please note this URL will only work while your terminal is online. Your documents stay on your computer.",
   "doc.source_doc": "Ships",
   "doc.status": "Status:",
   "doc.stock": "Stock",

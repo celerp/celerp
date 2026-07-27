@@ -2447,6 +2447,43 @@ class TestDocumentPolish:
         assert b'title="Click to edit"' in r.content
 
     @pytest.mark.asyncio
+    async def test_share_enabled_without_public_url(self, ui_client):
+        """A free relay-bound instance (gateway_token_set true, no paid public_url)
+        still shows the Share control. Gating on public_url alone hid it (GDR 2e)."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-get="/docs/d:1/share"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_online_note_present(self, ui_client):
+        """The online-only note renders in both the send modal and the share panel."""
+        note = b"Please note this URL will only work while your terminal is online."
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            page = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert note in page.content
+        with (
+            patch("ui.api_client.get_share_status", new=AsyncMock(
+                return_value={"active": True, "view_url": "https://share.celerp.com/x",
+                              "expires_at": "2026-12-31"})),
+        ):
+            panel = await ui_client.get(
+                "/docs/d:1/share",
+                cookies=_authed(),
+                headers={"HX-Request": "true", "HX-Current-URL": "http://ui/docs/d:1"})
+        assert note in panel.content
+
+    @pytest.mark.asyncio
     async def test_doc_empty_editable_cell_still_clickable(self, ui_client):
         """A None/empty field value renders editable-cell with '--' but still has hx-get."""
         doc = {**_DOC_DETAIL, "reference": None, "payment_terms": None}
@@ -11280,22 +11317,27 @@ class TestDocumentsOverhaul:
         assert b"Unmark Sent" in r.content
 
     @pytest.mark.asyncio
-    async def test_share_button_gated_on_public_url(self, ui_client):
-        """Share renders only when the relay reports a public URL (the link is
-        served there - without it every minted URL would be dead), and the
-        legacy Copy Link button stays gone. relay status is pinned so the test
-        is deterministic even with a live dev server running."""
-        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+    async def test_share_button_gated_on_relay_binding(self, ui_client):
+        """Share renders whenever the instance is relay-bound and can mint a
+        link - a paid instance from its own public URL, a free instance through
+        the relay - and stays hidden only for a self-hosted instance with no
+        relay token. The legacy Copy Link button stays gone. relay status is
+        pinned so the test is deterministic even with a live dev server running."""
+        _self_hosted = AsyncMock(return_value={
+            "connected": False, "public_url": "", "gateway_token_set": False})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=_no_relay):
+             patch("ui.api_client.get_relay_status", new=_self_hosted):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert "Copy Link" not in content
         assert '>Share<' not in content
 
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        # Free relay-bound instance: no paid public_url, but it can mint.
+        _relay_bound = AsyncMock(return_value={
+            "connected": True, "public_url": "", "gateway_token_set": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=_relay):
+             patch("ui.api_client.get_relay_status", new=_relay_bound), \
+             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         assert '>Share<' in r.content.decode()
 
@@ -11346,7 +11388,8 @@ class TestDocumentsOverhaul:
         """No share opt-out: the modal states the view link is added for 30
         days, and the Share button carries a status dot (green when live)."""
         doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={
+            "connected": True, "public_url": "https://x.celerp.com", "gateway_token_set": True})
         _active = AsyncMock(return_value={"active": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay), \
