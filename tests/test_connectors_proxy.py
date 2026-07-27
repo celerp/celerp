@@ -55,7 +55,7 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
-    assert "/settings/cloud" in html                       # the upgrade CTA link
+    assert "celerp.com/subscribe" in html                  # the upgrade CTA link
     assert "connector-entitlement-cta" in html
     assert "Could not load connectors" not in html
 

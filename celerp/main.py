@@ -143,8 +143,9 @@ async def _try_auto_activate() -> None:
         if public_url or await has_active_share():
             ensure_running()
             _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
-        # Start backup scheduler
-        if _s.backup_enabled and _s.backup_encryption_key:
+        # Start backup scheduler - paid tiers only (public_url is the paid signal;
+        # a free instance is not entitled to backups at all).
+        if public_url and _s.backup_enabled and _s.backup_encryption_key:
             from celerp.services import backup_scheduler
             backup_scheduler.start()
     except Exception as exc:
@@ -233,8 +234,9 @@ async def lifespan(_app: FastAPI):
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
         asyncio.create_task(_try_auto_activate())
 
-    # Start backup scheduler if cloud is connected and backup is enabled
-    if settings.gateway_token and settings.backup_encryption_key and settings.backup_enabled:
+    # Start backup scheduler - paid tiers only (public_url is the paid signal;
+    # a free instance is not entitled to backups at all).
+    if settings.celerp_public_url and settings.backup_encryption_key and settings.backup_enabled:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
         log.debug("Backup scheduler started")

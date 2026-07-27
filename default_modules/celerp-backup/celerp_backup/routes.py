@@ -167,7 +167,9 @@ async def list_backups(request: Request):
     from celerp.gateway.state import get_session_token
     from celerp.services import backup_repo
 
-    if not get_session_token():
+    # Backups are a paid-tier feature; a free instance holds a gateway_token
+    # (for marketplace purchases) but no public_url, and has no backup entitlement.
+    if not get_session_token() or not settings.celerp_public_url:
         if request.headers.get("HX-Request"):
             from fasthtml.common import Div, to_xml
             return Response(

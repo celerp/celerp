@@ -9716,17 +9716,42 @@ class TestWebAccessPlansAd:
     free tabs stay, the pitch a not-connected visitor sees stays too. Paid
     tiers and unknown tiers never see the upsell."""
 
-    def _mocks(self, tier, relay_status="active"):
+    def _mocks(self, tier, relay_status="active", public_url=""):
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch(
             "ui.api_client.get_relay_status",
             new=AsyncMock(return_value={"connected": True, "relay_status": relay_status,
-                                        "public_url": "", "tier": tier})))
+                                        "public_url": public_url, "tier": tier})))
         stack.enter_context(patch(
             "ui.api_client.get_backup_status",
-            new=AsyncMock(return_value={"db": {}, "next_db_utc": None})))
+            new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": public_url})))
         return stack
+
+    @pytest.mark.asyncio
+    async def test_free_tier_shows_free_tier_note_and_no_backup_card(self, ui_client):
+        """Free tier gets a plain statement of what it has (decision: 10 emails,
+        document sharing, community modules, marketplace) - not just a bare
+        'Active' status with nothing to tell it apart from a paid connection.
+        No public_url means no backup entitlement, so the backup summary card
+        (scheduler state, next-run countdown) must not render at all."""
+        with self._mocks(tier="free"):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Free Tier" in r.text
+        assert "10 emails per month" in r.text
+        assert "Share documents with customers" in r.text
+        assert "Download community modules" in r.text
+        assert "Access the module marketplace" in r.text
+        assert "Next DB backup" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_paid_tier_no_free_tier_note_shows_backup_card(self, ui_client):
+        with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Free Tier" not in r.text
+        assert "Next DB backup" in r.text
 
     @pytest.mark.asyncio
     async def test_free_tier_sees_tabs_and_plans_ad(self, ui_client):

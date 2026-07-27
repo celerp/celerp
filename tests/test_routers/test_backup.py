@@ -62,8 +62,10 @@ async def auth_client(session: AsyncSession):
 @pytest.fixture(autouse=True)
 def reset_backup_settings():
     orig_key = settings.backup_encryption_key
+    orig_public_url = settings.celerp_public_url
     yield
     settings.backup_encryption_key = orig_key
+    settings.celerp_public_url = orig_public_url
 
 
 # ── POST /backup/trigger ──────────────────────────────────────────────────────
@@ -116,6 +118,21 @@ async def test_list_no_session_token_json(auth_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_free_tier_session_token_but_no_public_url(auth_client, monkeypatch):
+    """Backups are a paid-tier feature: a free instance holds a session token
+    (for marketplace purchases) but no public_url, and must get the same
+    paywalled empty state as a fully disconnected instance - never a live
+    relay call (regression: this used to 500)."""
+    assert settings.celerp_public_url == ""
+    r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "empty-state-msg" in r.text
+    r = await auth_client.get("/backup/list")
+    assert r.status_code == 200
+    assert r.json() == {"items": []}
+
+
+@pytest.mark.asyncio
 async def test_list_htmx_with_items(auth_client, monkeypatch):
     """HTMX request returns rendered table when relay returns items."""
     import httpx as _httpx
@@ -123,6 +140,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
 
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
+    settings.celerp_public_url = "https://x.celerp.com"
 
     items = [
         {"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 1048576, "label": "daily"},
@@ -149,6 +167,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
 
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
+    settings.celerp_public_url = "https://x.celerp.com"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(
@@ -168,6 +187,7 @@ async def test_list_json(auth_client, monkeypatch):
 
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
+    settings.celerp_public_url = "https://x.celerp.com"
 
     items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
     with respx.mock:
@@ -188,6 +208,7 @@ async def test_list_relay_error(auth_client, monkeypatch):
 
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
+    settings.celerp_public_url = "https://x.celerp.com"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(

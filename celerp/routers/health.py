@@ -152,6 +152,7 @@ async def backup_status() -> dict:
         "running": running,
         "active": is_active(),
         "gateway_token_set": bool(settings.gateway_token),
+        "public_url": settings.celerp_public_url,
         "enc_ok": bool(settings.backup_encryption_key),
         "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
@@ -233,20 +234,20 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
     except Exception:
         pass
 
-    if _gw.get_client() is None:
-        gw = _gw.GatewayClient(
-            gateway_token=token,
-            instance_id=iid,
-            gateway_url=_s.gateway_url,
-        )
-        _gw.set_client(gw)
-        asyncio.create_task(gw.run())
+    # Route through ensure_running() - the single construction site - rather than
+    # constructing GatewayClient inline; it applies the same lazy-tunnel gate as
+    # boot and auto-activate (paid public_url, or a free instance with a live share).
+    from celerp.gateway import ensure_running, has_active_share
+    if _s.celerp_public_url or await has_active_share():
+        ensure_running()
+        gw = _gw.get_client()
         for _ in range(15):
-            if gw.relay_status == "active":
+            if gw and gw.relay_status == "active":
                 break
             await asyncio.sleep(0.2)
 
-    if _s.backup_enabled and _s.backup_encryption_key:
+    # Backups are a paid-tier feature; public_url is the paid signal.
+    if _s.celerp_public_url and _s.backup_enabled and _s.backup_encryption_key:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
 

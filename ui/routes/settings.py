@@ -3821,11 +3821,14 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
+def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
+                      tier: str | None = None) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
+    tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); None when
+    unknown (e.g. mid-reconnect fragments), which simply omits the free-tier note.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3871,9 +3874,26 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                   style="margin:4px 0 0;"),
             )))
 
+        free_tier_note = Div(
+            P(
+                Span(t("cloud.free_tier_badge"), cls="badge badge--inactive", style="margin-right:6px;"),
+                t("cloud.free_tier_note"),
+                cls="settings-hint",
+            ),
+            Ul(
+                Li(t("cloud.free_b1")),
+                Li(t("cloud.free_b2")),
+                Li(t("cloud.free_b3")),
+                Li(t("cloud.free_b4")),
+                style="margin:6px 0 0;padding-left:20px;",
+            ),
+            style="margin-top:12px;",
+        ) if tier == "free" else ""
+
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(*rows, cls="detail-table"),
+            free_tier_note,
             Div(
                 Button(t("btn.disconnect"),
                     cls="btn btn--sm btn--outline btn--danger",
@@ -3900,9 +3920,12 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
-    # gw_ok is derived from the API response - reading get_client() here would
-    # always return None because the gateway client lives in the API process.
-    gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))
+    # gw_ok gates on public_url, not just a gateway_token: a free instance now holds
+    # a gateway_token too (marketplace purchases), but backups are a paid-tier
+    # feature and public_url is only granted to paid tiers (mirrors the lazy-tunnel
+    # gate). Derived from the API response - reading get_client()/settings here
+    # would always return the UI process's own state, not the API process's.
+    gw_ok = bool(backup_data and backup_data.get("public_url"))
 
     if not gw_ok:
         return Div(

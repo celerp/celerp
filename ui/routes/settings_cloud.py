@@ -488,8 +488,12 @@ def setup_routes(app):
                 backup_data = await _api.get_backup_status(token)
             except Exception:
                 pass
-            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url),
-                     _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data)]
+            # Backups are a paid-tier feature (like connectors); a free instance has
+            # no public_url and no backup entitlement, so the summary card is omitted
+            # entirely rather than showing scheduler/pending state for a plan that
+            # never runs backups.
+            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier),
+                     _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the
             # plans are exactly what the free tier is missing. Only on the
