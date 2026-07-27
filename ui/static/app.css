@@ -2790,7 +2790,9 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   line-height: 1.5;
   margin: 0 0 18px;
 }
-.account-gate-modal .account-panel__form {
+/* Compound selector: must outrank `.account-gate-modal.modal-dialog form`
+   above, which zeroes gap - both target the same <form> element. */
+.account-gate-modal.modal-dialog .account-panel__form {
   gap: 10px;
   width: 100%;
 }
