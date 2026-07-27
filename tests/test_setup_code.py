@@ -84,8 +84,7 @@ def tmp_config(tmp_path, monkeypatch):
 def test_init_no_start_mints_setup_code(tmp_config):
     runner = CliRunner()
     with patch("celerp.cli._test_db", return_value=None), \
-         patch("celerp.cli._run_migrations"), \
-         patch("celerp.cli._post_migration_grants"), \
+         patch("celerp.cli._migrate_to_head"), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch("celerp.cli._start") as mock_start:
         result = runner.invoke(main, ["init", "--no-start",
@@ -115,8 +114,7 @@ def test_setup_form_shows_code_field_only_when_required():
 def test_init_without_no_start_has_no_setup_code(tmp_config):
     runner = CliRunner()
     with patch("celerp.cli._test_db", return_value=None), \
-         patch("celerp.cli._run_migrations"), \
-         patch("celerp.cli._post_migration_grants"), \
+         patch("celerp.cli._migrate_to_head"), \
          patch("celerp.cli._needs_ownership_fix", return_value=False), \
          patch("celerp.cli._start"):
         result = runner.invoke(main, ["init",

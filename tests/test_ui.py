@@ -1372,12 +1372,14 @@ class TestDocCatalogLookup:
 class TestAccountingPage:
     @pytest.mark.asyncio
     async def test_accounting_renders(self, ui_client):
-        """Default tab is P&L."""
-        with patch("ui.api_client.get_pnl", new=AsyncMock(return_value=_PNL)):
+        """The accounting page is the journal; the reports moved to /reports."""
+        with patch("ui.api_client.get_journal",
+                   new=AsyncMock(return_value={"entries": [], "total_debit": 0,
+                                               "total_credit": 0})):
             r = await ui_client.get("/accounting", cookies=_authed())
         assert r.status_code == 200
         assert b"Accounting" in r.content
-        assert b"P&amp;L" in r.content or b"P&L" in r.content
+        assert b"/reports/pnl" in r.content
 
     @pytest.mark.asyncio
     async def test_accounting_chart_in_settings(self, ui_client):
@@ -1389,16 +1391,39 @@ class TestAccountingPage:
         assert b"Cash" in r.content
 
     @pytest.mark.asyncio
-    async def test_pnl_redirects_to_tab(self, ui_client):
-        r = await ui_client.get("/accounting/pnl", cookies=_authed())
-        assert r.status_code == 302
-        assert "tab=pnl" in r.headers.get("location", "")
+    async def test_je_rate_input_accepts_any_step(self, ui_client):
+        """The journal's per-line rate field must not round the rate in the browser.
+
+        Same reasoning as the document payment field: a step of 0.0001 makes a
+        rate like 0.00001117318 unenterable. The floor is enforced at function
+        level with a message naming the line, not by a control the user cannot
+        reach past (GDR 2e).
+        """
+        with patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert 'name="rate_' in html, "the journal form should offer a per-line rate"
+        for field in html.split('name="rate_')[1:]:
+            tag = field[:200]
+            assert 'step="any"' in tag, tag
+            assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
 
     @pytest.mark.asyncio
-    async def test_balance_sheet_redirects_to_tab(self, ui_client):
+    async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
+        r = await ui_client.get("/accounting/pnl", cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/reports/pnl")
+
+    @pytest.mark.asyncio
+    async def test_balance_sheet_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/balance-sheet", cookies=_authed())
         assert r.status_code == 302
-        assert "tab=balance-sheet" in r.headers.get("location", "")
+        assert r.headers.get("location", "").startswith("/reports/balance-sheet")
 
 
 class TestPeriodLockAndCloseBooks:
@@ -2422,6 +2447,43 @@ class TestDocumentPolish:
         assert b'title="Click to edit"' in r.content
 
     @pytest.mark.asyncio
+    async def test_share_enabled_without_public_url(self, ui_client):
+        """A free relay-bound instance (gateway_token_set true, no paid public_url)
+        still shows the Share control. Gating on public_url alone hid it (GDR 2e)."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-get="/docs/d:1/share"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_online_note_present(self, ui_client):
+        """The online-only note renders in both the send modal and the share panel."""
+        note = b"Please note this URL will only work while your terminal is online."
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": True, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            page = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert note in page.content
+        with (
+            patch("ui.api_client.get_share_status", new=AsyncMock(
+                return_value={"active": True, "view_url": "https://share.celerp.com/x",
+                              "expires_at": "2026-12-31"})),
+        ):
+            panel = await ui_client.get(
+                "/docs/d:1/share",
+                cookies=_authed(),
+                headers={"HX-Request": "true", "HX-Current-URL": "http://ui/docs/d:1"})
+        assert note in panel.content
+
+    @pytest.mark.asyncio
     async def test_doc_empty_editable_cell_still_clickable(self, ui_client):
         """A None/empty field value renders editable-cell with '--' but still has hx-get."""
         doc = {**_DOC_DETAIL, "reference": None, "payment_terms": None}
@@ -3069,7 +3131,7 @@ class TestDateRangeFilters:
     @pytest.mark.asyncio
     async def test_pnl_tab_has_date_filter(self, ui_client):
         with patch("ui.api_client.get_pnl", new=AsyncMock(return_value={"revenue": {"total": 0, "lines": []}, "cogs": {"total": 0, "lines": []}, "gross_profit": 0, "expenses": {"total": 0, "lines": []}, "net_profit": 0})):
-            r = await ui_client.get("/accounting?tab=pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl", cookies=_authed())
         assert r.status_code == 200
         assert b"date-filter-bar" in r.content
 
@@ -3685,6 +3747,26 @@ class TestSprint4Payment:
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         assert b"Record Payment" in r.content or b"payment" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_document_payment_rate_inputs_accept_any_step(self, ui_client):
+        """A rate is a ratio, and a four-decimal step is not enough of one.
+
+        A currency quoted around 89,500 to the unit converts at 0.00001117, and
+        a step of 0.0001 rounds that to nothing. The step and floor are opened
+        up so the field accepts what the rate actually is; a rate of zero is
+        refused by the server with a message, not by a control the user cannot
+        reach past (GDR 2e).
+        """
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SENT_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        html = r.content.decode()
+        i = html.find('name="conversion_rate"')
+        assert i != -1, "the payment section should offer a conversion rate"
+        for field in html.split('name="conversion_rate"')[1:]:
+            tag = field[:200]
+            assert 'step="any"' in tag, tag
+            assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
 
     @pytest.mark.asyncio
     async def test_payment_section_not_visible_for_draft(self, ui_client):
@@ -7138,25 +7220,20 @@ class TestCurrencyThreading:
 
     @pytest.mark.asyncio
     async def test_accounting_page_uses_company_currency(self, ui_client):
-        _empty_section = {"lines": [], "total": 0}
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={
                 "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01"
             })),
-            patch("ui.api_client.get_pnl", new=AsyncMock(return_value={
-                "revenue": _empty_section, "cogs": _empty_section, "expenses": _empty_section,
-                "gross_profit": 0, "net_profit": 0,
-            })),
-            patch("ui.api_client.get_balance_sheet", new=AsyncMock(return_value={
-                "assets": _empty_section, "liabilities": _empty_section, "equity": _empty_section,
-                "total_assets": 0, "total_liabilities": 0, "total_equity": 0,
-            })),
-            patch("ui.api_client.get_trial_balance", new=AsyncMock(return_value={
-                "accounts": [], "total_debit": 0, "total_credit": 0,
+            patch("ui.api_client.get_journal", new=AsyncMock(return_value={
+                "entries": [], "total_debit": 1234.5, "total_credit": 1234.5,
             })),
         ):
             r = await ui_client.get("/accounting", cookies=_authed())
         assert r.status_code == 200
+        body = r.content.decode()
+        # Journal totals must be formatted with the company currency, not a hardcoded symbol
+        assert "$1,234.50" in body
+        assert "฿" not in body
 
     @pytest.mark.asyncio
     async def test_crm_deal_value_uses_fmt_money(self, ui_client):
@@ -12342,22 +12419,27 @@ class TestDocumentsOverhaul:
         assert b"Unmark Sent" in r.content
 
     @pytest.mark.asyncio
-    async def test_share_button_gated_on_public_url(self, ui_client):
-        """Share renders only when the relay reports a public URL (the link is
-        served there - without it every minted URL would be dead), and the
-        legacy Copy Link button stays gone. relay status is pinned so the test
-        is deterministic even with a live dev server running."""
-        _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
+    async def test_share_button_gated_on_relay_binding(self, ui_client):
+        """Share renders whenever the instance is relay-bound and can mint a
+        link - a paid instance from its own public URL, a free instance through
+        the relay - and stays hidden only for a self-hosted instance with no
+        relay token. The legacy Copy Link button stays gone. relay status is
+        pinned so the test is deterministic even with a live dev server running."""
+        _self_hosted = AsyncMock(return_value={
+            "connected": False, "public_url": "", "gateway_token_set": False})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=_no_relay):
+             patch("ui.api_client.get_relay_status", new=_self_hosted):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert "Copy Link" not in content
         assert '>Share<' not in content
 
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        # Free relay-bound instance: no paid public_url, but it can mint.
+        _relay_bound = AsyncMock(return_value={
+            "connected": True, "public_url": "", "gateway_token_set": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=_relay):
+             patch("ui.api_client.get_relay_status", new=_relay_bound), \
+             patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         assert '>Share<' in r.content.decode()
 
@@ -12408,7 +12490,8 @@ class TestDocumentsOverhaul:
         """No share opt-out: the modal states the view link is added for 30
         days, and the Share button carries a status dot (green when live)."""
         doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={
+            "connected": True, "public_url": "https://x.celerp.com", "gateway_token_set": True})
         _active = AsyncMock(return_value={"active": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay), \
@@ -16554,6 +16637,194 @@ class TestChartOfAccountsAddEdit:
         # The account code is the posting identity journal lines reference:
         # it is displayed, never editable.
         assert b'name="code"' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_edit_account_page_offers_the_cash_flow_override(self, ui_client):
+        """The classification the cash flow statement uses is settable here, and the
+        page shows what the account currently carries rather than a blank control."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'name="cash_flow_category"' in body
+        for category in ("operating", "investing", "financing"):
+            assert f'value="{category}"' in body
+        assert '<option value="financing" selected' in body
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_forwards_the_cash_flow_override(self, ui_client):
+        """A mock returns its fixture whatever it is called with, so assert on what
+        the page sent: the override has to reach the API to mean anything."""
+        patch_mock = AsyncMock(return_value={"code": "1000"})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash", "account_type": "asset", "parent_code": "",
+                      "is_active": "true", "cash_flow_category": "investing"},
+            )
+        assert r.status_code == 204
+        assert patch_mock.await_args.args[2]["cash_flow_category"] == "investing"
+
+    @pytest.mark.asyncio
+    async def test_patch_account_submit_sends_an_empty_override_to_clear_it(self, ui_client):
+        patch_mock = AsyncMock(return_value={"code": "1000"})
+        with patch("ui.api_client.patch_account", new=patch_mock), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000",
+                cookies=_authed(),
+                data={"name": "Cash", "account_type": "asset", "parent_code": "",
+                      "is_active": "true", "cash_flow_category": ""},
+            )
+        assert r.status_code == 204
+        assert patch_mock.await_args.args[2]["cash_flow_category"] == ""
+
+    @pytest.mark.asyncio
+    async def test_create_account_submit_forwards_the_cash_flow_override(self, ui_client):
+        create = AsyncMock(return_value={"code": "1999"})
+        with patch("ui.api_client.create_account", new=create), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.post(
+                "/settings/accounting/chart/new",
+                cookies=_authed(),
+                data={"code": "1999", "name": "Test Clearing", "account_type": "asset",
+                      "parent_code": "", "cash_flow_category": "financing"},
+            )
+        assert r.status_code == 204
+        assert create.await_args.args[1]["cash_flow_category"] == "financing"
+
+    @pytest.mark.asyncio
+    async def test_chart_table_shows_the_category_and_dashes_when_unset(self, ui_client):
+        """An account on the default reads as "--", not as a blank cell, so the
+        column is legible as "nothing set here" rather than as missing data. Both
+        the set and unset cells render inside the click-to-edit wrapper."""
+        chart = [_CHART[0], {"code": "1210", "name": "Equipment", "account_type": "asset",
+                             "parent_code": "", "is_active": True,
+                             "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert ">Financing<" in body
+        assert ">--<" in body
+        assert 'hx-get="/settings/accounting/chart/1210/cash-flow/edit"' in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_chart_table_cash_flow_cell_is_click_to_edit(self, ui_client):
+        """The cash flow column is a click-to-edit cell like the rest of the app's
+        inline-editable cells, not plain text that only the full edit form can change."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'class="editable-cell"' in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+        assert 'hx-trigger="click"' in body
+        assert 'title="Click to edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_chart_table_cash_flow_cell_shows_dash_and_stays_clickable_when_unset(self, ui_client):
+        """An account carrying no override still shows '--', and the cell keeps its
+        click-to-edit trigger rather than becoming a dead cell."""
+        with patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting?tab=chart", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert ">--<" in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_edit_returns_a_select_with_the_derived_option_and_three_sections(self, ui_client):
+        """Clicking the cell offers the same four choices as the full edit form:
+        derive it, or pin to one of the three cash flow sections."""
+        chart = [{**_CHART[0], "cash_flow_category": "investing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "<select" in body
+        for value in ("", "operating", "investing", "financing"):
+            assert f'value="{value}"' in body
+        assert '<option value="investing" selected' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_edit_has_an_escape_handler_that_restores_the_display_cell(self, ui_client):
+        """Escape cancels the in-place edit without saving, by restoring the
+        original display cell rather than submitting the select's value."""
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": _CHART})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "Escape" in body
+        assert "/settings/accounting/chart/1000/cash-flow/display" in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_saves_without_a_redirect_and_shows_the_new_value(self, ui_client):
+        """Routine data entry happens on-page: saving the override returns the
+        updated cell fragment, not a full-page redirect or reload."""
+        patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": "operating"})
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": "operating"},
+            )
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert patch_mock.await_args.args[2] == {"cash_flow_category": "operating"}
+        body = r.content.decode()
+        assert ">Operating<" in body
+        assert 'class="editable-cell"' in body
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_sends_an_empty_value_to_clear_the_override(self, ui_client):
+        """Selecting the derived option clears the override rather than sending a
+        category name, matching the API's clear-to-derive contract."""
+        patch_mock = AsyncMock(return_value={"code": "1000", "cash_flow_category": None})
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": ""},
+            )
+        assert r.status_code == 200
+        assert patch_mock.await_args.args[2] == {"cash_flow_category": ""}
+        assert ">--<" in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_patch_shows_the_api_rejection_message_instead_of_failing_silently(self, ui_client):
+        """A rejected save surfaces the API's own message to the user instead of
+        swallowing the error."""
+        patch_mock = AsyncMock(side_effect=APIError(
+            422, "Cash flow category must be one of: operating, investing, financing."))
+        with patch("ui.api_client.patch_account", new=patch_mock):
+            r = await ui_client.patch(
+                "/settings/accounting/chart/1000/cash-flow",
+                cookies=_authed(),
+                data={"value": "bogus"},
+            )
+        assert r.status_code == 200
+        assert b"Cash flow category must be one of" in r.content
+
+    @pytest.mark.asyncio
+    async def test_cash_flow_field_display_restores_the_saved_value_for_escape_cancel(self, ui_client):
+        """The display endpoint the Escape handler calls shows the account's
+        actual saved value, not a blank or stale one."""
+        chart = [{**_CHART[0], "cash_flow_category": "financing"}]
+        with patch("ui.api_client.get_chart", new=AsyncMock(return_value={"items": chart})):
+            r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/display", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert ">Financing<" in body
+        assert 'hx-get="/settings/accounting/chart/1000/cash-flow/edit"' in body
 
     @pytest.mark.asyncio
     async def test_chart_tab_api_error_shows_error_state_not_empty_chart(self, ui_client):

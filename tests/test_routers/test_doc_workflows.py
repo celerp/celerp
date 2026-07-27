@@ -2508,6 +2508,101 @@ async def test_bulk_delete_drafts_empty_ids_returns_422(client, session):
     assert r.status_code == 422
 
 
+async def _posted_then_draft(client, token: str) -> tuple[str, str]:
+    """A document that has posted to the books and is back in draft, and its ref.
+
+    Finalizing posts a journal entry that names the document. Reverting to draft
+    voids that entry but keeps it, because the books keep their history, so the
+    document is deletable by status while the journal still points at it.
+    """
+    h = _h(token)
+    eid = await _create_invoice(client, token)
+    r = await client.post(f"/docs/{eid}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{eid}/revert-to-draft", headers=h, json={"reason": "keyed the wrong customer"})
+    assert r.status_code == 200, r.text
+    state = (await client.get(f"/docs/{eid}", headers=h)).json()
+    assert state["status"] == "draft", state
+    return eid, state["ref_id"]
+
+
+async def _posting_ids(session, entity_id: str) -> list[str]:
+    """The journal entry ledger rows posted for a document."""
+    rows = await session.execute(
+        select(LedgerEntry.entity_id).where(LedgerEntry.entity_id.like(f"je:auto:{entity_id}:%"))
+    )
+    return sorted(set(rows.scalars().all()))
+
+
+@pytest.mark.asyncio
+async def test_delete_draft_with_journal_entries_is_refused(client, session):
+    """A document that has reached the books cannot be deleted, even back in draft.
+
+    Deleting it leaves entries in the journal naming a document nothing can
+    resolve, which is where unattributable entries come from. The refusal names
+    them so the reader can see what stands in the way.
+    """
+    token = await _register(client)
+    h = _h(token)
+    eid, _ref = await _posted_then_draft(client, token)
+    before = await _posting_ids(session, eid)
+    assert before, "the finalize posted nothing, so this test proves nothing"
+
+    r = await client.delete(f"/docs/{eid}", headers=h)
+    assert r.status_code == 409, r.text
+    assert f"je:auto:{eid}:fin" in r.json()["detail"], r.text
+
+    assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 200
+    assert await _posting_ids(session, eid) == before
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_drafts_refuses_the_whole_batch_and_deletes_nothing(client, session):
+    """One posted document in the selection stops the whole batch.
+
+    A successful bulk delete reloads the page, so a partly done one has nowhere
+    left to report what it skipped and the reader is left believing every ticked
+    document is gone. Nothing is deleted, and the refusal names the documents that
+    have postings so the reader can untick them and retry.
+    """
+    token = await _register(client)
+    h = _h(token)
+    clean = await _create_invoice(client, token)
+    posted, posted_ref = await _posted_then_draft(client, token)
+    before = await _posting_ids(session, posted)
+
+    r = await client.delete(f"/docs/bulk-draft?doc_ids={clean},{posted}", headers=h)
+    assert r.status_code == 422, r.text
+    assert posted_ref in r.json()["detail"], r.text
+
+    for eid in (clean, posted):
+        assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 200, eid
+    assert await _posting_ids(session, posted) == before
+
+
+@pytest.mark.asyncio
+async def test_delete_draft_never_finalized_still_works(client, session):
+    """The guard refuses documents that have posted, not deletion itself.
+
+    A draft that never reached the books still deletes, one at a time and in a
+    batch. Without this, refusing everything would pass the two tests above.
+    """
+    token = await _register(client)
+    h = _h(token)
+    single = await _create_invoice(client, token)
+    r = await client.delete(f"/docs/{single}", headers=h)
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/docs/{single}", headers=h)).status_code == 404
+
+    first = await _create_invoice(client, token)
+    second = await _create_invoice(client, token)
+    r = await client.delete(f"/docs/bulk-draft?doc_ids={first},{second}", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 2
+    for eid in (first, second):
+        assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 404, eid
+
+
 @pytest.mark.asyncio
 async def test_finalized_flag_survives_send(client, session):
     """Sending a finalized invoice overwrites its status to 'sent', but the

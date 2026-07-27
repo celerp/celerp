@@ -149,4 +149,8 @@ def require_permission(key: str):
         company = await session.get(Company, company_id)
         assert_role_permission(company.settings if company else {}, role, key)
 
+    # Recorded on the guard so a test can read back what each route requires.
+    # Without it the key is only visible inside this closure, and "did exactly the
+    # intended endpoints change?" stays a question for review rather than a test.
+    _guard.required_permission = key
     return Depends(_guard)

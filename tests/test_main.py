@@ -77,13 +77,15 @@ def _mock_db():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_starts_gateway_when_token_set():
-    """lifespan starts gateway task when settings.gateway_token is set."""
+async def test_lifespan_starts_gateway_for_paid_instance():
+    """A paid instance (celerp_public_url set) runs a persistent tunnel: lifespan
+    starts the gateway client at boot regardless of any live share."""
     from celerp.config import settings
     import celerp.gateway.client as gw_module
 
     original_token = settings.gateway_token
     original_instance = settings.gateway_instance_id
+    original_public = settings.celerp_public_url
 
     fake_run_called = []
 
@@ -93,6 +95,7 @@ async def test_lifespan_starts_gateway_when_token_set():
     with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run):
         settings.gateway_token = "test-gw-token"
         settings.gateway_instance_id = "test-inst-id"
+        settings.celerp_public_url = "https://acme.celerp.com"
 
         from celerp.main import lifespan
 
@@ -105,7 +108,61 @@ async def test_lifespan_starts_gateway_when_token_set():
         finally:
             settings.gateway_token = original_token
             settings.gateway_instance_id = original_instance
+            settings.celerp_public_url = original_public
             gw_module.set_client(None)
+
+
+@pytest.mark.asyncio
+async def test_startup_connects_free_only_with_active_share():
+    """A free instance (token set, no public_url) runs a lazy tunnel: it starts at
+    boot only when a share is already live. No live share -> the client stays down;
+    a live share -> it comes up."""
+    from celerp.config import settings
+    import celerp.gateway as gateway
+    import celerp.gateway.client as gw_module
+
+    original_token = settings.gateway_token
+    original_instance = settings.gateway_instance_id
+    original_public = settings.celerp_public_url
+
+    async def fake_run(self):
+        pass
+
+    async def _no_share() -> bool:
+        return False
+
+    async def _has_share() -> bool:
+        return True
+
+    from celerp.main import lifespan
+
+    # No live share -> the free instance must not open the tunnel at boot.
+    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run), \
+            patch.object(gateway, "has_active_share", _no_share):
+        settings.gateway_token = "test-gw-token"
+        settings.gateway_instance_id = "test-inst-id"
+        settings.celerp_public_url = ""
+        try:
+            async with lifespan(MagicMock()):
+                assert gw_module.get_client() is None
+        finally:
+            gw_module.set_client(None)
+
+    # A live share -> the tunnel comes up on demand at boot.
+    with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run), \
+            patch.object(gateway, "has_active_share", _has_share):
+        settings.gateway_token = "test-gw-token"
+        settings.gateway_instance_id = "test-inst-id"
+        settings.celerp_public_url = ""
+        try:
+            async with lifespan(MagicMock()):
+                assert gw_module.get_client() is not None
+        finally:
+            gw_module.set_client(None)
+
+    settings.gateway_token = original_token
+    settings.gateway_instance_id = original_instance
+    settings.celerp_public_url = original_public
 
 
 @pytest.mark.asyncio
@@ -136,6 +193,7 @@ async def test_lifespan_gateway_teardown():
     import celerp.gateway.client as gw_module
 
     original_token = settings.gateway_token
+    original_public = settings.celerp_public_url
     stopped = []
 
     async def fake_run(self):
@@ -146,6 +204,7 @@ async def test_lifespan_gateway_teardown():
 
     with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run):
         settings.gateway_token = "test-gw-token"
+        settings.celerp_public_url = "https://acme.celerp.com"
 
         from celerp.main import lifespan
 
@@ -164,3 +223,4 @@ async def test_lifespan_gateway_teardown():
         assert gw_module.get_client() is None
 
     settings.gateway_token = original_token
+    settings.celerp_public_url = original_public

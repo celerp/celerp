@@ -10,6 +10,10 @@ permission has an operator floor, so no owner override can grant a write
 capability to a viewer. These tests pin the default contract per module: one
 representative mutation 403s for a viewer (and still works for an operator),
 while the corresponding reads stay open.
+
+Reads are not all open, though, so the last test pins the reads that are gated:
+the financial reports default to manager, which makes them the case an
+operator-versus-viewer matrix would miss.
 """
 from __future__ import annotations
 
@@ -125,6 +129,26 @@ async def test_viewer_blocked_on_lists_and_label_templates(client, session):
     # Printing stays available: it renders, it does not change anything.
     r = await client.post("/api/labels/print/some-item", headers=_h(viewer))
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_journals_closed_to_an_operator(client, session):
+    """Both journals refuse a role below manager, and open to one at or above it.
+
+    view_financial_reports defaults to manager, so an operator is the role that
+    shows the gate is about the report rather than about writing. The extended
+    journal shows the same postings the classical journal shows, which is why it
+    carries the same permission and is asserted here rather than taken on trust:
+    the wider report is where a missing gate would be worth finding.
+    """
+    admin = await _admin(client)
+    operator = await _user_with_role(client, session, admin, "operator")
+
+    for path in ("/accounting/journal", "/accounting/extended-journal"):
+        r = await client.get(path, headers=_h(operator))
+        assert r.status_code == 403, f"GET {path} as operator: {r.status_code} {r.text}"
+        r = await client.get(path, headers=_h(admin))
+        assert r.status_code == 200, f"GET {path} as admin: {r.status_code} {r.text}"
 
 
 def test_nav_lets_viewers_see_documents_and_contacts():

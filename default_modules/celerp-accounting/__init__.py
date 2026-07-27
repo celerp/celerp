@@ -14,6 +14,9 @@ PLUGIN_MANIFEST = {
     "slots": {
         "nav": [
             {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "permission": "manage_accounting"},
+            # The financial reports live under /reports but ship with this module,
+            # so they stay reachable when the reports module is not installed.
+            {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
             {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},

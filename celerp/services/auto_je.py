@@ -15,7 +15,7 @@ from decimal import Decimal as _Dec
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import round_money, to_base, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
 # Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
@@ -26,13 +26,42 @@ from sqlalchemy import select as _select
 # relieved on sale.
 _INVENTORY_ACCT = "1130-P"
 
+# Where a settlement exchange difference lands. Seeded in the default chart and
+# backfilled for every company holding the 6000 parent, so it is always there to
+# post to.
+_FX_DIFFERENCE_ACCT = "6960"
 
-def _to_base(amount: float, rate: _Dec, base_cur: str) -> float:
-    """Convert a doc-currency amount to base currency for JE entry.
 
-    When rate is 1 (base currency doc), result is identical to input.
+def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
+    """The entry, plus the exchange difference line that makes it balance.
+
+    A receivable or payable can only be cleared at the rate it was raised at, and
+    cash can only move at the rate it actually converted at. When a document is
+    settled at a different rate from the one it was issued at, those two amounts
+    differ and the entry is short on one side by exactly that difference. It is a
+    realised exchange gain or loss, and this is the line an accountant writes by
+    hand for it.
+
+    The side is not decided here, it is read off the entry: whichever side is
+    short takes the line. One rule covers a receipt and a payment, a gain and a
+    loss, without a sign convention to get backwards.
+
+    Returned untouched when the two rates agree, which is every document in the
+    company's own currency. A difference of zero is not a difference, and a line
+    for it would put an account with no movement on the statement of every
+    document ever settled.
     """
-    return to_stored_float(round_money(to_decimal(amount) * rate, base_cur))
+    gap = (sum(to_decimal(e.get("debit")) for e in entries)
+           - sum(to_decimal(e.get("credit")) for e in entries))
+    if gap == 0:
+        return entries
+    short_side = "credit" if gap > 0 else "debit"
+    return entries + [{
+        "account": _FX_DIFFERENCE_ACCT,
+        "debit": 0.0,
+        "credit": 0.0,
+        short_side: to_stored_float(abs(gap)),
+    }]
 
 
 async def _emit_auto_posted_je(
@@ -86,9 +115,9 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     total_d = round_money(doc.get("total", 0), currency)
     tax_d = round_money(doc.get("tax", 0), currency)
     revenue_d = round_money(total_d - tax_d, currency)
-    total = _to_base(to_stored_float(total_d), rate, base_currency)
-    tax = _to_base(to_stored_float(tax_d), rate, base_currency)
-    revenue = _to_base(to_stored_float(revenue_d), rate, base_currency)
+    total = to_base(to_stored_float(total_d), rate, base_currency)
+    tax = to_base(to_stored_float(tax_d), rate, base_currency)
+    revenue = to_base(to_stored_float(revenue_d), rate, base_currency)
     # Use a cycle-aware suffix so re-finalize after revert creates a fresh JE entity
     # rather than hitting the dedup guard on the voided JE from the previous cycle.
     cycle = int(doc.get("revert_count", 0))
@@ -112,7 +141,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account to debit. Required - no default. Always pass the
@@ -122,28 +151,36 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     payment_index: position of this payment in the payments list (0-based). Used as the
         idempotency key suffix so voiding and re-paying at the same amount never collides.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    doc_rate: the rate the document raised the receivable or payable at. That balance
+        can only be cleared at the rate it was raised at, so this converts the AR/AP side.
+    settlement_rate: the rate the cash actually converted at, which converts the bank
+        side. Equal to doc_rate unless the payer recorded a rate of their own.
+
+    Both rates are required - no default. A rate silently defaulting to 1 next to a real
+    one would post a fabricated exchange difference, so a caller that omits either raises
+    TypeError at call time instead.
     """
-    rate = _Dec(str(conversion_rate or 1))
-    base_amount = _to_base(float(amount), rate, base_currency)
+    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
+    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
     paid_key = str(payment_index)
     if doc_type in ("bill", "purchase_order"):
         entries = [
-            {"account": "2110", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "2110", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
     elif doc_type == "credit_note":
         # Cash refund of a credit note: money LEAVES the bank and the credit
         # balance the note held against AR is cleared.
         entries = [
-            {"account": "1120", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
     else:
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
         ]
+    entries = _balanced_with_fx_difference(entries)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -158,34 +195,38 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Reverse a payment JE by creating a counter-entry.
 
     refund_date: ISO date for the reversal JE (defaults to today if None). Used when
         void is actually a refund - the date affects bank ledger position.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    doc_rate, settlement_rate: the same two rates the payment posted at, so the counter
+        entry is the mirror of it line for line, exchange difference included. Reversing
+        at any other rate would leave the difference behind in the accounts the payment
+        touched, on a document that is back to unpaid.
     """
-    rate = _Dec(str(conversion_rate or 1))
-    base_amount = _to_base(float(amount), rate, base_currency)
+    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
+    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "2110", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "2110", "debit": 0.0, "credit": ledger_amount},
         ]
     elif doc_type == "credit_note":
         # Reverse of the refund's outflow: the money comes back into the bank
         # and the credit balance is restored against AR.
         entries = [
-            {"account": bank_account_code, "debit": base_amount, "credit": 0.0},
-            {"account": "1120", "debit": 0.0, "credit": base_amount},
+            {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
+            {"account": "1120", "debit": 0.0, "credit": ledger_amount},
         ]
     else:
         entries = [
-            {"account": "1120", "debit": base_amount, "credit": 0.0},
-            {"account": bank_account_code, "debit": 0.0, "credit": base_amount},
+            {"account": "1120", "debit": ledger_amount, "credit": 0.0},
+            {"account": bank_account_code, "debit": 0.0, "credit": bank_amount},
         ]
+    entries = _balanced_with_fx_difference(entries)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -208,7 +249,7 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
     conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
     """
     rate = _Dec(str(conversion_rate or 1))
-    base_amount = _to_base(float(amount), rate, base_currency)
+    base_amount = to_base(float(amount), rate, base_currency)
     app_key = f"cn_apply_{cn_id}:{payment_index}"
     await _emit_auto_posted_je(
         session,
@@ -250,7 +291,7 @@ async def create_for_po_received(
     }.get(purchase_kind, _INVENTORY_ACCT)
 
     rate = _Dec(str((doc or {}).get("conversion_rate") or 1))
-    base_total = _to_base(float(total), rate, base_currency)
+    base_total = to_base(float(total), rate, base_currency)
 
     # suffix=None means "first receive" - use fixed key for backward compat with doctor/duplicate checks
     # suffix provided means "re-receive after revert" - use unique key to avoid idempotency collision
@@ -395,21 +436,21 @@ async def create_for_bill_conversion(
                 account = landed_acct
             else:
                 account = _INVENTORY_ACCT if li.get("sku") else "6950"
-            debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
+            debit_entries.append({"account": account, "debit": to_base(line_total, rate, base_currency), "credit": 0.0})
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets. Using the
         # wrong source left the bill JE unbalanced (inventory debited net, AP credited gross, no VAT debit).
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
         if tax_total_d > 0:
-            debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
+            debit_entries.append({"account": "1150", "debit": to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
 
     # Doc-level shipping on a bill is inbound freight: debit the freight clearing account so the JE
     # balances (this closes the legacy gap where shipping inflated the AP credit with no debit).
     shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
     if shipping_d > 0:
-        debit_entries.append({"account": "1130-FRT", "debit": _to_base(to_stored_float(shipping_d), rate, base_currency), "credit": 0.0})
+        debit_entries.append({"account": "1130-FRT", "debit": to_base(to_stored_float(shipping_d), rate, base_currency), "credit": 0.0})
 
-    base_total = _to_base(total, rate, base_currency)
+    base_total = to_base(total, rate, base_currency)
     if not debit_entries:
         if total <= 0:
             return
@@ -478,9 +519,9 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
     if doc_type == "invoice":
         tax_d = round_money(doc.get("tax", 0), currency)
         total_d = round_money(total, currency)
-        base_total = _to_base(to_stored_float(total_d), rate, base_currency)
-        base_tax = _to_base(to_stored_float(tax_d), rate, base_currency)
-        base_revenue = _to_base(to_stored_float(round_money(total_d - tax_d, currency)), rate, base_currency)
+        base_total = to_base(to_stored_float(total_d), rate, base_currency)
+        base_tax = to_base(to_stored_float(tax_d), rate, base_currency)
+        base_revenue = to_base(to_stored_float(round_money(total_d - tax_d, currency)), rate, base_currency)
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -519,12 +560,12 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                     account = "1210"
                 else:
                     account = _INVENTORY_ACCT if li.get("sku") else "6950"
-                debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
-            # Input VAT from the doc's effective tax (see create_for_bill_conversion) — keeps the JE balanced.
+                debit_entries.append({"account": account, "debit": to_base(line_total, rate, base_currency), "credit": 0.0})
+            # Input VAT from the doc's effective tax (see create_for_bill_conversion), which keeps the JE balanced.
             tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
             if tax_total_d > 0:
-                debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
-        base_total = _to_base(total, rate, base_currency)
+                debit_entries.append({"account": "1150", "debit": to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
+        base_total = to_base(total, rate, base_currency)
         if not debit_entries:
             if total <= 0:
                 return

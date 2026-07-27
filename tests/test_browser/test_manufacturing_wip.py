@@ -4,8 +4,8 @@
 
 Drives the REAL UI (no API bypass for the action under test):
 - The shared bulk toolbar (.bulkbar / .bulk-action-select / .bulk-count) is present; the Action
-  select is disabled with nothing ticked.
-- Ticking two run rows' .bulk-select enables the select and shows "2 selected".
+  select is usable before any row is ticked so its options can be read (GDR 2e).
+- Ticking two run rows' .bulk-select shows "2 selected".
 - Choosing "Start" from the Action dropdown (select_option) dispatches the bulk action; both runs
   move to in_progress (verified by polling the backend list — effect verification, not the trigger).
 - Re-ticking, accepting the confirm dialog, and choosing "Complete" closes both runs and the
@@ -78,7 +78,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
         o.get("status") == "planned" for o in items if o.get("id") in both
     ) and len([o for o in items if o.get("id") in both]) == 2), "both runs should start PLANNED"
 
-    # ── WIP page: bulk toolbar present, Action select disabled with no selection ──
+    # ── WIP page: bulk toolbar present, Action select usable with no selection ──
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     assert "Work In Progress" in page.locator("body").inner_text()
@@ -88,7 +88,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     assert bulkbar.count() >= 1, ".bulkbar not found on /manufacturing/production"
     action_select = page.locator(".bulk-action-select")
     assert action_select.count() >= 1, ".bulk-action-select not found in WIP bulk toolbar"
-    assert action_select.is_disabled(), ".bulk-action-select should be disabled with nothing selected"
+    assert not action_select.is_disabled(), ".bulk-action-select should stay usable so its options are discoverable before selecting"
     count_el = page.locator(".bulk-count")
     assert "0" in count_el.inner_text(), f"expected '0 selected'; got {count_el.inner_text()!r}"
     assert page.locator("#mfg-table thead .bulk-select-all").count() >= 1, ".bulk-select-all not in header"
@@ -100,10 +100,10 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
 
     page.screenshot(path=str(SHOTS / "wip-bulk-toolbar.png"), full_page=True)
 
-    # ── Tick both runs -> select enables, "2 selected" ──
+    # ── Tick both runs -> "2 selected" ──
     for rid in (run_a, run_b):
         page.locator(f"#mfg-table tr.data-row:has(input.bulk-select[value='{rid}']) .bulk-select").first.check()
-    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    page.wait_for_function("/2 selected/.test((document.querySelector('.bulk-count')||{}).textContent||'')", timeout=3000)
     assert "2 selected" in count_el.inner_text(), f"expected '2 selected'; got {count_el.inner_text()!r}"
     page.screenshot(path=str(SHOTS / "wip-two-selected.png"), full_page=True)
 

@@ -62,16 +62,12 @@ async def send_email(
     #    is the instance API key; exchanging it for a bearer JWT is the auth
     #    every relay REST endpoint accepts.
     if settings.gateway_token:
-        from celerp.gateway.state import relay_http_url
+        from celerp.gateway.state import fetch_relay_bearer, relay_http_url
         base = relay_http_url()
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30) as client:
-                tok_resp = await client.post(
-                    f"{base}/auth/token", json={"api_key": settings.gateway_token})
-                if tok_resp.status_code != 200:
-                    raise RuntimeError(f"relay auth failed ({tok_resp.status_code})")
-                bearer = tok_resp.json()["access_token"]
+                bearer = await fetch_relay_bearer(client)
                 resp = await client.post(
                     f"{base}/email/send",
                     headers={"Authorization": f"Bearer {bearer}"},

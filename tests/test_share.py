@@ -972,3 +972,79 @@ async def test_send_reactivates_an_expired_share_link(client: AsyncClient, sessi
     await asyncio.wait_for(done.wait(), timeout=2)
     assert f"/share/{token}" in captured["html"]
     assert (await client.get(f"/share/{token}")).status_code == 200  # revived
+
+
+# ---------------------------------------------------------------------------
+# Free-tier share URL: minted through the relay, no paid public_url (3.2)
+# ---------------------------------------------------------------------------
+
+_FREE_SHARE_URL = "https://share.celerp.com/eyJTVFVCLWVudmVsb3Bl"
+
+
+async def _company_id_for(session, entity_id: str):
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    row = (await session.execute(
+        select(Projection).where(Projection.entity_id == entity_id))).scalars().first()
+    return row.company_id
+
+
+def _stub_free_mint(monkeypatch):
+    """A free relay-bound instance: no paid public_url, mint returns a
+    share.celerp.com envelope, and the lazy tunnel trigger is a no-op."""
+    from celerp.config import settings as cfg
+    monkeypatch.setattr(cfg, "celerp_public_url", "")
+
+    async def _mint(doc_token):
+        return _FREE_SHARE_URL
+
+    monkeypatch.setattr("celerp.services.relay_share.mint_free_share_url", _mint)
+    monkeypatch.setattr("celerp.gateway.ensure_running", lambda: None)
+
+
+@pytest.mark.asyncio
+async def test_free_user_gets_view_url_when_connected(client: AsyncClient, session, monkeypatch):
+    """With no paid public_url, both public_view_url and send_view_url return the
+    relay-minted share.celerp.com link rather than None."""
+    _stub_free_mint(monkeypatch)
+    from celerp_docs.routes_share import public_view_url, send_view_url
+
+    assert await public_view_url("anytoken") == _FREE_SHARE_URL
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    company_id = await _company_id_for(session, entity_id)
+    assert await send_view_url(session, company_id, entity_id) == _FREE_SHARE_URL
+
+
+@pytest.mark.asyncio
+async def test_invoice_email_has_view_button_for_free_user(client: AsyncClient, monkeypatch):
+    """A free user's emailed invoice carries a real View button linking the minted
+    share URL, not the amount-only fallback body."""
+    _stub_free_mint(monkeypatch)
+    captured, done = await _capture_send(monkeypatch)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    assert r.status_code == 200
+
+    import asyncio
+    await asyncio.wait_for(done.wait(), timeout=2)
+    assert _FREE_SHARE_URL in captured["html"]
+    assert "View" in captured["html"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_connects_on_share_create(client: AsyncClient, monkeypatch):
+    """Creating a share brings the lazy tunnel up through the core seam
+    (routes_share -> relay_share.ensure_running -> gateway.ensure_running)."""
+    from unittest.mock import MagicMock
+    spy = MagicMock()
+    monkeypatch.setattr("celerp.gateway.ensure_running", spy)
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.status_code == 200
+    assert spy.called

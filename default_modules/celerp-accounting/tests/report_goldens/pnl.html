@@ -1,0 +1,80 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">P&amp;L</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div id="report-nav" class="flex-row flex-wrap gap-sm mb-md">
+<span class="cell--muted">Accounting Reports:</span><span class="report-nav-current">P&amp;L</span><a href="/reports/balance-sheet?as_of=2026-03-31" class="drilldown-link">Balance Sheet</a><a href="/reports/cash-flow?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Cash Flow</a><a href="/reports/trial-balance?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Trial Balance</a><a href="/reports/general-ledger?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">General Ledger</a><a href="/accounting?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Journal</a><a href="/reports/extended-journal?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Extended Journal</a><a href="/reports/statement?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Statement of Account</a>    </div>
+    <div class="date-filter-bar">
+      <div class="preset-bar">
+<a href="/reports/pnl?preset=this_month" class="preset-btn ">This month</a><a href="/reports/pnl?preset=last_3m" class="preset-btn ">Last 3 months</a><a href="/reports/pnl?preset=last_6m" class="preset-btn ">Last 6 months</a><a href="/reports/pnl?preset=last_12m" class="preset-btn ">Last 12 months</a><a href="/reports/pnl?preset=this_fy" class="preset-btn ">This fiscal year</a><a href="/reports/pnl?preset=last_fy" class="preset-btn ">Last fiscal year</a><a href="/reports/pnl?preset=all" class="preset-btn ">All time</a>      </div>
+<form enctype="multipart/form-data" action="/reports/pnl" method="get" class="date-custom-form">        <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
+<span class="date-sep">--</span>        <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/pnl/csv?date_from=2026-01-01&amp;date_to=2026-03-31" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/pnl?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div class="report-view">
+      <div class="report-section ">
+        <h3 class="report-section-title">Revenue</h3>
+        <table class="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th class="cell--number">Amount</th>
+              <th class="cell--right">% of Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+<a href="/reports/ledger/4100?date_from=2026-01-01&amp;date_to=2026-03-31&amp;src=pnl" class="drilldown-link">4100 Sales Revenue</a>              </td>
+              <td class="cell--number">฿145.00</td>
+              <td class="cell--right cell--muted">100.0%</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<a href="/reports/sales?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="drilldown-link"><strong>฿145.00</strong></a>        </p>
+      </div>
+      <div class="report-section ">
+        <h3 class="report-section-title">Cost of Goods Sold</h3>
+        <p class="empty-state">No entries</p>
+        <p class="section-total">
+<a href="/reports/purchases?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="drilldown-link"><strong>฿0.00</strong></a>        </p>
+      </div>
+      <div class="report-subtotal">
+        <p>
+<strong>Gross Profit: ฿145.00</strong>        </p>
+      </div>
+      <div class="report-section ">
+        <h3 class="report-section-title">Operating Expenses</h3>
+        <table class="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th class="cell--number">Amount</th>
+              <th class="cell--right">% of Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+<a href="/reports/ledger/6200?date_from=2026-01-01&amp;date_to=2026-03-31&amp;src=pnl" class="drilldown-link">6200 Rent</a>              </td>
+              <td class="cell--number">฿25.00</td>
+              <td class="cell--right cell--muted">17.2%</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="section-total">
+<a href="/reports/purchases?date_from=2026-01-01&amp;date_to=2026-03-31" target="_blank" class="drilldown-link"><strong>฿25.00</strong></a>        </p>
+      </div>
+      <div class="report-total">
+        <p class="net-profit net-profit--positive">
+<strong>Net Profit: ฿120.00</strong>        </p>
+      </div>
+    </div>
+  </div>
+</div>

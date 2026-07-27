@@ -19,7 +19,10 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header
-from ui.components.table import fmt_money, EMPTY, add_new_option
+from ui.components.table import (
+    EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, fmt_money, party_options,
+    searchable_select,
+)
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
@@ -179,8 +182,10 @@ def _match_picker(session_id: str, line_id: str, unmatched_entries: list[dict], 
 
 # ── Create expense form (inline partial) ─────────────────────────────────────
 
-def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str) -> FT:
+def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+                 contacts: list[dict] | None = None) -> FT:
     amount = abs(float(line.get("amount", 0)))
+    contact_opts = party_options(contacts or [])
     account_options = [
         Option(f"{a['code']} {a['name']}", value=a["code"])
         for a in chart
@@ -194,6 +199,12 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
                 Label(t("th.account"), cls="form-label"),
                 Select(*account_options, _acct_opt, name="account_code",
                        cls="form-input cell-input--select", onchange=_acct_js),
+                cls="form-field",
+            ),
+            Div(
+                Label(t("acct.je_line_party"), cls="form-label"),
+                searchable_select("contact", contact_opts, placeholder=t("acct.je_line_party"),
+                                  cls_extra="form-input", search_url=_PARTY_SEARCH_URL),
                 cls="form-field",
             ),
             Div(
@@ -225,8 +236,10 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
 
 # ── Split form (inline partial) ───────────────────────────────────────────────
 
-def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str) -> FT:
+def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+                contacts: list[dict] | None = None) -> FT:
     amount = abs(float(line.get("amount", 0)))
+    contact_opts = party_options(contacts or [])
     account_options = [
         Option(f"{a['code']} {a['name']}", value=a["code"])
         for a in chart
@@ -245,6 +258,9 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                                cls="form-input cell-input--select w-auto", onchange=_acct_js),
                         Input(type="number", name="amount_0", placeholder="Amount",
                               step="0.01", cls="form-input max-w-sm"),
+                        searchable_select("contact_0", contact_opts,
+                                          placeholder=t("acct.je_line_party"),
+                                          cls_extra="form-input", search_url=_PARTY_SEARCH_URL),
                         Input(type="text", name="memo_0", placeholder="Memo", cls="form-input"),
                         cls="split-entry-row flex-row gap-sm mb-sm",
                     )
@@ -736,9 +752,10 @@ def setup_routes(app):
                 return P(t("acct.line_not_found"), cls="error-banner")
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
+            contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _create_form(session_id, line_id, line, chart, currency)
+        return _create_form(session_id, line_id, line, chart, currency, contacts)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/split-form")
     async def split_form_partial(request: Request, session_id: str, line_id: str):
@@ -754,9 +771,10 @@ def setup_routes(app):
                 return P(t("acct.line_not_found"), cls="error-banner")
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
+            contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _split_form(session_id, line_id, line, chart, currency)
+        return _split_form(session_id, line_id, line, chart, currency, contacts)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm")
     async def match_confirm(request: Request, session_id: str, line_id: str):
@@ -795,6 +813,11 @@ def setup_routes(app):
         if not account_code:
             return P(t("acct.account_code_required"), cls="error-banner")
         data = {"account_code": account_code, "memo": memo}
+        # No party chosen means no contact key, so an entry nobody named posts
+        # exactly the request it posted before the picker existed.
+        contact = str(form.get("contact", "")).strip()
+        if contact:
+            data["contact"] = contact
         if amount_raw:
             try:
                 data["amount"] = float(amount_raw)
@@ -824,9 +847,13 @@ def setup_routes(app):
             code = str(form.get(f"account_code_{i}", "")).strip()
             amt_raw = str(form.get(f"amount_{i}", "")).strip()
             memo = str(form.get(f"memo_{i}", "")).strip()
+            contact = str(form.get(f"contact_{i}", "")).strip()
             if code and amt_raw:
                 try:
-                    splits.append({"account_code": code, "amount": float(amt_raw), "memo": memo})
+                    split = {"account_code": code, "amount": float(amt_raw), "memo": memo}
+                    if contact:
+                        split["contact"] = contact
+                    splits.append(split)
                 except ValueError:
                     pass
             i += 1

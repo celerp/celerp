@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Proactive QA test suite.
 
-Patterns extrapolated from Nikolai's reported bugs:
+Patterns extrapolated from bugs reported against earlier builds:
   P4 - Currency not threaded (hardcoded ฿ instead of company.currency)
   P7 - Server-side validation bypassed
   P1 - HTMX partial missing attrs / hard-crash on bad input
@@ -16,6 +16,7 @@ regression coverage before the first human review.
 """
 from __future__ import annotations
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -754,6 +755,37 @@ class TestReportApiErrors:
             r = await ui_client.get("/reports/expiring", cookies=_authed())
         assert r.status_code == 200
 
+    @pytest.mark.parametrize("failure,status,fragment", [
+        (httpx.TimeoutException("slow"), 504, "Request timed out."),
+        (httpx.ConnectError("refused"), 503, "Is the server running?"),
+    ])
+    @pytest.mark.parametrize("factory,args", [
+        ("_api_client", ("tok",)),
+        ("_anon_api_client", ()),
+        ("_ai_api_client", ("tok", "sess")),
+    ])
+    @pytest.mark.asyncio
+    async def test_api_unreachable_messages_are_plain_copy(self, factory, args, failure, status, fragment):
+        """What a reader sees when the API is down is user-facing copy.
+
+        Every report page routes through one of these three clients, so a network
+        failure on any of them puts this text on screen. It follows the same copy
+        rules as the rest of the page: plain, factual, no em dashes.
+        """
+        from ui import api_client
+
+        def _refuses(*a, **kw):
+            raise failure
+
+        with patch.object(api_client.httpx, "AsyncClient", _refuses):
+            with pytest.raises(api_client.APIError) as caught:
+                async with getattr(api_client, factory)(*args):
+                    pass
+
+        assert caught.value.status == status
+        assert fragment in caught.value.detail
+        assert "—" not in caught.value.detail, caught.value.detail
+
 
 # ── P3: Display consistency — sort controls and date filter bars ──────────────
 
@@ -838,7 +870,7 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/accounting?tab=pnl", cookies=_authed())
+            r = await ui_client.get("/reports/pnl", cookies=_authed())
         assert r.status_code == 200
         # USD accounting: should not show ฿5000
         assert "฿5000" not in r.text or "$" in r.text
@@ -862,6 +894,6 @@ class TestAccountingCurrencyRegression:
                 "accounts": [], "total_debit": 0, "total_credit": 0,
             })),
         ):
-            r = await ui_client.get("/accounting?tab=balance-sheet", cookies=_authed())
+            r = await ui_client.get("/reports/balance-sheet", cookies=_authed())
         assert r.status_code == 200
         assert "฿10000" not in r.text

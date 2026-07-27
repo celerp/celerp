@@ -1,0 +1,261 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Statement of Account</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div id="report-nav" class="flex-row flex-wrap gap-sm mb-md">
+<span class="cell--muted">Accounting Reports:</span><a href="/reports/pnl?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">P&amp;L</a><a href="/reports/balance-sheet?as_of=2026-03-31" class="drilldown-link">Balance Sheet</a><a href="/reports/cash-flow?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Cash Flow</a><a href="/reports/trial-balance?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Trial Balance</a><a href="/reports/general-ledger?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">General Ledger</a><a href="/accounting?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Journal</a><a href="/reports/extended-journal?from=2026-01-01&amp;to=2026-03-31" class="drilldown-link">Extended Journal</a><span class="report-nav-current">Statement of Account</span>    </div>
+    <div class="date-filter-bar">
+      <div class="preset-bar">
+<a href="/reports/statement?preset=this_month&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">This month</a><a href="/reports/statement?preset=last_3m&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">Last 3 months</a><a href="/reports/statement?preset=last_6m&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">Last 6 months</a><a href="/reports/statement?preset=last_12m&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">Last 12 months</a><a href="/reports/statement?preset=this_fy&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">This fiscal year</a><a href="/reports/statement?preset=last_fy&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">Last fiscal year</a><a href="/reports/statement?preset=all&amp;account=c:contact:<uuid>&amp;account=a:1120" class="preset-btn ">All time</a>      </div>
+<form enctype="multipart/form-data" action="/reports/statement" method="get" class="date-custom-form">        <input type="hidden" name="account" value="c:contact:<uuid>">
+        <input type="hidden" name="account" value="a:1120">
+        <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
+<span class="date-sep">--</span>        <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
+    <div>
+<form enctype="multipart/form-data" method="get" action="/reports/statement" class="flex-row gap-sm"><label class="form-label">Account</label>        <div data-multiple="true" data-count-label="{n} selected" data-empty-label="Search customers, suppliers and accounts" data-search-url="1" hx-get="/reports/statement/subject-options?account=c%3Acontact%3A<uuid>&amp;account=a%3A1120" hx-trigger="input from:.combobox-input changed delay:300ms" hx-swap="innerHTML" hx-include="find .combobox-input" hx-target="find .combobox-list" class="combobox-wrap">
+          <input type="text" value="2 selected" placeholder="Search customers, suppliers and accounts" autocomplete="off" name="q" class="combobox-input">
+          <input type="hidden" data-name="account" value="">
+          <div class="combobox-selected">
+            <input type="hidden" name="account" value="c:contact:<uuid>" data-label="Riverside Supplies (customer)">
+            <input type="hidden" name="account" value="a:1120" data-label="1120 Accounts Receivable">
+          </div>
+          <div class="combobox-list">
+            <div data-value="c:contact:<uuid>" class="combobox-option">Owner (both)</div>
+            <div data-value="c:contact:<uuid>" class="combobox-option combobox-option--selected">Riverside Supplies (customer)</div>
+            <div data-value="a:1000" class="combobox-option">1000 Assets</div>
+            <div data-value="a:1100" class="combobox-option">1100 Current Assets</div>
+            <div data-value="a:1110" class="combobox-option">1110 Cash and Cash Equivalents</div>
+            <div data-value="a:1111" class="combobox-option">1111 Default Bank Account (Checking)</div>
+            <div data-value="a:1120" class="combobox-option combobox-option--selected">1120 Accounts Receivable</div>
+            <div data-value="a:1130" class="combobox-option">1130 Inventory</div>
+            <div data-value="a:1130-DTY" class="combobox-option">1130-DTY Inventory - Import Duty Clearing</div>
+            <div data-value="a:1130-FRT" class="combobox-option">1130-FRT Inventory - Freight Clearing</div>
+            <div data-value="a:1130-INS" class="combobox-option">1130-INS Inventory - Insurance Clearing</div>
+            <div data-value="a:1130-IVT" class="combobox-option">1130-IVT Inventory - Non-Recoverable Import VAT Clearing</div>
+            <div data-value="a:1130-OB" class="combobox-option">1130-OB Inventory - Opening Balance</div>
+            <div data-value="a:1130-P" class="combobox-option">1130-P Inventory - Purchased</div>
+            <div data-value="a:1140" class="combobox-option">1140 Prepaid Expenses</div>
+            <div data-value="a:1150" class="combobox-option">1150 VAT Receivable (Input VAT)</div>
+            <div data-value="a:1200" class="combobox-option">1200 Non-Current Assets</div>
+            <div data-value="a:1210" class="combobox-option">1210 Property, Plant and Equipment</div>
+            <div data-value="a:1220" class="combobox-option">1220 Accumulated Depreciation</div>
+            <div data-value="a:1230" class="combobox-option">1230 Intangible Assets</div>
+            <div data-value="a:2000" class="combobox-option">2000 Liabilities</div>
+            <div data-value="a:2100" class="combobox-option">2100 Current Liabilities</div>
+            <div data-value="a:2110" class="combobox-option">2110 Accounts Payable</div>
+            <div data-value="a:2120" class="combobox-option">2120 VAT Payable (Output VAT)</div>
+            <div data-value="a:2130" class="combobox-option">2130 Withholding Tax Payable</div>
+            <div data-value="a:2140" class="combobox-option">2140 Accrued Expenses</div>
+            <div data-value="a:2150" class="combobox-option">2150 Social Security Payable</div>
+            <div data-value="a:2200" class="combobox-option">2200 Non-Current Liabilities</div>
+            <div data-value="a:2210" class="combobox-option">2210 Long-term Loans</div>
+            <div data-value="a:3000" class="combobox-option">3000 Equity</div>
+            <div data-value="a:3100" class="combobox-option">3100 Registered Capital</div>
+            <div data-value="a:3200" class="combobox-option">3200 Retained Earnings</div>
+            <div data-value="a:3300" class="combobox-option">3300 Current Year Earnings</div>
+            <div data-value="a:4000" class="combobox-option">4000 Revenue</div>
+            <div data-value="a:4100" class="combobox-option">4100 Sales Revenue</div>
+            <div data-value="a:4200" class="combobox-option">4200 Service Revenue</div>
+            <div data-value="a:4300" class="combobox-option">4300 Other Income</div>
+            <div data-value="a:4400" class="combobox-option">4400 Interest Income</div>
+            <div data-value="a:5000" class="combobox-option">5000 Cost of Goods Sold</div>
+            <div data-value="a:5100" class="combobox-option">5100 Cost of Goods Sold</div>
+            <div data-value="a:5200" class="combobox-option">5200 Direct Labor</div>
+            <div data-value="a:5300" class="combobox-option">5300 Manufacturing Overhead</div>
+            <div data-value="a:6000" class="combobox-option">6000 Operating Expenses</div>
+            <div data-value="a:6100" class="combobox-option">6100 Salaries and Wages</div>
+            <div data-value="a:6200" class="combobox-option">6200 Rent</div>
+            <div data-value="a:6300" class="combobox-option">6300 Utilities</div>
+            <div data-value="a:6400" class="combobox-option">6400 Depreciation</div>
+            <div data-value="a:6500" class="combobox-option">6500 Professional Fees</div>
+            <div data-value="a:6600" class="combobox-option">6600 Marketing and Advertising</div>
+            <div data-value="a:6700" class="combobox-option">6700 Insurance</div>
+            <div data-value="a:6800" class="combobox-option">6800 Office Supplies</div>
+            <div data-value="a:6900" class="combobox-option">6900 Travel and Transportation</div>
+            <div data-value="a:6950" class="combobox-option">6950 Miscellaneous Expenses</div>
+            <div data-value="a:6960" class="combobox-option">6960 Foreign Exchange Difference</div>
+            <div class="combobox-option combobox-option--empty" style="display:none">No results</div>
+          </div>
+        </div>
+        <input type="hidden" name="from" value="2026-01-01">
+        <input type="hidden" name="to" value="2026-03-31">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button></form>      <div class="picker-quickpicks">
+<a href="/reports/statement?pick=ar_balance&amp;from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">Customers with a balance</a><a href="/reports/statement?pick=ap_balance&amp;from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">Suppliers with a balance</a><a href="/reports/statement?pick=customers&amp;from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">All customers</a>      </div>
+    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/statement/csv?date_from=2026-01-01&amp;date_to=2026-03-31&amp;account=c%3Acontact%3A<uuid>&amp;account=a%3A1120" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/statement?date_from=2026-01-01&amp;date_to=2026-03-31&amp;account=c%3Acontact%3A<uuid>&amp;account=a%3A1120" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div>
+      <div class="report-section">
+        <table class="data-table data-table--compact">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th class="cell--number">Closing Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Riverside Supplies (customer)</td>
+              <td class="cell--number">฿105.00</td>
+            </tr>
+            <tr>
+              <td>1120 Accounts Receivable</td>
+              <td class="cell--number">฿105.00</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">Riverside Supplies (customer)</h3>
+        <p class="cell--muted">Built from posted journal entries.</p>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Ref</th>
+              <th>Type</th>
+              <th class="cell--number">Debit</th>
+              <th class="cell--number">Credit</th>
+              <th class="cell--number">Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="cell--mono">2026-01-01</td>
+              <td></td>
+              <td class="cell--muted">Opening Balance</td>
+              <td class="cell--number"></td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿0.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-01-05</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Invoice</td>
+              <td class="cell--number">฿100.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿100.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-01-20</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Payment</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿40.00</td>
+              <td class="cell--number">฿60.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-02-10</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Invoice</td>
+              <td class="cell--number">฿30.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿90.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-02-15</td>
+              <td>Late delivery charge</td>
+              <td>Journal Entry</td>
+              <td class="cell--number">฿15.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿105.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-03-31</td>
+              <td></td>
+              <td>
+<strong>Closing Balance</strong>              </td>
+              <td class="cell--number"></td>
+              <td class="cell--number"></td>
+              <td class="cell--number">
+<strong>฿105.00</strong>              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="report-total">
+<strong>Closing Balance: ฿105.00</strong>        </p>
+      </div>
+      <div class="report-section">
+        <h3 class="report-section-title">1120 Accounts Receivable</h3>
+        <p class="cell--muted">Built from posted journal entries.</p>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Ref</th>
+              <th>Type</th>
+              <th class="cell--number">Debit</th>
+              <th class="cell--number">Credit</th>
+              <th class="cell--number">Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="cell--mono">2026-01-01</td>
+              <td></td>
+              <td class="cell--muted">Opening Balance</td>
+              <td class="cell--number"></td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿0.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-01-05</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Auto JE for doc:<id> finalized</td>
+              <td class="cell--number">฿100.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿100.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-01-20</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Auto JE for doc:<id> payment</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿40.00</td>
+              <td class="cell--number">฿60.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-02-10</td>
+              <td>
+<a href="/docs/doc:<id>" class="drilldown-link">INV-<ref></a>              </td>
+              <td>Auto JE for doc:<id> finalized</td>
+              <td class="cell--number">฿30.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿90.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-02-15</td>
+              <td></td>
+              <td>Late delivery charge</td>
+              <td class="cell--number">฿15.00</td>
+              <td class="cell--number"></td>
+              <td class="cell--number">฿105.00</td>
+            </tr>
+            <tr>
+              <td class="cell--mono">2026-03-31</td>
+              <td></td>
+              <td>
+<strong>Closing Balance</strong>              </td>
+              <td class="cell--number"></td>
+              <td class="cell--number"></td>
+              <td class="cell--number">
+<strong>฿105.00</strong>              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="report-total">
+<strong>Closing Balance: ฿105.00</strong>        </p>
+      </div>
+    </div>
+  </div>
+</div>

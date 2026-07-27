@@ -274,24 +274,29 @@ if _wh_available:
     from celerp_warehousing.routes import router as _wh_router
     app.include_router(_wh_router, prefix="/warehousing", tags=["warehousing"])
 
-_SLOT_CONTRIBUTIONS = [
-    # --- nav slots (mirrors what modules register at load time) ---
-    {"slot": "nav", "contrib": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "order": 1, "_module": "celerp-dashboard"}},
-    {"slot": "nav", "contrib": {"group": "Sales Documents", "key": "docs", "href": "/docs", "label": "Documents", "order": 20, "_module": "celerp-docs"}},
-    {"slot": "nav", "contrib": {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists", "order": 21, "_module": "celerp-docs"}},
-    {"slot": "nav", "contrib": {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "min_role": "operator", "_module": "celerp-subscriptions"}},
-    {"slot": "nav", "contrib": {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "min_role": "operator", "_module": "celerp-subscriptions"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "order": 30, "settings_href": "/settings/inventory", "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "order": 31, "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "order": 32, "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "scanning", "href": "/scanning", "label": "Scanning", "order": 33, "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "audits", "href": "/audits", "label": "Audits", "order": 34, "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "order": 50, "settings_href": "/settings/accounting", "_module": "celerp-accounting"}},
-    {"slot": "nav", "contrib": {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "order": 52, "_module": "celerp-accounting"}},
-    {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},
-    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "manufacturing", "href": "/manufacturing", "label": "Demand Planning", "order": 35, "settings_href": "/settings/manufacturing", "_module": "celerp-manufacturing"}},
-    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "work_in_progress", "href": "/manufacturing/production", "label": "Work In Progress", "order": 36, "_module": "celerp-manufacturing"}},
-    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "production_orders", "href": "/docs?type=production_order", "label": "Stock Orders", "order": 37, "_module": "celerp-manufacturing"}},
+def _nav_slot_contributions() -> list[dict]:
+    """Nav entries read from the modules' own manifests, as the loader reads them.
+
+    They used to be hand-copied into this file, which put a second copy of every
+    manifest in the test harness and left it free to drift: a nav entry added to a
+    module did not exist for any test until someone remembered to mirror it here.
+    A nav test written against the copy proves only that the copy is intact.
+    """
+    from celerp.modules.loader import read_manifest
+
+    out: list[dict] = []
+    for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
+        manifest = read_manifest(pkg)
+        name = manifest.get("name")
+        nav = (manifest.get("slots") or {}).get("nav")
+        if not name or not nav:
+            continue
+        for item in (nav if isinstance(nav, list) else [nav]):
+            out.append({"slot": "nav", "contrib": {**item, "_module": name}})
+    return out
+
+
+_SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",
@@ -390,9 +395,12 @@ def _ensure_slots() -> None:
         slot = entry["slot"]
         contrib = entry["contrib"]
         registered = get(slot)
-        dedup_key = contrib.get("prefix") or contrib.get("href") or contrib.get("handler")
-        existing_keys = {c.get("prefix") or c.get("href") for c in registered}
-        if dedup_key not in existing_keys:
+        # Keyed by module as well as target: accounting and reports both offer
+        # /reports, and collapsing them here would hide which one the nav kept.
+        def _key(c: dict) -> tuple:
+            return (c.get("_module"), c.get("prefix") or c.get("href") or c.get("handler"))
+
+        if _key(contrib) not in {_key(c) for c in registered}:
             register(slot, contrib)
 
 
@@ -510,6 +518,36 @@ def _reset_loaded_modules(request):
     _loaded.clear()
     yield
     _loaded.clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_live_database():
+    """Refuse a connection to the developer's own `celerp` database.
+
+    The CLI's init/start/migrate paths reach Postgres through psycopg2. A test that
+    exercises one of them without patching the migrate step connects to whatever
+    database the config names, which on a development machine is the live `celerp`
+    database: the test passes locally, applies migrations to real data on the way
+    past, and fails only in CI, where no such database exists. Refusing here makes
+    the omission fail the same way in both places.
+    """
+    import psycopg2
+
+    real_connect = psycopg2.connect
+
+    def _guarded(*args, **kwargs):
+        dbname = kwargs.get("dbname") or kwargs.get("database") or ""
+        host = kwargs.get("host") or ""
+        if dbname == "celerp" and host in ("", "localhost", "127.0.0.1", "::1"):
+            raise AssertionError(
+                "test opened a connection to the live 'celerp' database; patch the "
+                "CLI step under test (celerp.cli._migrate_to_head) instead"
+            )
+        return real_connect(*args, **kwargs)
+
+    psycopg2.connect = _guarded
+    yield
+    psycopg2.connect = real_connect
 
 
 from celerp.models.base import Base

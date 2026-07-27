@@ -1978,8 +1978,13 @@ celerpUpdateBulkAlloc();
         try:
             _relay_status = await api.get_relay_status(token)
             _relay_connected = bool(_relay_status.get("connected"))
-            # Share needs the public URL that serves the link, not just a live tunnel.
-            _share_enabled = bool(_relay_status.get("public_url"))
+            # Share needs a relay-bound instance that can mint a link. A paid
+            # instance serves it from its own public URL; a free relay-bound
+            # instance mints a share.celerp.com envelope on demand. Only a
+            # self-hosted instance with no relay token can never mint, so it
+            # stays hidden. The offline case surfaces the online-only note, it
+            # does not hide the panel (GDR 2e).
+            _share_enabled = bool(_relay_status.get("gateway_token_set"))
         except Exception:
             pass
         _payments_on: bool = False
@@ -3382,6 +3387,7 @@ celerpUpdateBulkAlloc();
 
         return Div(
             P(t("doc.share_hint") if active else t("doc.share_hint_off"), cls="form-hint"),
+            *([P(t("doc.share_online_note"), cls="form-hint")] if active else []),
             url_row,
             controls,
         )
@@ -4655,7 +4661,7 @@ def _doc_table(
             cls="data-row",
         )
 
-    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
+    checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
 
     # Bulk action bar (hidden by default, shown when checkboxes selected)
     # Uses the same dropdown-then-confirm pattern as _li_bulk_toolbar for consistency.
@@ -5046,10 +5052,10 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                 Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                             Div(Label(t("label.bank_account"), cls="form-label"),
                                 Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                            Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which refund was issued (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
-                                Input(type="number", name="conversion_rate", value="1.0000",
-                                      step="0.0001", min="0.0001", cls="form-input"),
-                                cls="form-group"),
+                            # No conversion rate field: a refund is issued at the
+                            # rate the credit note itself carries, which the
+                            # endpoint reads from the note. An input here would
+                            # invite a rate the refund never uses.
                             Div(Label(t("label.reference"), cls="form-label"),
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
@@ -5102,8 +5108,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which payment was received (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
-                            Input(type="number", name="conversion_rate", value="1.0000",
-                                  step="0.0001", min="0.0001", cls="form-input"),
+                            Input(type="number", name="conversion_rate", value="1",
+                                  step="any", min="0", cls="form-input"),
                             cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
@@ -5736,9 +5742,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     )
     # Share is independent of Send's status gates: any customer-facing document or list
     # can be shared for viewing (a paid invoice is a receipt). Supplier/inbound docs
-    # (bills, POs, consignment-in) are never shared. Gated on a reachable cloud public
-    # URL — NOT merely "connected" — because the link is served at that URL; without it
-    # the link would be dead.
+    # (bills, POs, consignment-in) are never shared. Gated on a relay-bound instance
+    # (gateway_token_set) that can mint a link: a paid instance serves it from its own
+    # public URL, a free instance mints one through the relay. Only a self-hosted
+    # instance with no relay stays hidden, since it can never mint.
     _can_share = (
         share_enabled and not suppress_doc_actions
         and (is_list or doc_type not in NO_SEND_DOC_TYPES)
@@ -5799,6 +5806,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             Textarea(default_body, name="message", rows="3", cls="form-input"),
                             P(t("doc.send_appends_hint") if share_enabled else t("doc.send_appends_hint_offline"),
                               cls="form-hint"),
+                            *([P(t("doc.share_online_note"), cls="form-hint")] if share_enabled else []),
                             # Online payment, payable docs only: a quiet state line. On, it
                             # confirms the Pay button and the exact amount due (net of
                             # payments/credits); off, it is the discovery path to setup.

@@ -16,10 +16,16 @@ _NAV_ROUTES = [
     ("/crm/new", None),
     ("/lists", None),
     ("/lists/new", None),
-    ("/accounting", "Profit"),  # landing page is P&L view
+    ("/accounting", "New entry"),  # landing page is the journal; the reports moved to /reports
     ("/accounting/pnl", "Profit"),
     ("/accounting/balance-sheet", None),
     ("/reports", "Reports"),
+    ("/reports/pnl", "P&L"),
+    ("/reports/balance-sheet", "Balance Sheet"),
+    ("/reports/trial-balance", "Trial Balance"),
+    ("/reports/general-ledger", "General Ledger"),
+    ("/reports/cash-flow", "Cash Flow"),
+    ("/reports/statement", "Statement of Account"),
     ("/reports/ar-aging", None),
     ("/reports/ap-aging", None),
     ("/reports/sales", None),

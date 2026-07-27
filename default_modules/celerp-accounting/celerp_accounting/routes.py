@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -22,7 +23,10 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.je_keys import je_void_data
-from celerp.services.money import currency_dp, round_money, to_decimal, to_stored_float
+from celerp.services.line_measures import line_label
+from celerp.services.money import (
+    checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
+)
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -86,13 +90,19 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
-    {"code": "6960", "name": "Foreign Exchange Rounding", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
 ]
 
-# Absorbs the cents left over when each line of a foreign-currency entry rounds
-# independently. Not the FX revaluation of open balances over time, which is a
-# different concern handled elsewhere.
-FX_ROUNDING_ACCOUNT = "6960"
+
+# The sections of the cash flow statement, and the values an account may be
+# classified as. This endpoint module is the authoritative side; the chart of
+# accounts screen holds the same list and a test keeps the two in lockstep.
+CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
+
+# The account types the reports know how to sign and classify. Same arrangement as
+# the list above: this module is authoritative, the chart of accounts screen holds a
+# copy for its dropdown, and a test keeps the two in lockstep.
+ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
 
 
 class AccountCreate(BaseModel):
@@ -100,6 +110,7 @@ class AccountCreate(BaseModel):
     name: str
     account_type: str  # asset|liability|equity|revenue|expense|cogs
     parent_code: str | None = None
+    cash_flow_category: str | None = None  # unset means "derive it from type and code"
 
 
 class AccountPatch(BaseModel):
@@ -107,6 +118,8 @@ class AccountPatch(BaseModel):
     account_type: str | None = None
     parent_code: str | None = None
     is_active: bool | None = None
+    # None leaves the override alone; "" clears it back to the derived default.
+    cash_flow_category: str | None = None
 
 
 class AccImportRecord(BaseModel):
@@ -225,14 +238,40 @@ def _account_to_dict(acc: Account) -> dict:
         "account_type": acc.account_type,
         "parent_code": acc.parent_code,
         "is_active": acc.is_active,
+        "cash_flow_category": acc.cash_flow_category,
     }
+
+
+def _checked_account_type(value: str) -> str:
+    """The account's type, which decides its sign on every report. A type outside
+    the known set has no honest sign convention, so it is refused rather than
+    guessed at."""
+    if value not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
+        )
+    return value
+
+
+def _checked_cash_flow_category(value: str | None) -> str | None:
+    """The stored override, or None for "derive it". An empty value clears the
+    override; anything else must name a section the statement actually has."""
+    if not value:
+        return None
+    if value not in CASH_FLOW_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail="Cash flow category must be one of: " + ", ".join(CASH_FLOW_CATEGORIES) + ".",
+        )
+    return value
 
 
 @router.get("/chart")
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
 ) -> dict:
     """Return all accounts sorted by code."""
     rows = (
@@ -299,8 +338,9 @@ async def create_account(
         company_id=company_id,
         code=payload.code,
         name=payload.name,
-        account_type=payload.account_type,
+        account_type=_checked_account_type(payload.account_type),
         parent_code=payload.parent_code,
+        cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
     session.add(acc)
     await session.commit()
@@ -325,11 +365,13 @@ async def patch_account(
     if payload.name is not None:
         acc.name = payload.name
     if payload.account_type is not None:
-        acc.account_type = payload.account_type
+        acc.account_type = _checked_account_type(payload.account_type)
     if payload.parent_code is not None:
         acc.parent_code = payload.parent_code
     if payload.is_active is not None:
         acc.is_active = payload.is_active
+    if payload.cash_flow_category is not None:
+        acc.cash_flow_category = _checked_cash_flow_category(payload.cash_flow_category)
 
     await session.commit()
     return _account_to_dict(acc)
@@ -384,6 +426,14 @@ async def batch_import_accounting(
             skipped += 1
             continue
         try:
+            # An imported line may name a party. Checked here, at the boundary,
+            # because an entry whose contact resolves to nothing would post to a
+            # control account and then be missing from every statement, with
+            # nothing on screen to say why.
+            entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
+            if isinstance(entries, list):
+                await _check_line_contacts(
+                    session, company_id, [e for e in entries if isinstance(e, dict)])
             await emit_event(
                 session,
                 company_id=company_id,
@@ -438,6 +488,207 @@ def _require_iso_date(value: str | None, field: str) -> None:
         )
 
 
+def _require_date_range(date_from: str | None, date_to: str | None) -> None:
+    """Check the date filter pair every report takes, in one place.
+
+    Both ends must be strict ISO dates and the range must run forwards. A
+    backwards range matches nothing, so answering it produces a confident
+    empty report that reads as a quiet period instead of as a question that
+    cannot be answered. Refused here so every report refuses it alike.
+    """
+    _require_iso_date(date_from, "date_from")
+    _require_iso_date(date_to, "date_to")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"date_from {date_from} is after date_to {date_to}. "
+                    "Start the range on or before the date it ends."),
+        )
+
+
+# The longest free-text search the journal accepts. Long enough for a memo or a
+# document reference, short enough that the value cannot be used to make the
+# server read every entry against a pathological pattern.
+_JOURNAL_Q_MAX = 200
+
+
+@dataclass(frozen=True)
+class _JournalFilter:
+    """What the journal was asked to narrow itself to, and the rule that does it.
+
+    One home for the matching rule, because the journal, the extended journal and
+    both of their exports all narrow through this and a second copy of the rule
+    would eventually disagree with the first.
+
+    The reader gets one search box, not three. A comma separates terms and widens
+    the answer (an OR): "1200, coffee, 90.00" returns every entry touching account
+    1200, or naming coffee, or posting 90.00. Each term is tried against the three
+    things a term could mean - an account code, free text, or a figure - so the
+    reader never has to say which of them they meant.
+    """
+
+    terms: tuple[str, ...] = ()
+
+    @property
+    def active(self) -> bool:
+        return bool(self.terms)
+
+    def matches(self, entry: dict) -> bool:
+        """Whether an entry belongs in a filtered journal.
+
+        Any one term matching keeps the entry (the commas are ORs), and a term
+        matches on any one of the entry's lines. The entry is then emitted whole:
+        emitting only the matching lines would print half an entry, which does not
+        balance and is not a journal.
+        """
+        if not self.terms:
+            return True
+        lines = entry.get("lines") or []
+        haystack = [(entry.get("memo") or "").lower(),
+                    ((entry.get("source_doc") or {}).get("doc_ref") or "").lower()]
+        figures: list[Decimal] = []
+        for l in lines:
+            haystack += [(l.get("account") or "").lower(), (l.get("name") or "").lower()]
+            figures += [to_decimal(l.get("debit") or 0), to_decimal(l.get("credit") or 0)]
+        return any(self._term_matches(term, haystack, figures) for term in self.terms)
+
+    @staticmethod
+    def _term_matches(term: str, haystack: list[str], figures: list[Decimal]) -> bool:
+        if any(term in h for h in haystack):
+            return True
+        figure = _parse_amount(term)
+        return figure is not None and any(f == figure for f in figures)
+
+
+def _require_q(q: str) -> None:
+    """Refuse a search longer than the journal reads."""
+    if len(q) > _JOURNAL_Q_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Search text is {len(q)} characters, longer than the "
+                    f"{_JOURNAL_Q_MAX} the journal searches."),
+        )
+
+
+def _parse_amount(term: str) -> Decimal | None:
+    """A search term as a positive, finite figure, or None if it is not one.
+
+    Quiet by design: a term that is not a number is simply not tried as one, it
+    is still tried as text. `nan` and `inf` parse as decimals but are not figures
+    (one raises on every comparison, the other matches nothing while claiming to),
+    and a negative reads as nothing, since journal figures are posted positive on
+    one side, so all three fall back to a text-only term.
+    """
+    try:
+        figure = to_decimal(term)
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if figure is None or not figure.is_finite() or figure < 0:
+        return None
+    return figure
+
+
+def _journal_filter(q: str | None) -> _JournalFilter:
+    """Parse the journal's one search box into the rule that matches.
+
+    A comma separates terms; blank terms (a trailing comma, a double comma) are
+    dropped rather than matching everything. The whole string is length-guarded
+    before it is split, so a pathological query is refused once, not per term.
+    Clearing the box submits it empty, which is no filter, never a refusal.
+    """
+    q = (q or "").strip()
+    _require_q(q)
+    terms = tuple(t for t in (part.strip().lower() for part in q.split(",")) if t)
+    return _JournalFilter(terms=terms)
+
+
+# Account types whose balance is credit-normal. Every other type, including the
+# unknown type of a code with no chart entry, is reported on the debit side.
+_CREDIT_NORMAL_TYPES = frozenset({"liability", "equity", "revenue"})
+
+# Legacy doc_type spellings normalised to their canonical names, so a statement
+# row and the AR/AP aging call the same document the same thing.
+_DOC_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
+
+
+def _is_debit_normal(account_type: str) -> bool:
+    """Whether an account's balance is signed positive on the debit side.
+
+    One rule for the general ledger and the account ledger, so a drilldown can
+    never contradict the sign of the report row it was opened from. A type the
+    chart does not use, including the unknown type of a code that has posted
+    lines but no chart entry, keeps the raw debit-minus-credit figure rather
+    than having a sign guessed for it.
+    """
+    return account_type not in _CREDIT_NORMAL_TYPES
+
+
+async def _contact_row(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str
+) -> Projection | None:
+    """The contact projection behind an id, or None when the id names no contact."""
+    row = await session.get(Projection, (company_id, contact_id))
+    return row if row and row.entity_type == "contact" else None
+
+
+async def _require_contact(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str
+) -> Projection:
+    """The contact a statement was asked for, or 404 for a contact that is not there."""
+    row = await _contact_row(session, company_id, contact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return row
+
+
+async def _require_contact_filter(
+    session: AsyncSession, company_id: uuid.UUID, contact_id: str | None
+) -> None:
+    """Check a report's contact filter before it can silence the report.
+
+    The empty string is the reports' own bucket for lines with no resolvable
+    party, so it is a real filter value rather than a missing contact. Any
+    other id has to name a contact: a mistyped one would otherwise return an
+    empty subledger, which reads as "this party owes nothing".
+
+    Refused as 422 rather than 404, like the date filters: the account being
+    reported on is there, it is the filter that cannot be applied, and 422 is
+    the status whose message reaches the reader intact.
+    """
+    if contact_id is None or contact_id == "":
+        return
+    if await _contact_row(session, company_id, contact_id) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No contact matches contact_id {contact_id}.",
+        )
+
+
+async def _check_line_contacts(
+    session: AsyncSession, company_id: uuid.UUID, entries: list[dict]
+) -> None:
+    """Refuse a set of journal entry lines if any names a contact that is not there.
+
+    A line's contact is what puts a posting on that party's statement, so an id
+    matching no contact would post an entry no statement can ever show and no
+    control-account bucket can ever explain. Checked once per distinct contact
+    named, and by the same rule for every path that writes lines: manual
+    entries, reconciliation, and the batch import.
+    """
+    named = {e.get("contact") for e in entries if isinstance(e.get("contact"), str) and e.get("contact")}
+    if not named:
+        return
+    missing = []
+    for cid in sorted(named):
+        if await _contact_row(session, company_id, cid) is None:
+            missing.append(cid)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail="No contact matches " + ", ".join(missing) + ".",
+        )
+
+
 async def _je_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
 ) -> list[tuple[str, dict, str]]:
@@ -476,38 +727,50 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return (company.settings or {}).get("currency", "USD") if company else "USD"
 
 
-async def _validated_fx(
-    session: AsyncSession, company_id: uuid.UUID, fx: "ManualJEFx | None"
-) -> "ManualJEFx | None":
-    """Check a manual entry's currency and rate, or return None for an ordinary
-    base-currency entry.
+def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str, Decimal] | None:
+    """(currency, rate) for a line typed in a foreign currency, or None for a
+    line already in base currency.
 
-    Every message names the field at fault: an accountant who mistypes a rate
-    should be told which value was refused, not handed a generic rejection.
+    Every message names the line at fault: an accountant who mistypes a rate on
+    the fourth line of an entry should be told which line was refused, not handed
+    a rejection they have to search for.
     """
-    if fx is None:
+    where = f"Line {index + 1}"
+    currency = (line.currency or "").upper()
+    if not currency and line.rate is None:
         return None
-    currency = (fx.currency or "").upper()
+    if not currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{where} has an exchange rate but no currency. A rate needs the currency it converts from.",
+        )
     if currency not in ISO_4217_CURRENCIES:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown currency {fx.currency}. Use a three-letter ISO 4217 code.",
+            detail=f"{where}: unknown currency {line.currency}. Use a three-letter ISO 4217 code.",
         )
-    base = await _base_currency(session, company_id)
     if currency == base:
+        # The company's own currency converts at 1 by definition. An explicit 1 is
+        # accepted and dropped so the stored line looks like every other base-
+        # currency line; anything else would silently restate the amount.
+        if line.rate is not None and to_decimal(line.rate) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{where}: {currency} is this company's own currency, so its rate "
+                    f"is 1, not {line.rate}."
+                ),
+            )
+        return None
+    if line.rate is None:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"{currency} is this company's own currency. Leave the foreign "
-                "currency blank to post an ordinary entry."
-            ),
+            detail=f"{where} is in {currency} but has no exchange rate.",
         )
-    if not math.isfinite(fx.rate) or fx.rate <= 0:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Exchange rate must be greater than zero, not {fx.rate}.",
-        )
-    return ManualJEFx(currency=currency, rate=fx.rate)
+    try:
+        return currency, checked_exchange_rate(line.rate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{where}: exchange rate {exc}.") from exc
 
 
 def _id_chunks(ids: list[str], size: int = 10_000):
@@ -527,6 +790,11 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     empty rather than guessing. Payment JEs (metadata carries payment_index)
     resolve currency/rate from that specific payment, since a payment may
     legitimately use a different rate than its invoice.
+
+    The document's own figures - its line items, its currency, its rate and its
+    total - travel with the ref so the extended journal can name what was bought
+    or sold on each posting. The projection row is already loaded whole here, so
+    carrying them costs no extra read.
     """
     from celerp.models.ledger import LedgerEntry
 
@@ -551,7 +819,12 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             je_meta[ev.entity_id] = meta
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
-    doc_ids = sorted({m["doc_id"] for m in je_meta.values()})
+    # A credit note carries both ids; its own party is the one the entry belongs
+    # to, which is not always the party on the invoice it settles.
+    doc_ids = sorted(
+        {m["doc_id"] for m in je_meta.values()}
+        | {m["cn_id"] for m in je_meta.values() if m.get("cn_id")}
+    )
     doc_states: dict[str, dict] = {}
     for chunk in _id_chunks(doc_ids):
         doc_rows = (
@@ -590,12 +863,55 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         fx = None
         if currency and currency != base and rate:
             fx = {"currency": currency, "rate": float(rate)}
+        # The party this entry belongs to, resolved from the document that caused
+        # it. Every document-driven posting records its doc_id, so no separate
+        # party field has to be stored or backfilled for them.
+        party_state = doc_states.get(meta["cn_id"], state) if meta.get("cn_id") else state
+        contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
+                      or party_state.get("supplier_id"))
+        doc_type = party_state.get("doc_type") or party_state.get("type") or ""
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
             "fx": fx,
+            "contact_id": contact_id,
+            "doc_type": _DOC_TYPE_ALIASES.get(doc_type, doc_type),
+            "is_payment": isinstance(payment_index, int),
+            "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
+            "doc": state,
         }
     return refs
+
+
+def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
+    """The party a journal entry line belongs to, or "" when none resolves.
+
+    A line may name its own contact, which is how a manual posting to a control
+    account reaches that party's statement. Everything else inherits the party of
+    the document that caused the entry, resolved from the doc refs every report
+    already loads. One rule for the account ledger, the general ledger and the
+    statement, so a line can never sit in one party's bucket on one report and
+    another's on the next. Lines that resolve to nothing are reported under the
+    empty string, so a filtered view can never quietly drop them from the
+    account's total.
+    """
+    named = entry.get("contact")
+    if isinstance(named, str) and named:
+        return named
+    return (refs.get(je_id) or {}).get("contact_id") or ""
+
+
+def _statement_kind(ref: dict) -> str:
+    """What a statement row calls the entry behind it.
+
+    A posting the books made for a document is named after that document; a
+    payment against one is a payment whatever the document was; anything a
+    person posted by hand is a journal entry, which is exactly what the reader
+    needs to know to go looking for it.
+    """
+    if ref.get("is_payment"):
+        return "payment"
+    return ref.get("doc_type") or "journal"
 
 
 def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
@@ -634,21 +950,19 @@ def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, 
     return balances
 
 
-@router.get("/journal")
-async def journal(
-    date_from: str | None = None,
-    date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Journal: every entry with its lines, source-doc link, and FX info.
+async def _journal_payload(
+    session: AsyncSession, company_id: uuid.UUID,
+    date_from: str | None, date_to: str | None,
+    filt: _JournalFilter | None = None,
+) -> tuple[dict, dict, str]:
+    """The journal, its source-doc refs and the base currency.
 
-    Voided entries stay visible flagged status="void" - a journal is a record, and
-    hiding voids would misstate it - but they are excluded from the period totals.
+    The classical journal is the whole of this. The extended journal is this plus
+    item detail attached afterwards, so the two can never show different entries,
+    different lines or different totals for the same period. The filter is applied
+    here for the same reason: both books, and both of their exports, narrow alike.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_date_range(date_from, date_to)
     rows = await _je_rows(session, company_id, include_void=True)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
@@ -675,7 +989,20 @@ async def journal(
     entries_out = []
     for je_id, state, ts in rows:
         posted = state.get("status") == "posted"
+        ref = refs.get(je_id)
+        # A document-linked entry carries its rate on the source doc, which is
+        # one currency for the whole document; a manual entry carries a currency
+        # and rate on each line. Manual entries posted before per-line currency
+        # existed carry one `fx` for the entry instead, so their lines inherit it
+        # here. This is the only place the older shape is read: stored events are
+        # immutable, so an entry posted then still has to render now.
+        entry_fx = ref["fx"] if ref else state.get("fx")
         lines = []
+        # Kept per entry and folded into the running totals only once the entry
+        # has passed the filter, so the totals are the totals of the entries
+        # shown by construction rather than by a second pass over them.
+        entry_debit = Decimal(0)
+        entry_credit = Decimal(0)
         for entry in state.get("entries", []):
             code = entry.get("account")
             amounts = _line_amounts(entry)
@@ -685,21 +1012,24 @@ async def journal(
             if not code or amounts is None:
                 continue
             if posted:
-                total_debit += amounts[0]
-                total_credit += amounts[1]
+                entry_debit += amounts[0]
+                entry_credit += amounts[1]
+            line_currency = entry.get("fx_currency") or (entry_fx or {}).get("currency")
+            line_rate = entry.get("fx_rate") or (entry_fx or {}).get("rate")
             lines.append({
                 "account": code,
                 "name": account_names.get(code, code),
                 "debit": float(amounts[0]),
                 "credit": float(amounts[1]),
-                # Present only on a foreign-currency line. The rounding plug and
-                # every base-currency line carry None, which the view renders as
-                # an empty cell rather than a guessed figure.
+                # Present only on a foreign-currency line. A base-currency line
+                # carries None, which the view renders as an empty cell rather
+                # than a guessed figure.
                 "fx_debit": entry.get("fx_debit"),
                 "fx_credit": entry.get("fx_credit"),
+                "fx_currency": line_currency,
+                "fx_rate": float(line_rate) if line_rate else None,
             })
-        ref = refs.get(je_id)
-        entries_out.append({
+        out = {
             "je_id": je_id,
             "ts": ts,
             "memo": state.get("memo", ""),
@@ -708,32 +1038,256 @@ async def journal(
             "void_reason": state.get("void_reason"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
-            # A document-linked entry carries its rate on the source doc; a
-            # manual entry carries its own, typed by the author.
-            "fx": ref["fx"] if ref else state.get("fx"),
-        })
+            "fx": entry_fx,
+        }
+        if filt is not None and not filt.matches(out):
+            continue
+        total_debit += entry_debit
+        total_credit += entry_credit
+        entries_out.append(out)
 
-    return {
+    return ({
         "date_from": date_from,
         "date_to": date_to,
         "entries": entries_out,
         "total_debit": to_stored_float(round_money(total_debit, base)),
         "total_credit": to_stored_float(round_money(total_credit, base)),
+        # Stated by the payload rather than worked out again by each reader, so
+        # the page, the print sheet and the CSV cannot disagree about whether
+        # what they are showing is the whole book.
+        "filtered": bool(filt and filt.active),
+    }, refs, base)
+
+
+@router.get("/journal")
+async def journal(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    q: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Journal: every entry with its lines, source-doc link, and FX info.
+
+    Voided entries stay visible flagged status="void" - a journal is a record, and
+    hiding voids would misstate it - but they are excluded from the period totals.
+
+    `q` is the one search box: comma-separated terms that OR together, each tried
+    against an account code, free text, or a figure. A narrowed answer says so in
+    `filtered` and its totals are the totals of what it returned.
+    """
+    filt = _journal_filter(q)
+    payload, _refs, _base = await _journal_payload(
+        session, company_id, date_from, date_to, filt)
+    return payload
+
+
+# Which side of the books a document's items post to: a sale credits what it
+# earned, a purchase debits what it bought, and a credit note reverses the sale
+# it cancels. A document type absent here is one the books do not post item by
+# item, so its entries are shown exactly as the classical journal shows them.
+_ITEM_SIDE: dict[str, str] = {
+    "invoice": "credit",
+    "credit_note": "debit",
+    "bill": "debit",
+    "purchase_order": "debit",
+}
+
+
+def _doc_item_lines(doc: dict, base: str) -> list[dict]:
+    """A document's items, each with what it is worth in its own currency and in
+    the books'.
+
+    Both figures are derived exactly as `celerp/services/auto_je.py` derived them
+    when it posted the entry, down to the same rounding and the same skipping of
+    lines worth nothing, so a line that footed there foots here. A line the
+    arithmetic cannot read abandons the whole document rather than reporting a
+    partial set of items as if it were the full one.
+    """
+    currency = doc.get("currency") or base
+    rate = doc.get("conversion_rate") or 1
+    out: list[dict] = []
+    for li in doc.get("line_items") or []:
+        try:
+            net = (to_decimal(li.get("line_total") or 0)
+                   or to_decimal(li.get("quantity") or 0) * to_decimal(li.get("unit_price") or 0))
+            line_total = round_money(net, currency)
+        except (ArithmeticError, TypeError, ValueError):
+            return []
+        if line_total <= 0:
+            continue
+        out.append({
+            "item": line_label(li),
+            "quantity": li.get("quantity"),
+            "unit_price": li.get("unit_price"),
+            "fx_amount": to_stored_float(line_total),
+            "amount": to_decimal(to_base(to_stored_float(line_total), rate, base)),
+        })
+    return out
+
+
+def _doc_net_posted(doc: dict, base: str) -> Decimal:
+    """What a document's items are posted for in one line, in the books' currency:
+    its total less its tax, converted the way auto_je converts it."""
+    currency = doc.get("currency") or base
+    rate = doc.get("conversion_rate") or 1
+    try:
+        net = round_money(to_decimal(doc.get("total") or 0), currency) - round_money(
+            to_decimal(doc.get("tax") or 0), currency)
+    except (ArithmeticError, TypeError, ValueError):
+        return Decimal(0)
+    return to_decimal(to_base(to_stored_float(round_money(net, currency)), rate, base))
+
+
+def _item_row(line: dict, side: str, doc_line: dict, amount: Decimal) -> dict:
+    """One extended-journal row: the posting, narrowed to the one item it is for.
+
+    The foreign figure is the document line's own total, which is the figure the
+    supplier or the customer sees, rather than the book amount divided back out.
+    """
+    other = "credit" if side == "debit" else "debit"
+    return {
+        **line,
+        side: float(amount),
+        other: 0.0,
+        f"fx_{side}": doc_line["fx_amount"] if line.get("fx_currency") else None,
+        f"fx_{other}": None,
+        "item": doc_line["item"],
+        "quantity": doc_line["quantity"],
+        "unit_price": doc_line["unit_price"],
     }
+
+
+def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[list[dict], str]:
+    """The entry's lines with the item each one is for attached, and what became of
+    the attempt.
+
+    The status is one of four, because "no item detail" covers four different
+    facts and a reader has to be able to tell them apart:
+
+    - `expanded`: the items are on the lines below.
+    - `no_items`: there was never item detail to show. A manual entry, a payment
+      moving cash against a control account, a fulfilment posting that moves
+      inventory to cost of sales as one figure, or a document kind that does not
+      carry items.
+    - `no_document`: the document the entry was posted for is not in the books
+      any more, so there is nothing left to read items from.
+    - `untied`: the document is there and it has items, but its lines do not
+      account for what was posted, so no item was attached.
+
+    Two shapes are recognised, and the money is checked before anything is
+    attached: one posting covering the whole document, which becomes a row per
+    item, and one posting per document line in document order, which is already a
+    row per item. Anything else is left as the classical journal shows it, because
+    item detail that does not tie to the posting is worse than no item detail.
+
+    Where a single posting splits, the rows are the document's own line totals
+    converted one by one; converting each and converting their sum can differ by
+    a unit, so that difference lands on the last row and the rows always foot to
+    the posting they came from. Only a difference that small is absorbed. A wider
+    gap is a posting the lines do not account for, most often a document-level
+    charge that is not one of its lines, and it refuses rather than inflating an
+    item to swallow it.
+    """
+    if not ref:
+        return lines, "no_items"
+    doc = ref.get("doc") or {}
+    # Checked before the payment exit: an entry pointing at a document that is no
+    # longer readable is worth saying out loud whatever the entry was for, and it
+    # is the one case here that means something is missing rather than absent.
+    if not doc:
+        return lines, "no_document"
+    if ref.get("is_payment"):
+        return lines, "no_items"
+    if ref.get("is_cost_posting"):
+        # The fulfilment posting moves inventory to cost of sales at cost, as a
+        # single figure, not a line per item. It has no item breakdown to attach,
+        # and its cost basis is not meant to equal the document's sale-price lines,
+        # so tie-checking it against them would flag every sale as untied. The
+        # items are named on the same document's revenue posting; this entry stands
+        # as the classical journal shows it.
+        return lines, "no_items"
+    side = _ITEM_SIDE.get(ref.get("doc_type") or "")
+    doc_lines = _doc_item_lines(doc, base)
+    if not side or not doc_lines:
+        return lines, "no_items"
+    other = "credit" if side == "debit" else "debit"
+
+    posted = _doc_net_posted(doc, base)
+    amounts = [d["amount"] for d in doc_lines]
+    residual = posted - sum(amounts, Decimal(0))
+    rounding_room = (Decimal(10) ** -currency_dp(base)) * len(doc_lines)
+    if posted > 0 and abs(residual) <= rounding_room:
+        for i, line in enumerate(lines):
+            if to_decimal(line.get(side) or 0) == posted and not to_decimal(line.get(other) or 0):
+                amounts[-1] += residual
+                rows = [_item_row(line, side, d, a) for d, a in zip(doc_lines, amounts)]
+                return lines[:i] + rows + lines[i + 1:], "expanded"
+
+    on_side = [l for l in lines if to_decimal(l.get(side) or 0) > 0]
+    head = on_side[:len(doc_lines)]
+    if len(head) == len(doc_lines) and all(
+            to_decimal(h.get(side) or 0) == d["amount"] for h, d in zip(head, doc_lines)):
+        paired = {id(h): d for h, d in zip(head, doc_lines)}
+        return [_item_row(l, side, paired[id(l)], paired[id(l)]["amount"]) if id(l) in paired else l
+                for l in lines], "expanded"
+
+    return lines, "untied"
+
+
+@router.get("/extended-journal")
+async def extended_journal(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    q: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The journal with the item behind each posting named, where it can be.
+
+    The same entries, the same lines and the same totals as the classical
+    journal: nothing is posted, stored or recomputed here. A sale posted as one
+    revenue line becomes a row per item sold, a purchase already posted line by
+    line gains the item on each, and an entry whose figures do not tie to its
+    document is shown as it stands. Every entry carries an `items_status` of
+    `expanded`, `no_items`, `no_document` or `untied` (see `_expand_item_lines`),
+    so a reader can tell "no item here" from "the item detail was not
+    trustworthy" from "the document is gone".
+
+    The search is the classical journal's, applied to the same entries before
+    any item detail is derived, so a search can never give the two books
+    different entry sets.
+    """
+    filt = _journal_filter(q)
+    payload, refs, base = await _journal_payload(
+        session, company_id, date_from, date_to, filt)
+    for entry in payload["entries"]:
+        lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
+        entry["lines"] = lines
+        entry["items_status"] = status
+    return payload
 
 
 class ManualJELine(BaseModel):
     account: str
     debit: float = 0
     credit: float = 0
-
-
-class ManualJEFx(BaseModel):
-    """The currency and rate for a whole entry. The author types the foreign
-    amounts on each line; the server converts them to base currency."""
-
-    currency: str
-    rate: float
+    # The party this line belongs to. Document-driven postings derive their party
+    # from the document, so this is for the entries that have no document: a
+    # write-off, an opening balance, an adjustment posted straight to a control
+    # account. Without it those lines can only ever sit in the unattributed
+    # bucket, and the party's statement would not show a movement its own
+    # balance includes.
+    contact: str | None = None
+    # The currency this line's amounts were typed in, and what one unit of it is
+    # worth in base currency. Both absent on an ordinary base-currency line,
+    # which is every line of most entries. Carried per line rather than per entry
+    # because settling an invoice in one currency with cash in another is one
+    # transaction, and the books already store every posting in base currency.
+    currency: str | None = None
+    rate: float | None = None
 
 
 class ManualJECreate(BaseModel):
@@ -741,12 +1295,20 @@ class ManualJECreate(BaseModel):
     memo: str = ""
     entries: list[ManualJELine]
     idempotency_token: str
-    # Absent for an ordinary base-currency entry, which is the common case and
-    # is untouched by any of the conversion below.
-    fx: ManualJEFx | None = None
 
 
 class ManualJEVoidPayload(BaseModel):
+    reason: str | None = None
+
+
+# A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
+# selection cannot turn into an unbounded write loop holding a connection. A larger
+# selection is refused with the count and the limit, not silently truncated.
+_BULK_VOID_LIMIT = 200
+
+
+class BulkJEVoidPayload(BaseModel):
+    je_ids: list[str]
     reason: str | None = None
 
 
@@ -765,7 +1327,8 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
-    fx = await _validated_fx(session, company_id, payload.fx)
+    await _check_line_contacts(
+        session, company_id, [{"contact": line.contact} for line in payload.entries])
 
     accounts = (
         await session.execute(
@@ -779,16 +1342,14 @@ async def create_manual_journal_entry(
             children_of.setdefault(a.parent_code, []).append(a.code)
 
     base = await _base_currency(session, company_id)
-    # With a rate, the author typed foreign amounts: they are validated and
-    # balanced at the foreign currency's precision, then converted. Without one
-    # the amounts are already base currency and nothing below changes.
-    amount_currency = fx.currency if fx else base
+    # Every posting is stored in base currency, so the entry is balanced there,
+    # on the same converted figures the author is looking at while typing. A line
+    # in a foreign currency is validated and rounded at that currency's precision
+    # first, then converted; a line without one is already base currency.
     total_debit = Decimal(0)
     total_credit = Decimal(0)
-    local_debit = Decimal(0)
-    local_credit = Decimal(0)
     entries: list[dict] = []
-    for line in payload.entries:
+    for index, line in enumerate(payload.entries):
         acc = account_map.get(line.account)
         if not acc:
             raise HTTPException(status_code=422, detail=f"Unknown account {line.account}.")
@@ -806,83 +1367,53 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
+        line_fx = _validated_line_fx(base, line, index)
+        amount_currency = line_fx[0] if line_fx else base
         d = round_money(line.debit, amount_currency)
         c = round_money(line.credit, amount_currency)
         if d > 0 and c > 0:
             raise HTTPException(status_code=422, detail="Each line must have an amount on only one side, debit or credit.")
         if d == 0 and c == 0:
             raise HTTPException(status_code=422, detail="Each line needs a debit or credit amount.")
-        total_debit += d
-        total_credit += c
-        if fx:
-            ld = round_money(d * to_decimal(fx.rate), base)
-            lc = round_money(c * to_decimal(fx.rate), base)
-            local_debit += ld
-            local_credit += lc
-            entries.append({
+        if line_fx:
+            currency, rate = line_fx
+            bd = round_money(d * rate, base)
+            bc = round_money(c * rate, base)
+            stored = {
                 "account": line.account,
-                "debit": to_stored_float(ld),
-                "credit": to_stored_float(lc),
+                "debit": to_stored_float(bd),
+                "credit": to_stored_float(bc),
                 "fx_debit": to_stored_float(d) if d else None,
                 "fx_credit": to_stored_float(c) if c else None,
-            })
+                "fx_currency": currency,
+                "fx_rate": to_stored_float(rate),
+            }
         else:
-            entries.append({"account": line.account, "debit": to_stored_float(d), "credit": to_stored_float(c)})
+            bd, bc = d, c
+            stored = {"account": line.account, "debit": to_stored_float(bd), "credit": to_stored_float(bc)}
+        total_debit += bd
+        total_credit += bc
+        # Only lines that name a party carry the key, so an entry with no party
+        # stores exactly what it stored before.
+        if line.contact:
+            stored["contact"] = line.contact
+        entries.append(stored)
 
     if total_debit != total_credit:
-        where = f" in {fx.currency}" if fx else ""
+        # The gap is named, not just the two totals: when lines are in different
+        # currencies the difference is the exchange difference the author still
+        # has to post, and it is the figure they need rather than one to work out.
+        gap = abs(total_debit - total_credit)
+        short = "credit" if total_debit > total_credit else "debit"
         raise HTTPException(
             status_code=422,
-            detail=f"Entry is out of balance{where}: debits {total_debit} do not equal credits {total_credit}.",
+            detail=(
+                f"Entry is out of balance in {base}: debits {total_debit} do not equal "
+                f"credits {total_credit}. The {short} side is short by {gap}."
+            ),
         )
     if total_debit == 0:
         raise HTTPException(status_code=422, detail="Entry total must be greater than zero.")
-
-    if fx:
-        # Each line converts and rounds independently, so a set of foreign
-        # amounts that balance exactly can convert to local amounts that do not.
-        # The difference is posted as its own visible line rather than folded
-        # into a real account, where it would silently misstate that account.
-        residual = local_credit - local_debit
-        # Provably bounded: each line rounds by at most half a smallest unit of
-        # the foreign currency before conversion, and by at most half a smallest
-        # unit of the base currency after it. Breaching this would mean the
-        # conversion arithmetic is wrong, not that the user typed something odd,
-        # so it fails as a server error rather than posting a number that failed
-        # its own sanity check.
-        half_foreign = Decimal(10) ** -currency_dp(fx.currency) / 2
-        half_base = Decimal(10) ** -currency_dp(base) / 2
-        ceiling = len(payload.entries) * (half_foreign * to_decimal(fx.rate) + half_base)
-        if abs(residual) > ceiling:
-            # Raised rather than asserted: `python -O` strips assert statements,
-            # and a guard on a posted money figure must not depend on how the
-            # interpreter was launched.
-            raise RuntimeError(
-                f"exchange rounding residual {residual} exceeds the bound {ceiling} "
-                f"for {len(payload.entries)} lines at {fx.rate} {fx.currency}"
-            )
-        if residual != 0:
-            rounding = account_map.get(FX_ROUNDING_ACCOUNT)
-            if not rounding or not rounding.is_active:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Account {FX_ROUNDING_ACCOUNT} is needed to post the "
-                        "exchange-rate rounding difference and is missing or "
-                        "inactive. Re-seed the chart of accounts in Settings."
-                    ),
-                )
-            entries.append({
-                "account": FX_ROUNDING_ACCOUNT,
-                "debit": to_stored_float(residual) if residual > 0 else 0.0,
-                "credit": to_stored_float(-residual) if residual < 0 else 0.0,
-                # 0.0 rather than null on both sides: the display prefers a
-                # stored foreign amount over deriving one, and a null pair would
-                # fall through to division and invent a foreign figure for a
-                # line the author never typed in any currency.
-                "fx_debit": 0.0,
-                "fx_credit": 0.0,
-            })
 
     je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
@@ -894,7 +1425,6 @@ async def create_manual_journal_entry(
         data={
             "memo": payload.memo, "ts": payload.ts, "entries": entries,
             "je_type": "manual", "status": "posted",
-            **({"fx": {"currency": fx.currency, "rate": fx.rate}} if fx else {}),
         },
         actor_id=user.id,
         location_id=None,
@@ -913,9 +1443,10 @@ async def create_manual_journal_entry(
         def _norm(lines: list) -> list:
             # Compare money as rounded Decimals so a byte-identical retry never
             # trips on float representation differences across storage layers.
-            # The foreign amounts come along: two different rates can convert to
-            # the same local figures, and comparing only those would read a
-            # corrected rate as an identical retry and silently post nothing.
+            # The foreign amounts and the rate that converted them come along: two
+            # different rates can convert to the same base figures, and comparing
+            # only those would read a corrected rate as an identical retry and
+            # silently post nothing.
             out = []
             for l in lines or []:
                 amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
@@ -923,18 +1454,13 @@ async def create_manual_journal_entry(
                     l.get("account"),
                     round_money(amounts[0], base), round_money(amounts[1], base),
                     l.get("fx_debit"), l.get("fx_credit"),
+                    (l.get("fx_currency") or "").upper(),
+                    to_decimal(l.get("fx_rate") or 0),
                 ))
             return out
 
-        def _norm_fx(f: dict | None) -> tuple | None:
-            if not f:
-                return None
-            return ((f.get("currency") or "").upper(), to_decimal(f.get("rate") or 0))
-
-        submitted_fx = {"currency": fx.currency, "rate": fx.rate} if fx else None
         if (orig.get("ts") != payload.ts
                 or (orig.get("memo") or "") != (payload.memo or "")
-                or _norm_fx(orig.get("fx")) != _norm_fx(submitted_fx)
                 or _norm(orig.get("entries")) != _norm(entries)):
             raise HTTPException(
                 status_code=409,
@@ -966,17 +1492,17 @@ async def create_manual_journal_entry(
     }
 
 
-@router.post("/journal-entries/{entity_id}/void")
-async def void_manual_journal_entry(
-    entity_id: str,
-    payload: ManualJEVoidPayload | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Void a manual journal entry. The voided entry stays on the record - accounting
-    requires the full trail, so entries are never deleted."""
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+    """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
+
+    Both the single-entry route and the bulk route go through here, so a rule about
+    what may be voided cannot hold on one and not the other.
+
+    The actor arrives as an id rather than the user object because the bulk route
+    rolls a refused entry back, and a rollback expires every instance the session
+    holds - including the authenticated user, whose next attribute read would then
+    try to load lazily and fail outside the async context.
+    """
     row = await session.get(Projection, (company_id, entity_id))
     if not row or row.entity_type != "journal_entry":
         raise HTTPException(status_code=404, detail="Journal entry not found")
@@ -991,7 +1517,6 @@ async def void_manual_journal_entry(
     if state.get("status") == "void":
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
-    reason = payload.reason if payload else None
     data = je_void_data(reason, state)
     await emit_event(
         session,
@@ -1000,7 +1525,7 @@ async def void_manual_journal_entry(
         entity_type="journal_entry",
         event_type="acc.journal_entry.voided",
         data=data,
-        actor_id=user.id,
+        actor_id=actor_id,
         location_id=None,
         source="manual",
         idempotency_key=f"{entity_id}:void",
@@ -1010,16 +1535,94 @@ async def void_manual_journal_entry(
     return {"je_id": entity_id, "status": "void", "void_reason": reason}
 
 
+@router.post("/journal-entries/bulk-void")
+async def bulk_void_journal_entries(
+    payload: BulkJEVoidPayload,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Void several manual journal entries, reporting each one's outcome.
+
+    Every entry is voided by the same code the single-entry route uses, one at a
+    time, and each one commits on its own. A refusal is recorded against the entry
+    it belongs to and the rest of the selection carries on: refusing four valid
+    voids because the fifth sits in a locked period would leave the reader to
+    re-tick the four and try again, having been told nothing about which was which.
+    """
+    je_ids = list(dict.fromkeys(x.strip() for x in payload.je_ids if x.strip()))
+    if not je_ids:
+        raise HTTPException(status_code=422, detail="No journal entries selected.")
+    if len(je_ids) > _BULK_VOID_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many journal entries in one request: {len(je_ids)}. "
+                   f"The limit is {_BULK_VOID_LIMIT}; void them in smaller batches.",
+        )
+
+    actor_id = user.id
+    results = []
+    for entity_id in je_ids:
+        try:
+            results.append(await _void_one(
+                session, company_id=company_id, actor_id=actor_id,
+                entity_id=entity_id, reason=payload.reason,
+            ))
+        except HTTPException as exc:
+            # Every entry starts from a clean session, whatever the one before it
+            # left behind. Today's refusals are all raised before anything is
+            # written - the period lock is checked ahead of the insert
+            # (celerp/events/engine.py:130) and the insert itself is nested
+            # (:139) - so this discards nothing. It is here so that the next
+            # entry's commit can never carry a refused entry's half-written work
+            # into the books along with its own.
+            await session.rollback()
+            results.append({"je_id": entity_id, "status": "refused", "detail": exc.detail})
+
+    voided = sum(1 for r in results if r["status"] == "void")
+    return {"results": results, "voided": voided, "refused": len(results) - voided}
+
+
+@router.post("/journal-entries/{entity_id}/void")
+async def void_manual_journal_entry(
+    entity_id: str,
+    payload: ManualJEVoidPayload | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Void a manual journal entry. The voided entry stays on the record - accounting
+    requires the full trail, so entries are never deleted."""
+    return await _void_one(
+        session, company_id=company_id, actor_id=user.id,
+        entity_id=entity_id, reason=payload.reason if payload else None,
+    )
+
+
 @router.get("/ledger/{account_code}")
 async def account_ledger(
     account_code: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    contact_id: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
+    """Account ledger: posted JE lines for one account, with opening balance,
+    running balance, closing balance and source doc links.
+
+    contact_id narrows the account to one party, which is what turns a control
+    account into that party's subledger: 1120 filtered to a customer is that
+    customer's receivable, and every such line sums back to the control account.
+    Lines with no resolvable party are reported under the empty string so a
+    filtered view can never quietly exclude them from the account's total.
+    """
+    _require_date_range(date_from, date_to)
+    await _require_contact_filter(session, company_id, contact_id)
+
     # Fetch account metadata for name + type (sign convention)
     account = (
         await session.execute(
@@ -1028,7 +1631,6 @@ async def account_ledger(
     ).scalar_one_or_none()
 
     posted = await _je_rows(session, company_id)
-    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
     # Lines are matched by the literal account code, exactly like the trial
     # balance, journal, and general ledger bucket them, so the drilldown always
@@ -1036,29 +1638,57 @@ async def account_ledger(
     # directly to a parent code appear on the parent's own ledger.
     match_codes = {account_code}
 
+    # A code with no chart entry still has a ledger while the books hold lines
+    # for it: the general ledger lists such codes, and a drilldown must open on
+    # a row the report just showed. A code the chart and the books both know
+    # nothing about is a question about an account that does not exist, and
+    # answering it would invent a chart entry the company never created.
+    # The scan ignores the date and contact filters on purpose: a filter that
+    # matches nothing is an empty period, not a missing account.
+    if account is None and not any(
+        entry.get("account") in match_codes
+        for _, state, _ in posted
+        for entry in state.get("entries", [])
+    ):
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+
+    account_type = account.account_type if account else "unknown"
+    debit_normal = _is_debit_normal(account_type)
+
+    def _signed(d: Decimal, c: Decimal) -> Decimal:
+        return (d - c) if debit_normal else (c - d)
+
     # Filter to lines that touch this account, apply date filter
     lines = []
+    opening = Decimal(0)
     for je_id, state, ts in posted:
-        # Dateless JEs (ts="") count as pre-period, exactly as the trial
-        # balance, journal, and general ledger treat them: excluded once a
-        # start date is set, included otherwise.
-        if date_from and (not ts or ts < date_from):
-            continue
-        if ts and date_to and ts > date_to:
-            continue
+        ref = refs.get(je_id) or {}
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
+                continue
+            line_contact = _line_party(refs, je_id, entry)
+            if contact_id is not None and line_contact != contact_id:
                 continue
             amounts = _line_amounts(entry)
             if amounts is None:
                 continue
-            ref = refs.get(je_id) or {}
+            # Dateless JEs (ts="") count as pre-period, exactly as the trial
+            # balance, journal, and general ledger treat them: excluded once a
+            # start date is set, included otherwise.
+            if date_from and (not ts or ts < date_from):
+                opening += _signed(amounts[0], amounts[1])
+                continue
+            if ts and date_to and ts > date_to:
+                continue
             lines.append({
                 "date": ts,
                 "je_id": je_id,
                 "memo": state.get("memo", ""),
                 "doc_id": ref.get("doc_id"),
                 "doc_ref": ref.get("doc_ref"),
+                "contact_id": line_contact,
                 "debit": float(amounts[0]),
                 "credit": float(amounts[1]),
             })
@@ -1066,22 +1696,29 @@ async def account_ledger(
     # Sort chronologically for running balance
     lines.sort(key=lambda x: (x["date"], x["je_id"]))
 
-    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
-    account_type = account.account_type if account else "asset"
-    debit_normal = account_type in ("asset", "expense", "cogs")
-    running = Decimal(0)
+    # The running balance continues from what the account already held. Starting
+    # a date-filtered view at zero would report a balance that ignores every
+    # prior period and never ties to the general ledger's closing figure.
+    running = opening
     for line in lines:
         d, c = Decimal(str(line["debit"])), Decimal(str(line["credit"]))
-        running += (d - c) if debit_normal else (c - d)
+        running += _signed(d, c)
         line["balance"] = float(running)
 
+    base = await _base_currency(session, company_id)
     return {
         "account_code": account_code,
         "account_name": account.name if account else account_code,
         "account_type": account_type,
+        # The sign convention is decided here, once; consumers (UI, CSV) must
+        # use this flag rather than re-deriving it from account_type.
+        "debit_normal": debit_normal,
+        "contact_id": contact_id,
         "date_from": date_from,
         "date_to": date_to,
+        "opening_balance": to_stored_float(round_money(opening, base)),
         "lines": lines,
+        "closing_balance": to_stored_float(round_money(running, base)),
     }
 
 
@@ -1090,7 +1727,7 @@ async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Trial balance: one row per account with debit/credit totals.
@@ -1098,6 +1735,7 @@ async def trial_balance(
     Reads posted journal_entry projections. Each journal entry stores
     entries: [{account, debit?, credit?}] in its state.
     """
+    _require_date_range(date_from, date_to)
     posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
@@ -1153,18 +1791,31 @@ async def general_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
     include_lines: bool = False,
+    contact_id: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """General ledger summary: opening balance, period debits/credits, and closing
-    balance per account. Balances are signed by the account's normal side
-    (debit-normal for asset/expense/cogs, credit-normal otherwise), matching the
-    per-account ledger's running balance. Detail rows live at /ledger/{code}.
+    balance per account. Balances are signed by the account's normal side,
+    matching the per-account ledger's running balance. Detail rows live at
+    /ledger/{code}.
+
+    contact_id narrows every account to one party, the same filter and the same
+    party resolution the account ledger drills down with, so the report and the
+    drilldown always show the same figure. Lines with no resolvable party are
+    reported under the empty string, so the per-party views plus that one add
+    back up to the unfiltered report.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_date_range(date_from, date_to)
+    await _require_contact_filter(session, company_id, contact_id)
     posted = await _je_rows(session, company_id)
+    # The party filter resolves every entry before the scan; unfiltered runs
+    # never pay for the doc lookup.
+    party_refs = (
+        await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+        if contact_id is not None else {}
+    )
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id)
@@ -1182,6 +1833,8 @@ async def general_ledger(
             code = entry.get("account")
             amounts = _line_amounts(entry)
             if not code or amounts is None:
+                continue
+            if contact_id is not None and _line_party(party_refs, je_id, entry) != contact_id:
                 continue
             d, c = amounts
             if date_from and ts < date_from:
@@ -1220,7 +1873,7 @@ async def general_ledger(
             continue
         acc = account_map.get(code)
         account_type = acc.account_type if acc else "unknown"
-        debit_normal = account_type not in ("liability", "equity", "revenue")
+        debit_normal = _is_debit_normal(account_type)
         raw_closing = opening + d - c
         raw_closing_total += raw_closing
         signed_opening = opening if debit_normal else -opening
@@ -1248,6 +1901,7 @@ async def general_ledger(
     return {
         "date_from": date_from,
         "date_to": date_to,
+        "contact_id": contact_id,
         "rows": rows_out,
         "totals": {
             "opening": to_stored_float(round_money(tot_opening, base)),
@@ -1263,7 +1917,7 @@ async def general_ledger(
 async def profit_and_loss(
     date_from: str | None = None,
     date_to: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Profit and Loss statement for the period.
@@ -1272,6 +1926,7 @@ async def profit_and_loss(
     COGS accounts (5xxx) = debit-normal -> positive net debit = cost.
     Expense accounts (6xxx) = debit-normal -> positive net debit = expense.
     """
+    _require_date_range(date_from, date_to)
     posted = await _je_rows(session, company_id)
     accounts = (
         await session.execute(
@@ -1319,11 +1974,12 @@ async def profit_and_loss(
 async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Balance sheet as of a given date (default: all posted entries to date)."""
+    _require_iso_date(as_of, "as_of")
     from celerp.services.auto_je import upsert_opening_inventory_je
     await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
     await session.commit()
@@ -1417,13 +2073,12 @@ async def balance_sheet(
     }
 
 
-# Doc types that appear on a statement of account (the same financial docs the
-# AR/AP aging counts, plus credit notes which reduce what the contact owes).
-_SOA_DOC_TYPES = frozenset({"invoice", "credit_note", "purchase_order", "bill"})
-# Legacy doc_type spellings normalised to their canonical names. The AR/AP aging
-# accepts these same spellings (and the "type" state fallback), and a statement
-# must count exactly the doc set aging counts, so the tolerance matches.
-_SOA_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
+# The control accounts a party's balance lives on: receivable and payable. A
+# statement is these two accounts filtered to one party, which is what makes the
+# statements sum back to the balance sheet.
+_AR_CODE = "1120"
+_AP_CODE = "2110"
+_CONTROL_CODES = (_AR_CODE, _AP_CODE)
 
 
 @router.get("/soa/{contact_id}")
@@ -1432,24 +2087,30 @@ async def statement_of_account(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Statement of account for one contact: opening balance, dated doc/payment
-    rows with a running balance, closing balance.
+    """Statement of account for one contact: opening balance, dated rows with a
+    running balance, closing balance.
 
-    Amounts are in base currency so mixed-currency contacts read on one statement
-    (doc totals convert via their stored conversion_rate, payments via their own
-    per-payment rate). Finalized-and-later docs count, drafts and voids do not;
-    only active payments count, on their payment date. Credit notes reduce the
-    balance and their payments (applications, refunds) add back, so an applied
-    credit note is never double-counted against the invoice it settles.
+    The statement is the receivable and payable control accounts filtered to one
+    party, so every customer's statement plus the unattributed bucket sums back
+    to the control account and the balance sheet, by construction rather than by
+    coincidence. Reading the ledger is also what puts a manual adjustment,
+    write-off or opening conversion on the party's statement: anything posted to
+    a control account for them shows up, whether a document caused it or a person
+    typed it.
+
+    Amounts are the posted figures, which are stored in base currency at each
+    entry's own date, so a mixed-currency party reads on one statement with no
+    rate applied here. Only posted entries count; drafts and voids never post.
+
+    The sign convention is the party's net position, debits positive: what a
+    customer owes reads positive, what the company owes a supplier reads
+    negative, and a party that is both nets to one figure.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
-    contact_row = await session.get(Projection, (company_id, contact_id))
-    if not contact_row or contact_row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Contact not found")
+    _require_date_range(date_from, date_to)
+    contact_row = await _require_contact(session, company_id, contact_id)
     # Merge tombstones carry both deleted and merged_into, so the merge check
     # must come first or merged contacts would 404 instead of redirecting.
     if contact_row.state.get("merged_into"):
@@ -1467,81 +2128,56 @@ async def statement_of_account(
     if contact_row.state.get("deleted"):
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    doc_rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
-
     base = await _base_currency(session, company_id)
-    # (date, doc_id, seq, doc_ref, kind, debit, credit); seq keeps a doc's own row
-    # ahead of its same-day payments and makes the ordering replay-stable.
-    events: list[tuple[str, str, int, str, str, Decimal, Decimal]] = []
-    for dr in doc_rows:
-        state = dr.state
-        linked = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id")
-        if linked != contact_id:
-            continue
-        doc_type = state.get("doc_type", state.get("type", ""))
-        doc_type = _SOA_TYPE_ALIASES.get(doc_type, doc_type)
-        if doc_type not in _SOA_DOC_TYPES:
-            continue
-        if state.get("status") in ("draft", "void"):
-            continue
-        doc_ref = state.get("ref_id") or state.get("doc_number") or dr.entity_id
-        doc_rate = to_decimal(state.get("conversion_rate") or 1)
-        doc_date = str(state.get("issue_date") or state.get("date") or "")[:10]
-        total = round_money(to_decimal(state.get("total") or 0) * doc_rate, base)
-        # Statement sign convention: positive balance = the contact owes us.
-        # Receivable-side docs (invoices) charge as debits; payable-side docs
-        # (bills, purchase orders) and credit notes reduce the net as credits,
-        # so a dual-role contact's receivables and payables net correctly
-        # instead of stacking in one direction. Payments mirror their doc side.
-        reduces_balance = doc_type in ("credit_note", "purchase_order", "bill")
-        if reduces_balance:
-            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, Decimal(0), total))
-        else:
-            events.append((doc_date, dr.entity_id, 0, doc_ref, doc_type, total, Decimal(0)))
-        for i, p in enumerate(state.get("payments", [])):
-            if p.get("status") != "active":
+    posted = await _je_rows(session, company_id)
+    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+
+    # (date, je_id, seq, line) so same-day entries keep the order they were
+    # posted in and a replay reads the same way twice.
+    events: list[tuple[str, str, int, dict]] = []
+    for je_id, state, ts in posted:
+        ref = refs.get(je_id) or {}
+        for seq, entry in enumerate(state.get("entries", [])):
+            if entry.get("account") not in _CONTROL_CODES:
                 continue
-            p_rate = to_decimal(p.get("conversion_rate") or state.get("conversion_rate") or 1)
-            amount = round_money(to_decimal(p.get("amount") or 0) * p_rate, base)
-            p_date = str(p.get("payment_date") or doc_date or "")[:10]
-            if reduces_balance:
-                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", amount, Decimal(0)))
-            else:
-                events.append((p_date, dr.entity_id, i + 1, doc_ref, "payment", Decimal(0), amount))
+            if _line_party(refs, je_id, entry) != contact_id:
+                continue
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
+            events.append((ts, je_id, seq, {
+                "date": ts,
+                "je_id": je_id,
+                "doc_id": ref.get("doc_id"),
+                "doc_ref": ref.get("doc_ref") or state.get("memo", ""),
+                "kind": _statement_kind(ref),
+                "debit": to_stored_float(amounts[0]),
+                "credit": to_stored_float(amounts[1]),
+                "_net": amounts[0] - amounts[1],
+            }))
 
     # Ascending: a statement's running balance reads down the page.
     events.sort(key=lambda e: (e[0], e[1], e[2]))
 
     opening = Decimal(0)
     in_range = []
-    for e in events:
-        if date_from and e[0] < date_from:
-            opening += e[5] - e[6]
+    for date, _je_id, _seq, line in events:
+        # Dateless entries count as pre-period, exactly as every other report
+        # treats them, so a statement can never disagree with the ledger it is
+        # a slice of.
+        if date_from and (not date or date < date_from):
+            opening += line["_net"]
             continue
-        if date_to and e[0] > date_to:
+        if date and date_to and date > date_to:
             continue
-        in_range.append(e)
+        in_range.append(line)
 
     running = opening
     rows_out = []
-    for d, doc_id, _seq, doc_ref, kind, debit, credit in in_range:
-        running += debit - credit
-        rows_out.append({
-            "date": d,
-            "doc_id": doc_id,
-            "doc_ref": doc_ref,
-            "kind": kind,
-            "debit": to_stored_float(debit),
-            "credit": to_stored_float(credit),
-            "balance": to_stored_float(round_money(running, base)),
-        })
+    for line in in_range:
+        running += line.pop("_net")
+        line["balance"] = to_stored_float(round_money(running, base))
+        rows_out.append(line)
 
     cstate = contact_row.state
     return {
@@ -1596,22 +2232,44 @@ def _bank_to_dict(b: BankAccount) -> dict:
     }
 
 
-async def _compute_bank_balance(
-    session: AsyncSession,
-    company_id: uuid.UUID,
-    chart_account_code: str,
-    opening_balance: float,
-) -> float:
-    """Compute bank balance: opening + JE debits - JE credits for this account code."""
-    net = Decimal(str(opening_balance))
-    for _, state, _ in await _je_rows(session, company_id):
-        for entry in state.get("entries", []):
-            if entry.get("account") == chart_account_code:
-                amounts = _line_amounts(entry)
-                if amounts is None:
-                    continue
-                net += amounts[0] - amounts[1]
-    return float(net)
+def _opening_je_id(bank_id: uuid.UUID) -> str:
+    """The journal entry that carries a bank account's opening balance.
+
+    Written when the account is created and read by the health check below, from
+    this one place, so the two can never disagree about which entry backs which
+    opening balance.
+    """
+    return f"je:opening:{bank_id}"
+
+
+async def _bank_dicts(
+    session: AsyncSession, company_id: uuid.UUID, banks: list[BankAccount],
+) -> list[dict]:
+    """Bank accounts with their balance and the health of their opening balance.
+
+    The balance is the ledger's, and only the ledger's. Creating an account with
+    an opening balance posts that balance as a journal entry, so adding the column
+    on top of the entries would count it twice. An opening balance with no entry
+    behind it is reported as `opening_unbacked` rather than folded back into the
+    figure, which would put the bank screen back out of step with the books.
+    """
+    rows = await _je_rows(session, company_id)
+    posted_ids = {je_id for je_id, _state, _ts in rows}
+    out = []
+    for b in banks:
+        net = Decimal(0)
+        for _je_id, state, _ts in rows:
+            for entry in state.get("entries", []):
+                if entry.get("account") == b.chart_account_code:
+                    amounts = _line_amounts(entry)
+                    if amounts is None:
+                        continue
+                    net += amounts[0] - amounts[1]
+        d = _bank_to_dict(b)
+        d["balance"] = float(net)
+        d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
+        out.append(d)
+    return out
 
 
 async def _next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -1644,11 +2302,7 @@ async def list_bank_accounts(
         q = q.where(BankAccount.is_active.is_(True))
     q = q.order_by(BankAccount.created_at)
     rows = (await session.execute(q)).scalars().all()
-    items = []
-    for b in rows:
-        d = _bank_to_dict(b)
-        d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-        items.append(d)
+    items = await _bank_dicts(session, company_id, list(rows))
     return {"items": items, "total": len(items)}
 
 
@@ -1666,9 +2320,7 @@ async def get_bank_account(
     ).scalar_one_or_none()
     if not b:
         raise HTTPException(status_code=404, detail="Bank account not found")
-    d = _bank_to_dict(b)
-    d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [b]))[0]
 
 
 @router.post("/bank-accounts")
@@ -1720,7 +2372,7 @@ async def create_bank_account(
 
     # Create opening balance JE if opening_balance != 0
     if payload.opening_balance and payload.opening_balance != 0.0:
-        je_id = f"je:opening:{bank.id}"
+        je_id = _opening_je_id(bank.id)
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
@@ -1762,9 +2414,7 @@ async def create_bank_account(
         )
 
     await session.commit()
-    d = _bank_to_dict(bank)
-    d["balance"] = await _compute_bank_balance(session, company_id, code, float(payload.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
 @router.patch("/bank-accounts/{bank_id}")
@@ -1800,9 +2450,7 @@ async def patch_bank_account(
         b.is_active = payload.is_active
 
     await session.commit()
-    d = _bank_to_dict(b)
-    d["balance"] = await _compute_bank_balance(session, company_id, b.chart_account_code, float(b.opening_balance))
-    return d
+    return (await _bank_dicts(session, company_id, [b]))[0]
 
 
 # ---------------------------------------------------------------------------
@@ -2159,10 +2807,13 @@ class StmtLineCreatePayload(BaseModel):
     memo: str = ""
     amount: float | None = None  # defaults to line amount
     date: str | None = None      # defaults to line_date
+    # A bank line settled straight to a control account belongs to a party, and
+    # this is the only chance to say which: nothing downstream can infer it.
+    contact: str | None = None
 
 
 class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo}]
+    splits: list[dict]  # [{account_code, amount, memo, contact}]
 
 
 class StmtLinePatch(BaseModel):
@@ -2440,10 +3091,17 @@ async def create_je_from_line(
     idem_c = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "c")
     idem_p = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "p")
 
+    # The bank side has no party by nature; the offset side carries the one the
+    # operator named, so a bank line settled to a control account lands on that
+    # party's statement instead of in the unattributed bucket.
+    offset = {"account": payload.account_code, "debit": other_debit, "credit": other_credit}
+    if payload.contact:
+        offset["contact"] = payload.contact
     entries = [
         {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
-        {"account": payload.account_code, "debit": other_debit, "credit": other_credit},
+        offset,
     ]
+    await _check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -2500,11 +3158,15 @@ async def split_stmt_line(
     entries = [{"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit}]
     for s in payload.splits:
         amt = float(s.get("amount", 0))
-        entries.append({
+        split = {
             "account": s["account_code"],
             "debit": amt if sl.amount < 0 else 0.0,
             "credit": amt if sl.amount >= 0 else 0.0,
-        })
+        }
+        if s.get("contact"):
+            split["contact"] = s["contact"]
+        entries.append(split)
+    await _check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -2827,6 +3489,229 @@ async def _get_recon_and_line(
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
+
+
+# ---------------------------------------------------------------------------
+# Cash flow statement
+# ---------------------------------------------------------------------------
+
+_CASH_PARENT = "1110"  # Cash and Cash Equivalents; bank accounts are seeded beneath it
+_NON_CURRENT_ASSET_FLOOR = 1200
+_NON_CURRENT_LIABILITY_FLOOR = 2200
+
+
+def _code_number(code: str) -> int:
+    """Leading digits of an account code, for range tests. Codes carry suffixes
+    ("1130-P"), so the numeric part is read rather than the whole string."""
+    m = re.match(r"\d+", code or "")
+    return int(m.group()) if m else 0
+
+
+def _derived_cash_flow_category(account_type: str, code: str) -> str:
+    """Default classification for the account on the far side of a cash movement.
+
+    Working capital and trading accounts are operating; long-lived assets are
+    investing; borrowings and owner capital are financing. Correct for the seeded
+    chart, and overridable per account where a company's own chart differs.
+    """
+    if account_type in ("revenue", "expense", "cogs"):
+        return "operating"
+    num = _code_number(code)
+    if account_type == "asset":
+        return "investing" if num >= _NON_CURRENT_ASSET_FLOOR else "operating"
+    if account_type == "liability":
+        return "financing" if num >= _NON_CURRENT_LIABILITY_FLOOR else "operating"
+    if account_type == "equity":
+        return "financing"
+    return "operating"
+
+
+def _cash_flow_category(acc: Account | None, code: str) -> str:
+    """The account's own classification where it carries one, the derived default
+    where it does not."""
+    if acc is not None and acc.cash_flow_category in CASH_FLOW_CATEGORIES:
+        return acc.cash_flow_category
+    return _derived_cash_flow_category(acc.account_type if acc else "asset", code)
+
+
+def _split_cash_movement(
+    cash_delta: Decimal, contras: list[tuple[str, Decimal]], base: str,
+) -> list[tuple[str, Decimal]]:
+    """Apportion one entry's cash movement across the accounts it moved against.
+
+    An entry may touch cash once and several other accounts at once (one payment
+    settling several invoices, a bill paid net of a discount), so the movement is
+    split in proportion to each contra leg. The rounding residual lands on the
+    largest leg, ties broken by account code, so the same entry always splits the
+    same way on replay.
+    """
+    total = sum((abs(v) for _, v in contras), Decimal(0))
+    if not contras or total == 0:
+        return []
+    out: list[tuple[str, Decimal]] = []
+    for code, val in contras:
+        out.append((code, round_money(cash_delta * (abs(val) / total), base)))
+    residual = cash_delta - sum((v for _, v in out), Decimal(0))
+    if residual != 0:
+        biggest = max(range(len(out)), key=lambda i: (abs(contras[i][1]), contras[i][0]))
+        out[biggest] = (out[biggest][0], out[biggest][1] + residual)
+    return out
+
+
+@router.get("/cash-flow")
+async def cash_flow(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cash flow statement, direct and indirect, over the same posted entries.
+
+    Direct reads every entry that moved cash and sorts the movement by what it
+    moved against. Indirect starts from the period's profit and adjusts for the
+    movement in every other non-cash account.
+
+    The two agree by construction rather than by tolerance: a balanced entry set
+    means the change in cash is exactly the negative of the change in everything
+    else, which is what the indirect side computes. There is no exchange-rate
+    reconciling item because every posting is stored in base currency at its own
+    date, so a cash balance is never restated after the fact.
+
+    Cash comes from the ledger. A bank account holding an opening balance that no
+    journal entry carries is listed in `unbacked_bank_openings`, so the gap between
+    that account and the books is reported rather than closed behind the reader's
+    back with a figure the ledger does not support.
+    """
+    _require_date_range(date_from, date_to)
+
+    accounts = (
+        await session.execute(select(Account).where(Account.company_id == company_id))
+    ).scalars().all()
+    account_map = {a.code: a for a in accounts}
+
+    banks = (
+        await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))
+    ).scalars().all()
+    cash_codes = {b.chart_account_code for b in banks}
+    cash_codes |= {a.code for a in accounts
+                   if a.code == _CASH_PARENT or a.parent_code == _CASH_PARENT}
+
+    base = await _base_currency(session, company_id)
+    posted = await _je_rows(session, company_id)
+
+    opening_cash = Decimal(0)
+    by_category: dict[str, dict[str, Decimal]] = {c: {} for c in ("operating", "investing", "financing")}
+    non_cash_movement: dict[str, Decimal] = {}
+    profit_movement = Decimal(0)
+    period_cash = Decimal(0)
+
+    for _je_id, state, ts in posted:
+        cash_delta = Decimal(0)
+        contras: list[tuple[str, Decimal]] = []
+        for entry in state.get("entries", []):
+            code = entry.get("account")
+            amounts = _line_amounts(entry)
+            if not code or amounts is None:
+                continue
+            signed = amounts[0] - amounts[1]
+            if code in cash_codes:
+                cash_delta += signed
+            else:
+                contras.append((code, signed))
+        if cash_delta == 0 and not contras:
+            continue
+        # Dateless entries count as pre-period, matching every other report.
+        if date_from and (not ts or ts < date_from):
+            opening_cash += cash_delta
+            continue
+        if ts and date_to and ts > date_to:
+            continue
+        period_cash += cash_delta
+        if cash_delta != 0:
+            for code, share in _split_cash_movement(cash_delta, sorted(contras), base):
+                acc = account_map.get(code)
+                cat = _cash_flow_category(acc, code)
+                by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
+        for code, signed in contras:
+            acc = account_map.get(code)
+            atype = acc.account_type if acc else "unknown"
+            if atype in ("revenue", "expense", "cogs"):
+                profit_movement += signed
+            else:
+                non_cash_movement[code] = non_cash_movement.get(code, Decimal(0)) + signed
+
+    def _lines(cat: str) -> list[dict]:
+        # Sorted by code: stable across replays, unlike dict encounter order.
+        return [
+            {
+                "code": code,
+                "name": account_map[code].name if code in account_map else code,
+                "amount": to_stored_float(round_money(amount, base)),
+            }
+            for code, amount in sorted(by_category[cat].items())
+            if amount != 0
+        ]
+
+    direct_sections = {}
+    direct_total = Decimal(0)
+    for cat in ("operating", "investing", "financing"):
+        lines = _lines(cat)
+        subtotal = sum((to_decimal(l["amount"]) for l in lines), Decimal(0))
+        direct_total += subtotal
+        direct_sections[cat] = {"lines": lines, "total": to_stored_float(round_money(subtotal, base))}
+
+    # Revenue and expenses are credit-normal and debit-normal respectively, so the
+    # summed debit-credit movement across them is the negative of the profit.
+    net_profit = -profit_movement
+    adjustments = [
+        {
+            "code": code,
+            "name": account_map[code].name if code in account_map else code,
+            # Cash moves opposite to a non-cash balance: stock bought (a debit)
+            # consumes cash, a supplier balance taken on (a credit) preserves it.
+            "amount": to_stored_float(round_money(-amount, base)),
+        }
+        for code, amount in sorted(non_cash_movement.items())
+        if amount != 0
+    ]
+    indirect_total = net_profit - sum(non_cash_movement.values(), Decimal(0))
+
+    closing_cash = opening_cash + period_cash
+    posted_ids = {je_id for je_id, _s, _t in posted}
+    unbacked = [
+        {
+            "bank_account_id": str(b.id),
+            "bank_name": b.bank_name,
+            "chart_account_code": b.chart_account_code,
+            "opening_balance": to_stored_float(round_money(Decimal(str(b.opening_balance)), base)),
+        }
+        for b in banks
+        if b.opening_balance and _opening_je_id(b.id) not in posted_ids
+    ]
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "cash_accounts": sorted(cash_codes),
+        # Named per bank account, not a bare count: fixing one means knowing which.
+        "unbacked_bank_openings": sorted(unbacked, key=lambda u: u["chart_account_code"]),
+        "opening_cash": to_stored_float(round_money(opening_cash, base)),
+        "closing_cash": to_stored_float(round_money(closing_cash, base)),
+        "net_change": to_stored_float(round_money(period_cash, base)),
+        "direct": {
+            **direct_sections,
+            "total": to_stored_float(round_money(direct_total, base)),
+        },
+        "indirect": {
+            "net_profit": to_stored_float(round_money(net_profit, base)),
+            "adjustments": adjustments,
+            "total": to_stored_float(round_money(indirect_total, base)),
+        },
+        # Exact, not approximate: a reconciling item here would mean an entry
+        # whose sides do not sum to zero, which is a data fault worth surfacing.
+        "balanced": (round_money(direct_total, base) == round_money(period_cash, base)
+                     and round_money(indirect_total, base) == round_money(period_cash, base)),
+    }
 
 
 class PeriodLockPayload(BaseModel):

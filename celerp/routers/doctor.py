@@ -473,17 +473,28 @@ async def _emit_payment_je(
     "1111" (the default bank account that always exists) when original is unknown.
     This is the one legitimate fallback - historical repair where real bank is unknowable.
     """
+    from celerp.models.company import Company
     from celerp.services import auto_je as _auto_je
     payment = payment or {}
     bank_code = payment.get("bank_account") or "1111"  # Doctor fallback: default bank always exists
     ts = (payment.get("payment_date") or state.get("issue_date") or state.get("created_at")
           or __import__("datetime").date.today().isoformat())
+    # A repair posts the entry the payment should have made, so it reads the same
+    # base currency and the same two rates the recorder does. Repairing a
+    # foreign-currency payment without them would post the document-currency
+    # figure into the books as though it were already converted.
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings.get("currency", "USD") if company else "USD")
+    doc_rate = float(state.get("conversion_rate") or 1)
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         amount=amount, payment_index=payment_index,
         bank_account_code=bank_code,
         doc_type=state.get("doc_type", "invoice"),
         payment_date=str(ts)[:10],
+        base_currency=base_currency,
+        doc_rate=doc_rate,
+        settlement_rate=float(payment.get("conversion_rate") or doc_rate),
     )
 
 

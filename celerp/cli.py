@@ -181,13 +181,26 @@ def _fix_ownership(db_url: str) -> str | None:
     return None
 
 
+def _sync_url(db_url: str) -> str:
+    """The configured URL with any async/psycopg2 driver stripped.
+
+    Alembic, the grant statements and the pg_dump helpers all need a plain
+    synchronous URL, and the conversion was written out inline at each of them.
+    One copy, so a third driver prefix is added here rather than in seven places.
+    """
+    return (
+        db_url.replace("postgresql+asyncpg://", "postgresql://")
+        .replace("postgresql+psycopg2://", "postgresql://")
+    )
+
+
 def _needs_ownership_fix(db_url: str) -> bool:
     """Check if any tables in the public schema are NOT owned by the app user."""
     parts = _parse_db_url(db_url)
     if not parts:
         return False
     user = parts["user"]
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
@@ -217,7 +230,7 @@ def _post_migration_grants(db_url: str) -> None:
     if not parts:
         return
     user = parts["user"]
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url)
@@ -262,7 +275,7 @@ def _config_to_env(cfg: dict) -> dict:
 
 def _test_db(db_url: str) -> str | None:
     """Try connecting to DB. Returns error string or None on success."""
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
@@ -541,7 +554,7 @@ def _apply_migrations(db_url: str) -> None:
     # there — forward or back — and let alembic upgrade apply the rest.
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
+    sync_url = _sync_url(db_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         inspector = _sa.inspect(engine)
@@ -590,6 +603,74 @@ def _run_migrations(db_url: str) -> None:
         sys.exit(1)
 
 
+def _stamped_revision(db_url: str) -> str | None:
+    """The alembic revision the database is stamped at, or None if unstamped.
+
+    The stamp records what alembic believes; on a develop database built by
+    create_all it can sit behind or ahead of the real schema, which is what
+    `_apply_migrations` repairs. So this is for reporting what changed, never for
+    deciding whether the schema is sound.
+    """
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine
+
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            return MigrationContext.configure(conn).get_current_revision()
+    finally:
+        engine.dispose()
+
+
+# One fixed key, so every process that migrates this database queues on the same
+# lock. Value is arbitrary and only has to be stable across versions.
+_MIGRATION_LOCK_KEY = 4207320001
+
+
+def _migrate_to_head(db_url: str) -> None:
+    """Apply pending migrations, the grants, then the develop→release reconcile.
+
+    Shared by `celerp migrate` and `celerp start` so the steps and their order
+    exist once. The start path cannot drift from the explicit command.
+
+    Held under a Postgres advisory lock, because a service restart overlapping a
+    manual start would otherwise have both processes migrating the same database:
+    the loser re-applies DDL that already exists and is stamped past it by the
+    duplicate-object handler, which reaches the right answer for the wrong
+    reason. The second holder waits here and then finds nothing pending.
+
+    Reports the stamp it moved, and says nothing when it moved nothing, so a
+    routine start is as quiet as it was and a start that changed the schema
+    cannot be mistaken for one that did not.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
+        isolation_level="AUTOCOMMIT"
+    )
+    before = after = None
+    try:
+        with engine.connect() as lock_conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+            try:
+                before = _stamped_revision(db_url)
+                _run_migrations(db_url)
+                _post_migration_grants(db_url)
+                _reconcile_after_migrate(db_url)
+                # Read inside the lock: outside it, a process queued behind this
+                # one could move the stamp further and this would report a
+                # transition that never happened here.
+                after = _stamped_revision(db_url)
+            finally:
+                lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+                )
+    finally:
+        engine.dispose()
+    if after != before:
+        click.echo(f"  ✓ Database migrated: {before or 'base'} -> {after}")
+
+
 def _reconcile_after_migrate(db_url: str) -> None:
     """Replay data-backfill migrations the auto-stamp walker skips on a develop
     (create_all) database, so a develop→release in-place upgrade preserves data.
@@ -609,10 +690,7 @@ def _reconcile_after_migrate(db_url: str) -> None:
         set_meta,
     )
 
-    sync_url = (
-        db_url.replace("postgresql+asyncpg://", "postgresql://")
-        .replace("postgresql+psycopg2://", "postgresql://")
-    )
+    sync_url = _sync_url(db_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         with engine.begin() as conn:
@@ -854,12 +932,11 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
             sys.exit(1)
         click.echo("  ✓ Table ownership fixed")
 
-    # Run migrations
+    # Run migrations. The grants are part of that path, not a step here:
+    # sequences and tables created by migrations are not covered by the ALTER
+    # DEFAULT PRIVILEGES set during provisioning, so they are re-granted after.
     click.echo("Running migrations...")
-    _run_migrations(db_url_val)
-    # Re-grant after migrations: sequences and tables created by migrations
-    # won't be covered by ALTER DEFAULT PRIVILEGES set during provisioning.
-    _post_migration_grants(db_url_val)
+    _migrate_to_head(db_url_val)
     click.echo("  ✓ Database ready")
 
     # Headless installs (a process manager runs `start`) are network-exposed, so the
@@ -945,8 +1022,17 @@ def _start(cfg: dict) -> None:
     When a subprocess exits with the restart sentinel present, it is respawned
     once (to load newly enabled modules). Any subsequent exit is treated as a
     real error and terminates the supervisor.
+
+    Migrations are applied first. Installing a new version and starting it is one
+    act, so a start against a database the new code cannot read is not a state
+    worth preserving: it serves an unknown subset of the ledger as errors and
+    reads as a bug in the app rather than a schema behind the code. `migrate` is
+    idempotent, so this costs nothing when there is nothing to apply, and a
+    failure exits non-zero with the alembic error rather than starting anyway.
     """
     from celerp.config import config_path as _cfg_path
+
+    _migrate_to_head(cfg["database"]["url"])
 
     def _sentinel() -> "Path":
         return _cfg_path().parent / ".restart_requested"
@@ -1036,7 +1122,7 @@ def reset_password(email: str, password: str) -> None:
         sys.exit(1)
     ensure_database(cfg)
     db_url = cfg["database"]["url"]
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         from celerp.services.auth import hash_password
@@ -1080,9 +1166,7 @@ def migrate(db_url):
         ensure_database(cfg)
         url = cfg["database"]["url"]
     click.echo("Running migrations...")
-    _run_migrations(url)
-    _post_migration_grants(url)
-    _reconcile_after_migrate(url)
+    _migrate_to_head(url)
     click.echo("  ✓ Done")
 
 
@@ -1112,21 +1196,12 @@ def status():
     if not err:
         # Check migration state
         try:
-            from alembic.runtime.migration import MigrationContext
             from alembic.script import ScriptDirectory
-            from sqlalchemy import create_engine
             from celerp.alembic_config import build_alembic_config as _build_alembic_config
 
-            sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-
-            alembic_cfg = _build_alembic_config()
-            script = ScriptDirectory.from_config(alembic_cfg)
+            script = ScriptDirectory.from_config(_build_alembic_config())
             head = script.get_current_head()
-
-            engine = create_engine(sync_url)
-            with engine.connect() as conn:
-                ctx = MigrationContext.configure(conn)
-                current = ctx.get_current_revision()
+            current = _stamped_revision(db_url)
 
             if current == head:
                 click.echo(f"  Migrations: ✓ up to date ({current})")
@@ -1175,7 +1250,7 @@ def upgrade():
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
     ensure_database(cfg)
-    _run_migrations(cfg["database"]["url"])
+    _migrate_to_head(cfg["database"]["url"])
     click.echo("✓ Upgrade complete")
 
 

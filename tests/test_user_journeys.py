@@ -83,6 +83,15 @@ _BS = {"assets": {"lines": [{"name": "Cash", "amount": 100000}], "total": 100000
        "liabilities": {"lines": [], "total": 0},
        "equity": {"lines": [{"name": "Retained", "amount": 100000}], "total": 100000}}
 _TB = {"accounts": [{"code": "1000", "name": "Cash", "debit": 100000, "credit": 0}]}
+_JOURNAL = {"date_from": "", "date_to": "",
+            "entries": [{"je_id": "je:1", "ts": "2026-01-01", "memo": "Opening balance",
+                         "status": "posted", "je_type": "manual", "void_reason": None,
+                         "source_doc": None, "fx": None,
+                         "lines": [{"account": "1000", "name": "Cash", "debit": 100000,
+                                    "credit": 0, "fx_debit": None, "fx_credit": None},
+                                   {"account": "3000", "name": "Equity", "debit": 0,
+                                    "credit": 100000, "fx_debit": None, "fx_credit": None}]}],
+            "total_debit": 100000, "total_credit": 100000}
 _AR_AGING = {"buckets": {"Current": 15000, "1-30": 5000, "31-60": 3000, "61-90": 1000, "90+": 1000},
              "rows": []}
 _AP_AGING = {"buckets": {"Current": 3000}, "rows": []}
@@ -173,6 +182,7 @@ def _accounting_mocks():
         "ui.api_client.get_pnl": AsyncMock(return_value=_PNL),
         "ui.api_client.get_balance_sheet": AsyncMock(return_value=_BS),
         "ui.api_client.get_trial_balance": AsyncMock(return_value=_TB),
+        "ui.api_client.get_journal": AsyncMock(return_value=_JOURNAL),
     }
 
 
@@ -483,13 +493,13 @@ class TestCRUDRead:
     @pytest.mark.asyncio
     async def test_accounting_pnl(self, ui):
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/accounting", cookies=_c())
+            r = await ui.get("/reports/pnl", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_accounting_balance_sheet(self, ui):
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/accounting?tab=balance-sheet", cookies=_c())
+            r = await ui.get("/reports/balance-sheet", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -734,7 +744,7 @@ class TestNavigation:
 
     @pytest.mark.asyncio
     async def test_accounting_subpages(self, ui):
-        for subpath in ["/accounting", "/accounting?tab=pnl", "/accounting?tab=balance-sheet"]:
+        for subpath in ["/accounting", "/reports/pnl", "/reports/balance-sheet"]:
             with _Patches(_accounting_mocks()):
                 r = await ui.get(subpath, cookies=_c())
             assert r.status_code == 200, f"{subpath} failed"
@@ -846,7 +856,7 @@ class TestSearchAndFilter:
     @pytest.mark.asyncio
     async def test_pnl_date_range(self, ui):
         with _Patches(_accounting_mocks()):
-            r = await ui.get("/accounting?tab=pnl&from=2026-01-01&to=2026-12-31", cookies=_c())
+            r = await ui.get("/reports/pnl?from=2026-01-01&to=2026-12-31", cookies=_c())
         assert r.status_code == 200
 
 
