@@ -35,3 +35,22 @@ class DocShareToken(Base):
     # Manual revoke: set = link is off. The row (and its token) persists so a
     # document's share URL is stable - sharing again reactivates the same link.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+def is_active(row: DocShareToken, now: datetime | None = None) -> bool:
+    """A link resolves while it is not revoked and not past its expiry instant.
+    Single source of the 'active' rule (row form); the SQL form is active_filter()."""
+    now = now or datetime.now(timezone.utc)
+    if row.revoked_at is not None:
+        return False
+    return row.expires_at is None or row.expires_at > now
+
+
+def active_filter(now: datetime | None = None):
+    """SQLAlchemy predicate matching the same rule as is_active(), for existence
+    queries (has_active_share) instead of a loaded row."""
+    now = now or datetime.now(timezone.utc)
+    return sa.and_(
+        DocShareToken.revoked_at.is_(None),
+        sa.or_(DocShareToken.expires_at.is_(None), DocShareToken.expires_at > now),
+    )

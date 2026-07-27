@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
@@ -27,6 +28,11 @@ log = logging.getLogger(__name__)
 
 _PING_INTERVAL = 30   # seconds
 _BACKOFF_MAX = 60     # seconds
+# Lazy free-tier teardown: check this often, and drop the tunnel only after this
+# many seconds with no live share AND no proxied request (the grace window debounces
+# a revoke-then-reshare so it does not flap connect/disconnect).
+_REAP_INTERVAL = 15 * 60   # seconds
+_REAP_GRACE = 5 * 60       # seconds
 
 
 def _shop_key(handle: str | None) -> str:
@@ -57,6 +63,12 @@ class GatewayClient:
         self._ws: Any = None
         self._running = False
         self._stop_event = asyncio.Event()
+        # Reaper wakeup, separate from _stop_event so the teardown timer is
+        # independent of the connect/backoff loop's own stop signalling.
+        self._reaper_stop = asyncio.Event()
+        # Monotonic time of the last proxied request; drives the reaper grace window.
+        # 0.0 = none served yet this process.
+        self._last_request_monotonic: float = 0.0
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
         self._required_tos_version: str = ""
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
@@ -102,34 +114,49 @@ class GatewayClient:
     # ── Public API ─────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Connection loop with exponential backoff. Runs until stop() is called."""
+        """Connection loop with exponential backoff. Runs until stop() is called.
+
+        A free instance's tunnel is lazy: a reaper task, owned by this loop so it
+        observes the same connection it manages, drops the tunnel once no share is
+        live and nothing has been served within the grace window."""
         self._running = True
         self._stop_event.clear()
-        backoff = 1
-        while self._running:
-            if self._relay_status == "tos_required":
+        self._reaper_stop.clear()
+        reaper = asyncio.create_task(self._reaper_loop())
+        try:
+            backoff = 1
+            while self._running:
+                if self._relay_status == "tos_required":
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=1)
+                        break  # stop() was called
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=1)
-                    break  # stop() was called
-                except asyncio.TimeoutError:
-                    pass
-                continue
+                    await self._connect_and_serve()
+                    backoff = 1  # reset on clean disconnect
+                except Exception as exc:
+                    log.warning("Gateway connection lost: %s. Reconnecting in %ds.", exc, backoff)
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+                        break  # stop() was called during backoff
+                    except asyncio.TimeoutError:
+                        pass
+                    backoff = min(backoff * 2, _BACKOFF_MAX)
+        finally:
+            self._reaper_stop.set()
+            reaper.cancel()
             try:
-                await self._connect_and_serve()
-                backoff = 1  # reset on clean disconnect
-            except Exception as exc:
-                log.warning("Gateway connection lost: %s. Reconnecting in %ds.", exc, backoff)
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
-                    break  # stop() was called during backoff
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2, _BACKOFF_MAX)
+                await reaper
+            except (asyncio.CancelledError, Exception):
+                pass
 
     def stop(self) -> None:
         """Signal the run loop to stop. Call close() from async context for clean WS shutdown."""
         self._running = False
         self._stop_event.set()
+        self._reaper_stop.set()
 
     async def close(self) -> None:
         """Async-safe shutdown: signal stop and close the active websocket immediately.
@@ -140,6 +167,7 @@ class GatewayClient:
         """
         self._running = False
         self._stop_event.set()
+        self._reaper_stop.set()
         ws = self._ws
         self._ws = None
         if ws is not None:
@@ -147,6 +175,42 @@ class GatewayClient:
                 await ws.close()
             except Exception:
                 pass
+
+    async def _should_reap(self) -> bool:
+        """A free instance with no live share and no recent proxied request should
+        drop its tunnel. A paid instance (public_url set) is never reaped. Best
+        effort: any error reading state defers teardown (returns False)."""
+        try:
+            from celerp.config import settings
+            if settings.celerp_public_url:
+                return False
+            from celerp.gateway import has_active_share
+            if await has_active_share():
+                return False
+            last = self._last_request_monotonic
+            if last and (time.monotonic() - last) < _REAP_GRACE:
+                return False
+            return True
+        except Exception:
+            log.debug("Gateway reaper: state check failed; deferring teardown", exc_info=True)
+            return False
+
+    async def _reaper_loop(self) -> None:
+        """Every _REAP_INTERVAL, drop the tunnel once _should_reap() holds. Runs
+        alongside the connect loop and exits when stop()/close() is signalled."""
+        while self._running:
+            try:
+                await asyncio.wait_for(self._reaper_stop.wait(), timeout=_REAP_INTERVAL)
+                return  # stop requested
+            except asyncio.TimeoutError:
+                pass
+            if not self._running:
+                return
+            if await self._should_reap():
+                log.info("Gateway: no active share and idle past grace; dropping tunnel.")
+                await self.close()
+                set_client(None)
+                return
 
     @property
     def relay_status(self) -> str:
@@ -419,6 +483,9 @@ class GatewayClient:
         """
         import base64
         import httpx
+
+        # Activity stamp for the reaper's grace window: any proxied request counts.
+        self._last_request_monotonic = time.monotonic()
 
         request_id = payload.get("id", "")
         method = payload.get("method", "GET")
