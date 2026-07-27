@@ -317,6 +317,13 @@ class GatewayClient:
                 from celerp.gateway.state import set_feature_flags
                 set_feature_flags(feature_flags)
                 await self._persist_feature_flags(feature_flags)
+            # tier/status ride hello_ack too (not just subscription_updated): a
+            # plain free connection never triggers a Stripe billing event, so
+            # that push alone would never tell a free instance its own tier.
+            tier = payload.get("tier", "")
+            if tier:
+                from celerp.gateway.state import set_subscription_state
+                set_subscription_state(tier, payload.get("status", ""))
 
         elif msg_type == "session.refresh":
             session_token = payload.get("session_token", "")
