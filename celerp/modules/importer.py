@@ -199,23 +199,42 @@ def _target_for(name: str) -> Path:
 def remove_module_dir(name: str) -> None:
     """Delete an installed module's folder, freeing the name for re-import.
 
+    Removes EVERY copy of the name across the MODULE_DIR search entries, not just
+    the first: the scan and loader search all entries, so a straggler copy in a
+    later entry (e.g. one landed under an older folder layout) would otherwise
+    resurface as a sideload the moment the first copy is gone. A copy whose
+    content matches the committed first-party lock is never touched - deleting a
+    stale shadow of a bundled default must not take the genuine default with it.
+
     The name is charset-validated (same guard as install, so no separators or
-    traversal reach the filesystem) and the resolved target must sit directly
-    under the module dir. Removal mirrors the install landing: rename to a hidden
+    traversal reach the filesystem) and each target must sit directly under its
+    search entry. Removal mirrors the install landing: rename to a hidden
     `.<name>.deleting-<uuid>` then rmtree, so a crash never leaves a half-deleted
     tree under the live module name.
     """
+    from celerp.modules.loader import is_first_party
+
     _validate_name_chars(name)
-    base = _module_dir()
-    target = base / name
-    if target.resolve().parent != base.resolve() or not target.is_dir():
+    removed = False
+    for entry in os.environ.get("MODULE_DIR", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        base = Path(entry)
+        target = base / name
+        if not target.is_dir() or target.resolve().parent != base.resolve():
+            continue
+        if is_first_party(target):
+            continue
+        grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
+        try:
+            os.replace(target, grave)
+        except OSError as exc:
+            raise ModuleImportError(f"Could not remove the module: {exc}")
+        shutil.rmtree(grave, ignore_errors=True)
+        removed = True
+    if not removed:
         raise ModuleImportError(f"Module '{name}' is not installed.")
-    grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
-    try:
-        os.replace(target, grave)
-    except OSError as exc:
-        raise ModuleImportError(f"Could not remove the module: {exc}")
-    shutil.rmtree(grave, ignore_errors=True)
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,

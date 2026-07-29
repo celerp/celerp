@@ -3132,7 +3132,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* Source provenance shield beside an installed module's name: gold for bundled
    defaults, muted grey for community modules. Marketplace reuses --trusted. */
 .trust-icon--default { color: var(--c-amber); }
-.trust-icon--community { color: var(--c-text2); }
 /* A restart-needed badge rendered as a button reads and posts like a control
    without looking unlike the passive badges beside it. */
 .badge-btn { font-family: inherit; cursor: pointer; }

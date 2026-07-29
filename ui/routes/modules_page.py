@@ -109,27 +109,17 @@ def _restart_pending(modules: list[dict]) -> bool:
     )
 
 
-# The set of first-party module names as of the last render, so a render that finds
-# fewer can name what dropped. None means "not yet seeded" - the first render only
-# records the baseline and never reports a reclassification against nothing.
-_LAST_FIRST_PARTY: set[str] | None = None
+def _demoted(modules: list[dict]) -> list[str]:
+    """Sorted names of demoted defaults: modules the backend scan found whose name
+    is in the committed first-party lock but whose content no longer matches.
 
-
-def _reclassified(modules: list[dict]) -> list[str]:
-    """Modules that were first-party on the previous render but are not now.
-
-    Content-identity can demote a default silently (its digest stopped matching the
-    committed lock), so the change is surfaced to the user rather than left to a
-    backend log (GDR 2d). Returns the sorted names that dropped since last render.
+    Content-identity can demote a default silently (it is handled as an imported
+    module from then on), so the change is surfaced to the user rather than left
+    to a backend log (GDR 2d). A per-render fact from the scan itself - never a
+    diff against a previous render, so a failed or empty fetch cannot fabricate
+    a demotion.
     """
-    global _LAST_FIRST_PARTY
-    current = {m["name"] for m in modules if m.get("is_default")}
-    if _LAST_FIRST_PARTY is None:
-        _LAST_FIRST_PARTY = current
-        return []
-    dropped = sorted(_LAST_FIRST_PARTY - current)
-    _LAST_FIRST_PARTY = current
-    return dropped
+    return sorted(m["name"] for m in modules if m.get("demoted"))
 
 
 # ── tabs chrome ────────────────────────────────────────────────────────────────
@@ -320,11 +310,11 @@ def _local_panel(modules: list[dict], lang: str = "en",
         cls="error-banner mb-md",
     ) if _restart_pending(modules) else Div(id="modules-restart-banner")
 
-    # Unmissable on-page notice when a module that scanned first-party before no
-    # longer does (its content stopped matching the committed lock). The panel is
-    # re-rendered whole on every swap, so there is nothing to render when nothing
-    # reclassified - no empty placeholder to leave behind.
-    dropped = _reclassified(modules)
+    # Unmissable on-page notice for any demoted default the scan found (its
+    # content stopped matching the committed lock, so it is handled as an
+    # imported module now). Shown as long as the mismatch exists - it names a
+    # real, current state, not a one-off event.
+    dropped = _demoted(modules)
     reclass_banner = Div(
         Span(t("modules.reclassified_notice", lang, names=", ".join(dropped))),
         id="modules-reclass-banner",
@@ -447,6 +437,21 @@ def _local_panel(modules: list[dict], lang: str = "en",
     )
 
 
+def _unavailable_panel(lang: str) -> FT:
+    """Shown when the installed-modules list cannot be fetched (API down, e.g.
+    mid-restart). States the failure and retries on its own until the list loads
+    - never a fake "no modules installed" empty state fabricated from an error
+    (that would both alarm and mislead), and no manual refresh needed."""
+    return Div(
+        P(t("modules.unavailable_retry", lang), cls="text-muted"),
+        hx_get="/modules/local-panel",
+        hx_trigger="load delay:2s",
+        hx_swap="outerHTML",
+        id="local-modules-panel",
+        cls="settings-card",
+    )
+
+
 def _restarting_panel(lang: str, panel_id: str = "local-modules-panel") -> FT:
     """Shown right after POST /system/restart. Desktop: Electron reloads the
     window itself once the servers are back. Server mode: this script polls
@@ -498,16 +503,15 @@ def _trust_icon(tier: str, lang: str):
 def _source_icon(source: str | None, is_default: bool, lang: str):
     """The provenance shield shown to the left of a module name, or None.
 
-    Defaults are trusted by name (gold), regardless of any sidecar. Marketplace
-    and community modules carry their own shield. A plain sideload or an unknown
-    origin shows nothing - never a fabricated trust claim.
+    Defaults are trusted by content (gold) and marketplace modules by their
+    vetting (trusted). Community, sideloaded, and unknown origins show no shield:
+    nothing vouched for them, and a badge would read as a trust claim. The Source
+    column still states the origin in words.
     """
     if is_default:
         tier, key = "default", "modules.source_default"
     elif source == "marketplace":
         tier, key = "trusted", "modules.source_marketplace"
-    elif source == "community":
-        tier, key = "community", "modules.source_community"
     else:
         return None
     tip = t(key, lang)
@@ -858,9 +862,10 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
                    downloaded_path: str | None = None) -> FT:
     """One community listing. Three states drive the Status and action cells:
     installed (nothing to do), downloaded (offer Import), or fresh (offer
-    Download). Download fetches the author's repo archive; Import installs it -
-    two deliberate clicks, each swapping this row in place. A failed download or
-    import surfaces as a corner toast (see the routes), not inside the row."""
+    Download). Download fetches the author's repo archive and swaps this row in
+    place; Import installs it and lands on the Installed tab, where enabling is
+    the next step. A failed download or import surfaces as a corner toast (see
+    the routes), not inside the row."""
     row_id = f"community-row-{m['id']}"
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
@@ -894,14 +899,16 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
     )
 
 
-def _with_error_toast(fragment: FT, message: str) -> HTMLResponse:
-    """Swap the fragment back in place and raise the failure as a corner toast,
-    the app-wide error surface, rather than crowding the status cell."""
-    return HTMLResponse(
-        to_xml(fragment),
-        headers={"HX-Trigger": json.dumps(
-            {"celerpToast": {"message": message, "type": "error"}})},
-    )
+def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResponse:
+    """Swap the fragment in place and surface the message as a corner toast, the
+    app-wide notice surface, rather than crowding the fragment itself. A None
+    message swaps silently."""
+    headers = {}
+    if message:
+        headers["HX-Trigger"] = json.dumps(
+            {"celerpToast": {"message": message,
+                             "type": "error" if error else "success"}})
+    return HTMLResponse(to_xml(fragment), headers=headers)
 
 
 def _community_table(community: list[dict], installed: set[str], lang: str,
@@ -999,11 +1006,11 @@ def setup_routes(app):
             tab = "local"
             try:
                 modules = await api.get_modules(token)
+                content = _local_panel(modules, lang=lang)
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                modules = []
-            content = _local_panel(modules, lang=lang)
+                content = _unavailable_panel(lang)
 
         return await base_shell(
             page_header(t("modules.title", lang)),
@@ -1014,6 +1021,22 @@ def setup_routes(app):
             lang=lang,
             request=request,
         )
+
+    @app.get("/modules/local-panel")
+    async def modules_local_panel(request: Request):
+        """Fragment refresh for the installed-modules panel; the unavailable
+        state polls this until the list loads again."""
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        try:
+            modules = await api.get_modules(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return _unavailable_panel(lang)
+        return _local_panel(modules, lang=lang)
 
     @app.post("/modules/{module_name}/enable")
     async def module_enable(request: Request, module_name: str):
@@ -1027,7 +1050,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            modules = []
+            return _unavailable_panel(lang)
         return _local_panel(modules, lang=lang)
 
     @app.post("/modules/{module_name}/disable")
@@ -1042,7 +1065,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            modules = []
+            return _unavailable_panel(lang)
         return _local_panel(modules, lang=lang)
 
     @app.post("/modules/{module_name}/delete")
@@ -1064,7 +1087,8 @@ def setup_routes(app):
             try:
                 modules = await api.get_modules(token)
             except APIError:
-                modules = []
+                # The refusal still reaches the user (toast); the panel retries.
+                return _toast(_unavailable_panel(lang), flash_text)
         return _local_panel(modules, lang=lang, flash_text=flash_text,
                             flash_error=flash_text is not None)
 
@@ -1096,7 +1120,7 @@ def setup_routes(app):
         try:
             modules = await api.get_modules(token)
         except APIError:
-            modules = []
+            return _toast(_unavailable_panel(lang), flash_text, error=flash_error)
         return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
 
     @app.post("/modules/import-path")
@@ -1116,7 +1140,7 @@ def setup_routes(app):
         try:
             modules = await api.get_modules(token)
         except APIError:
-            modules = []
+            return _toast(_unavailable_panel(lang), flash_text, error=flash_error)
         # Return the panel fragment (not JSON) so the desktop folder-pick swaps
         # in place, matching the zip upload path - no full page reload.
         return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
@@ -1151,9 +1175,9 @@ def setup_routes(app):
         except Exception:
             if zone:
                 community, installed = await _community_and_installed(token)
-                return _with_error_toast(_community_table(community, installed, lang),
+                return _toast(_community_table(community, installed, lang),
                                          t("marketplace.download_failed", lang))
-            return _with_error_toast(_community_row(m, lang, installed),
+            return _toast(_community_row(m, lang, installed),
                                      t("marketplace.download_failed", lang))
         if zone:
             community, installed = await _community_and_installed(token)
@@ -1175,21 +1199,21 @@ def setup_routes(app):
             data = catalog.read_staged_archive(path)
             await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
         except APIError as e:
-            return _with_error_toast(
+            return _toast(
                 _community_row(m, lang, installed, downloaded_path=path),
                 e.detail or str(e))
         except (ValueError, OSError):
-            return _with_error_toast(
+            return _toast(
                 _community_row(m, lang, installed, downloaded_path=path),
                 t("marketplace.import_failed", lang))
-        # Installed: drop the staged archive and re-read the installed set so the
-        # row reflects reality (the module now appears in get_modules).
+        # Installed: drop the staged archive, then land on the Installed tab where
+        # the new module's row sits with its Enable button - the next step in the
+        # flow - rather than leaving the user on the catalog row.
         try:
             Path(path).unlink(missing_ok=True)
         except OSError:
             pass
-        _, installed = await _community_and_installed(token)
-        return _community_row(m, lang, installed)
+        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
@@ -1310,7 +1334,7 @@ def setup_routes(app):
         try:
             res = await api.marketplace_download(token, slug)
         except APIError as e:
-            return _with_error_toast(
+            return _toast(
                 _marketplace_row(m, lang, installed, licensed), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed,
                                 downloaded_path=res.get("path"))
@@ -1332,17 +1356,13 @@ def setup_routes(app):
         try:
             await api.marketplace_install(token, path)
         except APIError as e:
-            return _with_error_toast(
+            return _toast(
                 _marketplace_row(m, lang, installed, licensed, downloaded_path=path),
                 e.detail or str(e))
-        # Installed: re-read the installed set so the row reflects reality (the
-        # module now appears in get_modules).
-        installed = set()
-        try:
-            installed = {x["name"] for x in await api.get_modules(token)}
-        except APIError:
-            pass
-        return _marketplace_row(m, lang, installed, licensed)
+        # Installed: land on the Installed tab where the new module's row sits
+        # with its Enable button - the next step in the flow - rather than
+        # leaving the user on the catalog row.
+        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):

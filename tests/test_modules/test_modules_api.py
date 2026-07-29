@@ -327,6 +327,7 @@ class TestModuleProvenanceAndDelete:
                 seen_default = True
                 assert m["source"] == "default", m
                 assert m["installed_at"] is None, m
+                assert m["demoted"] is False, m
         assert seen_default, "expected at least one default module in the scan"
 
     @pytest.mark.asyncio
@@ -347,6 +348,8 @@ class TestModuleProvenanceAndDelete:
         row = next(m for m in r.json() if m["name"] == "celerp-strayxyz")
         assert row["is_default"] is False
         assert row["source"] != "default"
+        # Not named in the lock, so it is a stray - never a demoted default.
+        assert row["demoted"] is False
 
     @pytest.mark.asyncio
     async def test_scan_reports_real_source_for_demoted_module(self, client, tmp_path):
@@ -362,6 +365,9 @@ class TestModuleProvenanceAndDelete:
         row = next(m for m in r.json() if m["name"] == "celerp-manufacturing")
         assert row["is_default"] is False
         assert row["source"] != "default"
+        # Named in the lock but content mismatch: the scan reports the demotion
+        # itself, so the UI banner needs no cross-render state.
+        assert row["demoted"] is True
 
     @pytest.mark.asyncio
     async def test_delete_allows_demoted_module_previously_refused_as_default(

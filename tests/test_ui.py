@@ -8349,10 +8349,12 @@ class TestModulesUI:
         assert "hx-confirm" in tail
 
     @pytest.mark.asyncio
-    async def test_source_column_shows_label_and_keeps_shield(self, ui_client):
+    async def test_source_column_shows_label_and_shields_defaults_only(self, ui_client):
         """The Local Modules table carries a leftmost Source column with an
-        explicit text label per row (never blank), while the provenance shield
-        stays beside the name - both indicators kept."""
+        explicit text label per row (never blank). Shields mark verified
+        provenance only (bundled defaults, marketplace); community and
+        sideloaded rows carry no shield - the Source column already states
+        their origin in words."""
         rows = [
             {"name": "comm-mod", "label": "Community Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -8369,8 +8371,8 @@ class TestModulesUI:
         assert 'data-filter-value="Community"' in body
         assert 'data-filter-value="Sideloaded"' in body
         assert 'data-filter-value="Default"' in body
-        # Shields still render beside the name (both indicators).
-        assert "trust-icon--community" in body
+        # Only the verified-provenance shield renders; community rows carry none.
+        assert "trust-icon--community" not in body
         assert "trust-icon--default" in body
 
     @pytest.mark.asyncio
@@ -8872,14 +8874,11 @@ class TestMarketplaceUI:
         assert "celerpToast" in r.headers.get("HX-Trigger", "")   # error goes to the toast
 
     @pytest.mark.asyncio
-    async def test_community_import_installs_staged_archive(self, ui_client):
-        """Import reads the staged archive, installs it, and the row reflects
-        Installed once the module appears in get_modules."""
-        installed_after = [{"name": "equipment-maintenance", "label": "Equipment Maintenance",
-                            "version": "1.0", "author": "Celerp", "enabled": False, "running": False}]
+    async def test_community_import_installs_and_redirects_to_installed_tab(self, ui_client):
+        """Import reads the staged archive, installs it, and redirects to the
+        Installed tab so the new module is immediately visible and enableable."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
-            patch("ui.api_client.get_modules", new=AsyncMock(return_value=installed_after)),
             patch("ui.marketplace_catalog.read_staged_archive", new=lambda p: b"zip-bytes"),
             patch("ui.api_client.import_module_zip",
                   new=AsyncMock(return_value={"name": "equipment-maintenance", "display_name": "Equipment Maintenance"})),
@@ -8889,8 +8888,7 @@ class TestMarketplaceUI:
                                            "path": "/data/community-downloads/equipment-maintenance.zip"},
                                      cookies=_authed())
         assert r.status_code == 200
-        assert b"badge--active" in r.content            # Installed badge
-        assert b">Import<" not in r.content             # no Import button once installed
+        assert r.headers.get("HX-Redirect") == "/modules?tab=local"
 
     @pytest.mark.asyncio
     async def test_community_import_failure_keeps_import_button(self, ui_client):
@@ -9120,14 +9118,12 @@ class TestMarketplaceUI:
         assert "celerpToast" in r.headers.get("HX-Trigger", "")   # error goes to the toast
 
     @pytest.mark.asyncio
-    async def test_marketplace_install_lands_installed(self, ui_client):
-        """Install lands the staged archive; once it appears in get_modules the
-        row shows Installed, the same terminal state a community import reaches."""
-        installed_after = [{"name": "celerp-budgeting", "label": "Budgeting",
-                            "version": "1.0", "author": "Celerp", "enabled": False, "running": False}]
+    async def test_marketplace_install_redirects_to_installed_tab(self, ui_client):
+        """Install lands the staged archive and redirects to the Installed tab
+        so the new module is immediately visible and enableable - the same
+        terminal state a community import reaches."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
-            patch("ui.api_client.get_modules", new=AsyncMock(return_value=installed_after)),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_install",
                   new=AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
@@ -9138,8 +9134,7 @@ class TestMarketplaceUI:
                                            "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
                                      cookies=_authed())
         assert r.status_code == 200
-        assert b"badge--active" in r.content            # Installed badge
-        assert b">Install<" not in r.content            # no Install button once installed
+        assert r.headers.get("HX-Redirect") == "/modules?tab=local"
 
     @pytest.mark.asyncio
     async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
@@ -17298,33 +17293,106 @@ class TestReconciliationImportResponse:
 
 
 # ── Module reclassification banner (GDR 2d) ───────────────────────────────────
-# When a module that scanned first-party last render no longer does, the modules
-# page must surface it in an unmissable on-page banner, not only a backend log.
+# When the backend scan reports a demoted default (named in the committed
+# first-party lock but content changed), the modules page must surface it in an
+# unmissable on-page banner, not only a backend log. The banner is driven by the
+# per-render "demoted" fact from the scan - never a diff against a previous
+# render, so a failed or empty fetch can never fabricate a demotion.
 
 class TestModuleReclassificationBanner:
-    def _mod(self, name, is_default, source="default"):
+    def _mod(self, name, is_default, source="default", demoted=False):
         return {"name": name, "label": name, "version": "1.0", "author": "",
                 "enabled": False, "running": False, "load_error": None,
                 "depends_on": [], "is_default": is_default, "source": source,
-                "installed_at": None}
+                "installed_at": None, "demoted": demoted}
 
-    def test_reclassification_banner_shown_when_module_demotes(self):
+    def test_reclassification_banner_shown_for_demoted_default(self):
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
-        mp._LAST_FIRST_PARTY = None
-        # First render: celerp-labels is first-party. Seeds the remembered set; no banner.
-        first = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
-        assert "modules-reclass-banner" not in first
-        # Second render: it has demoted. The banner appears naming it.
-        second = to_xml(mp._local_panel(
-            [self._mod("celerp-labels", False, source="sideloaded")]))
-        assert "modules-reclass-banner" in second
-        assert "celerp-labels" in second
+        body = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded", demoted=True)]))
+        assert "modules-reclass-banner" in body
+        assert "celerp-labels" in body
 
     def test_no_reclassification_banner_when_stable(self):
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
-        mp._LAST_FIRST_PARTY = None
+        body = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        assert "modules-reclass-banner" not in body
+
+    def test_no_banner_for_community_module(self):
+        # A community module was never in the lock: it is not a demoted default
+        # and must never trip the banner, whatever its enable/disable state.
+        from fasthtml.common import to_xml
+        from ui.routes import modules_page as mp
+        body = to_xml(mp._local_panel(
+            [self._mod("equipment-maintenance", False, source="community")]))
+        assert "modules-reclass-banner" not in body
+
+    def test_empty_module_list_never_fabricates_banner(self):
+        # Regression: the old implementation diffed first-party names between
+        # renders, so an empty list (a failed fetch fell back to []) reported
+        # every bundled default as demoted. An empty scan renders no banner.
+        from fasthtml.common import to_xml
+        from ui.routes import modules_page as mp
         to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
-        stable = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
-        assert "modules-reclass-banner" not in stable
+        body = to_xml(mp._local_panel([]))
+        assert "modules-reclass-banner" not in body
+
+
+# ── Honest degradation when the modules list cannot load ──────────────────────
+# A failed list fetch must never render the fake "No modules installed yet"
+# empty state. It renders a retry panel that polls /modules/local-panel until
+# the list loads again.
+
+class TestModulesUnavailablePanel:
+    @pytest.mark.asyncio
+    async def test_page_shows_retry_panel_not_fake_empty_state_on_api_error(self, ui_client):
+        from contextlib import ExitStack
+        from ui.api_client import APIError
+        mocks = {**_SETTINGS_MOCKS_MODULES,
+                 "ui.api_client.get_modules": AsyncMock(side_effect=APIError(500, "boom"))}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "The modules list is not available right now" in body
+        assert 'hx-get="/modules/local-panel"' in body      # self-refreshing
+        assert "No modules installed yet" not in body       # never the fake empty state
+
+    @pytest.mark.asyncio
+    async def test_local_panel_route_returns_panel_when_list_loads(self, ui_client):
+        rows = [{"name": "celerp-labels", "label": "Labels", "version": "1.0",
+                 "author": "Celerp", "enabled": True, "running": True,
+                 "is_default": True, "source": "default", "installed_at": None}]
+        with patch("ui.api_client.get_modules", new=AsyncMock(return_value=rows)):
+            r = await ui_client.get("/modules/local-panel", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "celerp-labels" in body
+        assert "The modules list is not available right now" not in body
+
+    @pytest.mark.asyncio
+    async def test_local_panel_route_keeps_retrying_on_api_error(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.get_modules", new=AsyncMock(side_effect=APIError(502, "down"))):
+            r = await ui_client.get("/modules/local-panel", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "The modules list is not available right now" in body
+        assert 'hx-get="/modules/local-panel"' in body
+
+    @pytest.mark.asyncio
+    async def test_disable_failure_shows_retry_panel(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.disable_module", new=AsyncMock(return_value={"ok": True})),
+            patch("ui.api_client.get_modules", new=AsyncMock(side_effect=APIError(500, "boom"))),
+        ):
+            r = await ui_client.post("/modules/some-mod/disable", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "The modules list is not available right now" in body
+        assert "No modules installed yet" not in body

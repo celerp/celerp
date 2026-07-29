@@ -1578,8 +1578,8 @@ async def list_modules(
     from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
-        is_first_party, is_running, load_errors, loaded_modules,
-        read_manifest_metadata,
+        first_party_names, is_first_party, is_running, load_errors,
+        loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
     from celerp.modules.registry import get_enabled
@@ -1594,6 +1594,7 @@ async def list_modules(
     def _scan_modules() -> list[dict]:
         results: list[dict] = []
         seen: set[str] = set()
+        lock_names = first_party_names()
         for d_str in module_dir_raw.split(","):
             d_str = d_str.strip()
             if not d_str:
@@ -1650,6 +1651,11 @@ async def list_modules(
                     "load_error": load_errs.get(pkg_name),
                     # First-party bundled modules cannot be removed from the UI.
                     "is_default": is_default,
+                    # A demoted default: named in the committed lock but its
+                    # content no longer matches. A per-render fact (no state
+                    # carried between scans), so the UI notice can never fire
+                    # from anything but a genuine content mismatch.
+                    "demoted": (not is_default) and pkg_name in lock_names,
                     # Where the module came from, and when it landed.
                     "source": source,
                     "installed_at": installed_at,

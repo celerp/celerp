@@ -396,6 +396,57 @@ def test_remove_module_dir_rejects_path_traversal_name(module_dir):
     assert sentinel.exists()
 
 
+def test_remove_module_dir_removes_stragglers_across_all_entries(tmp_path, monkeypatch):
+    """A copy left in a later MODULE_DIR entry (e.g. one landed under an older
+    folder layout) is removed along with the first copy - the scan searches all
+    entries, so a surviving straggler would resurface as a sideload the moment
+    the first copy is gone."""
+    from celerp.modules.importer import remove_module_dir
+    d1 = tmp_path / "modules"
+    d2 = tmp_path / "default_modules"
+    d1.mkdir()
+    d2.mkdir()
+    for base in (d1, d2):
+        pkg = base / "my-module"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(MANIFEST)
+    monkeypatch.setenv("MODULE_DIR", f"{d1},{d2}")
+    remove_module_dir("my-module")
+    assert not (d1 / "my-module").exists()
+    assert not (d2 / "my-module").exists()
+
+
+def test_remove_module_dir_never_touches_first_party_copy(tmp_path, monkeypatch):
+    """Removing a name that also exists as a genuine bundled default (content
+    matches the committed lock) deletes only the stale copy; the first-party
+    copy is never touched."""
+    import json
+
+    from celerp.modules import loader as _loader
+    from celerp.modules.importer import remove_module_dir
+    d1 = tmp_path / "modules"
+    d2 = tmp_path / "bundled"
+    d1.mkdir()
+    d2.mkdir()
+    stale = d1 / "my-module"
+    stale.mkdir()
+    (stale / "__init__.py").write_text(MANIFEST + "\n# local edit\n")
+    genuine = d2 / "my-module"
+    genuine.mkdir()
+    (genuine / "__init__.py").write_text(MANIFEST)
+    lock = tmp_path / "first_party.lock.json"
+    lock.write_text(json.dumps({"my-module": _loader.module_content_digest(genuine)}))
+    monkeypatch.setattr(_loader, "_lock_path", lambda: lock)
+    _loader._first_party_lock.cache_clear()
+    monkeypatch.setenv("MODULE_DIR", f"{d1},{d2}")
+    try:
+        remove_module_dir("my-module")
+    finally:
+        _loader._first_party_lock.cache_clear()
+    assert not stale.exists()   # stale copy removed
+    assert genuine.exists()     # genuine bundled default untouched
+
+
 def test_module_dir_refuses_bundled_target(monkeypatch, tmp_path):
     """An import must never land in a bundled/trusted module dir: a package
     written there would inherit first-party trust by name. Pointing MODULE_DIR at

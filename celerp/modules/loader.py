@@ -252,6 +252,15 @@ def is_first_party(pkg_path: Path) -> bool:
     return True
 
 
+def first_party_names() -> frozenset[str]:
+    """The module names the committed lock claims as first-party.
+
+    A scanned module whose name is here but whose content no longer matches the
+    lock is a demoted default - the scan reports that as a per-module fact so the
+    UI can surface it without keeping any cross-render state."""
+    return frozenset(_first_party_lock())
+
+
 def resolve_module_path(name: str) -> Path | None:
     """The first <entry>/<name> package (a dir with __init__.py) across the
     MODULE_DIR search entries, or None if no entry holds it.
