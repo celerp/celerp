@@ -129,16 +129,20 @@ def ui_server(api_server):
 
     from ui.app import app as ui_app
 
-    # The root conftest imports ui.app before MODULE_DIR is set, so
-    # module-level load_all / register_ui_routes runs with MODULE_DIR=""
-    # and skips external modules. Re-register any missing module UI routes.
+    # ui.app / celerp.main, imported (by the root conftest) before this file's
+    # module-level setdefault runs, rewrite MODULE_DIR to "" when it is unset at that
+    # point (with_writable_module_dir("") returns ""). The key then exists as "", so
+    # our setdefault above cannot restore it. Re-register the module UI routes here.
+    # Treat an empty MODULE_DIR as unset so the default dirs are used - otherwise
+    # load_all runs against no directories and module-gated UI (e.g. the credit-note
+    # Receive Returns button, which reads loaded_modules()) never renders.
     # Use absolute paths so load_all resolves correctly regardless of cwd.
     from celerp.modules.loader import load_all, register_ui_routes
     import pathlib as _pl
     _repo_root = _pl.Path(__file__).resolve().parents[2]
     _abs_module_dirs = ",".join(
         str(_repo_root / d.strip())
-        for d in os.environ.get("MODULE_DIR", "default_modules").split(",")
+        for d in (os.environ.get("MODULE_DIR") or "default_modules").split(",")
         if d.strip()
     )
     _enabled = {m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()}
