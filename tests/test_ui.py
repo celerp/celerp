@@ -17295,3 +17295,36 @@ class TestReconciliationImportResponse:
         assert r.status_code == 200
         assert b'href="/settings/accounting?tab=bank-accounts"' in r.content
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
+
+
+# ── Module reclassification banner (GDR 2d) ───────────────────────────────────
+# When a module that scanned first-party last render no longer does, the modules
+# page must surface it in an unmissable on-page banner, not only a backend log.
+
+class TestModuleReclassificationBanner:
+    def _mod(self, name, is_default, source="default"):
+        return {"name": name, "label": name, "version": "1.0", "author": "",
+                "enabled": False, "running": False, "load_error": None,
+                "depends_on": [], "is_default": is_default, "source": source,
+                "installed_at": None}
+
+    def test_reclassification_banner_shown_when_module_demotes(self):
+        from fasthtml.common import to_xml
+        from ui.routes import modules_page as mp
+        mp._LAST_FIRST_PARTY = None
+        # First render: celerp-labels is first-party. Seeds the remembered set; no banner.
+        first = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        assert "modules-reclass-banner" not in first
+        # Second render: it has demoted. The banner appears naming it.
+        second = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded")]))
+        assert "modules-reclass-banner" in second
+        assert "celerp-labels" in second
+
+    def test_no_reclassification_banner_when_stable(self):
+        from fasthtml.common import to_xml
+        from ui.routes import modules_page as mp
+        mp._LAST_FIRST_PARTY = None
+        to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        stable = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        assert "modules-reclass-banner" not in stable

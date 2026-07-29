@@ -109,6 +109,29 @@ def _restart_pending(modules: list[dict]) -> bool:
     )
 
 
+# The set of first-party module names as of the last render, so a render that finds
+# fewer can name what dropped. None means "not yet seeded" - the first render only
+# records the baseline and never reports a reclassification against nothing.
+_LAST_FIRST_PARTY: set[str] | None = None
+
+
+def _reclassified(modules: list[dict]) -> list[str]:
+    """Modules that were first-party on the previous render but are not now.
+
+    Content-identity can demote a default silently (its digest stopped matching the
+    committed lock), so the change is surfaced to the user rather than left to a
+    backend log (GDR 2d). Returns the sorted names that dropped since last render.
+    """
+    global _LAST_FIRST_PARTY
+    current = {m["name"] for m in modules if m.get("is_default")}
+    if _LAST_FIRST_PARTY is None:
+        _LAST_FIRST_PARTY = current
+        return []
+    dropped = sorted(_LAST_FIRST_PARTY - current)
+    _LAST_FIRST_PARTY = current
+    return dropped
+
+
 # ── tabs chrome ────────────────────────────────────────────────────────────────
 
 def _tabs(active: str, lang: str) -> FT:
@@ -297,6 +320,17 @@ def _local_panel(modules: list[dict], lang: str = "en",
         cls="error-banner mb-md",
     ) if _restart_pending(modules) else Div(id="modules-restart-banner")
 
+    # Unmissable on-page notice when a module that scanned first-party before no
+    # longer does (its content stopped matching the committed lock). The panel is
+    # re-rendered whole on every swap, so there is nothing to render when nothing
+    # reclassified - no empty placeholder to leave behind.
+    dropped = _reclassified(modules)
+    reclass_banner = Div(
+        Span(t("modules.reclassified_notice", lang, names=", ".join(dropped))),
+        id="modules-reclass-banner",
+        cls="error-banner mb-md",
+    ) if dropped else None
+
     flash_div = Div(
         flash_text,
         cls=f"flash {'flash--error' if flash_error else 'flash--success'}",
@@ -403,6 +437,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     return Div(
         folder_row,
         banner,
+        reclass_banner,
         flash_div,
         import_section,
         content,
