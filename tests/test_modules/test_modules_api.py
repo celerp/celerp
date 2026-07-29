@@ -448,12 +448,18 @@ class TestModuleProvenanceAndDelete:
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_module_404s(self, client, tmp_path):
+        from celerp.modules.importer import install_from_folder
         token = await _register(client)
         module_dir = tmp_path / "modules"
         module_dir.mkdir()
+        src = _write_pkg(tmp_path / "src", "ghost-mod")
         with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
             r = await client.post(
                 "/companies/me/modules/ghost-mod/delete", headers=_h(token))
-        # A module that was never installed is Not Found. (The app's global 404
-        # handler standardizes the body, so the status is the observable signal.)
+            assert r.status_code == 200, r.text
+            # A second delete of the same name is the never-installed case:
+            # the live route reports the module itself as missing.
+            r = await client.post(
+                "/companies/me/modules/ghost-mod/delete", headers=_h(token))
         assert r.status_code == 404, r.text

@@ -638,7 +638,7 @@ async def test_send_email_includes_view_link_when_cloud_connected(client: AsyncC
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio
@@ -659,7 +659,7 @@ async def test_send_uses_custom_subject_message_and_formatted_amount(client: Asy
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)  # total 1070.0, THB
     r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={
-        "sent_to": "cust@x.com", "subject": "Your order is ready",
+        "sent_to": "cust@shop.example", "subject": "Your order is ready",
         "message": "Thanks for your business, please see attached.",
     })
     assert r.status_code == 200
@@ -682,7 +682,7 @@ async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, m
 
     tok = await _token(client)  # registers admin share@test.com
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio
@@ -704,7 +704,7 @@ async def test_send_always_shares_with_30_day_window(client: AsyncClient, monkey
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={"sent_to": "cust@x.com"})
+    r = await client.post(f"/docs/{entity_id}/send", headers=_h(tok), json={"sent_to": "cust@shop.example"})
     assert r.status_code == 200
 
     import asyncio
@@ -763,13 +763,13 @@ async def test_send_doc_success_creates_bell_notification(client: AsyncClient, m
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     await asyncio.wait_for(done.wait(), timeout=2)
     assert calls["category"] == "email"
-    assert calls["title"] == "Email delivered to cust@x.com"
-    assert "cust@x.com" in calls["body"]
+    assert calls["title"] == "Email delivered to cust@shop.example"
+    assert "cust@shop.example" in calls["body"]
     assert calls["priority"] == "low"
     assert calls["action_url"] == f"/docs/{entity_id}"
 
@@ -783,11 +783,11 @@ async def test_send_doc_failure_creates_failure_notification(client: AsyncClient
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     await asyncio.wait_for(done.wait(), timeout=2)
-    assert calls["title"] == "Email to cust@x.com failed"
+    assert calls["title"] == "Email to cust@shop.example failed"
     assert "quota" in calls["body"]
     assert calls["priority"] == "high"
 
@@ -800,7 +800,7 @@ async def test_send_email_no_link_when_not_cloud_connected(client: AsyncClient, 
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio
@@ -965,7 +965,7 @@ async def test_send_reactivates_an_expired_share_link(client: AsyncClient, sessi
     await _expire_token(session, token)
     assert (await client.get(f"/share/{token}")).status_code == 404  # dead before send
 
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio
@@ -1026,7 +1026,7 @@ async def test_invoice_email_has_view_button_for_free_user(client: AsyncClient, 
 
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
 
     import asyncio

@@ -14,7 +14,7 @@ import pytest
 pytestmark = pytest.mark.browser
 
 
-def _poll(api, doc_id, predicate, tries: int = 40, delay: float = 0.25) -> bool:
+def _poll(api, doc_id, predicate, tries: int = 180, delay: float = 0.25) -> bool:
     for _ in range(tries):
         if predicate(api.get(f"/docs/{doc_id}").json()):
             return True

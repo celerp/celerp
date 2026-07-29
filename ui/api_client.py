@@ -2091,7 +2091,7 @@ async def import_module_zip(token: str, filename: str, data: bytes,
 
 
 async def import_module_path(token: str, path: str) -> dict:
-    """POST /companies/me/modules/import-path — install a module from a local folder."""
+    """POST /companies/me/modules/import-path - install a module from a local folder."""
     async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
 
@@ -2132,7 +2132,7 @@ async def marketplace_install(token: str, path: str) -> dict:
 
 
 async def restart_system(token: str) -> dict:
-    """POST /system/restart — graceful restart; the process manager respawns."""
+    """POST /system/restart - graceful restart; the process manager respawns."""
     async with _api_client(token) as c:
         return _raise(await c.post("/system/restart")).json()
 
@@ -2328,19 +2328,19 @@ async def get_instance_id(token: str) -> str:
 
 
 async def account_methods(token: str) -> dict:
-    """GET /settings/account-methods — optional sign-in methods + Google start URL."""
+    """GET /settings/account-methods - optional sign-in methods + Google start URL."""
     async with _api_client(token) as c:
         return _raise(await c.get("/settings/account-methods")).json()
 
 
 async def account_signup(token: str, email: str) -> dict:
-    """POST /settings/account-signup — send the magic sign-in link."""
+    """POST /settings/account-signup - send the magic sign-in link."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/account-signup", json={"email": email})).json()
 
 
 async def account_status(token: str) -> dict:
-    """GET /settings/account-status — poll the relay account state."""
+    """GET /settings/account-status - poll the relay account state."""
     async with _api_client(token) as c:
         return _raise(await c.get("/settings/account-status")).json()
 

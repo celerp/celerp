@@ -8218,7 +8218,7 @@ _SETTINGS_MOCKS_MODULES = {
 
 
 class TestModulesUI:
-    """Modules page (top-level, owner/admin only) — list, enable, disable,
+    """Modules page (top-level, owner/admin only) - list, enable, disable,
     import, restart, load-error surfacing."""
 
     @pytest.mark.asyncio
@@ -16256,7 +16256,7 @@ class TestCelerpAccountSurface:
     async def test_email_submit_shows_bounded_waiting_panel(self, ui_client):
         with patch("ui.api_client.account_signup",
                    new=AsyncMock(return_value={"sent": True})):
-            r = await ui_client.post("/account/email", data={"email": "o@shop.com"},
+            r = await ui_client.post("/account/email", data={"email": "o@shop.example"},
                                      cookies=_authed())
         content = r.content
         assert b"Check your inbox" in content
@@ -16271,7 +16271,7 @@ class TestCelerpAccountSurface:
             patch("ui.api_client.account_methods",
                   new=AsyncMock(return_value={"google": False})),
         ):
-            r = await ui_client.post("/account/email", data={"email": "o@shop.com"},
+            r = await ui_client.post("/account/email", data={"email": "o@shop.example"},
                                      cookies=_authed())
         assert b"confirmation email" in r.content
         assert b"Continue with email" in r.content           # back on the form, can retry
@@ -16291,20 +16291,20 @@ class TestCelerpAccountSurface:
         activate = AsyncMock(return_value={"relay_status": "active"})
         with (
             patch("ui.api_client.account_status",
-                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                  new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
                                               "tier": "cloud", "pending_selection": False,
                                               "linked_elsewhere": False})),
             patch("ui.api_client.activate_relay", new=activate),
         ):
             r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
-        assert b"Signed in as" in r.content and b"o@shop.com" in r.content
+        assert b"Signed in as" in r.content and b"o@shop.example" in r.content
         assert activate.await_count == 1                     # chained into activation
 
     @pytest.mark.asyncio
     async def test_poll_pending_selection_offers_claim(self, ui_client):
         with (
             patch("ui.api_client.account_status",
-                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                  new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
                                               "tier": "free", "pending_selection": True,
                                               "linked_elsewhere": False})),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
@@ -16317,7 +16317,7 @@ class TestCelerpAccountSurface:
     async def test_poll_linked_elsewhere_offers_claim(self, ui_client):
         with (
             patch("ui.api_client.account_status",
-                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                  new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
                                               "tier": "free", "pending_selection": False,
                                               "linked_elsewhere": True})),
             patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})),
@@ -16357,7 +16357,7 @@ class TestCelerpAccountSurface:
                                                "public_url": "https://co.celerp.app",
                                                "instance_id": "i-1"})):
             r = await ui_client.post("/settings/cloud-claim",
-                                     data={"claim_email": "o@shop.com", "otp_code": "123456"},
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
                                      cookies=_authed())
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud"
@@ -16366,7 +16366,7 @@ class TestCelerpAccountSurface:
     async def test_poll_reloads_web_access_page_once_relay_connects(self, ui_client):
         """The signup/poll flow hosted on the Web Access page also lands on
         the connected page once activation brings the relay up."""
-        status = {"email": "o@shop.com", "email_verified": True, "tier": "cloud",
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "cloud",
                   "pending_selection": False, "linked_elsewhere": False}
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
@@ -16383,7 +16383,7 @@ class TestCelerpAccountSurface:
         """A verified account whose activation does not bring the relay up
         (e.g. free tier) keeps the signed-in panel - reloading would re-show
         the landing page and hide the account state."""
-        status = {"email": "o@shop.com", "email_verified": True, "tier": "free",
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
@@ -16434,7 +16434,7 @@ class TestCelerpAccountSurface:
         activate = AsyncMock(return_value={})
         with (
             patch("ui.api_client.account_status",
-                  new=AsyncMock(return_value={"email": "o@shop.com", "email_verified": True,
+                  new=AsyncMock(return_value={"email": "o@shop.example", "email_verified": True,
                                               "tier": "free", "pending_selection": False,
                                               "linked_elsewhere": False, "claim_offer": True})),
             patch("ui.api_client.activate_relay", new=activate),

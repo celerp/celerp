@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Module importer — the single validation + install path for every way a
+"""Module importer - the single validation + install path for every way a
 module package arrives.
 
 Two thin entrypoints, one core:
-  - install_from_zip(data)     — Import Module upload (browser) and, later, the
+  - install_from_zip(data)     - Import Module upload (browser) and, later, the
                                  marketplace installer (downloaded artifact).
-  - install_from_folder(path)  — desktop "Import Module…" folder picker (the
+  - install_from_folder(path)  - desktop "Import Module..." folder picker (the
                                  backend runs locally, so a path is enough).
 
 Both funnel through the same checks, so the security posture cannot drift

@@ -290,7 +290,7 @@ async def lifespan(_app: FastAPI):
         pass
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
-    # or a runtime share-create) — the gateway package owns that lifecycle now.
+    # or a runtime share-create) - the gateway package owns that lifecycle now.
     from celerp.gateway import shutdown as _gateway_shutdown
     await _gateway_shutdown()
 

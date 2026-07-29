@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Unit tests for celerp.modules.importer — the single validation + install
+"""Unit tests for celerp.modules.importer - the single validation + install
 path for Import Module uploads and (later) marketplace downloads.
 
 These tests double as the marketplace installer tests: same function.

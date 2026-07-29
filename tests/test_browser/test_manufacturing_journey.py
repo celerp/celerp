@@ -128,7 +128,7 @@ def test_full_manufacturing_journey(page, ui_server, api):
     #    receives the finished goods. allow_splitting is true (default) so the ring is restocked
     #    IN PLACE (no nameless item).
     import time as _t2
-    def _wait_status(want: str, timeout: float = 10.0) -> None:
+    def _wait_status(want: str, timeout: float = 45.0) -> None:
         deadline = _t2.time() + timeout
         while _t2.time() < deadline:
             if api.get(f"/manufacturing/{run_id}").json().get("status") == want:

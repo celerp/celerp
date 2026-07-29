@@ -1644,10 +1644,10 @@ async def list_modules(
                     "depends_on": list(manifest_source.get("depends_on") or []),
                     "enabled": pkg_name in enabled_names,
                     # Core-folded modules (ai/backup/connectors) are wired at app
-                    # construction, never in loaded_by_name — is_running() counts them.
+                    # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),
                     # Why an enabled module is not running (import error, missing
-                    # dependency, license) — the UI shows this instead of silence.
+                    # dependency, license) - the UI shows this instead of silence.
                     "load_error": load_errs.get(pkg_name),
                     # First-party bundled modules cannot be removed from the UI.
                     "is_default": is_default,

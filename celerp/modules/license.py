@@ -139,7 +139,7 @@ def check_license(
         # answer, not a transient outage - do NOT fall back to the offline grace
         # cache. Record the denial and deny.
         _write_cache(cache_file, licensed=False, status="denied")
-        log.warning("Premium module %r: relay denied the license — not loading", slug)
+        log.warning("Premium module %r: relay denied the license - not loading", slug)
         return False
     except Exception as exc:
         log.info(

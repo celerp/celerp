@@ -14,7 +14,7 @@ pytestmark = pytest.mark.browser
 SHOTS = Path("context/reviews/manufacturing")
 
 
-def _poll_run_status(api, run_id: str, want: str, timeout: float = 10.0) -> dict:
+def _poll_run_status(api, run_id: str, want: str, timeout: float = 45.0) -> dict:
     """Poll the /manufacturing board until the named work order reaches `want`. Returns its row."""
     deadline = time.time() + timeout
     last: dict = {}

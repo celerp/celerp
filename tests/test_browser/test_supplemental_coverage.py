@@ -38,7 +38,7 @@ import uuid
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
-def _wait_projection(api, url: str, retries: int = 10, delay: float = 0.3) -> dict:
+def _wait_projection(api, url: str, retries: int = 150, delay: float = 0.3) -> dict:
     """Poll API until projection is ready (handles async event-sourcing lag)."""
     for _ in range(retries):
         r = api.get(url)

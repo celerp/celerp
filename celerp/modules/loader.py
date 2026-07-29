@@ -361,7 +361,7 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] 
             # A back-edge to a module still being visited: a dependency cycle.
             # Skip it with a clear error rather than accepting an order that
             # cannot actually satisfy the deps.
-            log.warning("Module %r is part of a dependency cycle — skipping", name)
+            log.warning("Module %r is part of a dependency cycle - skipping", name)
             if errors is not None:
                 errors.setdefault(name, "Part of a dependency cycle.")
             skipped.add(name)
@@ -601,7 +601,7 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                     continue
             else:
                 log.debug(
-                    "Premium module %r: no relay identity (never activated) — "
+                    "Premium module %r: no relay identity (never activated) - "
                     "skipping license check (dev mode)",
                     pkg_name,
                 )

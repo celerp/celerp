@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Unit tests for ui.marketplace_catalog — the catalog is untrusted input."""
+"""Unit tests for ui.marketplace_catalog - the catalog is untrusted input."""
 from __future__ import annotations
 
 import json
