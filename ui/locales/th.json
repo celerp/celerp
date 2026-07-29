@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "อีเมลที่ใช้ตอนชำระเงิน",
   "account.doc_send_offer_button": "ส่งทางอีเมล",
   "account.email_hint": "เราจะส่งลิงก์ลงชื่อเข้าใช้ไปทางอีเมล",
-  "account.email_placeholder": "you@company.com",
+  "account.email_placeholder": "you@example.com",
   "account.gate_buy_benefit": "การซื้อจะผูกกับอีเมลของคุณ จึงกู้คืนได้ในคอมพิวเตอร์ทุกเครื่อง",
   "account.gate_community_benefit": "โมดูลคอมมูนิตี้ฟรี ลงชื่อเข้าใช้ด้วยบัญชี Celerp ฟรีของคุณเพื่อดาวน์โหลด",
   "account.gate_doc_send_benefit": "ส่งเอกสาร {n} ฉบับต่อเดือนผ่าน Celerp ฟรี ไม่ต้องตั้งค่า",

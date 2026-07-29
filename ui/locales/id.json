@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "Email yang digunakan saat pembelian",
   "account.doc_send_offer_button": "Kirim lewat email",
   "account.email_hint": "Kami akan mengirimkan tautan masuk melalui email.",
-  "account.email_placeholder": "anda@perusahaan.com",
+  "account.email_placeholder": "anda@example.com",
   "account.gate_buy_benefit": "Pembelian ditautkan ke email Anda sehingga dapat dipulihkan di komputer mana pun.",
   "account.gate_community_benefit": "Modul komunitas gratis. Masuk dengan akun Celerp gratis Anda untuk mengunduh.",
   "account.gate_doc_send_benefit": "Kirim {n} dokumen per bulan melalui Celerp secara gratis. Tanpa penyiapan.",

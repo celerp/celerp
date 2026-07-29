@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "Email used at checkout",
   "account.doc_send_offer_button": "Send by email",
   "account.email_hint": "We'll email you a sign-in link.",
-  "account.email_placeholder": "you@company.com",
+  "account.email_placeholder": "you@example.com",
   "account.gate_buy_benefit": "Purchases are linked to your email so you can restore them on any computer.",
   "account.gate_community_benefit": "Community modules are free. Sign in with your free Celerp account to download.",
   "account.gate_doc_send_benefit": "Send {n} documents a month through Celerp free. No setup.",

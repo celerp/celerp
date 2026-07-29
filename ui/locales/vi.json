@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "Email đã dùng khi thanh toán",
   "account.doc_send_offer_button": "Gửi qua email",
   "account.email_hint": "Chúng tôi sẽ gửi liên kết đăng nhập qua email.",
-  "account.email_placeholder": "ban@congty.com",
+  "account.email_placeholder": "ban@example.com",
   "account.gate_buy_benefit": "Giao dịch mua được liên kết với email của bạn nên có thể khôi phục trên bất kỳ máy tính nào.",
   "account.gate_community_benefit": "Mô-đun cộng đồng miễn phí. Đăng nhập bằng tài khoản Celerp miễn phí của bạn để tải xuống.",
   "account.gate_doc_send_benefit": "Gửi {n} tài liệu mỗi tháng qua Celerp miễn phí. Không cần thiết lập.",

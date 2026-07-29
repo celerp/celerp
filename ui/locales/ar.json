@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "البريد الإلكتروني المستخدم عند الشراء",
   "account.doc_send_offer_button": "إرسال عبر البريد الإلكتروني",
   "account.email_hint": "سنرسل لك رابط تسجيل الدخول عبر البريد الإلكتروني.",
-  "account.email_placeholder": "you@company.com",
+  "account.email_placeholder": "you@example.com",
   "account.gate_buy_benefit": "ترتبط المشتريات ببريدك الإلكتروني حتى تتمكن من استعادتها على أي جهاز كمبيوتر.",
   "account.gate_community_benefit": "وحدات المجتمع مجانية. سجّل الدخول بحساب Celerp المجاني لتنزيلها.",
   "account.gate_doc_send_benefit": "أرسل {n} مستندات شهريًا عبر Celerp مجانًا. بدون إعداد.",

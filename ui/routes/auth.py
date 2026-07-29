@@ -503,7 +503,7 @@ def setup_routes(app):
         if not has_email:
             if is_htmx:
                 msg = ("To reset your password, open a terminal on this machine and run: "
-                       "celerp reset-password --email you@company.com")
+                       "celerp reset-password --email you@example.com")
                 return Response("", headers={"HX-Trigger": json.dumps(
                     {"celerpToast": {"message": msg, "type": "info", "persist": True}})})
             # Direct URL entry with no JS: send back to login (the link there toasts).
@@ -588,7 +588,7 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
             Input(type="hidden", name="next", value=next_url) if next_url != "/" else "",
             Div(Label(t("label.email", lang), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email", value=email,
-                      placeholder="you@company.com", required=True, autofocus=True, cls="form-input"),
+                      placeholder="you@example.com", required=True, autofocus=True, cls="form-input"),
                 cls="form-group"),
             Div(Label(t("label.password", lang), For="password", cls="form-label"),
                 Input(type="password", id="password", name="password",
@@ -637,7 +637,7 @@ def _setup_form(
                 cls="form-group"),
             Div(Label(t("label.email", lang), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email", value=email,
-                      placeholder="you@company.com", required=True, cls="form-input"),
+                      placeholder="you@example.com", required=True, cls="form-input"),
                 cls="form-group"),
             Div(Label(t("label.password", lang), For="password", cls="form-label"),
                 Input(type="password", id="password", name="password",
@@ -865,7 +865,7 @@ def _forgot_password_form(error: str | None = None) -> FT:
             flash(error) if error else "",
             Div(Label(t("th.email"), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email",
-                      placeholder="you@company.com", required=True, autofocus=True, cls="form-input"),
+                      placeholder="you@example.com", required=True, autofocus=True, cls="form-input"),
                 cls="form-group"),
             Button(t("btn.send_reset_link"), type="submit", cls="btn btn--primary btn--full"),
             P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),

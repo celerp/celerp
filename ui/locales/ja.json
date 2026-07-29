@@ -4,7 +4,7 @@
   "account.claim_email_placeholder": "購入時に使用したメールアドレス",
   "account.doc_send_offer_button": "メールで送信",
   "account.email_hint": "サインイン用リンクをメールでお送りします。",
-  "account.email_placeholder": "you@company.com",
+  "account.email_placeholder": "you@example.com",
   "account.gate_buy_benefit": "購入はメールアドレスに紐づくため、どのコンピュータでも復元できます。",
   "account.gate_community_benefit": "コミュニティモジュールは無料です。無料のCelerpアカウントでサインインしてダウンロードしてください。",
   "account.gate_doc_send_benefit": "Celerpを通じて毎月{n}件のドキュメントを無料で送信できます。設定は不要です。",
