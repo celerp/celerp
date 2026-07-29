@@ -154,11 +154,21 @@ def _local_panel(modules: list[dict], lang: str = "en",
         for dep in (m.get("depends_on") or []):
             required_by.setdefault(dep, []).append(m.get("label") or m["name"])
 
-    # Enabled and running modules first, disabled ones after, so the user sees
-    # what is live before what is off. Stable, so within each group the server
-    # order is preserved; the shared table JS keeps this order until a header is
-    # clicked to sort.
+    # Order: imported modules on top, newest install first; bundled defaults
+    # below, live ones before off ones. Built with three stable passes, least
+    # significant first (Python's sort is stable, so each pass preserves the
+    # previous order among ties):
+    #   A. enabled/running first - the primary order among defaults and the
+    #      tiebreaker among imports that share (or lack) an install time.
+    #   B. newest installed_at first - ISO 8601 strings sort chronologically, so
+    #      reverse gives newest first; defaults have no install time and tie here,
+    #      keeping pass A's order.
+    #   C. imports (non-default) before defaults - defaults re-seed on every
+    #      desktop version bump, so their folder times are meaningless for "newest".
+    # The shared table JS keeps this order until a header is clicked to sort.
     modules = sorted(modules, key=lambda m: 0 if (m.get("enabled") or m.get("running")) else 1)
+    modules = sorted(modules, key=lambda m: m.get("installed_at") or "", reverse=True)
+    modules = sorted(modules, key=lambda m: 1 if m.get("is_default") else 0)
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 
     rows = []
@@ -190,8 +200,20 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
             status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
         elif enabled:
+            # Enabled but not yet loaded: surface the restart as a control, not a
+            # passive label, so the change can be applied from the row itself. A
+            # restart is impactful (it reloads the app), so it confirms first -
+            # this is the deliberate-action exception to on-page editing, not
+            # routine data entry.
             status_filter = t("settings.restart_needed", lang)
-            status_parts.append(Span(status_filter, cls="badge badge--warning"))
+            status_parts.append(Button(status_filter,
+                hx_post="/modules/restart",
+                hx_target="#local-modules-panel",
+                hx_swap="outerHTML",
+                hx_confirm=t("modules.restart_confirm", lang),
+                hx_disabled_elt="this",
+                cls="badge badge--warning badge-btn",
+            ))
         else:
             status_filter = t("modules.badge_disabled", lang)
             status_parts.append(Span(status_filter, cls="badge badge--inactive"))
@@ -221,15 +243,39 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 cls="btn btn--sm btn--primary",
             )
 
+        # Provenance shield to the LEFT of the name (tags-left), gold for
+        # bundled defaults, trusted/community for their sources, nothing for a
+        # plain sideload or unknown origin (never a fabricated trust claim).
+        source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
+
+        # A disabled, non-default module can be removed to free its name. The X
+        # sits to the RIGHT of Enable (destructive control on the right) and only
+        # appears once the module is off, so nothing that depends on it is live.
+        action_parts = [toggle_btn]
+        if not effectively_enabled and not m.get("is_default"):
+            action_parts.append(Button("×",
+                hx_post=f"/modules/{name}/delete",
+                hx_target="#local-modules-panel",
+                hx_swap="outerHTML",
+                hx_confirm=t("modules.delete_confirm", lang, name=label),
+                hx_disabled_elt="this",
+                title=t("modules.delete_module", lang),
+                aria_label=t("modules.delete_module", lang),
+                cls="btn btn--sm btn--danger btn--icon module-delete-btn",
+            ))
+
         rows.append(Tr(
-            Td(Div(Strong(label), Div(description, cls="text-muted small") if description else "", cls="module-name-cell"),
+            Td(Div(source_icon or "", Strong(label),
+                   Div(description, cls="text-muted small") if description else "",
+                   cls="module-name-cell"),
                data_filter_value=label),
             _deps_cell(m, name_to_label),
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
             Td(*status_parts, data_filter_value=status_filter),
-            Td(toggle_btn),
-            cls="data-row",
+            Td(*action_parts),
+            # Disabled rows are shaded so their off state reads at a glance.
+            cls="data-row" if effectively_enabled else "data-row module-row--disabled",
         ))
 
     # Derived restart banner, with a button that actually restarts.
@@ -406,6 +452,27 @@ _SHIELD_SVG = (
 def _trust_icon(tier: str, lang: str):
     tip = t("marketplace.official_tip", lang) if tier == "official" else t("marketplace.verified_tip", lang)
     return Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
+                title=tip, aria_label=tip, role="img")
+
+
+def _source_icon(source: str | None, is_default: bool, lang: str):
+    """The provenance shield shown to the left of a module name, or None.
+
+    Defaults are trusted by name (gold), regardless of any sidecar. Marketplace
+    and community modules carry their own shield. A plain sideload or an unknown
+    origin shows nothing - never a fabricated trust claim.
+    """
+    if is_default:
+        tier, key = "default", "modules.source_default"
+    elif source == "marketplace":
+        tier, key = "trusted", "modules.source_marketplace"
+    elif source == "community":
+        tier, key = "community", "modules.source_community"
+    else:
+        return None
+    tip = t(key, lang)
+    return Span(NotStr(_SHIELD_SVG),
+                cls=f"module-source-icon trust-icon trust-icon--{tier}",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -923,6 +990,29 @@ def setup_routes(app):
             modules = []
         return _local_panel(modules, lang=lang)
 
+    @app.post("/modules/{module_name}/delete")
+    async def module_delete(request: Request, module_name: str):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        flash_text = None
+        try:
+            await api.delete_module(token, module_name)
+            modules = await api.get_modules(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # Refused (still enabled/running, or default): keep the row and tell
+            # the user why, rather than silently doing nothing.
+            flash_text = e.detail or t("modules.delete_failed", lang)
+            try:
+                modules = await api.get_modules(token)
+            except APIError:
+                modules = []
+        return _local_panel(modules, lang=lang, flash_text=flash_text,
+                            flash_error=flash_text is not None)
+
     @app.post("/modules/import")
     async def module_import(request: Request):
         token, redirect = await _guard(request)
@@ -1028,7 +1118,7 @@ def setup_routes(app):
         m, installed = await _community_entry(token, module_id)
         try:
             data = catalog.read_staged_archive(path)
-            await api.import_module_zip(token, f"{module_id}.zip", data)
+            await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
         except APIError as e:
             return _with_error_toast(
                 _community_row(m, lang, installed, downloaded_path=path),

@@ -8266,6 +8266,106 @@ class TestModulesUI:
         body = r.content.decode()
         assert body.index("Alpha On") < body.index("Zeta Off")   # enabled ahead of disabled
 
+    async def _render_modules(self, ui_client, rows):
+        from contextlib import ExitStack
+        mocks = {**_SETTINGS_MOCKS_MODULES,
+                 "ui.api_client.get_modules": AsyncMock(return_value=rows)}
+        with ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, new=v))
+            r = await ui_client.get("/modules", cookies=_authed())
+        assert r.status_code == 200
+        return r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_installed_table_orders_newest_import_first(self, ui_client):
+        """Two disabled imports: the newer installed_at renders above the older."""
+        rows = [
+            {"name": "old-imp", "label": "Older Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-01T00:00:00+00:00"},
+            {"name": "new-imp", "label": "Newer Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+            {"name": "celerp-labels", "label": "Default Mod", "version": "1.0", "author": "Celerp",
+             "enabled": True, "running": True, "is_default": True,
+             "source": "default", "installed_at": None},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert body.index("Newer Import") < body.index("Older Import")
+
+    @pytest.mark.asyncio
+    async def test_installed_table_groups_defaults_after_imports(self, ui_client):
+        """Every non-default row renders above every default row, even when the
+        default is enabled and the imports are disabled."""
+        rows = [
+            {"name": "imp-a", "label": "Import A", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+            {"name": "celerp-labels", "label": "Default Mod", "version": "1.0", "author": "Celerp",
+             "enabled": True, "running": True, "is_default": True,
+             "source": "default", "installed_at": None},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert body.index("Import A") < body.index("Default Mod")
+
+    @pytest.mark.asyncio
+    async def test_source_shield_renders_for_marketplace_and_default(self, ui_client):
+        rows = [
+            {"name": "market-mod", "label": "Market Mod", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "marketplace", "installed_at": "2026-07-20T00:00:00+00:00"},
+            {"name": "celerp-labels", "label": "Default Mod", "version": "1.0", "author": "Celerp",
+             "enabled": False, "running": False, "is_default": True,
+             "source": "default", "installed_at": None},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert "trust-icon--default" in body            # gold default shield
+        assert body.count("module-source-icon") == 2    # one per row, none elsewhere
+
+    @pytest.mark.asyncio
+    async def test_source_shield_absent_for_sideloaded(self, ui_client):
+        rows = [
+            {"name": "side-mod", "label": "Sideloaded Mod", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert "module-source-icon" not in body
+
+    @pytest.mark.asyncio
+    async def test_restart_indicator_is_clickable_control(self, ui_client):
+        """An enabled, not-running row surfaces the restart action as a control
+        that posts to /modules/restart with a confirm, not a bare Span."""
+        rows = [
+            {"name": "enab-mod", "label": "Enabled Mod", "version": "1.0", "author": "X",
+             "enabled": True, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        idx = body.index("Enabled Mod")
+        tail = body[idx:]
+        assert 'hx-post="/modules/restart"' in tail
+        assert "hx-confirm" in tail
+
+    @pytest.mark.asyncio
+    async def test_delete_button_shown_only_for_disabled_nondefault_rows(self, ui_client):
+        rows = [
+            {"name": "disable-nd", "label": "Disabled NonDefault", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+            {"name": "disable-def", "label": "Disabled Default", "version": "1.0", "author": "Celerp",
+             "enabled": False, "running": False, "is_default": True,
+             "source": "default", "installed_at": None},
+            {"name": "enabled-nd", "label": "Enabled NonDefault", "version": "1.0", "author": "X",
+             "enabled": True, "running": True, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-10T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert 'hx-post="/modules/disable-nd/delete"' in body
+        assert 'hx-post="/modules/disable-def/delete"' not in body
+        assert 'hx-post="/modules/enabled-nd/delete"' not in body
+
     @pytest.mark.asyncio
     async def test_installed_table_has_sort_and_filter_markup(self, ui_client):
         """The Installed table opts into the shared sort/filter behavior."""

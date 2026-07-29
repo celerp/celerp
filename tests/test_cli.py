@@ -683,3 +683,16 @@ def test_run_migrations_exits_nonzero_on_failure():
         with pytest.raises(SystemExit) as exc:
             cli._run_migrations("postgresql://user:pw@localhost/db")
     assert exc.value.code == 1
+
+
+def test_config_to_env_prepends_writable_module_dir(valid_cfg, tmp_path, monkeypatch):
+    """Sideloaded imports must land in a dedicated writable dir, never in the
+    bundled default_modules/ tree. _config_to_env must put data_dir/modules first
+    on MODULE_DIR (the importer writes to MODULE_DIR.split(',')[0])."""
+    import celerp.config as config
+    from celerp.cli import _config_to_env
+
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path, raising=False)
+    env = _config_to_env(valid_cfg)
+    assert env["MODULE_DIR"].split(",")[0] == str(tmp_path / "modules")
+    assert (tmp_path / "modules").is_dir()

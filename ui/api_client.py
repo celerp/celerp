@@ -2070,12 +2070,23 @@ async def disable_module(token: str, module_name: str) -> dict:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
 
 
-async def import_module_zip(token: str, filename: str, data: bytes) -> dict:
-    """POST /companies/me/modules/import — install a module from a .zip (admin only)."""
+async def delete_module(token: str, module_name: str) -> dict:
+    """POST /companies/me/modules/{name}/delete - remove a disabled, non-default module (admin only)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+
+
+async def import_module_zip(token: str, filename: str, data: bytes,
+                            source: str = "sideloaded") -> dict:
+    """POST /companies/me/modules/import - install a module from a .zip (admin only).
+
+    `source` records the module's provenance (a plain sideload by default; the
+    community-import surface passes "community")."""
     async with _api_client(token) as c:
         return _raise(await c.post(
             "/companies/me/modules/import",
             files={"file": (filename, data, "application/zip")},
+            data={"source": source},
         )).json()
 
 

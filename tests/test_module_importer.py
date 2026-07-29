@@ -336,3 +336,61 @@ def test_premium_false_removes_any_marker_belt_and_suspenders(module_dir, tmp_pa
     manifest = {"name": "reconciled-mod", "version": "1.0.0"}
     _finish(staged, manifest, official=False, premium=False)
     assert not (module_dir / "reconciled-mod" / PREMIUM_MARKER).exists()
+
+
+# ── provenance sidecar (.celerp-meta.json) + directory removal ────────────────
+
+def test_zip_install_writes_sidecar_with_source(module_dir):
+    import json
+    from celerp.modules.meta import META_FILENAME
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}), source="marketplace")
+    sidecar = module_dir / "my-module" / META_FILENAME
+    assert sidecar.exists()
+    assert json.loads(sidecar.read_text())["source"] == "marketplace"
+
+
+def test_folder_install_defaults_to_sideloaded_source(module_dir, tmp_path):
+    import json
+    from celerp.modules.meta import META_FILENAME
+    src = tmp_path / "src-module"
+    src.mkdir()
+    (src / "__init__.py").write_text(MANIFEST)
+    install_from_folder(src)
+    sidecar = module_dir / "my-module" / META_FILENAME
+    assert sidecar.exists()
+    assert json.loads(sidecar.read_text())["source"] == "sideloaded"
+
+
+def test_read_meta_returns_empty_on_missing_file(tmp_path):
+    from celerp.modules.meta import read_meta
+    assert read_meta(tmp_path) == {}
+
+
+def test_read_meta_returns_empty_on_corrupt_file(tmp_path):
+    from celerp.modules.meta import META_FILENAME, read_meta
+    (tmp_path / META_FILENAME).write_text("{not json")
+    assert read_meta(tmp_path) == {}
+
+
+def test_remove_module_dir_removes_folder(module_dir):
+    from celerp.modules.importer import remove_module_dir
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    assert (module_dir / "my-module").exists()
+    remove_module_dir("my-module")
+    assert not (module_dir / "my-module").exists()
+
+
+def test_remove_module_dir_raises_if_absent(module_dir):
+    from celerp.modules.importer import remove_module_dir
+    with pytest.raises(ModuleImportError, match="not installed"):
+        remove_module_dir("never-installed")
+
+
+def test_remove_module_dir_rejects_path_traversal_name(module_dir):
+    from celerp.modules.importer import remove_module_dir
+    sentinel = module_dir.parent / "sentinel.txt"
+    sentinel.write_text("keep me")
+    with pytest.raises(ModuleImportError):
+        remove_module_dir("../../etc")
+    # Nothing outside the module dir was touched.
+    assert sentinel.exists()

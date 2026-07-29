@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
@@ -1575,11 +1575,13 @@ async def list_modules(
     """
     import asyncio
     import os
+    from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
         default_module_names, is_running, load_errors, loaded_modules,
         read_manifest_metadata,
     )
+    from celerp.modules.meta import read_meta
     from celerp.modules.registry import get_enabled
 
     company = await session.get(Company, company_id)
@@ -1601,6 +1603,11 @@ async def list_modules(
             if not d.exists():
                 continue
             for pkg_path in sorted(d.iterdir()):
+                # Skip the importer's transient landing/deletion dirs
+                # (.<name>.incoming-* / .<name>.deleting-*) and any other
+                # dot-prefixed entry - they are never installed modules.
+                if pkg_path.name.startswith("."):
+                    continue
                 if not pkg_path.is_dir() or not (pkg_path / "__init__.py").exists():
                     continue
                 pkg_name = pkg_path.name
@@ -1609,6 +1616,24 @@ async def list_modules(
                 seen.add(pkg_name)
                 loaded = loaded_by_name.get(pkg_name)
                 manifest_source = loaded or read_manifest_metadata(pkg_path)
+                # Provenance and install time drive the source shield and the
+                # newest-imported-first ordering. Defaults are trusted by name,
+                # not by sidecar, and never carry an install time (the desktop
+                # app re-seeds them on every version bump). A non-default folder
+                # with no sidecar (a pre-existing import) falls back to its
+                # folder ctime so ordering still has something to sort on.
+                is_default = pkg_name in default_names
+                if is_default:
+                    source = "default"
+                    installed_at = None
+                else:
+                    meta = read_meta(pkg_path)
+                    source = meta.get("source")
+                    installed_at = meta.get("installed_at")
+                    if installed_at is None:
+                        ctime = pkg_path.stat().st_ctime
+                        installed_at = datetime.fromtimestamp(
+                            ctime, tz=timezone.utc).isoformat()
                 results.append({
                     "name": pkg_name,
                     "label": manifest_source.get("display_name") or manifest_source.get("label") or pkg_name,
@@ -1624,7 +1649,10 @@ async def list_modules(
                     # dependency, license) — the UI shows this instead of silence.
                     "load_error": load_errs.get(pkg_name),
                     # First-party bundled modules cannot be removed from the UI.
-                    "is_default": pkg_name in default_names,
+                    "is_default": is_default,
+                    # Where the module came from, and when it landed.
+                    "source": source,
+                    "installed_at": installed_at,
                 })
         return results
 
@@ -1676,22 +1704,80 @@ async def disable_module(
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
 
 
+@router.post("/me/modules/{module_name}/delete", dependencies=[require_permission("manage_company_settings")])
+async def delete_module(
+    module_name: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete a disabled, non-default module, freeing its name for re-import. Admin only.
+
+    Refused for default modules (bundled, undeletable) and for any module that is
+    still enabled or running - a running module is disabled first, from the same
+    row. Removing the folder frees the name so the same package can be imported
+    again later.
+    """
+    import asyncio
+    from celerp.modules.importer import ModuleImportError, remove_module_dir
+    from celerp.modules.loader import default_module_names, is_running
+    from celerp.modules.registry import disable, get_enabled
+    from celerp.config import read_config, write_config
+
+    company = await session.get(Company, company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    if module_name in default_module_names():
+        raise HTTPException(status_code=409, detail="Default modules cannot be deleted.")
+    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
+        raise HTTPException(
+            status_code=409,
+            detail="Disable this module and restart before deleting it.")
+
+    try:
+        await asyncio.to_thread(remove_module_dir, module_name)
+    except ModuleImportError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    # Prune the freed name from both enabled stores so a later re-import starts
+    # clean (mirrors disable's dual-store write: settings + config file).
+    company.settings = disable(company.settings or {}, module_name)
+    await session.commit()
+    cfg = read_config()
+    enabled = cfg.get("modules", {}).get("enabled", [])
+    cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != module_name]
+    write_config(cfg)
+    return {"ok": True, "name": module_name}
+
+
 class _ImportPathBody(BaseModel):
     path: str
 
 
 @router.post("/me/modules/import", dependencies=[require_permission("manage_company_settings")])
-async def import_module_upload(request: Request, file: UploadFile = File(...)) -> dict:
+async def import_module_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    source: str = Form("sideloaded"),
+) -> dict:
     """Install a module package from an uploaded .zip archive. Admin only.
 
     Validation and installation share one code path with every other way a
     module package arrives (celerp.modules.importer), so the security posture
     cannot drift between surfaces. The module lands DISABLED; enabling and
     restarting are separate, deliberate steps in the modules UI.
+
+    `source` records provenance in the module's sidecar (defaults to a plain
+    sideload); the community-import surface passes "community".
     """
     import asyncio
-    from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
+    from celerp.modules.importer import (
+        MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
+    )
+    from celerp.modules.meta import VALID_SOURCES
 
+    if source not in VALID_SOURCES:
+        raise HTTPException(status_code=422, detail="Unknown module source.")
     # Reject on the declared length before reading, then read with a hard cap so
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
     clen = request.headers.get("content-length")
@@ -1701,7 +1787,7 @@ async def import_module_upload(request: Request, file: UploadFile = File(...)) -
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
     try:
-        info = await asyncio.to_thread(install_from_zip, data)
+        info = await asyncio.to_thread(install_from_zip, data, source=source)
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {"ok": True, **info}
@@ -1968,16 +2054,17 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     is left behind, so Install can always be retried.
     """
     import asyncio
-    import os
-    import shutil
     from pathlib import Path
 
-    from celerp.modules.importer import ModuleImportError, install_from_zip
+    from celerp.modules.importer import (
+        ModuleImportError, install_from_zip, remove_module_dir,
+    )
 
     data, is_official, is_paid = _read_staged_marketplace(body.path)
     try:
         info = await asyncio.to_thread(
-            install_from_zip, data, official=is_official, premium=is_paid)
+            install_from_zip, data, official=is_official, premium=is_paid,
+            source="marketplace")
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1986,9 +2073,10 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     if info["name"] != slug:
         # A package whose manifest name differs from the catalog slug must not
         # stay installed (it would dodge the slug's license/scan identity).
-        module_dir = os.environ.get("MODULE_DIR", "").split(",")[0].strip()
-        if module_dir:
-            shutil.rmtree(Path(module_dir) / info["name"], ignore_errors=True)
+        try:
+            await asyncio.to_thread(remove_module_dir, info["name"])
+        except ModuleImportError:
+            pass
         raise HTTPException(
             status_code=422,
             detail="The downloaded package does not match the requested module.")

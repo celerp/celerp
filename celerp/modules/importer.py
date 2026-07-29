@@ -33,6 +33,8 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from celerp.modules.meta import write_meta
+
 # Compressed and uncompressed caps. Generous for code, hostile to zip bombs.
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 200 * 1024 * 1024
@@ -51,9 +53,24 @@ class ModuleImportError(Exception):
     """User-facing import failure. Message is safe to show in the UI."""
 
 
-def _validate_name(name: str, *, official: bool = False) -> None:
+def _validate_name_chars(name: str) -> None:
+    """Length and character-set rules shared by install and delete.
+
+    Delete resolves a folder from a caller-supplied name, so it needs the same
+    charset guard as install (no separators, no traversal) without the celerp-
+    prefix trust rule, which only governs where a NEW package may install.
+    """
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError("Module name missing or too long.")
+    ok = all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
+    if not ok or not name[0].isalnum():
+        raise ModuleImportError(
+            "Module name may only contain letters, digits, '-' and '_'."
+        )
+
+
+def _validate_name(name: str, *, official: bool = False) -> None:
+    _validate_name_chars(name)
     # The celerp- prefix is the trust boundary: sideloads may never claim it, and
     # the marketplace-download path (official=True, relay-authenticated) may ONLY
     # install under it - so neither path can impersonate the other.
@@ -62,11 +79,6 @@ def _validate_name(name: str, *, official: bool = False) -> None:
             "The 'celerp-' name prefix is reserved for official modules."
             if not official else
             "Official module packages must use the 'celerp-' name prefix."
-        )
-    ok = all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
-    if not ok or not name[0].isalnum():
-        raise ModuleImportError(
-            "Module name may only contain letters, digits, '-' and '_'."
         )
 
 
@@ -176,8 +188,30 @@ def _target_for(name: str) -> Path:
     return target
 
 
+def remove_module_dir(name: str) -> None:
+    """Delete an installed module's folder, freeing the name for re-import.
+
+    The name is charset-validated (same guard as install, so no separators or
+    traversal reach the filesystem) and the resolved target must sit directly
+    under the module dir. Removal mirrors the install landing: rename to a hidden
+    `.<name>.deleting-<uuid>` then rmtree, so a crash never leaves a half-deleted
+    tree under the live module name.
+    """
+    _validate_name_chars(name)
+    base = _module_dir()
+    target = base / name
+    if target.resolve().parent != base.resolve() or not target.is_dir():
+        raise ModuleImportError(f"Module '{name}' is not installed.")
+    grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
+    try:
+        os.replace(target, grave)
+    except OSError as exc:
+        raise ModuleImportError(f"Could not remove the module: {exc}")
+    shutil.rmtree(grave, ignore_errors=True)
+
+
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
-            premium: bool = False) -> dict:
+            premium: bool = False, source: str = "sideloaded") -> dict:
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
@@ -191,6 +225,10 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         marker.write_text("")
     else:
         marker.unlink(missing_ok=True)
+    # Record provenance and install time in the staged tree so the sidecar
+    # travels into the landing dir with the rest of the package (one atomic
+    # replace, no second write into the live module dir).
+    write_meta(staged, source=source)
     target = _target_for(name)
     # Land atomically: copy into a temp dir on the SAME filesystem as the module
     # dir (staged lives under /tmp, often a different device, where shutil.move
@@ -253,12 +291,14 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
 
 
 def install_from_zip(data: bytes, *, official: bool = False,
-                     premium: bool = False) -> dict:
+                     premium: bool = False, source: str = "sideloaded") -> dict:
     """Validate and install a module from zip bytes. Returns manifest summary.
 
     `official` is set ONLY by the marketplace installer (relay-authenticated
     download): it flips the celerp- prefix rule from forbidden to required.
-    `premium` drops the license-gate marker for paid modules."""
+    `premium` drops the license-gate marker for paid modules.
+    `source` is recorded in the provenance sidecar and drives the source shield
+    and newest-first ordering on the modules page."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError("Archive is too large (limit 50 MB).")
     tmp_zip = None
@@ -303,16 +343,20 @@ def install_from_zip(data: bytes, *, official: bool = False,
                 with zf.open(info) as src, open(dest, "wb") as f:
                     shutil.copyfileobj(src, f, length=1024 * 256)
             module_root, manifest = _locate_module(out)
-            return _finish(module_root, manifest, official=official, premium=premium)
+            return _finish(module_root, manifest, official=official,
+                           premium=premium, source=source)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
 
 # ── folder entrypoint ──────────────────────────────────────────────────────────
 
-def install_from_folder(source: str | Path) -> dict:
-    """Validate and install a module from a local folder path (desktop picker)."""
-    src = Path(source)
+def install_from_folder(source_path: str | Path, *,
+                        source: str = "sideloaded") -> dict:
+    """Validate and install a module from a local folder path (desktop picker).
+
+    `source` is recorded in the provenance sidecar (defaults to a sideload)."""
+    src = Path(source_path)
     if not src.is_dir():
         raise ModuleImportError("That path is not a folder.")
     init_py = src / "__init__.py"
@@ -338,6 +382,6 @@ def install_from_folder(source: str | Path) -> dict:
         out = staging / "pkg"
         shutil.copytree(src, out, symlinks=False,
                         ignore=shutil.ignore_patterns(".git", "__pycache__", ".github"))
-        return _finish(out, manifest)
+        return _finish(out, manifest, source=source)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

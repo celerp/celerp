@@ -3129,6 +3129,18 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
    rows carry no badge. Tooltips get aria-labels. */
 .trust-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; cursor: help; }
 .trust-icon--trusted { color: var(--c-text); }
+/* Source provenance shield beside an installed module's name: gold for bundled
+   defaults, muted grey for community modules. Marketplace reuses --trusted. */
+.trust-icon--default { color: var(--c-amber); }
+.trust-icon--community { color: var(--c-text2); }
+/* A restart-needed badge rendered as a button reads and posts like a control
+   without looking unlike the passive badges beside it. */
+.badge-btn { font-family: inherit; cursor: pointer; }
+/* Delete X on a disabled, non-default row: a small danger control to the right
+   of Enable. */
+.module-delete-btn { margin-left: 6px; font-weight: 700; }
+/* A disabled module row is shaded so its off state reads at a glance. */
+.module-row--disabled td { background: var(--c-bg3); }
 /* The shield badge on the Verified Marketplace tab: no help cursor, sits on the
    tab baseline next to the label. */
 .tab-badge { margin-right: 6px; vertical-align: -2px; cursor: inherit; }
