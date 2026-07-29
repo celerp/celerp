@@ -161,6 +161,12 @@ def module_content_digest(pkg_path: Path) -> str | None:
     (returning None) rather than dereferencing it, so a symlink escaping pkg_path
     cannot inline foreign bytes into the hash. Any OSError yields None - fail
     closed, so an unreadable tree is never mistaken for a first-party match.
+
+    Relative paths are hashed in POSIX form and line endings are normalised to
+    LF before hashing, so the same shipped source produces the same digest on
+    every platform (a Windows checkout that lands CRLF, or a build there, still
+    matches a lock generated on Linux). The generator digests the same way, so
+    the committed lock and the running content agree regardless of platform.
     """
     entries: list[tuple[str, str]] = []
     try:
@@ -177,7 +183,8 @@ def module_content_digest(pkg_path: Path) -> str | None:
                 if fpath.is_symlink():
                     return None
                 rel = fpath.relative_to(pkg_path).as_posix()
-                entries.append((rel, hashlib.sha256(fpath.read_bytes()).hexdigest()))
+                data = fpath.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                entries.append((rel, hashlib.sha256(data).hexdigest()))
     except OSError as exc:
         log.warning("Cannot digest module at %s: %s", pkg_path, exc)
         return None

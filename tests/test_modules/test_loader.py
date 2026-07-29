@@ -1073,6 +1073,19 @@ class TestModuleContentDigest:
         (pkg / "__init__.py").write_text('PLUGIN_MANIFEST = {"name": "chg-mod", "version": "2.0"}')
         assert _fpt_loader.module_content_digest(pkg) != before
 
+    def test_digest_is_line_ending_independent(self, tmp_path):
+        # The same source with CRLF line endings (as a Windows checkout or build
+        # lands it) must hash identically to the LF form the lock was generated
+        # from, or every module demotes to not-first-party off-platform.
+        body = 'PLUGIN_MANIFEST = {"name": "eol-mod", "version": "1.0"}\nX = 1\n'
+        lf = _make_module(tmp_path / "lf", "eol-mod", '{"name": "eol-mod", "version": "1.0"}')
+        (lf / "__init__.py").write_bytes(body.encode("utf-8"))
+        (lf / "routes.py").write_bytes(b"A = 1\nB = 2\n")
+        crlf = _make_module(tmp_path / "crlf", "eol-mod", '{"name": "eol-mod", "version": "1.0"}')
+        (crlf / "__init__.py").write_bytes(body.replace("\n", "\r\n").encode("utf-8"))
+        (crlf / "routes.py").write_bytes(b"A = 1\r\nB = 2\r\n")
+        assert _fpt_loader.module_content_digest(lf) == _fpt_loader.module_content_digest(crlf)
+
     def test_digest_rejects_symlink_escape(self, tmp_path):
         secret = tmp_path / "secret.txt"
         secret.write_text("TOP SECRET")
