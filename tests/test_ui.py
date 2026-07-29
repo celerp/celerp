@@ -17383,16 +17383,18 @@ class TestModulesUnavailablePanel:
         assert "No modules installed yet" not in body       # never the fake empty state
 
     @pytest.mark.asyncio
-    async def test_local_panel_route_returns_panel_when_list_loads(self, ui_client):
+    async def test_local_panel_route_reloads_page_when_list_loads(self, ui_client):
+        """Recovery is a full page reload, not a fragment swap: the page around
+        the retry panel rendered while the backend was down, so its side menu
+        misses nav entries from modules a restart just loaded."""
         rows = [{"name": "celerp-labels", "label": "Labels", "version": "1.0",
                  "author": "Celerp", "enabled": True, "running": True,
                  "is_default": True, "source": "default", "installed_at": None}]
         with patch("ui.api_client.get_modules", new=AsyncMock(return_value=rows)):
             r = await ui_client.get("/modules/local-panel", cookies=_authed())
         assert r.status_code == 200
-        body = r.content.decode()
-        assert "celerp-labels" in body
-        assert "The modules list is not available right now" not in body
+        assert r.headers.get("HX-Refresh") == "true"
+        assert "The modules list is not available right now" not in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_local_panel_route_keeps_retrying_on_api_error(self, ui_client):

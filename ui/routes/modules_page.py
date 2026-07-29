@@ -471,9 +471,10 @@ def _unavailable_panel(lang: str) -> FT:
 
     `every 2s` keeps polling through failed attempts (a one-shot `load` trigger
     would die on the first network error mid-restart); the successful response
-    swaps the whole element out, which stops the polling. The panel already says
-    it is retrying, so its own failed polls are marked quiet for the global
-    error toasts."""
+    reloads the whole page via HX-Refresh (see the /modules/local-panel route
+    for why a fragment swap is not enough), which ends the polling with it. The
+    panel already says it is retrying, so its own failed polls are marked quiet
+    for the global error toasts."""
     return Div(
         P(t("modules.unavailable_retry", lang), cls="text-muted"),
         hx_get="/modules/local-panel",
@@ -1057,19 +1058,27 @@ def setup_routes(app):
 
     @app.get("/modules/local-panel")
     async def modules_local_panel(request: Request):
-        """Fragment refresh for the installed-modules panel; the unavailable
-        state polls this until the list loads again."""
+        """Recovery poll for the unavailable-modules state - its only caller.
+
+        Success answers with a full page reload (HX-Refresh), not the panel
+        fragment: the retry panel is only ever on screen when the page rendered
+        while the backend was down (mid-restart or API outage), so the rest of
+        that document is stale too - most visibly the side menu, built before a
+        restart loaded any newly installed module's nav entries. Swapping only
+        the panel would leave that stale shell in place until a manual refresh.
+        The reload is the recovery from a degraded page, not routine data entry,
+        which is the specific reason it is allowed here."""
         token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         try:
-            modules = await api.get_modules(token)
+            await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return _local_panel(modules, lang=lang)
+        return HTMLResponse("", headers={"HX-Refresh": "true"})
 
     @app.post("/modules/{module_name}/enable")
     async def module_enable(request: Request, module_name: str):
