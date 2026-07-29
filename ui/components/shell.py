@@ -425,13 +425,22 @@ document.addEventListener('htmx:afterSettle', function(e) {
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
+/* Elements marked data-quiet-error surface their failure state themselves
+   (e.g. a self-retrying panel) - a toast per failed poll would only add noise. */
+function quietError(e) {
+  var el = e.detail && e.detail.elt;
+  return !!(el && el.closest && el.closest('[data-quiet-error]'));
+}
+
 document.addEventListener('htmx:responseError', function(e) {
+  if (quietError(e)) return;
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
   showGlobalUiError('Request failed (' + status + '): ' + path);
 });
 
 document.addEventListener('htmx:sendError', function(e) {
+  if (quietError(e)) return;
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   showGlobalUiError('Network error while loading: ' + path);
 });

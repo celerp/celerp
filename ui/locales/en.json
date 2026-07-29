@@ -945,6 +945,7 @@
   "modules.delete_confirm": "Delete '{name}'? This removes the module folder. You can import it again later.",
   "modules.delete_failed": "That module could not be deleted.",
   "modules.delete_module": "Delete module",
+  "modules.disable_pending": "Disabled. Takes effect when Celerp restarts.",
   "modules.build_docs_link": "Module docs",
   "modules.build_template_link": "Start from the template",
   "modules.build_title": "Build your own",

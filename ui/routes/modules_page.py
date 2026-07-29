@@ -109,6 +109,21 @@ def _restart_pending(modules: list[dict]) -> bool:
     )
 
 
+def _restart_badge(lang: str) -> FT:
+    """The row-level restart control shown while a toggle waits for a restart
+    (enable pending load, or disable pending unload). A restart is impactful
+    (it reloads the app), so it confirms first - the deliberate-action
+    exception to on-page editing, not routine data entry."""
+    return Button(t("settings.restart_needed", lang),
+        hx_post="/modules/restart",
+        hx_target="#local-modules-panel",
+        hx_swap="outerHTML",
+        hx_confirm=t("modules.restart_confirm", lang),
+        hx_disabled_elt="this",
+        cls="badge badge--warning badge-btn",
+    )
+
+
 def _demoted(modules: list[dict]) -> list[str]:
     """Sorted names of demoted defaults: modules the backend scan found whose name
     is in the committed first-party lock but whose content no longer matches.
@@ -197,9 +212,20 @@ def _local_panel(modules: list[dict], lang: str = "en",
         effectively_enabled = enabled or running
 
         status_parts = []
-        if running:
+        if running and (enabled or m.get("is_default")):
+            # Defaults keep the plain running badge even when toggled off:
+            # core-folded ones (ai/backup/connectors) report running=True
+            # regardless of the enabled flag, so a pending state would pin
+            # forever (same exclusion as _restart_pending).
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
+        elif running:
+            # Disable pressed, but the module stays loaded until the next
+            # restart: the status carries the restart control (same one as the
+            # enable-pending state), so the row shows the press took and names
+            # the next step.
+            status_filter = t("settings.restart_needed", lang)
+            status_parts.append(_restart_badge(lang))
         elif enabled and load_error and "license" in load_error.lower():
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
@@ -213,27 +239,27 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
             status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
         elif enabled:
-            # Enabled but not yet loaded: surface the restart as a control, not a
-            # passive label, so the change can be applied from the row itself. A
-            # restart is impactful (it reloads the app), so it confirms first -
-            # this is the deliberate-action exception to on-page editing, not
-            # routine data entry.
+            # Enabled but not yet loaded: surface the restart as a control, not
+            # a passive label, so the change can be applied from the row itself.
             status_filter = t("settings.restart_needed", lang)
-            status_parts.append(Button(status_filter,
-                hx_post="/modules/restart",
-                hx_target="#local-modules-panel",
-                hx_swap="outerHTML",
-                hx_confirm=t("modules.restart_confirm", lang),
-                hx_disabled_elt="this",
-                cls="badge badge--warning badge-btn",
-            ))
+            status_parts.append(_restart_badge(lang))
         else:
             status_filter = t("modules.badge_disabled", lang)
             status_parts.append(Span(status_filter, cls="badge badge--inactive"))
 
         dependents = required_by.get(name, [])
         if effectively_enabled:
-            if dependents:
+            if not enabled and not m.get("is_default"):
+                # Disable already pressed; it applies at the next restart. The
+                # button greys out so the press is visibly registered - pressing
+                # it again would change nothing. (Defaults are excluded for the
+                # same core-folded reason as the status branch above.)
+                toggle_btn = Button(t("btn.disable", lang),
+                    title=t("modules.disable_pending", lang),
+                    disabled=True,
+                    cls="btn btn--sm btn--disabled",
+                )
+            elif dependents:
                 toggle_btn = Button(t("btn.disable", lang),
                     title=t("modules.required_by", lang, names=", ".join(dependents)),
                     disabled=True,
@@ -441,14 +467,21 @@ def _unavailable_panel(lang: str) -> FT:
     """Shown when the installed-modules list cannot be fetched (API down, e.g.
     mid-restart). States the failure and retries on its own until the list loads
     - never a fake "no modules installed" empty state fabricated from an error
-    (that would both alarm and mislead), and no manual refresh needed."""
+    (that would both alarm and mislead), and no manual refresh needed.
+
+    `every 2s` keeps polling through failed attempts (a one-shot `load` trigger
+    would die on the first network error mid-restart); the successful response
+    swaps the whole element out, which stops the polling. The panel already says
+    it is retrying, so its own failed polls are marked quiet for the global
+    error toasts."""
     return Div(
         P(t("modules.unavailable_retry", lang), cls="text-muted"),
         hx_get="/modules/local-panel",
-        hx_trigger="load delay:2s",
+        hx_trigger="every 2s",
         hx_swap="outerHTML",
         id="local-modules-panel",
         cls="settings-card",
+        **{"data-quiet-error": "1"},
     )
 
 

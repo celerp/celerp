@@ -466,8 +466,11 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
 def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_poll: bool = False) -> FT:
     """Status table wrapped in a self-re-triggering container. While a sync is in progress
     (or force_poll, right after kicking one off) the fragment re-fetches itself every 2s
-    (native `load delay` idiom - the app does not use `every`); when all entities are
-    terminal it renders WITHOUT the trigger, stopping the poll. aria-live announces it."""
+    via the one-shot `load delay` idiom - fine here because the polled endpoint is the
+    local app, so requests succeed and each swap re-arms the trigger (an `every` trigger
+    is needed only where a request can fail mid-poll, as in the modules restart panel);
+    when all entities are terminal it renders WITHOUT the trigger, stopping the poll.
+    aria-live announces it."""
     polling = force_poll or _any_in_progress(runs)
     attrs: dict = {}
     if polling:
