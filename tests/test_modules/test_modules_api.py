@@ -312,21 +312,71 @@ class TestModuleProvenanceAndDelete:
         assert row["installed_at"] == "2026-07-29T00:00:00+00:00"
 
     @pytest.mark.asyncio
-    async def test_scan_reports_default_source_by_name_regardless_of_sidecar(self, client):
-        from celerp.modules.loader import default_module_names
+    async def test_scan_reports_default_source_for_genuine_defaults(self, client):
+        # Genuine, unmodified defaults (content matches the committed lock) scan
+        # as source="default"; the content-identity predicate is the oracle.
+        from celerp.modules.loader import is_first_party
         token = await _register(client)
         default_modules = Path(__file__).parent.parent.parent / "default_modules"
         with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
             r = await client.get("/companies/me/modules", headers=_h(token))
         assert r.status_code == 200
-        defaults = default_module_names()
         seen_default = False
         for m in r.json():
-            if m["name"] in defaults:
+            if is_first_party(default_modules / m["name"]):
                 seen_default = True
                 assert m["source"] == "default", m
                 assert m["installed_at"] is None, m
         assert seen_default, "expected at least one default module in the scan"
+
+    @pytest.mark.asyncio
+    async def test_stray_folder_in_bundled_dir_not_in_lock_scans_non_default(
+            self, client, tmp_path, monkeypatch):
+        # Journey 2: a folder physically inside the bundled dir whose name is not a
+        # shipped default (not in the lock) scans as NON-default, even though the
+        # old name-listing check would have called it default.
+        from celerp.modules import loader
+        token = await _register(client)
+        bundled = tmp_path / "default_modules"
+        bundled.mkdir()
+        _write_pkg(bundled, "celerp-strayxyz")
+        monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
+        with patch.dict(os.environ, {"MODULE_DIR": str(bundled)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "celerp-strayxyz")
+        assert row["is_default"] is False
+        assert row["source"] != "default"
+
+    @pytest.mark.asyncio
+    async def test_scan_reports_real_source_for_demoted_module(self, client, tmp_path):
+        # A folder named after a real default but with junk content (the impostor)
+        # scans as non-default, not "default".
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg(module_dir, "celerp-manufacturing")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "celerp-manufacturing")
+        assert row["is_default"] is False
+        assert row["source"] != "default"
+
+    @pytest.mark.asyncio
+    async def test_delete_allows_demoted_module_previously_refused_as_default(
+            self, client, tmp_path):
+        # The impostor (real default name, junk content) is deletable now, where
+        # the old name-based guard refused it as a default.
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg(module_dir, "celerp-manufacturing")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/celerp-manufacturing/delete", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert not (module_dir / "celerp-manufacturing").exists()
 
     @pytest.mark.asyncio
     async def test_delete_module_unauthenticated(self, client):

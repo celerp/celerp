@@ -188,11 +188,32 @@ jobs:
         working-directory: electron
         run: pnpm test
 
+  # First-party lock is derived, not hand-edited: regenerate it from the tracked
+  # tree and fail if the committed file differs. Keeps default_modules/ and the
+  # loader's trust check in lockstep so a shipped module change without a matching
+  # lock update (which would fail-close that module at runtime) is caught on the PR.
+  lockfile:
+    name: First-party lock is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]"
+      - name: Regenerate the lock
+        run: python scripts/gen_first_party_lock.py
+      - name: Fail if the committed lock is stale
+        run: git diff --exit-code default_modules/first_party.lock.json
+
   # Aggregator: the single required status check. Branch protection should require "Test"
-  # (this job), which passes only when every unit, browser, AND electron job passed.
+  # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron]
+    needs: [shard, browser, embedded, electron, lockfile]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -214,4 +235,8 @@ jobs:
             echo "Electron unit tests failed (result: ${{ needs.electron.result }})"
             exit 1
           fi
-          echo "All unit, browser, embedded, and electron checks passed."
+          if [ "${{ needs.lockfile.result }}" != "success" ]; then
+            echo "First-party lock is stale (result: ${{ needs.lockfile.result }})"
+            exit 1
+          fi
+          echo "All unit, browser, embedded, electron, and lockfile checks passed."

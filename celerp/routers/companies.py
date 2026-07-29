@@ -1578,7 +1578,7 @@ async def list_modules(
     from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
-        default_module_names, is_running, load_errors, loaded_modules,
+        is_first_party, is_running, load_errors, loaded_modules,
         read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
@@ -1589,7 +1589,6 @@ async def list_modules(
     enabled_names = get_enabled(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
-    default_names = default_module_names()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
 
     def _scan_modules() -> list[dict]:
@@ -1617,12 +1616,13 @@ async def list_modules(
                 loaded = loaded_by_name.get(pkg_name)
                 manifest_source = loaded or read_manifest_metadata(pkg_path)
                 # Provenance and install time drive the source shield and the
-                # newest-imported-first ordering. Defaults are trusted by name,
-                # not by sidecar, and never carry an install time (the desktop
+                # newest-imported-first ordering. A default is identified by
+                # content (its digest matches the committed first-party lock), not
+                # by name or sidecar, and never carries an install time (the desktop
                 # app re-seeds them on every version bump). A non-default folder
                 # with no sidecar (a pre-existing import) falls back to its
                 # folder ctime so ordering still has something to sort on.
-                is_default = pkg_name in default_names
+                is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"
                     installed_at = None
@@ -1719,7 +1719,7 @@ async def delete_module(
     """
     import asyncio
     from celerp.modules.importer import ModuleImportError, remove_module_dir
-    from celerp.modules.loader import default_module_names, is_running
+    from celerp.modules.loader import is_first_party, is_running, resolve_module_path
     from celerp.modules.registry import disable, get_enabled
     from celerp.config import read_config, write_config
 
@@ -1727,7 +1727,13 @@ async def delete_module(
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    if module_name in default_module_names():
+    pkg_path = resolve_module_path(module_name)
+    if pkg_path is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    # A default is identified by content (its digest matches the committed lock),
+    # never by name - so a demoted look-alike can be deleted, and no impostor named
+    # after a default is shielded from deletion.
+    if is_first_party(pkg_path):
         raise HTTPException(status_code=409, detail="Default modules cannot be deleted.")
     if module_name in get_enabled(company.settings or {}) or is_running(module_name):
         raise HTTPException(

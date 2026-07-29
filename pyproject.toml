@@ -129,6 +129,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "locales/**/*",
 ]
 "default_modules" = [
+    "first_party.lock.json",
     "celerp-accounting/**/*",
     "celerp-admin/**/*",
     "celerp-ai/**/*",

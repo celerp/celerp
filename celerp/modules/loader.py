@@ -30,14 +30,21 @@ Called from ui/app.py after core route setup:
 from __future__ import annotations
 
 import ast
+import fnmatch
+import functools
+import hashlib
 import importlib
 import importlib.util
+import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
+from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
+from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import register as register_slot
 
 log = logging.getLogger(__name__)
@@ -76,11 +83,12 @@ _BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
 
 
 def is_bundled_dir(path: Path) -> bool:
-    """True if `path` is (or sits inside) a bundled/trusted source module dir.
+    """True if `path` is (or sits inside) a bundled source module dir.
 
-    Trust is granted by name against these dirs (see _trusted_default_names), so
-    an import must never write into one - the sole source of truth for that check
-    is this predicate, shared by the importer guard and the writable-dir helper.
+    This is a location predicate, not a trust decision (first-party trust is by
+    content - see is_first_party). It is the sole source of truth for the rule
+    that an import must never write into the shipped source tree, shared by the
+    importer guard and the writable-dir helper.
     """
     try:
         rp = path.resolve()
@@ -127,26 +135,151 @@ def with_writable_module_dir(module_dir_env: str) -> str:
     return ",".join([str(writable), *rest])
 
 
-def _trusted_default_names() -> frozenset[str]:
-    """Names of first-party modules, taken from the bundled SOURCE directories.
+# Files that are never copied into a seeded module dir and never enter the
+# content digest: bytecode caches, VCS metadata, and the runtime sidecars the app
+# itself writes into a module folder after it is installed (the meta sidecar and
+# the premium marker). One tuple feeds two derivations - the importer's copy-ignore
+# and the content digest - so the copied set and the hashed set cannot drift (DRY).
+# META_FILENAME / PREMIUM_MARKER are imported, never re-typed here, so renaming
+# either constant cannot silently desync this exclusion set.
+_DIGEST_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "__pycache__", "*.pyc", ".git", ".github", META_FILENAME, PREMIUM_MARKER,
+)
 
-    Electron seeds default modules into DATA_DIR/modules (the user-writable
-    module dir). Trust for those seeded copies is granted BY NAME against the
-    bundled source listing - never by directory. Blanket-trusting MODULE_DIR
-    would exempt user-imported third-party modules from the BSL import checks,
-    which is exactly what those checks exist to prevent. The importer refuses
-    the celerp- prefix for imports, so a third-party package cannot take a
-    first-party name through the app.
+
+def _is_excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pat) for pat in _DIGEST_EXCLUDE_GLOBS)
+
+
+def module_content_digest(pkg_path: Path) -> str | None:
+    """Deterministic sha256 over a module's source content, or None if it cannot
+    be read.
+
+    Excludes _DIGEST_EXCLUDE_GLOBS (bytecode, VCS metadata, runtime sidecars) so a
+    seeded copy hashes identically to the shipped source it was copied from. The
+    walk never follows a symlink and rejects any symlinked component outright
+    (returning None) rather than dereferencing it, so a symlink escaping pkg_path
+    cannot inline foreign bytes into the hash. Any OSError yields None - fail
+    closed, so an unreadable tree is never mistaken for a first-party match.
     """
-    names: set[str] = set()
-    for d in _BUNDLED_MODULES_DIRS:
-        if d.exists():
-            for p in d.iterdir():
-                if p.is_dir() and (p / "__init__.py").exists():
-                    names.add(p.name)
-    return frozenset(names)
+    entries: list[tuple[str, str]] = []
+    try:
+        for root, dirs, files in os.walk(pkg_path, followlinks=False):
+            root_p = Path(root)
+            dirs[:] = [d for d in dirs if not _is_excluded(d)]
+            for d in dirs:
+                if (root_p / d).is_symlink():
+                    return None
+            for fname in files:
+                if _is_excluded(fname):
+                    continue
+                fpath = root_p / fname
+                if fpath.is_symlink():
+                    return None
+                rel = fpath.relative_to(pkg_path).as_posix()
+                entries.append((rel, hashlib.sha256(fpath.read_bytes()).hexdigest()))
+    except OSError as exc:
+        log.warning("Cannot digest module at %s: %s", pkg_path, exc)
+        return None
+    digest = hashlib.sha256()
+    for rel, file_hash in sorted(entries):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_hash.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
-# Loaded manifests — populated by load_all()
+
+def _lock_path() -> Path:
+    """Path to the committed first-party lock, installed beside default_modules/.
+    A separate function so tests can patch it without touching the read logic."""
+    return Path(__file__).resolve().parent.parent.parent / "default_modules" / "first_party.lock.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _first_party_lock() -> dict[str, str]:
+    """The committed {module_name: content_digest} map, or {} if it cannot be read
+    or is malformed (fail closed: no module is trusted rather than a wrong one).
+
+    Cached so the fail-closed log line is emitted once per process. Trust flows
+    only from this committed file - never from CELERP_TRUSTED_MODULE_DIRS or any
+    directory listing - so no environment variable can grant first-party trust.
+    """
+    path = _lock_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        log.error("First-party lock missing at %s; no module will be trusted.", path)
+        return {}
+    except (OSError, ValueError) as exc:
+        log.error("First-party lock unreadable at %s: %s; no module will be trusted.", path, exc)
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(v, str) for v in raw.values()):
+        log.error("First-party lock at %s is not a name->digest map; no module will be trusted.", path)
+        return {}
+    if not raw:
+        log.warning("First-party lock at %s is empty; no module treated as first-party.", path)
+    return raw
+
+
+def is_first_party(pkg_path: Path) -> bool:
+    """True only if pkg_path's folder name is in the committed lock AND its live
+    content digest matches the locked digest.
+
+    Trust is by content, never by folder name or filesystem location: an impostor
+    dropped into any module search dir is not trusted, and a modified default is
+    demoted (with a warning) so it stops skipping the BSL import checks.
+    """
+    lock = _first_party_lock()
+    expected = lock.get(pkg_path.name)
+    if expected is None:
+        return False
+    digest = module_content_digest(pkg_path)
+    if digest is None:
+        return False
+    if digest != expected:
+        log.warning(
+            "Module %r content does not match its first-party lock entry; "
+            "treating it as not first-party.", pkg_path.name)
+        return False
+    return True
+
+
+def resolve_module_path(name: str) -> Path | None:
+    """The first <entry>/<name> package (a dir with __init__.py) across the
+    MODULE_DIR search entries, or None if no entry holds it.
+
+    Mirrors the scan's directory walk so a module living in any configured search
+    entry - not only the first install target - is found. The delete guard needs a
+    real Path to ask is_first_party the same content question the scan asks.
+    """
+    for entry in os.environ.get("MODULE_DIR", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        candidate = Path(entry) / name
+        if candidate.is_dir() and (candidate / "__init__.py").exists():
+            return candidate
+    return None
+
+
+def _purge_pycache(pkg_path: Path) -> None:
+    """Remove every __pycache__ under pkg_path before the module is imported.
+
+    The content digest excludes *.pyc, so a stale or tampered bytecode cache with a
+    matching header would otherwise be executed in preference to recompiling the
+    just-verified source. Purging first guarantees the bytes CPython runs are the
+    bytes that were content-verified. Best effort: a purge failure is logged, not
+    fatal, and Python still validates cache headers against source mtime.
+    """
+    try:
+        for cache in pkg_path.rglob("__pycache__"):
+            if cache.is_dir() and not cache.is_symlink():
+                shutil.rmtree(cache, ignore_errors=True)
+    except OSError as exc:
+        log.warning("Could not purge bytecode cache under %s: %s", pkg_path, exc)
+
+# Loaded manifests - populated by load_all()
 _loaded: list[dict] = []
 
 # Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
@@ -270,11 +403,6 @@ def load_errors() -> dict[str, str]:
     return dict(_load_errors)
 
 
-def default_module_names() -> frozenset[str]:
-    """Public: names of first-party bundled modules (in-tree or seeded copies)."""
-    return _trusted_default_names()
-
-
 def loaded_modules() -> list[dict]:
     """Return manifests of all successfully loaded modules."""
     return list(_loaded)
@@ -364,8 +492,6 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
     raw = str(module_dir)
     dirs = [Path(d.strip()) for d in raw.split(",") if d.strip()]
 
-    resolved_bundled = {d.resolve() for d in _BUNDLED_MODULES_DIRS if d.exists()}
-
     # Collect enabled packages from all directories
     candidate_paths = []
     for d in dirs:
@@ -395,8 +521,6 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
 
     # Sort by dependency order (skip reasons land in _load_errors)
     ordered = _topo_sort(candidate_paths, enabled, errors=_load_errors)
-
-    trusted_names = _trusted_default_names()
 
     # Relay credentials for the premium-license gate, resolved lazily and ONCE
     # per load pass: the JWT is the same for every module, and there must be no
@@ -429,10 +553,11 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
 
     for pkg_path in ordered:
         pkg_name = pkg_path.name
-        trusted = (
-            pkg_path.parent.resolve() in resolved_bundled
-            or pkg_name in trusted_names
-        )
+        # Trust is by content identity, decided ONCE here: the folder name is in
+        # the committed lock AND the live content digest matches. Location and name
+        # alone grant nothing, so a forged folder in a trusted dir is not trusted.
+        first_party = is_first_party(pkg_path)
+        trusted = first_party
         # License gate for premium modules (only when this instance has a relay
         # identity - i.e. it has activated / been given a GATEWAY_TOKEN).
         if is_premium_path(pkg_path):
@@ -464,6 +589,9 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                     "skipping license check (dev mode)",
                     pkg_name,
                 )
+        # Run the source just content-verified, never a stale/tampered .pyc that a
+        # matching cache header would execute in preference (the digest omits *.pyc).
+        _purge_pycache(pkg_path)
         try:
             manifest = _load_one(pkg_path, pkg_name, trusted=trusted)
         except ModuleLoadError as exc:
@@ -471,12 +599,15 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
             # a working app): fail startup naming the module and error.
             # Third-party modules keep load-and-continue; their failure shows
             # as the failed badge in the Modules UI.
-            if pkg_name in trusted_names:
+            if first_party:
                 raise ModuleLoadError(
                     f"Default module {pkg_name!r} failed to load: {exc}") from exc
             _load_errors[pkg_name] = str(exc)
             manifest = None
         if manifest is not None:
+            # Carry the trust decision on the manifest so route registration reads
+            # it rather than recomputing (and re-hashing) per module.
+            manifest["first_party"] = first_party
             _loaded.append(manifest)
 
     log.info(
@@ -622,11 +753,14 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     return manifest
 
 
-def _route_failure(name: str, kind: str, exc: Exception) -> None:
-    """Route-registration failure policy: a default module fails boot loudly
+def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:
+    """Route-registration failure policy: a first-party module fails boot loudly
     (a boot without it is not a working product); a third-party module keeps
-    load-and-continue, with the failure recorded for the Modules UI badge."""
-    if name in _trusted_default_names():
+    load-and-continue, with the failure recorded for the Modules UI badge. The
+    manifest carries its own first-party verdict (set by load_all), so the policy
+    reads it directly rather than re-deriving trust here."""
+    name = manifest["name"]
+    if manifest.get("first_party"):
         raise ModuleLoadError(
             f"Default module {name!r} {kind} failed to register "
             f"({type(exc).__name__}: {exc})") from exc
@@ -679,7 +813,7 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         except Exception as exc:
             if routes is not None:
                 del routes[start:]
-            _route_failure(name, manifest_key, exc)
+            _route_failure(manifest, manifest_key, exc)
             continue
         clashes = sorted({
             path for r in routes[start:]
@@ -687,7 +821,7 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         })
         if clashes:
             del routes[start:]
-            _route_failure(name, manifest_key, RouteConflictError(
+            _route_failure(manifest, manifest_key, RouteConflictError(
                 "route path(s) already registered: " + ", ".join(clashes)))
             continue
         log.info("Module %r: %s routes registered", name, kind.upper())

@@ -22,13 +22,21 @@ from celerp.modules import loader
 from celerp.modules.loader import (
     _BUNDLED_MODULES_DIRS,
     ModuleLoadError,
-    default_module_names,
     is_core_folded,
     load_all,
     load_errors,
     register_api_routes,
     register_ui_routes,
 )
+
+
+def _bundled_names() -> set[str]:
+    """Every physically-present bundled module (by folder), independent of the
+    content lock - a boot test asserts the shipped tree loads, not what the lock
+    happens to trust."""
+    d = _BUNDLED_MODULES_DIRS[0]
+    return {p.name for p in d.iterdir()
+            if p.is_dir() and (p / "__init__.py").exists()}
 
 
 @pytest.fixture(autouse=True)
@@ -46,11 +54,11 @@ def _clear_loader_state():
 def _pluggable_default_names() -> set[str]:
     """Default modules the loader actually loads: core-folded components
     (ai/backup/connectors) are wired at app construction, never via load_all."""
-    return {n for n in default_module_names() if not is_core_folded(n)}
+    return {n for n in _bundled_names() if not is_core_folded(n)}
 
 
 def test_all_default_modules_load_and_reimport_cleanly():
-    loaded = load_all(_BUNDLED_MODULES_DIRS[0], set(default_module_names()))
+    loaded = load_all(_BUNDLED_MODULES_DIRS[0], set(_bundled_names()))
     loaded_names = {m["name"] for m in loaded}
     for name in sorted(_pluggable_default_names()):
         assert name in loaded_names, (
@@ -68,9 +76,12 @@ def test_all_default_modules_load_and_reimport_cleanly():
 
 
 def test_default_module_import_failure_fails_boot():
-    """A default module whose route code fails to import must fail boot with
-    an error naming the module, never boot without the feature."""
-    manifest = {"name": "celerp-docs", "api_routes": "celerp_docs_broken_x",
+    """A first-party module whose route code fails to import must fail boot with
+    an error naming the module, never boot without the feature. First-party-ness
+    travels on the manifest (load_all sets it from the content lock); the route
+    registrar trusts that verdict rather than re-deriving it."""
+    manifest = {"name": "celerp-docs", "first_party": True,
+                "api_routes": "celerp_docs_broken_x",
                 "ui_routes": "celerp_docs_broken_x"}
     with pytest.raises(ModuleLoadError, match="celerp-docs"):
         register_api_routes(app=None, loaded=[manifest])

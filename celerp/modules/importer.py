@@ -385,11 +385,15 @@ def install_from_folder(source_path: str | Path, *,
             if total > MAX_UNPACKED_BYTES:
                 raise ModuleImportError("Folder is too large; refused.")
     manifest = _read_manifest(init_py.read_text(encoding="utf-8", errors="replace"))
+    # Function-level import: loader imports PREMIUM_MARKER from this module at load
+    # time, so a top-level loader import here would be circular. The digest and this
+    # copy share one exclusion set so the installed tree hashes to its lock entry.
+    from celerp.modules.loader import _DIGEST_EXCLUDE_GLOBS
     staging = Path(tempfile.mkdtemp(prefix="celerp-mod-import-"))
     try:
         out = staging / "pkg"
         shutil.copytree(src, out, symlinks=False,
-                        ignore=shutil.ignore_patterns(".git", "__pycache__", ".github"))
+                        ignore=shutil.ignore_patterns(*_DIGEST_EXCLUDE_GLOBS))
         return _finish(out, manifest, source=source)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

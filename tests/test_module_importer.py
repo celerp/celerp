@@ -447,3 +447,38 @@ def test_with_writable_module_dir_empty_unchanged():
     """No module dir configured stays off - the helper never invents one."""
     from celerp.modules import loader
     assert loader.with_writable_module_dir("") == ""
+
+
+# ── Copy-ignore is the shared digest-exclude set (DRY) ────────────────────────
+# The importer's copytree ignore and the content digest's exclusion set are one
+# source of truth: celerp.modules.loader._DIGEST_EXCLUDE_GLOBS.
+
+def test_digest_exclude_globs_built_from_meta_and_premium_constants():
+    from celerp.modules.loader import _DIGEST_EXCLUDE_GLOBS
+    from celerp.modules.meta import META_FILENAME
+    from celerp.modules.importer import PREMIUM_MARKER
+    assert META_FILENAME in _DIGEST_EXCLUDE_GLOBS
+    assert PREMIUM_MARKER in _DIGEST_EXCLUDE_GLOBS
+    assert "__pycache__" in _DIGEST_EXCLUDE_GLOBS
+    assert "*.pyc" in _DIGEST_EXCLUDE_GLOBS
+
+
+def test_importer_copy_ignore_uses_shared_digest_globs(module_dir, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "__init__.py").write_text(MANIFEST)
+    (src / "helper.py").write_text("x = 1")
+    (src / "__pycache__").mkdir()
+    (src / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00")
+    (src / "stale.pyc").write_bytes(b"\x00")
+    (src / ".git").mkdir()
+    (src / ".git" / "config").write_text("[core]")
+    (src / ".github").mkdir()
+    (src / ".github" / "workflow.yml").write_text("on: push")
+    install_from_folder(src)
+    installed = module_dir / "my-module"
+    assert (installed / "helper.py").exists()
+    assert not (installed / "__pycache__").exists()
+    assert not (installed / "stale.pyc").exists()
+    assert not (installed / ".git").exists()
+    assert not (installed / ".github").exists()

@@ -20,6 +20,7 @@ from celerp.modules.loader import (
     _PROTECTED_BSL_INTERNALS,
     _load_one,
     load_all,
+    load_errors,
     loaded_modules,
     register_api_routes,
     register_ui_routes,
@@ -34,9 +35,11 @@ def clean_state(tmp_path):
     slots.clear()
     from celerp.modules import loader
     loader._loaded.clear()
+    loader._load_errors.clear()
     yield
     slots.clear()
     loader._loaded.clear()
+    loader._load_errors.clear()
     # Remove any test module packages added to sys.modules
     for key in list(sys.modules.keys()):
         if key.startswith("test_mod_") or key.startswith("good_module") or key.startswith("bad_module"):
@@ -708,18 +711,16 @@ class TestDependencySystem:
 # ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
 
 class TestElectronTrustedModuleDirs:
-    """Regression tests for the Electron module-loading trust bug.
+    """Directory-resolution and write-guard behaviour for the seeded-module case.
 
-    Root cause: Electron seeds default_modules/ from app resources into
-    DATA_DIR/modules/ (a user-data directory outside APP_DIR). The loader's
-    _BUNDLED_MODULES_DIRS resolves relative to loader.py, so DATA_DIR/modules/
-    is NOT in the trusted set. Modules like celerp-ai, celerp-connectors,
-    celerp-backup, and celerp-admin import BSL-protected internals and are
-    rejected by the AST/runtime scan → running=False forever.
-
-    Fix: _resolve_bundled_dirs() includes paths from CELERP_TRUSTED_MODULE_DIRS
-    env var AND from MODULE_DIR. Both the original source dir (DEFAULT_MODULES_SRC)
-    and the seeded destination (MODULE_DIR/DATA_DIR/modules/) are trusted.
+    Electron seeds default_modules/ from app resources into DATA_DIR/modules/ (a
+    user-data directory outside APP_DIR). _BUNDLED_MODULES_DIRS resolves relative
+    to loader.py plus any CELERP_TRUSTED_MODULE_DIRS entries; is_bundled_dir uses
+    it to refuse writes into the shipped source tree. It is NOT a trust decision:
+    first-party trust is by content digest against the committed lock (see the
+    content-identity tests below), so a seeded copy is trusted by matching content,
+    never by its directory. These tests cover the directory resolution itself and
+    that a BSL-importing module is still scanned when it is not first-party.
     """
 
     def _make_module_with_bsl_import(self, base: Path, name: str, import_line: str) -> Path:
@@ -776,10 +777,11 @@ class TestElectronTrustedModuleDirs:
             "BSL-importing module in untrusted directory must be rejected"
         )
 
-    def test_module_with_bsl_import_accepted_when_dir_in_trusted_module_dirs(
+    def test_trusted_module_dirs_resolve_into_bundled_dirs(
         self, tmp_path, monkeypatch
     ):
-        """Module importing BSL internal is accepted when its dir is in CELERP_TRUSTED_MODULE_DIRS."""
+        """A CELERP_TRUSTED_MODULE_DIRS entry is included in _BUNDLED_MODULES_DIRS,
+        so the write-guard treats it as part of the shipped source tree."""
         from celerp.modules import loader as _loader
         # Point CELERP_TRUSTED_MODULE_DIRS at tmp_path
         monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(tmp_path))
@@ -790,53 +792,19 @@ class TestElectronTrustedModuleDirs:
             "_resolve_bundled_dirs must include CELERP_TRUSTED_MODULE_DIRS path"
         )
 
-    def test_module_dir_is_not_blanket_trusted(self, tmp_path, monkeypatch):
-        """MODULE_DIR must NOT be trusted by directory.
+    def test_module_dir_is_not_in_bundled_dirs(self, tmp_path, monkeypatch):
+        """MODULE_DIR must NOT be folded into _BUNDLED_MODULES_DIRS.
 
-        Blanket-trusting MODULE_DIR would exempt user-imported third-party
-        modules from the BSL import checks. Seeded first-party copies are
-        trusted by NAME instead (next test).
+        The write-guard would otherwise refuse imports into the user's own module
+        dir. Trust is unaffected either way - it is decided by content digest, not
+        by directory membership.
         """
         from celerp.modules import loader as _loader
         monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
         monkeypatch.setenv("MODULE_DIR", str(tmp_path))
         new_trusted = _loader._resolve_bundled_dirs()
         assert tmp_path.resolve() not in new_trusted, (
-            "MODULE_DIR must not be blanket-trusted: that would exempt "
-            "user-imported modules from the BSL import checks"
-        )
-
-    def test_seeded_first_party_copy_trusted_by_name(self, tmp_path, monkeypatch):
-        """Electron regression, name-based: a bundled module seeded into
-        DATA_DIR/modules (an untrusted directory) still loads with its BSL
-        imports, because its name appears in the bundled source listing."""
-        from celerp.modules import loader as _loader
-        src = tmp_path / "bundled_src"
-        (src / "celerp-ai-sim").mkdir(parents=True)
-        (src / "celerp-ai-sim" / "__init__.py").write_text(
-            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0'}\n"
-        )
-        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(src))
-        monkeypatch.setattr(
-            _loader, "_BUNDLED_MODULES_DIRS", _loader._resolve_bundled_dirs()
-        )
-
-        seeded = tmp_path / "data_modules"
-        pkg = seeded / "celerp-ai-sim"
-        inner = pkg / "celerp_ai_sim"
-        inner.mkdir(parents=True)
-        (inner / "__init__.py").write_text("")
-        (inner / "routes.py").write_text(
-            "from celerp.session_gate import require_session_token\n"
-            "def setup_api_routes(app): pass\n"
-        )
-        (pkg / "__init__.py").write_text(
-            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0', "
-            "'api_routes': 'celerp_ai_sim.routes'}\n"
-        )
-        result = _loader.load_all(seeded, {"celerp-ai-sim"})
-        assert any(m["name"] == "celerp-ai-sim" for m in result), (
-            "seeded copy of a bundled module must be trusted by name"
+            "MODULE_DIR must not be folded into the bundled-source set"
         )
 
     def test_third_party_in_module_dir_still_checked(self, tmp_path, monkeypatch):
@@ -1058,3 +1026,224 @@ class TestElectronTrustedModuleDirs:
             finally:
                 _loader._loaded.clear()
                 _slots.clear()
+
+
+# ── Content-identity first-party trust ────────────────────────────────────────
+# Trust is granted by content digest against a committed lock, never by folder
+# name or location. These cover the digest, the predicate, the lock loader and
+# its failure paths, the reader migration, and the pycache purge.
+
+import hashlib
+import json
+import logging
+
+from celerp.modules import loader as _fpt_loader
+
+
+def _copy_default(name: str, dest: Path) -> Path:
+    """Byte-copy a shipped default module into dest/name (the electron reseed
+    shape). __pycache__/*.pyc are skipped so the copy is a clean source tree."""
+    import shutil
+    src = _fpt_loader._BUNDLED_MODULES_DIRS[0] / name
+    out = dest / name
+    shutil.copytree(src, out, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return out
+
+
+class TestModuleContentDigest:
+    def test_module_content_digest_is_deterministic(self, tmp_path):
+        pkg = _make_module(tmp_path, "det-mod", '{"name": "det-mod", "version": "1.0"}')
+        assert _fpt_loader.module_content_digest(pkg) == _fpt_loader.module_content_digest(pkg)
+
+    def test_digest_excludes_pycache_pyc_meta_and_premium(self, tmp_path):
+        from celerp.modules.meta import META_FILENAME
+        from celerp.modules.importer import PREMIUM_MARKER
+        pkg = _make_module(tmp_path, "ex-mod", '{"name": "ex-mod", "version": "1.0"}')
+        before = _fpt_loader.module_content_digest(pkg)
+        (pkg / "__pycache__").mkdir()
+        (pkg / "__pycache__" / "x.cpython-311.pyc").write_bytes(b"\x00\x01")
+        (pkg / "stale.pyc").write_bytes(b"\x00\x02")
+        (pkg / META_FILENAME).write_text('{"source": "default"}')
+        (pkg / PREMIUM_MARKER).write_text("")
+        assert _fpt_loader.module_content_digest(pkg) == before
+
+    def test_digest_changes_when_a_source_file_changes(self, tmp_path):
+        pkg = _make_module(tmp_path, "chg-mod", '{"name": "chg-mod", "version": "1.0"}')
+        before = _fpt_loader.module_content_digest(pkg)
+        (pkg / "__init__.py").write_text('PLUGIN_MANIFEST = {"name": "chg-mod", "version": "2.0"}')
+        assert _fpt_loader.module_content_digest(pkg) != before
+
+    def test_digest_rejects_symlink_escape(self, tmp_path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        pkg = _make_module(tmp_path, "sym-mod", '{"name": "sym-mod", "version": "1.0"}')
+        clean = _fpt_loader.module_content_digest(pkg)
+        try:
+            (pkg / "leak.txt").symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported on this platform")
+        after = _fpt_loader.module_content_digest(pkg)
+        # The escaping symlink's target bytes never enter the hash: either the
+        # digest is unchanged (symlink skipped) or None (rejected) - never a
+        # value that inlined the secret.
+        inlined = hashlib.sha256(b"TOP SECRET").hexdigest()
+        assert after in (clean, None)
+        assert after is None or inlined not in after
+
+    def test_digest_returns_none_on_unreadable_file(self, tmp_path, monkeypatch):
+        pkg = _make_module(tmp_path, "unr-mod", '{"name": "unr-mod", "version": "1.0"}')
+        real_read = Path.read_bytes
+
+        def boom(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError("unreadable")
+            return real_read(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_bytes", boom)
+        assert _fpt_loader.module_content_digest(pkg) is None
+
+
+class TestIsFirstParty:
+    def test_impostor_named_default_in_writable_dir_is_not_trusted(self, tmp_path, monkeypatch):
+        # A folder named after a real default, wrong content, whose route file
+        # imports a protected BSL internal. Under content-identity it is NOT
+        # first-party (digest mismatch), so the BSL scan runs and rejects it.
+        # (Under the old name-trust it would have loaded clean.)
+        monkeypatch.setattr(_fpt_loader, "_first_party_lock",
+                            lambda: {"celerp-manufacturing": "deadbeef"})
+        pkg = tmp_path / "celerp-manufacturing"
+        inner = pkg / "celerp_manufacturing"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "def setup_api_routes(app): pass\n")
+        (pkg / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'celerp-manufacturing', 'version': '1.0', "
+            "'api_routes': 'celerp_manufacturing.routes'}\n")
+        result = load_all(tmp_path, {"celerp-manufacturing"})
+        assert not any(m["name"] == "celerp-manufacturing" for m in result)
+        assert "celerp-manufacturing" in load_errors()
+
+    def test_seeded_default_with_pycache_and_markers_is_still_first_party(self, tmp_path):
+        # THE load-bearing upgrade test: a byte-copy of a shipped default plus the
+        # runtime files the electron reseed / first boot add must stay trusted.
+        from celerp.modules.meta import META_FILENAME
+        from celerp.modules.importer import PREMIUM_MARKER
+        pkg = _copy_default("celerp-labels", tmp_path)
+        assert _fpt_loader.is_first_party(pkg) is True
+        (pkg / "__pycache__").mkdir(exist_ok=True)
+        (pkg / "__pycache__" / "__init__.cpython-311.pyc").write_bytes(b"\x00")
+        (pkg / META_FILENAME).write_text('{"source": "default"}')
+        (pkg / PREMIUM_MARKER).write_text("")
+        assert _fpt_loader.is_first_party(pkg) is True
+
+    def test_modified_default_demotes_and_warns(self, tmp_path, caplog):
+        pkg = _copy_default("celerp-labels", tmp_path)
+        (pkg / "__init__.py").write_text(
+            (pkg / "__init__.py").read_text() + "\n# tampered\n")
+        with caplog.at_level(logging.WARNING, logger="celerp.modules.loader"):
+            assert _fpt_loader.is_first_party(pkg) is False
+        assert any("celerp-labels" in r.message for r in caplog.records)
+
+
+class TestFirstPartyLock:
+    def _point_lock(self, monkeypatch, tmp_path, content: str | None):
+        lock = tmp_path / "first_party.lock.json"
+        if content is not None:
+            lock.write_text(content)
+        monkeypatch.setattr(_fpt_loader, "_lock_path", lambda: lock)
+        _fpt_loader._first_party_lock.cache_clear()
+
+    def test_lock_missing_returns_empty_and_logs_error(self, tmp_path, monkeypatch, caplog):
+        self._point_lock(monkeypatch, tmp_path, None)
+        with caplog.at_level(logging.ERROR, logger="celerp.modules.loader"):
+            assert _fpt_loader._first_party_lock() == {}
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
+        _fpt_loader._first_party_lock.cache_clear()
+
+    def test_lock_empty_valid_logs_warning_not_error(self, tmp_path, monkeypatch, caplog):
+        self._point_lock(monkeypatch, tmp_path, "{}")
+        with caplog.at_level(logging.WARNING, logger="celerp.modules.loader"):
+            assert _fpt_loader._first_party_lock() == {}
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+        assert not any(r.levelno == logging.ERROR for r in caplog.records)
+        _fpt_loader._first_party_lock.cache_clear()
+
+    def test_lock_malformed_returns_empty_fail_closed(self, tmp_path, monkeypatch):
+        for bad in ('["not", "a", "dict"]', '{"celerp-x": 123}', 'not json'):
+            self._point_lock(monkeypatch, tmp_path, bad)
+            assert _fpt_loader._first_party_lock() == {}
+            _fpt_loader._first_party_lock.cache_clear()
+
+    def test_lock_resolves_package_root_ignores_trusted_module_dirs(self, tmp_path, monkeypatch):
+        # A rogue lock planted beside a CELERP_TRUSTED_MODULE_DIRS copy must NOT
+        # be read: only the package-root lock is authoritative.
+        rogue = tmp_path / "rogue"
+        rogue.mkdir()
+        (rogue / "first_party.lock.json").write_text('{"evil": "0"}')
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(rogue))
+        _fpt_loader._first_party_lock.cache_clear()
+        assert "evil" not in _fpt_loader._first_party_lock()
+        _fpt_loader._first_party_lock.cache_clear()
+
+
+class TestReaderMigrationAndPurge:
+    def test_route_failure_load_and_continues_for_demoted_module(self):
+        # A demoted (name in lock, content mismatch) module carries first_party
+        # False on its manifest; a route failure is recorded and boot continues -
+        # it is no longer treated as a boot-critical default just because its name
+        # matches. The policy reads the manifest's own verdict, not the name.
+        manifest = {"name": "celerp-manufacturing", "first_party": False}
+        # Should not raise (would raise if treated as a genuine default).
+        _fpt_loader._route_failure(manifest, "api route", RuntimeError("boom"))
+        assert "celerp-manufacturing" in load_errors()
+
+    def test_import_error_gate_uses_first_party_bit(self, tmp_path, monkeypatch):
+        # A name-matching but content-mismatched module raising ModuleLoadError is
+        # recorded, not re-raised to halt boot.
+        monkeypatch.setattr(_fpt_loader, "_first_party_lock",
+                            lambda: {"celerp-manufacturing": "deadbeef"})
+        bad = tmp_path / "celerp-manufacturing"
+        bad.mkdir()
+        (bad / "__init__.py").write_text(
+            'PLUGIN_MANIFEST = {"name": "celerp-manufacturing", "version": "1.0"}\n'
+            'raise RuntimeError("import boom")')
+        result = load_all(tmp_path, {"celerp-manufacturing"})
+        assert result == []
+        assert "celerp-manufacturing" in load_errors()
+
+    def test_pycache_purged_before_load(self, tmp_path):
+        pkg = _make_module(tmp_path, "pc-mod", '{"name": "pc-mod", "version": "1.0"}')
+        cache = pkg / "__pycache__"
+        cache.mkdir()
+        (cache / "__init__.cpython-311.pyc").write_bytes(b"\x00tampered")
+        _fpt_loader._purge_pycache(pkg)
+        assert not cache.exists()
+
+    def test_load_all_purges_pycache(self, tmp_path):
+        # Import itself recompiles a fresh __init__ pyc, so __pycache__ reappears;
+        # what must be gone is the stale junk pyc, purged before the import ran.
+        pkg = _make_module(tmp_path, "pc2-mod", '{"name": "pc2-mod", "version": "1.0"}')
+        cache = pkg / "__pycache__"
+        cache.mkdir()
+        (cache / "junk.pyc").write_bytes(b"\x00")
+        load_all(tmp_path, {"pc2-mod"})
+        assert not (cache / "junk.pyc").exists()
+
+
+class TestResolveModulePath:
+    def test_resolve_module_path_finds_module_in_non_first_entry(self, tmp_path, monkeypatch):
+        first = tmp_path / "writable"
+        first.mkdir()
+        second = tmp_path / "bundled"
+        second.mkdir()
+        pkg = _make_module(second, "found-mod", '{"name": "found-mod", "version": "1.0"}')
+        monkeypatch.setenv("MODULE_DIR", f"{first},{second}")
+        resolved = _fpt_loader.resolve_module_path("found-mod")
+        assert resolved is not None
+        assert resolved.resolve() == pkg.resolve()
+
+    def test_resolve_module_path_none_when_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MODULE_DIR", str(tmp_path))
+        assert _fpt_loader.resolve_module_path("ghost") is None
