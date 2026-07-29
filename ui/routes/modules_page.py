@@ -247,6 +247,9 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # bundled defaults, trusted/community for their sources, nothing for a
         # plain sideload or unknown origin (never a fabricated trust claim).
         source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
+        # The leftmost Source column states the origin in words - always filled,
+        # even for a plain sideload - alongside the shield beside the name.
+        source_label = _source_label(m.get("source"), bool(m.get("is_default")), lang)
 
         # A disabled, non-default module can be removed to free its name. The X
         # sits to the RIGHT of Enable (destructive control on the right) and only
@@ -265,6 +268,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             ))
 
         rows.append(Tr(
+            Td(source_label, data_filter_value=source_label, cls="module-source-cell"),
             Td(Div(source_icon or "", Strong(label),
                    Div(description, cls="text-muted small") if description else "",
                    cls="module-name-cell"),
@@ -350,11 +354,12 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Div(
                 Table(
                     Thead(Tr(
-                        sortable_th(t("th.module", lang), 0),
+                        filter_th(t("th.source", lang), 0, sortable=True),
+                        sortable_th(t("th.module", lang), 1),
                         Th(t("th.dependencies", lang)),
-                        sortable_th(t("th.version", lang), 2),
-                        filter_th(t("th.author", lang), 3, sortable=True),
-                        filter_th(t("th.status", lang), 4, sortable=True),
+                        sortable_th(t("th.version", lang), 3),
+                        filter_th(t("th.author", lang), 4, sortable=True),
+                        filter_th(t("th.status", lang), 5, sortable=True),
                         Th(""),
                     )),
                     Tbody(*rows),
@@ -474,6 +479,21 @@ def _source_icon(source: str | None, is_default: bool, lang: str):
     return Span(NotStr(_SHIELD_SVG),
                 cls=f"module-source-icon trust-icon trust-icon--{tier}",
                 title=tip, aria_label=tip, role="img")
+
+
+def _source_label(source: str | None, is_default: bool, lang: str) -> str:
+    """Plain-text provenance for the Source column - always a word, never blank
+    (GDR 2k). Defaults read as Default regardless of any sidecar; an unknown or
+    plain origin reads as Sideloaded rather than a fabricated trust claim."""
+    if is_default:
+        key = "modules.src_default"
+    elif source == "marketplace":
+        key = "modules.src_marketplace"
+    elif source == "community":
+        key = "modules.src_community"
+    else:
+        key = "modules.src_sideloaded"
+    return t(key, lang)
 
 
 def _catalog_price(m: dict, lang: str) -> str:

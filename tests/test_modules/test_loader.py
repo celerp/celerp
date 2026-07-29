@@ -337,10 +337,12 @@ class TestBSLProtection:
 
 class TestRouteRegistration:
     def test_register_api_routes_calls_setup(self, tmp_path):
+        import types
         called = []
 
         class _FakeApp:
-            pass
+            def __init__(self):
+                self.router = types.SimpleNamespace(routes=[])
 
         pkg = tmp_path / "route-mod"
         pkg.mkdir()
@@ -359,12 +361,13 @@ class TestRouteRegistration:
         sys.modules.pop("route_mod_api", None)
 
     def test_register_ui_routes_calls_setup(self, tmp_path):
+        import types
         called = []
 
         class _FakeApp:
-            pass
+            def __init__(self):
+                self.router = types.SimpleNamespace(routes=[])
 
-        import types
         ui_mod = types.ModuleType("route_mod_ui")
         ui_mod.setup_ui_routes = lambda app: called.append("ui")
         sys.modules["route_mod_ui"] = ui_mod

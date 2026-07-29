@@ -67,10 +67,14 @@ def _filtered_logger_handle(self, record):
 
 logging.Logger.handle = _filtered_logger_handle
 
-# Module system (opt-in: no-op if MODULE_DIR not set)
+# Module system (opt-in: no-op if MODULE_DIR not set). Correct a MODULE_DIR whose
+# first entry is the bundled default_modules/ tree so imports land in a writable
+# drop-in, never among first-party modules (the dev/bare-run footgun).
 import os as _os
 from pathlib import Path as _Path
-_MODULE_DIR = _os.environ.get("MODULE_DIR", "")
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR", ""))
+_MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
 async def _try_auto_activate() -> None:

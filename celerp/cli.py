@@ -259,13 +259,11 @@ def _config_to_env(cfg: dict) -> dict:
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
     # dir separate means a sideload never lands in default_modules/.
-    from celerp.config import settings
+    from celerp.modules.loader import writable_module_dir
     _pkg_root = Path(__file__).parent.parent
     _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
-    _writable = settings.data_dir / "modules"
     try:
-        _writable.mkdir(parents=True, exist_ok=True)
-        _mod_dirs.insert(0, _writable)
+        _mod_dirs.insert(0, writable_module_dir())
     except OSError:
         # A read-only data dir is unusual; fall back to the bundled dirs so the
         # app still starts. Imports will fail with a clear "no module directory"

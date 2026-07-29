@@ -417,8 +417,11 @@ try:
 except ImportError:
     pass  # AI package not present — skip silently
 
-# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set)
-_MODULE_DIR = os.environ.get("MODULE_DIR", "")
+# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set).
+# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in.
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
+_MODULE_DIR = os.environ["MODULE_DIR"]
 if _MODULE_DIR and _ENABLED_MODULES:
     from celerp.modules.loader import load_all, register_ui_routes
     _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES)

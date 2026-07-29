@@ -35,6 +35,48 @@ def _mk(dirpath: Path, name: str, init_src: str) -> None:
     (pkg / "__init__.py").write_text(init_src)
 
 
+def test_route_collision_is_refused_and_recorded(monkeypatch):
+    """Two modules declaring the same route path: the first wins, the second is
+    refused (its routes rolled back) and recorded as a load error, never allowed
+    to silently shadow the first - Starlette matches the first-registered route."""
+    import types
+
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from celerp.modules import loader
+
+    app = Starlette()
+
+    def _handler(request):
+        return PlainTextResponse("ok")
+
+    def _setup_a(a):
+        a.router.routes.append(Route("/collide", _handler, methods=["GET"]))
+
+    def _setup_b(a):
+        a.router.routes.append(Route("/collide", _handler, methods=["GET"]))
+
+    fake = {
+        "mod_a.ui": types.SimpleNamespace(setup_ui_routes=_setup_a),
+        "mod_b.ui": types.SimpleNamespace(setup_ui_routes=_setup_b),
+    }
+    monkeypatch.setattr(loader.importlib, "import_module", lambda p: fake[p])
+    loader._load_errors.clear()
+
+    loader.register_ui_routes(app, [
+        {"name": "mod-a", "ui_routes": "mod_a.ui"},
+        {"name": "mod-b", "ui_routes": "mod_b.ui"},
+    ])
+
+    paths = [getattr(r, "path", None) for r in app.router.routes]
+    assert paths.count("/collide") == 1          # second refused, not duplicated
+    errs = load_errors()
+    assert "mod-b" in errs and "already registered" in errs["mod-b"]
+    assert "mod-a" not in errs
+
+
 def test_load_errors_are_recorded(tmp_path):
     _mk(tmp_path, "ok-module", OK_MODULE)
     _mk(tmp_path, "broken-module", BROKEN_MODULE)

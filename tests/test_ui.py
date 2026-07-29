@@ -8349,6 +8349,31 @@ class TestModulesUI:
         assert "hx-confirm" in tail
 
     @pytest.mark.asyncio
+    async def test_source_column_shows_label_and_keeps_shield(self, ui_client):
+        """The Local Modules table carries a leftmost Source column with an
+        explicit text label per row (never blank), while the provenance shield
+        stays beside the name - both indicators kept."""
+        rows = [
+            {"name": "comm-mod", "label": "Community Mod", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "community", "installed_at": "2026-07-20T00:00:00+00:00"},
+            {"name": "side-mod", "label": "Side Mod", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-19T00:00:00+00:00"},
+            {"name": "celerp-labels", "label": "Default Mod", "version": "1.0", "author": "Celerp",
+             "enabled": False, "running": False, "is_default": True,
+             "source": "default", "installed_at": None},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        # Source column cell per row, an explicit label even for a plain sideload.
+        assert 'data-filter-value="Community"' in body
+        assert 'data-filter-value="Sideloaded"' in body
+        assert 'data-filter-value="Default"' in body
+        # Shields still render beside the name (both indicators).
+        assert "trust-icon--community" in body
+        assert "trust-icon--default" in body
+
+    @pytest.mark.asyncio
     async def test_delete_button_shown_only_for_disabled_nondefault_rows(self, ui_client):
         rows = [
             {"name": "disable-nd", "label": "Disabled NonDefault", "version": "1.0", "author": "X",

@@ -175,6 +175,14 @@ def _module_dir() -> Path:
     if not first:
         raise ModuleImportError("This install has no module directory configured.")
     d = Path(first)
+    # A sideload must never land in a bundled/trusted dir: a package written there
+    # would inherit first-party trust by name. Refuse rather than write into it.
+    from celerp.modules.loader import is_bundled_dir
+    if is_bundled_dir(d):
+        raise ModuleImportError(
+            "The module directory points at the bundled default modules, which is "
+            "read-only. Configure a writable MODULE_DIR for imports."
+        )
     d.mkdir(parents=True, exist_ok=True)
     return d
 

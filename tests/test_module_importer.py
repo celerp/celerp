@@ -394,3 +394,56 @@ def test_remove_module_dir_rejects_path_traversal_name(module_dir):
         remove_module_dir("../../etc")
     # Nothing outside the module dir was touched.
     assert sentinel.exists()
+
+
+def test_module_dir_refuses_bundled_target(monkeypatch, tmp_path):
+    """An import must never land in a bundled/trusted module dir: a package
+    written there would inherit first-party trust by name. Pointing MODULE_DIR at
+    a bundled dir is refused with a clear error, not written into. The bundled set
+    is monkeypatched to a tmp dir so the test never touches the real tree."""
+    from celerp.modules import importer, loader
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
+    monkeypatch.setenv("MODULE_DIR", str(bundled))
+    with pytest.raises(ModuleImportError, match="bundled"):
+        importer._module_dir()
+
+
+def test_install_into_bundled_dir_refused(monkeypatch, tmp_path):
+    """The guard holds at the install entrypoint, before any bytes are written."""
+    from celerp.modules import loader
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
+    monkeypatch.setenv("MODULE_DIR", str(bundled))
+    with pytest.raises(ModuleImportError, match="bundled"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    assert not (bundled / "my-module").exists()
+
+
+def test_with_writable_module_dir_prepends_when_first_is_bundled(monkeypatch, tmp_path):
+    """A dev/CLI MODULE_DIR whose first entry is the bundled default_modules/ tree
+    is corrected: a writable data-dir drop-in is prepended so imports land there,
+    with the bundled dir kept on the path for default discovery."""
+    from celerp.modules import loader
+    from celerp.modules.loader import _BUNDLED_MODULES_DIRS
+    monkeypatch.setattr(loader, "writable_module_dir", lambda: tmp_path / "modules")
+    bundled = str(_BUNDLED_MODULES_DIRS[0])
+    parts = loader.with_writable_module_dir(bundled).split(",")
+    assert parts[0] == str(tmp_path / "modules")
+    assert bundled in parts
+
+
+def test_with_writable_module_dir_leaves_safe_first_entry(tmp_path):
+    """A MODULE_DIR whose first entry is already a writable, non-bundled dir (the
+    normal test/CLI case) is returned unchanged."""
+    from celerp.modules import loader
+    safe = f"{tmp_path / 'mods'},/other"
+    assert loader.with_writable_module_dir(safe) == safe
+
+
+def test_with_writable_module_dir_empty_unchanged():
+    """No module dir configured stays off - the helper never invents one."""
+    from celerp.modules import loader
+    assert loader.with_writable_module_dir("") == ""

@@ -75,6 +75,58 @@ def _resolve_bundled_dirs() -> tuple[Path, ...]:
 _BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
 
 
+def is_bundled_dir(path: Path) -> bool:
+    """True if `path` is (or sits inside) a bundled/trusted source module dir.
+
+    Trust is granted by name against these dirs (see _trusted_default_names), so
+    an import must never write into one - the sole source of truth for that check
+    is this predicate, shared by the importer guard and the writable-dir helper.
+    """
+    try:
+        rp = path.resolve()
+    except OSError:
+        return False
+    for bundled in _BUNDLED_MODULES_DIRS:
+        try:
+            b = bundled.resolve()
+        except OSError:
+            continue
+        if rp == b or b in rp.parents:
+            return True
+    return False
+
+
+def writable_module_dir() -> Path:
+    """The dedicated writable drop-in for imported modules: data_dir/modules.
+
+    Kept distinct from the read-only bundled default_modules/ tree so a sideload
+    never lands among first-party modules. Created on demand; raises OSError on a
+    read-only data dir so callers can fall back honestly."""
+    from celerp.config import settings
+    d = settings.data_dir / "modules"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def with_writable_module_dir(module_dir_env: str) -> str:
+    """Ensure a launch path's MODULE_DIR writes imports to a safe location.
+
+    The importer installs into MODULE_DIR.split(",")[0]. If that first entry is a
+    bundled/trusted dir (the dev/CLI footgun: MODULE_DIR=default_modules), a
+    writable data-dir drop-in is prepended so imports land there, with the bundled
+    dir kept on the path for default discovery. An already-safe first entry, or an
+    unset MODULE_DIR (module system off), is returned unchanged."""
+    entries = [e.strip() for e in module_dir_env.split(",") if e.strip()]
+    if not entries or not is_bundled_dir(Path(entries[0])):
+        return module_dir_env
+    try:
+        writable = writable_module_dir()
+    except OSError:
+        return module_dir_env
+    rest = [e for e in entries if Path(e).resolve() != writable.resolve()]
+    return ",".join([str(writable), *rest])
+
+
 def _trusted_default_names() -> frozenset[str]:
     """Names of first-party modules, taken from the bundled SOURCE directories.
 
@@ -582,32 +634,73 @@ def _route_failure(name: str, kind: str, exc: Exception) -> None:
     _load_errors[name] = f"{kind} failed ({type(exc).__name__}: {exc})"
 
 
-def register_api_routes(app, loaded: list[dict]) -> None:
-    """Register API routes from all loaded modules into the FastAPI app."""
+class RouteConflictError(Exception):
+    """A module declared a route path already claimed by core or an earlier
+    module. Starlette matches the first-registered route, so a duplicate would
+    silently shadow the original - the second module is refused instead."""
+
+
+def _route_keys(route) -> set:
+    """(path, method) pairs a route answers, for collision comparison. A route
+    with no path (Mount host rules) contributes nothing; one with no methods
+    (websocket, mount) keys on its path alone."""
+    path = getattr(route, "path", None)
+    if path is None:
+        return set()
+    methods = getattr(route, "methods", None)
+    if methods:
+        return {(path, m) for m in methods}
+    return {(path, None)}
+
+
+def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
+    """Register `{kind}` routes (kind in {"api","ui"}) for every loaded module,
+    refusing any module whose route collides with an already-registered one.
+
+    Core routes are registered before modules, so a module can never shadow core;
+    between two modules the first loaded wins and the second is recorded as a load
+    error (failed badge). The refused module's just-added routes are rolled back so
+    nothing half-registers."""
+    manifest_key = f"{kind}_routes"
+    setup_attr = f"setup_{kind}_routes"
     for manifest in loaded:
-        route_mod_path = manifest.get("api_routes")
+        route_mod_path = manifest.get(manifest_key)
         if not route_mod_path:
             continue
+        name = manifest["name"]
+        routes = None
+        start = 0
         try:
             mod = importlib.import_module(route_mod_path)
-            mod.setup_api_routes(app)
-            log.info("Module %r: API routes registered", manifest["name"])
+            routes = app.router.routes
+            existing = {k for r in routes for k in _route_keys(r)}
+            start = len(routes)
+            getattr(mod, setup_attr)(app)
         except Exception as exc:
-            _route_failure(manifest["name"], "api_routes", exc)
+            if routes is not None:
+                del routes[start:]
+            _route_failure(name, manifest_key, exc)
+            continue
+        clashes = sorted({
+            path for r in routes[start:]
+            for (path, _method) in _route_keys(r) & existing
+        })
+        if clashes:
+            del routes[start:]
+            _route_failure(name, manifest_key, RouteConflictError(
+                "route path(s) already registered: " + ", ".join(clashes)))
+            continue
+        log.info("Module %r: %s routes registered", name, kind.upper())
+
+
+def register_api_routes(app, loaded: list[dict]) -> None:
+    """Register API routes from all loaded modules into the FastAPI app."""
+    _register_module_routes(app, loaded, "api")
 
 
 def register_ui_routes(app, loaded: list[dict]) -> None:
     """Register UI routes from all loaded modules into the FastHTML app."""
-    for manifest in loaded:
-        route_mod_path = manifest.get("ui_routes")
-        if not route_mod_path:
-            continue
-        try:
-            mod = importlib.import_module(route_mod_path)
-            mod.setup_ui_routes(app)
-            log.info("Module %r: UI routes registered", manifest["name"])
-        except Exception as exc:
-            _route_failure(manifest["name"], "ui_routes", exc)
+    _register_module_routes(app, loaded, "ui")
 
 
 def _protected_hit(name: str) -> str | None:
