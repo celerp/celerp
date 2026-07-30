@@ -1832,29 +1832,37 @@ def setup_routes(app):
     ) -> FT:
         """Shown when activate returns reconnect=True.
 
-        Lets the user confirm reconnecting to the same subscription or start
-        the claim flow to pick a different one.
+        Lets the user confirm reconnecting or start the claim flow to pick a
+        different account. The relay returns a public URL exactly when the
+        tier is entitled to one, so no public URL means a free account: those
+        get sign-back-in wording, never subscription wording.
         """
-        display_url = public_url or t("settings.tab_cloud_relay")
+        if public_url:
+            prompt = P(t("settings.this_instance_was_previously_connected_to"),
+                       B(public_url),
+                       t("settings.reconnect_to_same_subscription"),
+                       cls="settings-hint", style="margin-bottom:12px;")
+            confirm_label = t("btn.reconnect_to") + public_url
+            other_label = t("btn.use_a_different_subscription")
+        else:
+            prompt = P(t("settings.previously_signed_in_free"),
+                       cls="settings-hint", style="margin-bottom:12px;")
+            confirm_label = t("btn.sign_back_in")
+            other_label = t("btn.use_a_different_account")
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-            P(t("settings.this_instance_was_previously_connected_to"),
-                B(display_url),
-                ". Reconnect to the same subscription?",
-                cls="settings-hint",
-                style="margin-bottom:12px;",
-            ),
+            prompt,
             Div(
                 Form(
                     Input(type="hidden", name="_reconnect_token", value=token),
                     Input(type="hidden", name="_reconnect_public_url", value=public_url or ""),
                     Input(type="hidden", name="_reconnect_tos_version", value=tos_version or ""),
-                    Button("Reconnect to " + display_url, type="submit", cls="btn btn--primary"),
+                    Button(confirm_label, type="submit", cls="btn btn--primary"),
                     hx_post="/settings/cloud-reconnect-confirm",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
                 ),
-                Button(t("btn.use_a_different_subscription"),
+                Button(other_label,
                     cls="btn btn--outline",
                     style="margin-left:8px;",
                     hx_post="/settings/cloud-disconnect",

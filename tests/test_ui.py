@@ -16351,6 +16351,26 @@ class TestCelerpAccountSurface:
         assert b"No subscription found." in r.content
 
     @pytest.mark.asyncio
+    async def test_reconnect_confirm_speaks_account_language_for_free_tier(self, ui_client):
+        """A free account has no subscription and no public URL, so the
+        reconnect confirm must not offer 'Reconnect to Celerp Connect' or talk
+        about subscriptions - it is a sign-back-in to a free account."""
+        with patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
+                                               "public_url": None, "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+        assert b"free Celerp account" in r.content
+        assert b"Sign back in" in r.content
+        assert b"subscription" not in r.content
+        with patch("ui.api_client.activate_relay",
+                   new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
+                                               "public_url": "https://co.celerp.app",
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-activate", cookies=_authed())
+        assert b"Reconnect to the same subscription?" in r.content
+        assert b"free Celerp account" not in r.content
+
+    @pytest.mark.asyncio
     async def test_claim_connected_reloads_the_web_access_page(self, ui_client):
         with patch("ui.api_client.cloud_claim",
                    new=AsyncMock(return_value={"connected": True, "relay_status": "active",
