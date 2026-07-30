@@ -24,7 +24,7 @@ from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
-from ui.components.shell import auth_shell, flash, star_supporter_card
+from ui.components.shell import auth_shell, flash, star_supporter_card, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
@@ -504,8 +504,7 @@ def setup_routes(app):
             if is_htmx:
                 msg = ("To reset your password, open a terminal on this machine and run: "
                        "celerp reset-password --email you@example.com")
-                return Response("", headers={"HX-Trigger": json.dumps(
-                    {"celerpToast": {"message": msg, "type": "info", "persist": True}})})
+                return Response("", headers=toast_header(msg, "info", persist=True))
             # Direct URL entry with no JS: send back to login (the link there toasts).
             return RedirectResponse("/login", status_code=302)
         if is_htmx:

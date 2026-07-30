@@ -17670,3 +17670,29 @@ class TestBulkToolbarHidesUntilSelection:
         import ui
         css = (Path(ui.__file__).parent / "static" / "app.css").read_text()
         assert ".bulkbar:not(.is-active)" in css
+
+
+class TestToastHeader:
+    """One helper builds the HX-Trigger header the shell's toast listener reads."""
+
+    def test_message_and_kind(self):
+        import json as _j
+        from ui.components.shell import toast_header
+        h = toast_header("Saved.", "success")
+        assert _j.loads(h["HX-Trigger"]) == {
+            "celerpToast": {"message": "Saved.", "type": "success"}}
+
+    def test_persist_flag(self):
+        import json as _j
+        from ui.components.shell import toast_header
+        payload = _j.loads(toast_header("Read me.", "info", persist=True)["HX-Trigger"])
+        assert payload["celerpToast"]["persist"] is True
+
+    def test_extra_triggers_ride_along(self):
+        """A response can pair the toast with another client event in one header."""
+        import json as _j
+        from ui.components.shell import toast_header
+        payload = _j.loads(
+            toast_header("No.", "error", celerpRestoreCell=True)["HX-Trigger"])
+        assert payload["celerpRestoreCell"] is True
+        assert payload["celerpToast"]["message"] == "No."

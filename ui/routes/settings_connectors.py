@@ -993,10 +993,10 @@ def setup_routes(app):
         if polling and runs and not _any_in_progress(runs):
             ok = _overall_status(runs) != "failed"
             msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang)
+            from ui.components.shell import toast_header
             return HTMLResponse(
                 to_xml(view),
-                headers={"HX-Trigger": json.dumps(
-                    {"celerpToast": {"message": msg, "type": "success" if ok else "error"}})},
+                headers=toast_header(msg, "success" if ok else "error"),
             )
         return view
 

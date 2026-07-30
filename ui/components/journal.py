@@ -23,6 +23,7 @@ from celerp.services.money import EXCHANGE_RATE_DP, to_decimal
 from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
+from ui.components.shell import toast_header
 from ui.components.table import EMPTY, bulk_toolbar, fmt_money
 from ui.i18n import t
 
@@ -278,7 +279,7 @@ def journal_bulk_toolbar(params: dict, carried: dict, *, items: bool = False) ->
 
 
 def journal_void_toast(result: dict) -> dict:
-    """What to tell the reader after a void, read from the API's own answer.
+    """The toast header to send after a void, read from the API's own answer.
 
     Both void paths report through here, so one entry and forty are described the
     same way. Refusals are stated with the count and the API's own words for why,
@@ -297,7 +298,7 @@ def journal_void_toast(result: dict) -> dict:
         reasons = " ".join(dict.fromkeys(
             str(r.get("detail") or "").strip() for r in refused if r.get("detail")))
         message = f"{message} {t('acct.bulk_void_refused', n=len(refused), reasons=reasons)}"
-    return {"message": message.strip(), "type": "error" if refused else "success"}
+    return toast_header(message.strip(), "error" if refused else "success")
 
 
 def _entry_cells(row: dict, has_fx: bool) -> list:
