@@ -224,3 +224,83 @@ async def test_account_methods_proxy_reports_free_email_quota():
         from celerp.routers.health import account_methods_api
         data = await account_methods_api()
     assert data["free_email_quota"] == 0
+
+
+@pytest.mark.asyncio
+async def test_account_methods_owner_initiated_start_url_when_credentialed():
+    """An activated install proves its credential and gets the relay's
+    owner-initiated Google start URL, which lets the sign-in change this
+    computer's account link instead of being refused."""
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={"google": True, "free_email_quota": 5})
+        elif url.endswith("/auth/google/start-url"):
+            assert kw["headers"]["Authorization"] == "Bearer jwt-abc"
+            resp.json = MagicMock(return_value={
+                "url": "https://accounts.google.com/o/oauth2/v2/auth?state=signed"})
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    with (
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+    assert data["google"] is True
+    assert data["google_start_url"] == (
+        "https://accounts.google.com/o/oauth2/v2/auth?state=signed")
+    assert any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_account_methods_open_door_url_without_credential():
+    """A fresh install (no gateway_token yet) keeps the open-door start URL -
+    it has no existing link to change, and the relay would 403 it anyway."""
+    factory, client = _mock_httpx()
+    methods_resp = MagicMock()
+    methods_resp.status_code = 200
+    methods_resp.json = MagicMock(return_value={"google": True, "free_email_quota": 0})
+    client.get = AsyncMock(return_value=methods_resp)
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+    assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
+    assert not client.post.call_args_list
+
+
+@pytest.mark.asyncio
+async def test_account_methods_falls_back_when_start_url_fetch_fails():
+    """A relay that doesn't serve /auth/google/start-url (or a failed token
+    exchange) degrades to the open-door URL, never to a broken button."""
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        if url.endswith("/auth/methods"):
+            resp.status_code = 200
+            resp.json = MagicMock(return_value={"google": True, "free_email_quota": 0})
+        else:
+            resp.status_code = 404
+            resp.json = MagicMock(return_value={"detail": "no such endpoint"})
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    with (
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+    assert data["google"] is True
+    assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
