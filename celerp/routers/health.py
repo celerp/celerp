@@ -373,8 +373,10 @@ async def account_methods_api() -> dict:
 
     An activated install exchanges its gateway credential for a JWT and asks
     the relay for an owner-initiated start URL: that sign-in may CHANGE which
-    account this computer is linked to, which the open door refuses. Fresh
-    installs (no credential yet) get the open-door URL - they have no link to
+    account this computer is linked to, which the open door refuses. A
+    disconnected install re-obtains its credential from /auth/activate first,
+    so the switch also works after a Cloud disconnect. Fresh installs (nothing
+    linked, activate 404s) get the open-door URL - they have no link to
     change. The UI fetches this at click time, so the URL is always fresh."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
@@ -393,6 +395,17 @@ async def account_methods_api() -> dict:
                     google = bool(data.get("google"))
                     free_email_quota = int(data.get("free_email_quota") or 0)
             api_key = _s.gateway_token
+            if google and not api_key:
+                # A Cloud disconnect clears only the local token; the relay-side
+                # link survives (cloud_disconnect above). Re-prove possession the
+                # same way the startup probe does: /auth/activate is keyed on the
+                # preserved instance_id and 404s when nothing is linked, which
+                # keeps fresh installs on the open door below.
+                from celerp.gateway.state import activate_payload
+                act = await c.post(f"{relay_base}/auth/activate",
+                                   json=activate_payload(iid))
+                if act.status_code == 200:
+                    api_key = str(act.json().get("gateway_token") or "")
             if google and api_key:
                 tok_r = await c.post(f"{relay_base}/auth/token",
                                      json={"api_key": api_key})

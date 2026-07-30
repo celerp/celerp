@@ -259,13 +259,17 @@ async def test_account_methods_owner_initiated_start_url_when_credentialed():
 
 @pytest.mark.asyncio
 async def test_account_methods_open_door_url_without_credential():
-    """A fresh install (no gateway_token yet) keeps the open-door start URL -
-    it has no existing link to change, and the relay would 403 it anyway."""
+    """A fresh install (no gateway_token, nothing linked on the relay) keeps
+    the open-door start URL: its /auth/activate probe 404s, it has no existing
+    link to change, and the relay would 403 the owner route anyway."""
     factory, client = _mock_httpx()
     methods_resp = MagicMock()
     methods_resp.status_code = 200
     methods_resp.json = MagicMock(return_value={"google": True, "free_email_quota": 0})
     client.get = AsyncMock(return_value=methods_resp)
+    activate_resp = MagicMock()
+    activate_resp.status_code = 404
+    client.post = AsyncMock(return_value=activate_resp)
     with (
         patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.ensure_instance_id", return_value="i-77"),
@@ -275,7 +279,8 @@ async def test_account_methods_open_door_url_without_credential():
         from celerp.routers.health import account_methods_api
         data = await account_methods_api()
     assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
-    assert not client.post.call_args_list
+    # The only POST is the activate probe - no credential means no JWT exchange.
+    assert not any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -304,3 +309,44 @@ async def test_account_methods_falls_back_when_start_url_fetch_fails():
         data = await account_methods_api()
     assert data["google"] is True
     assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
+
+
+@pytest.mark.asyncio
+async def test_account_methods_reactivates_when_disconnected_but_linked():
+    """A disconnected install whose instance is still linked on the relay
+    re-proves possession via /auth/activate, so the owner-initiated switch
+    works even after a Cloud disconnect (which clears the local token only)."""
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={"google": True, "free_email_quota": 5})
+        elif url.endswith("/auth/google/start-url"):
+            assert kw["headers"]["Authorization"] == "Bearer jwt-abc"
+            resp.json = MagicMock(return_value={
+                "url": "https://accounts.google.com/o/oauth2/v2/auth?state=signed"})
+        return resp
+
+    async def _post_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/activate"):
+            resp.json = MagicMock(return_value={"gateway_token": "fresh-key"})
+        elif url.endswith("/auth/token"):
+            assert kw["json"] == {"api_key": "fresh-key"}
+            resp.json = MagicMock(return_value={"access_token": "jwt-abc"})
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    client.post = AsyncMock(side_effect=_post_router)
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+    assert data["google_start_url"] == (
+        "https://accounts.google.com/o/oauth2/v2/auth?state=signed")
