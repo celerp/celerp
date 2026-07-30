@@ -597,33 +597,48 @@ def test_init_force_aborts_on_no_keeps_everything(tmp_config, tmp_path, monkeypa
 
 # ── _wait_ready ───────────────────────────────────────────────────────────────
 
-def test_wait_ready_announces_when_port_opens(capsys):
-    """The ready line appears only once the port actually accepts connections."""
+def test_wait_ready_ui_url_waits_for_api(capsys):
+    """The clickable UI URL prints only after the API also accepts connections,
+    even when the UI port opens first, and the API line carries no URL: the
+    only address offered is the one users should open, and it is never offered
+    while the pages behind it would still error."""
     import socket
     import threading
     import time as _time
 
     from celerp.cli import _wait_ready
 
-    srv = socket.socket()
-    srv.bind(("127.0.0.1", 0))
-    port = srv.getsockname()[1]
-
     class FakeProc:
         def poll(self):
             return None
 
-    def _listen_later():
-        _time.sleep(0.6)
-        srv.listen(1)
+    ui_srv = socket.socket()
+    ui_srv.bind(("127.0.0.1", 0))
+    ui_port = ui_srv.getsockname()[1]
+    ui_srv.listen(1)  # UI is up immediately
 
-    t = threading.Thread(target=_listen_later)
+    api_srv = socket.socket()
+    api_srv.bind(("127.0.0.1", 0))
+    api_port = api_srv.getsockname()[1]
+
+    def _api_listens_later():
+        _time.sleep(0.8)
+        api_srv.listen(1)  # API comes up later, as in real startup
+
+    t = threading.Thread(target=_api_listens_later)
     t.start()
-    _wait_ready({"UI ": (FakeProc(), port)}, timeout=10)
+    _wait_ready((FakeProc(), api_port), (FakeProc(), ui_port), timeout=10)
     t.join()
-    srv.close()
+    api_srv.close()
+    ui_srv.close()
+
     out = capsys.readouterr().out
-    assert "✓ UI  ready → http://localhost:" in out
+    api_line = f"✓ API ready (internal service, port {api_port})"
+    ui_line = f"✓ Celerp ready → http://localhost:{ui_port}"
+    assert api_line in out
+    assert ui_line in out
+    assert out.index(api_line) < out.index(ui_line)
+    assert f"http://localhost:{api_port}" not in out
 
 
 def test_wait_ready_skips_dead_process(capsys):
@@ -634,7 +649,7 @@ def test_wait_ready_skips_dead_process(capsys):
         def poll(self):
             return 1
 
-    _wait_ready({"API": (DeadProc(), 1)}, timeout=2)
+    _wait_ready((DeadProc(), 1), (DeadProc(), 2), timeout=2)
     assert "ready" not in capsys.readouterr().out
 
 
