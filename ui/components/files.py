@@ -69,7 +69,7 @@ def _fmt_date(iso: str | None) -> str:
     return iso[:10]
 
 
-def _files_section(
+def files_section(
     entity_type: str,
     entity_id: str,
     files: list[dict],

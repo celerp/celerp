@@ -21,7 +21,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import _files_section as _shared_doc_files_section
+from ui.components.files import files_section as _shared_doc_files_section
 
 
 from celerp.output.doc_print import (

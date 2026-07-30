@@ -9803,17 +9803,17 @@ class TestFilesExcelFunnels:
     ]
 
     def test_funnel_present_and_product_images_shown_by_default(self):
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("item", "item:1", self._FILES, can_tag=True))
+        html = to_xml(files_section("item", "item:1", self._FILES, can_tag=True))
         assert "colfilter" in html and "data-row" in html and "data-filter-value" in html
         # Product images are NOT hidden on a normal (e.g. item) files table.
         assert "hero.jpg" in html
 
     def test_product_images_excluded_only_when_requested(self):
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("company", "all", self._FILES, can_tag=True, hide_product_images=True))
+        html = to_xml(files_section("company", "all", self._FILES, can_tag=True, hide_product_images=True))
         # Excluded server-side: the row never renders (and the pager never counts it).
         assert "hero.jpg" not in html
         assert "registration.pdf" in html
@@ -9822,13 +9822,13 @@ class TestFilesExcelFunnels:
         """Regression: with product images excluded, the pager must not count them.
         25 product images + 1 document on one page -> no pagination at all (was:
         an empty-looking table under a multi-page pager)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": f"img{i}", "filename": f"img{i}.jpg", "size": 1,
                   "document_tag": "product_images", "uploaded_at": "2026-06-18"} for i in range(25)]
         files.append({"id": "d1", "filename": "reg.pdf", "size": 1,
                       "document_tag": "registrations", "uploaded_at": "2026-06-18"})
-        html = to_xml(_files_section("company", "all", files, hide_product_images=True))
+        html = to_xml(files_section("company", "all", files, hide_product_images=True))
         assert "reg.pdf" in html
         assert "page-link" not in html
 
@@ -14368,22 +14368,22 @@ class TestUnwrapAddress:
 
 class TestFilesSectionRenders:
     def test_files_section_renders_empty(self):
-        """_files_section with no files should render empty-state message."""
-        from ui.components.files import _files_section
+        """files_section with no files should render empty-state message."""
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         assert "files-section-c1" in html
         assert "files-table-c1" in html
         assert "file-drop-zone-c1" in html
 
     def test_files_section_renders_with_files(self):
-        """_files_section with files should render filename, tag select and delete button."""
-        from ui.components.files import _files_section
+        """files_section with files should render filename, tag select and delete button."""
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "f1", "filename": "contract.pdf", "size": 12345, "document_tag": "contracts", "description": "Main contract"},
         ]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert "contract.pdf" in html
         assert "f1" in html
         assert "file-tag-select" in html
@@ -14391,19 +14391,19 @@ class TestFilesSectionRenders:
         assert "Main contract" in html
 
     def test_files_section_doc_entity(self):
-        """_files_section with entity_type='doc' uses /docs/ URLs."""
-        from ui.components.files import _files_section
+        """files_section with entity_type='doc' uses /docs/ URLs."""
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f2", "filename": "bill.pdf", "size": 500, "document_tag": "", "description": ""}]
-        html = to_xml(_files_section("doc", "d1", files))
+        html = to_xml(files_section("doc", "d1", files))
         assert "/docs/d1/files" in html
         assert "files-section-d1" in html
 
     def test_files_section_upload_js_no_json_parse(self):
         """Upload JS must NOT call .json() - proxy returns HTML, not JSON."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         # Must use r.text() not r.json()
         assert "r.text()" in html or "r.json()" not in html, (
             "Upload JS calls r.json() but proxy returns HTML - this causes "
@@ -14415,10 +14415,10 @@ class TestFilesSectionRenders:
 
     def test_files_section_tag_uses_hx_post(self):
         """Tag select must use hx-post not hx-patch (proxy only has POST handler)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert 'hx-patch="/contacts/c1/files/f1/tag"' not in html, (
             "Tag select uses hx-patch but UI proxy only handles POST"
         )
@@ -14426,20 +14426,20 @@ class TestFilesSectionRenders:
 
     def test_files_section_download_link_uses_download_suffix(self):
         """Download link must use /download suffix to hit the UI proxy correctly."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert "/contacts/c1/files/f1/download" in html, (
             "Download link should point to /download proxy, not raw /files/f1"
         )
 
     def test_files_section_description_js_no_patch(self):
         """Description inline edit must use POST not PATCH (proxy only has POST handler)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "desc"}]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert "method:'PATCH'" not in html, (
             "Description fetch uses PATCH but UI proxy only handles POST"
         )
@@ -14449,9 +14449,9 @@ class TestFilesSectionRenders:
 
     def test_files_section_id_sanitized_no_colon(self):
         """entity_id with colon must produce a colon-free DOM id (valid CSS selector)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "contact:abc-123", []))
+        html = to_xml(files_section("contact", "contact:abc-123", []))
         assert 'id="files-section-contact:abc-123"' not in html, (
             "Colon in entity_id makes CSS selector invalid - must be sanitized"
         )
@@ -14465,9 +14465,9 @@ class TestFilesSectionRenders:
 
     def test_files_section_upload_date_column(self):
         """Upload Date must be the first column header."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         assert "Upload Date" in html or "upload_date" in html.lower()
         # Upload Date must appear before Filename in the header
         upload_pos = html.find("Upload Date")
@@ -14477,54 +14477,54 @@ class TestFilesSectionRenders:
 
     def test_files_section_sort_arrow_on_date_column(self):
         """Date column header must have a sort arrow indicator."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         assert "sort=" in html or "▲" in html or "▼" in html or "sort_dir" in html
 
     def test_files_section_filter_bar_has_tag_dropdown(self):
         """Filter bar must include a tag dropdown select."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         assert 'name="tag_filter"' in html
 
     def test_files_section_filter_bar_has_date_inputs(self):
         """Filter bar must include from-date and to-date inputs."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         assert 'name="date_from"' in html
         assert 'name="date_to"' in html
 
     def test_files_section_pagination_shown_over_threshold(self):
         """Pagination controls must appear when files > page size."""
-        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from ui.components.files import files_section, FILES_PAGE_SIZE
         from fasthtml.common import to_xml
         files = [
             {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
              "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
             for i in range(FILES_PAGE_SIZE + 1)
         ]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert "page=" in html or "pagination" in html.lower() or "Next" in html or ">" in html
 
     def test_files_section_pagination_hidden_under_threshold(self):
         """Pagination controls must NOT appear when files <= page size."""
-        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from ui.components.files import files_section, FILES_PAGE_SIZE
         from fasthtml.common import to_xml
         files = [
             {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
              "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
             for i in range(FILES_PAGE_SIZE)
         ]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         # Should not show page navigation for exactly PAGE_SIZE items
         assert 'class="pagination"' not in html
 
     def test_files_section_newest_first_by_default(self):
         """Files must be sorted newest-first by default (GDR)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "old", "filename": "old.pdf", "size": 1, "document_tag": "", "description": "",
@@ -14532,77 +14532,77 @@ class TestFilesSectionRenders:
             {"id": "new", "filename": "new.pdf", "size": 1, "document_tag": "", "description": "",
              "uploaded_at": "2026-06-01T00:00:00Z"},
         ]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert html.index("new.pdf") < html.index("old.pdf"), "Newest file must appear first"
 
     def test_files_section_search_filters_by_filename(self):
         """search= must filter rows by filename (case-insensitive)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "f1", "filename": "invoice.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
             {"id": "f2", "filename": "contract.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
         ]
-        html = to_xml(_files_section("contact", "c1", files, search="inv"))
+        html = to_xml(files_section("contact", "c1", files, search="inv"))
         assert "invoice.pdf" in html
         assert "contract.pdf" not in html
 
     def test_files_section_search_filters_by_description(self):
         """search= must filter rows by description text."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "warranty card", "uploaded_at": ""},
             {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "shipping label", "uploaded_at": ""},
         ]
-        html = to_xml(_files_section("contact", "c1", files, search="warranty"))
+        html = to_xml(files_section("contact", "c1", files, search="warranty"))
         assert "a.pdf" in html
         assert "b.pdf" not in html
 
     def test_files_section_search_filters_by_linked_ref(self):
         """search= must filter rows by linked_ref (document number)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-0042"},
             {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "PO-0007"},
         ]
-        html = to_xml(_files_section("doc", "d1", files, search="INV"))
+        html = to_xml(files_section("doc", "d1", files, search="INV"))
         assert "a.pdf" in html
         assert "b.pdf" not in html
 
     def test_files_section_search_preserved_in_form(self):
         """The search input must render with the current search value so HTMX refreshes preserve it."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
-        html = to_xml(_files_section("contact", "c1", files, search="hello"))
+        html = to_xml(files_section("contact", "c1", files, search="hello"))
         assert 'value="hello"' in html
 
     def test_files_section_linked_to_column_shown_when_data_present(self):
         """Linked To column must appear when any file has linked_ref."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [
             {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-001", "linked_url": "/docs/d1"},
         ]
-        html = to_xml(_files_section("doc", "d1", files))
+        html = to_xml(files_section("doc", "d1", files))
         assert "Linked To" in html or "linked_to" in html.lower()
         assert "INV-001" in html
 
     def test_files_section_linked_to_column_always_shown(self):
         """Linked To column must always appear (GDR: don't hide structure)."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
-        html = to_xml(_files_section("contact", "c1", files))
+        html = to_xml(files_section("contact", "c1", files))
         assert "Linked To" in html or "linked_to" in html.lower()
 
     def test_files_section_date_inputs_are_text_type(self):
         """Date filter inputs must be type=text (not type=date) to avoid browser year-entry bug."""
-        from ui.components.files import _files_section
+        from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(_files_section("contact", "c1", []))
+        html = to_xml(files_section("contact", "c1", []))
         # type="date" causes the Chrome year field to only accept 2 digits
         assert 'name="date_from"' in html
         assert 'name="date_to"' in html
@@ -17420,3 +17420,41 @@ class TestModulesUnavailablePanel:
         body = r.content.decode()
         assert "The modules list is not available right now" in body
         assert "No modules installed yet" not in body
+
+
+class TestSharedCellUrlsAndDates:
+    """The shared click-to-edit cell takes its save URL from the caller and renders dates."""
+
+    def test_editable_cell_accepts_patch_url(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import editable_cell
+        html = to_xml(editable_cell("eq1", "location", "Bay 2",
+                                    patch_url="/api/maintenance/equipment/eq1/field/location"))
+        assert 'hx-patch="/api/maintenance/equipment/eq1/field/location"' in html
+        assert "/api/items/eq1/field/location" not in html
+
+    def test_editable_cell_date_type_renders_date_input(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import editable_cell
+        html = to_xml(editable_cell("eq1", "serviced_at", "2026-07-01", cell_type="date"))
+        assert 'type="date"' in html
+        assert 'value="2026-07-01"' in html
+
+    def test_editable_cell_date_restores_on_escape(self):
+        """ESC on the date editor restores the display cell instead of saving (GDR 2j)."""
+        from fasthtml.common import to_xml
+        from ui.components.table import editable_cell
+        restore = "/api/maintenance/equipment/eq1/field/serviced_at/display"
+        html = to_xml(editable_cell("eq1", "serviced_at", "2026-07-01", cell_type="date",
+                                    restore_url=restore))
+        assert 'type="date"' in html
+        assert "Escape" in html
+        assert restore in html
+
+    def test_display_cell_date_shows_the_day_only(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import display_cell
+        html = to_xml(display_cell("eq1", "serviced_at", "2026-07-01T09:30:00+00:00",
+                                   cell_type="date", edit_url="/x"))
+        assert "2026-07-01" in html
+        assert "09:30" not in html

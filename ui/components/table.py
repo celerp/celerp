@@ -851,11 +851,14 @@ def editable_cell(
     restore_url: str | None = None,
     label_map: dict | None = None,
     placeholder: str | None = None,
+    patch_url: str | None = None,
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
     placeholder: optional grey hint text for empty number/text inputs (e.g. a suggested value).
-                 It is a hint only - never submitted - so the stored value is unaffected."""
+                 It is a hint only - never submitted - so the stored value is unaffected.
+    patch_url: where the edit saves to. Defaults to the item field route, so a caller that
+               owns its own REST surface (a module) points the cell at its own endpoint."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
@@ -863,8 +866,10 @@ def editable_cell(
     display_val = str(value) if value is not None else ""
     if cell_type == "number" and display_val:
         display_val = _normalize_number_str(display_val)
-    patch_url = f"/api/items/{entity_id}/field/{field}"
-    restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
+    patch_url = patch_url or f"/api/items/{entity_id}/field/{field}"
+    # ESC restores from the same field route it saves to, so pointing the cell at another
+    # REST surface moves both halves together instead of leaving the restore on core's.
+    restore_url = restore_url or f"{patch_url}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
     # Apply label_map to options for selects
     if options is not None and label_map:
@@ -939,6 +944,19 @@ def editable_cell(
             autofocus=True,
             onkeydown=escape_js,
         )
+    elif cell_type == "date":
+        # Native date picker: saving on `change` is what a picker gives us (there is no
+        # meaningful blur-to-save for a calendar popup), and blur restores the display cell
+        # so an opened-but-untouched editor never sticks. Same pair the select branch uses.
+        input_el = Input(
+            type="date", name="value", value=display_val[:10],
+            **swap,
+            hx_trigger="change",
+            cls="cell-input",
+            autofocus=True,
+            onkeydown=escape_js,
+            onblur=blur_restore_js,
+        )
     elif cell_type == "textarea":
         # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
         textarea_escape_js = (
@@ -1008,6 +1026,9 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
         if not s:
             return Span(EMPTY)
         return Span(_normalize_number_str(s), cls="cell-number")
+    if cell_type == "date":
+        # Store may hold a full timestamp; the cell shows the day, matching _fmt("date").
+        return Span(s[:10], cls="cell-text") if s else Span(EMPTY)
     if cell_type == "weight":
         return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
     if cell_type == "tags":
