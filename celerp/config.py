@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # No `[gateway_token]` means no gateway connection, no product telemetry, and
     # no cloud dependency, except a startup subscription check.
     gateway_token: str = ""
+    # True after an explicit Cloud disconnect: the startup probe must not
+    # re-link the install. Cleared when the user reconnects (settings or a
+    # sign-in flow applies a fresh token). Persisted as [cloud] disconnected.
+    cloud_disconnected: bool = False
     gateway_url: str = "wss://relay.celerp.com/ws/connect"
     # Unique instance identifier sent to gateway (auto-generated if blank).
     gateway_instance_id: str = ""
@@ -165,6 +169,8 @@ def load_cloud_config() -> None:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
         settings.backup_encryption_key = cloud["backup_encryption_key"]
+    if cloud.get("disconnected"):
+        settings.cloud_disconnected = True
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
@@ -283,8 +289,12 @@ def write_config(cfg: dict) -> None:
             f'public_url = {_str(cloud.get("public_url", ""))}',
             f'backup_encryption_key = {_str(cloud.get("backup_encryption_key", ""))}',
             f'tos_version = {_str(cloud.get("tos_version", ""))}',
-            "",
         ]
+        # Absent key = never explicitly disconnected (all configs written
+        # before this shipped), matching the embedded/headless idiom.
+        if cloud.get("disconnected"):
+            lines.append("disconnected = true")
+        lines.append("")
 
     if "storage" in cfg:
         st = cfg["storage"]

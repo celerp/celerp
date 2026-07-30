@@ -219,3 +219,27 @@ class TestAutoActivateProbe:
             assert _gw.get_client() is not None, "WS client must start when a public_url is granted"
         finally:
             _gw.set_client(_prev_client)
+
+
+class TestStickyDisconnect:
+    """An explicit Cloud disconnect must hold until the user reconnects:
+    the startup probe never quietly re-links a disconnected install."""
+
+    @respx.mock
+    async def test_disconnected_install_never_probes(self, tmp_path, monkeypatch):
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_http_url = "https://relay.test"
+        mod.settings.gateway_token = ""
+        mod.settings.cloud_disconnected = True
+        route = respx.post("https://relay.test/auth/activate").respond(
+            200, json={"gateway_token": "tok-1"})
+        from celerp.main import _try_auto_activate
+        await _try_auto_activate()
+        assert route.call_count == 0
+        assert mod.settings.gateway_token == ""
+
+    def test_disconnect_flag_survives_restart(self, tmp_path, monkeypatch):
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"cloud": {"disconnected": True}})
+        mod.load_cloud_config()
+        assert mod.settings.cloud_disconnected is True

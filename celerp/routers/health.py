@@ -183,8 +183,9 @@ async def email_status() -> dict:
 async def cloud_disconnect() -> dict:
     """Stop the gateway WebSocket client and clear credentials from config.
 
-    instance_id is preserved - the relay can re-issue a token on next
-    /auth/activate call using the same instance_id.
+    instance_id is preserved and the relay-side link survives, but the
+    disconnect is sticky: nothing reconnects automatically until the user
+    does so from Cloud settings or completes a sign-in.
     """
     from celerp.config import settings as _s, read_config, write_config
     from celerp.gateway import client as _gw
@@ -202,13 +203,15 @@ async def cloud_disconnect() -> dict:
     _set_session_token("")  # must clear before touching config (gate reads this)
     _s.gateway_token = ""
     _s.celerp_public_url = ""
+    _s.cloud_disconnected = True
 
     try:
         cfg = read_config()
-        if cfg and "cloud" in cfg:
-            cfg["cloud"]["token"] = ""
-            cfg["cloud"].pop("public_url", None)
-            write_config(cfg)
+        cloud_cfg = cfg.setdefault("cloud", {})
+        cloud_cfg["token"] = ""
+        cloud_cfg.pop("public_url", None)
+        cloud_cfg["disconnected"] = True
+        write_config(cfg)
     except Exception:
         pass
 
@@ -217,13 +220,24 @@ async def cloud_disconnect() -> dict:
 
 
 async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
-    """Apply a gateway token in the API process: persist config, start WS client."""
+    """Apply a gateway token in the API process: persist config, start WS client.
+
+    Every path here is user-initiated (settings reconnect, sign-in poll, claim),
+    so it also ends a sticky Cloud disconnect."""
     import asyncio
-    from celerp.config import settings as _s, persist_cloud_settings
+    from celerp.config import read_config, settings as _s, persist_cloud_settings, write_config
     from celerp.gateway import client as _gw
 
     _s.gateway_token = token
     _s.gateway_instance_id = iid
+    if _s.cloud_disconnected:
+        _s.cloud_disconnected = False
+        try:
+            cfg = read_config()
+            if cfg.get("cloud", {}).pop("disconnected", None) is not None:
+                write_config(cfg)
+        except Exception:
+            pass
     if public_url:
         _s.celerp_public_url = public_url
 

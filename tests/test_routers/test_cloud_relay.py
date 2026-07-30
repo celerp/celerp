@@ -694,3 +694,58 @@ async def test_connectors_catalog_402_reports_needs_plan(client):
     assert data["error"] == "Connectors need an active plan."
     assert data["needs_plan"] is True
     assert data["connectors"] == []
+
+
+@pytest.mark.asyncio
+async def test_cloud_disconnect_is_sticky(client):
+    """Disconnect records the user's choice in settings and config so the
+    startup probe cannot quietly re-link the install."""
+    token = await _register(client, "sticky")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.gateway_token = "old-token"
+    _s.cloud_disconnected = False
+
+    written = {}
+    with (
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
+        patch("celerp.config.read_config", return_value={"cloud": {"token": "old-token"}}),
+    ):
+        r = await client.post("/settings/cloud-disconnect", headers=_h(token))
+
+    assert r.status_code == 200
+    assert _s.cloud_disconnected is True
+    assert written["cloud"]["disconnected"] is True
+
+
+@pytest.mark.asyncio
+async def test_cloud_apply_token_clears_disconnect_flag(client):
+    """An explicit reconnect (applying a fresh gateway token) ends the sticky
+    disconnect, in settings and in config."""
+    token = await _register(client, "apply-reconnect")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = True
+
+    written = {}
+    with (
+        patch("celerp.gateway.client.get_client", return_value=None),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.gateway.client.GatewayClient", return_value=gw),
+        patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
+        patch("celerp.config.read_config", return_value={"cloud": {"disconnected": True}}),
+        patch("asyncio.create_task"),
+    ):
+        r = await client.post(
+            "/settings/cloud-apply-token",
+            headers=_h(token),
+            json={"gateway_token": "gw-xyz", "public_url": "https://co.celerp.app"},
+        )
+
+    assert r.status_code == 200
+    assert _s.cloud_disconnected is False
+    assert "disconnected" not in written.get("cloud", {})

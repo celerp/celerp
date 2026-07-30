@@ -81,6 +81,8 @@ async def _try_auto_activate() -> None:
     """Probe the relay for an existing subscription and auto-connect if found.
 
     Called at startup when gateway_token is empty. Silent on any failure.
+    Skipped entirely after an explicit Cloud disconnect: staying disconnected
+    is the user's recorded choice, and reconnecting is always explicit.
     """
     _log = logging.getLogger(__name__)
     try:
@@ -88,6 +90,8 @@ async def _try_auto_activate() -> None:
 
         import httpx
         from celerp.config import settings as _s, ensure_instance_id, config_path, persist_cloud_settings
+        if _s.cloud_disconnected:
+            return
         first_boot = not config_path().exists()
         iid = ensure_instance_id()
         from celerp.gateway.state import activate_payload, relay_http_url as _rhu
