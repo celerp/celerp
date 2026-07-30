@@ -75,9 +75,14 @@ def test_product_hub_work_orders_and_action_dropdown(page, ui_server, api):
     assert in_prog["status"] == "in_progress"
 
     # The refreshed block now offers Complete in the same dropdown; choosing it closes the run,
-    # issues components and receives the finished good.
-    page.wait_for_selector("#production-block .wo-action-select", timeout=8000)
-    block.locator(".wo-action-select").first.select_option(value="complete")
+    # issues components and receives the finished good. The API can report in_progress before
+    # the start POST's swap has rendered, so wait for an option only the refreshed select has -
+    # selecting on the stale pre-swap select loses the change event with the swapped-out node.
+    page.wait_for_selector("#production-block .wo-action-select option[value='complete']",
+                           state="attached", timeout=8000)
+    with page.expect_response(lambda r: r.url.endswith("/act") and r.request.method == "POST") as act:
+        block.locator(".wo-action-select").first.select_option(value="complete")
+    assert act.value.ok, f"complete action failed: HTTP {act.value.status}"
     done = _poll_run_status(api, run_id, "completed")
     assert done["status"] == "completed"
 
