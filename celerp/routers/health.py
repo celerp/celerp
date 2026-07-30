@@ -366,28 +366,49 @@ async def cloud_instance_id() -> dict:
 async def account_methods_api() -> dict:
     """Which optional sign-in methods the relay offers, plus the browser URL for
     the Google flow (started in the system browser, bound to this instance).
-    Degrades to email-only when the relay is unreachable - never an error."""
+    Degrades to email-only when the relay is unreachable - never an error.
+
+    An activated install exchanges its gateway credential for a JWT and asks
+    the relay for an owner-initiated start URL: that sign-in may CHANGE which
+    account this computer is linked to, which the open door refuses. Fresh
+    installs (no credential yet) get the open-door URL - they have no link to
+    change. The UI fetches this at click time, so the URL is always fresh."""
     import httpx
-    from celerp.config import ensure_instance_id
+    from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import relay_http_url as _rhu
     relay_base = _rhu()
     iid = ensure_instance_id()
     google = False
     free_email_quota = 0
+    start_url = f"{relay_base}/auth/google/start?instance_id={iid}"
     try:
         async with httpx.AsyncClient(timeout=6.0) as c:
             r = await c.get(f"{relay_base}/auth/methods")
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, dict):
-                google = bool(data.get("google"))
-                free_email_quota = int(data.get("free_email_quota") or 0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    google = bool(data.get("google"))
+                    free_email_quota = int(data.get("free_email_quota") or 0)
+            api_key = _s.gateway_token
+            if google and api_key:
+                tok_r = await c.post(f"{relay_base}/auth/token",
+                                     json={"api_key": api_key})
+                if tok_r.status_code == 200:
+                    su = await c.get(
+                        f"{relay_base}/auth/google/start-url",
+                        params={"instance_id": iid},
+                        headers={"Authorization":
+                                 f"Bearer {tok_r.json()['access_token']}"})
+                    if su.status_code == 200:
+                        su_data = su.json()
+                        if isinstance(su_data, dict) and su_data.get("url"):
+                            start_url = str(su_data["url"])
     except Exception:
         pass
     return {
         "google": google,
         "free_email_quota": free_email_quota,
-        "google_start_url": f"{relay_base}/auth/google/start?instance_id={iid}",
+        "google_start_url": start_url,
     }
 
 
