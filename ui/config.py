@@ -31,67 +31,58 @@ def cookie_domain(request) -> str | None:
     return host
 
 
-def get_role(request) -> str:
-    """Decode the role claim from the JWT cookie without signature verification.
+def get_claims(request) -> dict:
+    """Decode the JWT cookie payload without signature verification.
 
-    Returns the role string (e.g. 'viewer', 'operator', 'manager', 'admin', 'owner').
-    Falls back to 'viewer' (least privilege) on any decode error.
+    The API is the enforcement point for every claim; the UI reads them only to
+    shape what it renders and which company's files it will fetch. Returns an
+    empty dict when there is no cookie or the payload will not decode, so every
+    caller's own fallback is the least-privilege one.
     """
     import base64
     import json as _json
 
-    from celerp.services.auth import _ROLE_MIGRATION
-
     token = get_token(request)
     if not token:
-        return "viewer"
+        return {}
     try:
         payload_b64 = token.split(".")[1]
         payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
         claims = _json.loads(payload_bytes)
-        raw_role = claims.get("role", "viewer")
-        return _ROLE_MIGRATION.get(raw_role, raw_role)
+        return claims if isinstance(claims, dict) else {}
     except Exception:
-        return "viewer"
+        return {}
+
+
+def get_role(request) -> str:
+    """Return the role claim (e.g. 'viewer', 'operator', 'manager', 'admin', 'owner').
+
+    Falls back to 'viewer' (least privilege) when the claim is absent or unreadable.
+    """
+    from celerp.services.auth import _ROLE_MIGRATION
+
+    raw_role = get_claims(request).get("role", "viewer")
+    return _ROLE_MIGRATION.get(raw_role, raw_role)
 
 
 def get_user_email(request) -> str | None:
-    """Decode the 'sub' (email) claim from the JWT cookie without signature verification."""
-    import base64
-    import json as _json
+    """Return the email claim, or None when it is absent or unreadable."""
+    return get_claims(request).get("email") or None
 
-    token = get_token(request)
-    if not token:
-        return None
-    try:
-        payload_b64 = token.split(".")[1]
-        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
-        claims = _json.loads(payload_bytes)
-        return claims.get("email") or None
-    except Exception:
-        return None
+
+def get_company_id(request) -> str | None:
+    """Return the company_id claim, or None when it is absent or unreadable."""
+    company_id = get_claims(request).get("company_id")
+    return str(company_id) if company_id else None
 
 
 def get_enabled_modules(request) -> set[str]:
-    """Decode the 'modules' claim from the JWT cookie without signature verification.
+    """Return the set of enabled module names for the current company.
 
-    Returns the set of enabled module names for the current company.
-    Returns empty set on any decode error or missing claim (shows all nav items as fallback).
+    Empty set when the claim is absent or unreadable (shows all nav items as fallback).
     """
-    import base64
-    import json as _json
-
-    token = get_token(request)
-    if not token:
-        return set()
-    try:
-        payload_b64 = token.split(".")[1]
-        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
-        claims = _json.loads(payload_bytes)
-        raw = claims.get("modules", [])
-        return set(raw) if isinstance(raw, list) else set()
-    except Exception:
-        return set()
+    raw = get_claims(request).get("modules", [])
+    return set(raw) if isinstance(raw, list) else set()
 
 
 async def get_relay_info(request) -> dict:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -1573,6 +1574,16 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
 def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     content = NotStr(msg) if raw else msg
     return Div(content, cls=f"flash flash--{kind}", id="flash")
+
+
+def toast_header(message: str, kind: str = "success", *, persist: bool = False,
+                 **extra_triggers) -> dict:
+    """HX-Trigger header for the shell's celerpToast listener. Extra keyword
+    arguments become sibling client events fired from the same header."""
+    toast: dict = {"message": message, "type": kind}
+    if persist:
+        toast["persist"] = True
+    return {"HX-Trigger": json.dumps({"celerpToast": toast, **extra_triggers})}
 
 
 # Reload the page once the server is reachable again after a restart. The first poll

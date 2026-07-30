@@ -349,7 +349,7 @@ def setup_routes(app):
             clear_href=_href(base, carried))
         return HTMLResponse(
             to_xml(table) + to_xml(totals),
-            headers={"HX-Trigger": _json.dumps({"celerpToast": journal_void_toast(result)})},
+            headers=journal_void_toast(result),
         )
 
     @app.post("/accounting/journal/bulk-void")

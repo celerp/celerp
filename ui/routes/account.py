@@ -30,6 +30,7 @@ from starlette.responses import HTMLResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.shell import toast_header
 from ui.config import PRIVACY_POLICY_URL, get_role as _get_role
 from ui.i18n import t, get_lang
 from ui.routes.settings import _token
@@ -445,8 +446,7 @@ def setup_routes(app):
             # opens instead of swapping in silence.
             return HTMLResponse(
                 to_xml(Div(id=panel_id)),
-                headers={"HX-Trigger": json.dumps({"celerpToast": {
-                    "message": t("account.admin_only", lang), "type": "info"}})})
+                headers=toast_header(t("account.admin_only", lang), "info"))
         intent = request.query_params.get("intent", "signup")
         next_action = _next_from(request.query_params.get("next"))
         google, quota = False, 0

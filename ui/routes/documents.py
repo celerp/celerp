@@ -14,7 +14,7 @@ from urllib.parse import quote_plus, urlencode
 import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
@@ -388,18 +388,12 @@ def _render_fulfillment_badge(doc: dict):
 
 def _action_error(msg: str):
     """Fire a toast popup for action errors and restore any open editable cell to display mode."""
-    import json as _json
     from starlette.responses import HTMLResponse as _HR
     return _HR(
         "",
         status_code=200,
-        headers={
-            "HX-Reswap": "none",
-            "HX-Trigger": _json.dumps({
-                "celerpToast": {"message": msg, "type": "error"},
-                "celerpRestoreCell": True,
-            }),
-        },
+        headers={"HX-Reswap": "none",
+                 **toast_header(msg, "error", celerpRestoreCell=True)},
     )
 
 

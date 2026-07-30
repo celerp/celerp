@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date
 
@@ -13,7 +12,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
@@ -509,14 +508,14 @@ def setup_routes(app):
         made = len(result.get("created", []))
         verb = "Made and completed" if complete else "Created"
         if error:
-            toast = {"message": error, "type": "error"}
+            msg, kind = error, "error"
         elif made:
-            toast = {"message": f"{verb} {made} work order(s).", "type": "success"}
+            msg, kind = f"{verb} {made} work order(s).", "success"
         else:
-            toast = {"message": "Nothing to make for the selected lines.", "type": "info"}
+            msg, kind = "Nothing to make for the selected lines.", "info"
         return HTMLResponse(
             to_xml(_demand_table(lines)),
-            headers={"HX-Trigger": json.dumps({"celerpToast": toast})},
+            headers=toast_header(msg, kind),
         )
 
     @app.get("/manufacturing/requirements")
@@ -636,15 +635,15 @@ def setup_routes(app):
         done = len(result.get("done", []))
         skipped = len(result.get("skipped", []))
         if error:
-            toast = {"message": error, "type": "error"}
+            msg, kind = error, "error"
         else:
             msg = f"{_BULK_RUN_VERB.get(action, 'Updated')} {done} run(s)."
             if skipped:
                 msg += f" {skipped} skipped (not in a valid state)."
-            toast = {"message": msg, "type": "success" if done else "info"}
+            kind = "success" if done else "info"
         return HTMLResponse(
             to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
-            headers={"HX-Trigger": json.dumps({"celerpToast": toast})},
+            headers=toast_header(msg, kind),
         )
 
     @app.get("/manufacturing/runs/{run_id}/edit/{field}")

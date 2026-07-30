@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
 from test_helpers import make_test_token, authed_cookies
+from ui.config import API_BASE as _API_BASE
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -10529,13 +10530,16 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_attachment_proxy_route(self, ui_client):
         """GET /static/attachments/... proxies to API instead of serving from UI static dir."""
-        import httpx
-        mock_response = httpx.Response(200, content=b"fake-image-bytes", headers={"content-type": "image/jpeg"})
-        with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_response)):
-            r = await ui_client.get("/static/attachments/comp1/att1.jpg")
+        patcher, calls = _api_get_mock()
+        with patcher:
+            r = await ui_client.get(
+                f"/static/attachments/{_TEST_COMPANY}/att1.jpg",
+                cookies=_authed(),
+            )
         assert r.status_code == 200
         assert r.content == b"fake-image-bytes"
         assert "image/jpeg" in r.headers.get("content-type", "")
+        assert calls == [f"{_API_BASE}/static/attachments/{_TEST_COMPANY}/att1.jpg"]
 
     @pytest.mark.asyncio
     async def test_actions_panel_removed(self, ui_client):
@@ -17573,3 +17577,122 @@ class TestSharedCellUrlsAndDates:
                                      aria_label="Location"))
         assert 'aria-label="Location"' in combo
         assert "combobox-input" in combo
+
+
+# ── Attachment proxy: company boundary ────────────────────────────────────────
+
+_TEST_COMPANY = "00000000-0000-0000-0000-000000000002"
+_OTHER_COMPANY = "00000000-0000-0000-0000-000000000009"
+
+
+def _api_get_mock(content: bytes = b"fake-image-bytes", content_type: str = "image/jpeg"):
+    """Patch httpx so ONLY the proxy's outbound API call is faked.
+
+    The test client is itself an httpx.AsyncClient, so patching the class method
+    outright answers the test's own request and the app never runs. Dispatch on
+    the API base URL instead, and record outbound calls so a test can assert the
+    proxy never reached the API at all.
+    """
+    import httpx
+    from ui.config import API_BASE
+
+    original = httpx.AsyncClient.get
+    calls: list[str] = []
+
+    async def _dispatch(self, url, *args, **kwargs):
+        if str(url).startswith(API_BASE):
+            calls.append(str(url))
+            return httpx.Response(200, content=content, headers={"content-type": content_type})
+        return await original(self, url, *args, **kwargs)
+
+    return patch("httpx.AsyncClient.get", new=_dispatch), calls
+
+
+class TestAttachmentProxyCompanyBoundary:
+    """The attachment proxy serves only the caller's own company's files."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_other_company_attachment(self, ui_client):
+        """A file under another company id is not found, and the API is never called."""
+        patcher, calls = _api_get_mock()
+        with patcher:
+            r = await ui_client.get(
+                f"/static/attachments/{_OTHER_COMPANY}/att1.jpg",
+                cookies=_authed(),
+            )
+        assert r.status_code == 404
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_traversal_out_of_own_company(self, ui_client):
+        """A path that starts in the caller's company then climbs out is rejected."""
+        patcher, calls = _api_get_mock()
+        with patcher:
+            r = await ui_client.get(
+                f"/static/attachments/{_TEST_COMPANY}/../{_OTHER_COMPANY}/att1.jpg",
+                cookies=_authed(),
+            )
+        assert r.status_code == 404
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_undecodable_token_goes_to_login(self, ui_client):
+        """A cookie with no readable company claim is an unusable session, not a pass."""
+        patcher, calls = _api_get_mock()
+        with patcher:
+            r = await ui_client.get(
+                f"/static/attachments/{_TEST_COMPANY}/att1.jpg",
+                cookies={"celerp_token": "not-a-jwt"},
+            )
+        assert r.status_code in (302, 303)
+        assert "/login" in r.headers.get("location", "")
+        assert calls == []
+
+
+class TestBulkToolbarHidesUntilSelection:
+    """The shared bulk toolbar stays out of the way until rows are ticked,
+    the way inventory's bespoke bar always has."""
+
+    def test_bar_renders_without_is_active(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import bulk_toolbar
+        html = to_xml(bulk_toolbar("t1", [
+            {"value": "go", "label": "Go", "method": "post", "url": "/x"}]))
+        assert 'class="bulkbar bulk-action-bar"' in html
+
+    def test_toolbar_js_reveals_on_selection(self):
+        from ui.components.table import BULK_TOOLBAR_JS
+        assert "classList.toggle('is-active'" in BULK_TOOLBAR_JS
+
+    def test_css_hides_inactive_bar(self):
+        from pathlib import Path
+
+        import ui
+        css = (Path(ui.__file__).parent / "static" / "app.css").read_text()
+        assert ".bulkbar:not(.is-active)" in css
+
+
+class TestToastHeader:
+    """One helper builds the HX-Trigger header the shell's toast listener reads."""
+
+    def test_message_and_kind(self):
+        import json as _j
+        from ui.components.shell import toast_header
+        h = toast_header("Saved.", "success")
+        assert _j.loads(h["HX-Trigger"]) == {
+            "celerpToast": {"message": "Saved.", "type": "success"}}
+
+    def test_persist_flag(self):
+        import json as _j
+        from ui.components.shell import toast_header
+        payload = _j.loads(toast_header("Read me.", "info", persist=True)["HX-Trigger"])
+        assert payload["celerpToast"]["persist"] is True
+
+    def test_extra_triggers_ride_along(self):
+        """A response can pair the toast with another client event in one header."""
+        import json as _j
+        from ui.components.shell import toast_header
+        payload = _j.loads(
+            toast_header("No.", "error", celerpRestoreCell=True)["HX-Trigger"])
+        assert payload["celerpRestoreCell"] is True
+        assert payload["celerpToast"]["message"] == "No."

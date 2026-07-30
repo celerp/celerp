@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.permissions import role_has_permission
@@ -2721,10 +2721,7 @@ function celerpPrintLabel(entityId, templateId) {
         from starlette.responses import HTMLResponse
         return HTMLResponse(
             "", status_code=200,
-            headers={
-                "HX-Reswap": "none",
-                "HX-Trigger": json.dumps({"celerpToast": {"message": str(msg), "type": "error"}}),
-            },
+            headers={"HX-Reswap": "none", **toast_header(str(msg), "error")},
         )
 
     @app.post("/api/items/bulk/status")

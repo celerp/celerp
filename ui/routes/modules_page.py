@@ -34,7 +34,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role
 from ui.i18n import t, get_lang
@@ -937,11 +937,7 @@ def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResp
     """Swap the fragment in place and surface the message as a corner toast, the
     app-wide notice surface, rather than crowding the fragment itself. A None
     message swaps silently."""
-    headers = {}
-    if message:
-        headers["HX-Trigger"] = json.dumps(
-            {"celerpToast": {"message": message,
-                             "type": "error" if error else "success"}})
+    headers = toast_header(message, "error" if error else "success") if message else {}
     return HTMLResponse(to_xml(fragment), headers=headers)
 
 

@@ -28,6 +28,14 @@ NEEDS_MISSING_DEP = '''PLUGIN_MANIFEST = {
 }
 '''
 
+BAD_PERMISSION = '''PLUGIN_MANIFEST = {
+    "name": "bad-perm",
+    "version": "1.0.0",
+    "slots": {"nav": [{"key": "bp", "label": "Bad Perm", "href": "/bp",
+                       "permission": "manage_equipment"}]},
+}
+'''
+
 
 def _mk(dirpath: Path, name: str, init_src: str) -> None:
     pkg = dirpath / name
@@ -94,6 +102,20 @@ def test_load_errors_are_recorded(tmp_path):
     assert "needs-dep" in errs and "not-installed" in errs["needs-dep"]
     # the good module carries no error
     assert "ok-module" not in errs
+
+
+def test_unknown_permission_key_is_refused(tmp_path):
+    """A nav entry naming a permission key outside the registry would KeyError
+    inside the sidebar builder on every page render, taking the whole UI down.
+    The loader refuses the module at load with the key named instead."""
+    _mk(tmp_path, "bad-perm", BAD_PERMISSION)
+    loaded = load_all(tmp_path, {"bad-perm"})
+    assert not any(m["name"] == "bad-perm" for m in loaded)
+    errs = load_errors()
+    assert "bad-perm" in errs and "manage_equipment" in errs["bad-perm"]
+
+    from celerp.modules.slots import get as get_slot
+    assert not any(item.get("_module") == "bad-perm" for item in get_slot("nav"))
 
 
 def test_errors_cleared_between_runs(tmp_path):

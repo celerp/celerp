@@ -46,6 +46,7 @@ from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import register as register_slot
+from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
 
@@ -751,6 +752,27 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                 f"AI API instead:\n"
                 f"  {_MODULE_AI_API_URL}"
             )
+
+    # A slot item naming a permission key outside the registry would KeyError in
+    # the sidebar builder on every page render, taking the whole UI down for
+    # every user. Refuse the module here, with the bad key named, instead.
+    for slot_name, contribution in (manifest.get("slots") or {}).items():
+        items = contribution if isinstance(contribution, list) else [contribution]
+        for item in items:
+            perm = item.get("permission") if isinstance(item, dict) else None
+            if perm and not is_permission_key(perm):
+                log.error(
+                    "Module %r rejected: slot %r names unknown permission key %r",
+                    pkg_name, slot_name, perm,
+                )
+                for key in list(sys.modules.keys()):
+                    if key == pkg_name or key.startswith(pkg_name + "."):
+                        sys.modules.pop(key, None)
+                raise ModuleLoadError(
+                    f"Slot {slot_name!r} names unknown permission key {perm!r}. "
+                    f"Permission keys come from Celerp's own registry; pick the "
+                    f"closest existing key."
+                )
 
     # Register extension slots
     for slot_name, contribution in (manifest.get("slots") or {}).items():

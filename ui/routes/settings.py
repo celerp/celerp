@@ -14,7 +14,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header, flash
+from ui.components.shell import base_shell, page_header, flash, toast_header
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
@@ -333,10 +333,9 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
 def _toast_response(message: str, *fragments: FT):
     """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
     so no stale error text persists in the page."""
-    import json as _json
     from starlette.responses import HTMLResponse as _HR
     body = "".join(to_xml(f) for f in fragments)
-    return _HR(body, headers={"HX-Trigger": _json.dumps({"celerpToast": {"message": message, "type": "error"}})})
+    return _HR(body, headers=toast_header(message, "error"))
 
 
 def _status_error(status_id: str, message: str, oob: FT | None = None):
