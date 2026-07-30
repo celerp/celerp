@@ -234,6 +234,10 @@ def test_manual_je_fx_journey_converts_per_line_and_refuses_to_plug(
         "a refused entry comes back with what was typed, not an empty form"
 
     # The author writes the difference line themselves, in the company currency.
+    # A refusal re-renders the whole page, and the script that builds a new row is
+    # parsed after the button that calls it, so the refusal text being on screen
+    # does not yet mean the button does anything. Wait for the parse to finish.
+    page.wait_for_load_state("domcontentloaded")
     page.click('button:has-text("Add line")')
     _pick_account(page, 4, "6960")
     _clear_currency(page, 4)
