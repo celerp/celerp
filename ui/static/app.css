@@ -2889,6 +2889,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   padding-top: 4px;
   border-top: 1px solid var(--c-border);
 }
+.modal-dialog__quota { margin-right: auto; align-self: center; font-size: 0.75rem; color: var(--text-muted); }
 .modal-body { padding: 16px 24px 24px; }
 
 /* --- Share modal --- */

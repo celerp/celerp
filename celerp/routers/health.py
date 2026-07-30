@@ -87,7 +87,7 @@ async def cloud_status() -> dict:
     # "green but still 502" the user sees while the relay has no live upstream.
     connected = relay_status in ("active", "tos_required")
     if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
+        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "email_resets_on": None, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
 
     # Tier comes from the gateway's own WS push (set_subscription_state, on the
     # "subscription_updated" message) whenever that's arrived - it needs no extra
@@ -99,6 +99,7 @@ async def cloud_status() -> dict:
     last_backup: str | None = None
     email_quota: int = 0
     email_used: int = 0
+    email_resets_on: str | None = None
     try:
         import httpx
         from celerp.gateway.state import relay_http_url as _relay_http_url
@@ -116,6 +117,7 @@ async def cloud_status() -> dict:
                     last_backup = data.get("last_backup")
                     email_quota = int(data.get("email_quota", 0))
                     email_used = int(data.get("email_used", 0))
+                    email_resets_on = data.get("email_resets_on")
     except Exception:
         pass
 
@@ -126,6 +128,7 @@ async def cloud_status() -> dict:
         "last_backup": last_backup,
         "email_quota": email_quota,
         "email_used": email_used,
+        "email_resets_on": email_resets_on,
         "public_url": settings.celerp_public_url,
         "gateway_token_set": bool(settings.gateway_token),
     }

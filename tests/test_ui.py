@@ -12579,6 +12579,25 @@ class TestDocumentsOverhaul:
         assert "modal-dialog" in content
 
     @pytest.mark.asyncio
+    async def test_send_modal_shows_quota_usage_and_reset_date(self, ui_client):
+        """The send modal footer shows the email quota used this period and
+        the date it resets; the line is omitted when the relay doesn't
+        report the quota (self-hosted, or relay unreachable)."""
+        _relay = AsyncMock(return_value={
+            "connected": True, "email_quota": 10, "email_used": 1,
+            "email_resets_on": "2026-08-01"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "(1/10) Resets 2026-08-01" in r.content.decode()
+
+        _no_quota = AsyncMock(return_value={"connected": True})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_quota):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "Resets" not in r.content.decode()
+
+    @pytest.mark.asyncio
     async def test_mark_as_sent_button_on_draft(self, ui_client):
         """Draft doc shows 'Mark as Sent' button."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):

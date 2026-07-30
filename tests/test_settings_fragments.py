@@ -85,6 +85,7 @@ async def test_cloud_status_not_connected(client):
     assert data["connected"] is False
     assert data["tier"] is None
     assert data["email_quota"] == 0
+    assert data["email_resets_on"] is None
 
 
 @pytest.mark.asyncio
@@ -176,6 +177,7 @@ async def test_cloud_status_connected_relay_ok(client):
         "last_backup": "2026-03-15T06:00:00Z",
         "email_quota": 1000,
         "email_used": 42,
+        "email_resets_on": "2026-08-01",
     }
 
     captured_params = {}
@@ -205,6 +207,7 @@ async def test_cloud_status_connected_relay_ok(client):
     assert data["tier"] == "team"
     assert data["email_quota"] == 1000
     assert data["email_used"] == 42
+    assert data["email_resets_on"] == "2026-08-01"
     assert data["last_backup"] == "2026-03-15T06:00:00Z"
     # Verify correct auth params are sent
     assert captured_params.get("instance_id") == "inst-abc"
