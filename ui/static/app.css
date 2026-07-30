@@ -3087,8 +3087,10 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .colfilter-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .dp-row-hidden { display: none; }
 
-/* Shared bulk-action toolbar */
+/* Shared bulk-action toolbar. Hidden until its JS marks a selection, so the
+   action list appears only once rows are ticked, on every page alike. */
 .bulkbar { min-height: 32px; }
+.bulkbar:not(.is-active) { display: none; }
 .bulk-action-select {
   padding: 4px 8px; border: 1px solid var(--c-border); border-radius: 4px;
   font-size: 13px; background: var(--c-bg, #fff); color: var(--c-text); cursor: pointer;

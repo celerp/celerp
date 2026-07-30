@@ -143,6 +143,7 @@ BULK_TOOLBAR_JS = """
     var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
     var cnt=bar.querySelector('.bulk-count');
     if(cnt)cnt.textContent=(bar.getAttribute('data-count-label')||'{n} selected').replace('{n}',n);
+    bar.classList.toggle('is-active',n>0);
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
     if(n===0)closeFields(bar);
     var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
@@ -210,6 +211,8 @@ BULK_TOOLBAR_JS = """
 
 def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None) -> FT:
     """Standard bulk-action toolbar: [N selected] [Action ▾] [Clear] [fields…].
+    Hidden until at least one row is ticked (the JS toggles `is-active`), so the
+    action list appears only when there is a selection for it to act on.
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
     url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`

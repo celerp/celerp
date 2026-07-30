@@ -17647,3 +17647,26 @@ class TestAttachmentProxyCompanyBoundary:
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
         assert calls == []
+
+
+class TestBulkToolbarHidesUntilSelection:
+    """The shared bulk toolbar stays out of the way until rows are ticked,
+    the way inventory's bespoke bar always has."""
+
+    def test_bar_renders_without_is_active(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import bulk_toolbar
+        html = to_xml(bulk_toolbar("t1", [
+            {"value": "go", "label": "Go", "method": "post", "url": "/x"}]))
+        assert 'class="bulkbar bulk-action-bar"' in html
+
+    def test_toolbar_js_reveals_on_selection(self):
+        from ui.components.table import BULK_TOOLBAR_JS
+        assert "classList.toggle('is-active'" in BULK_TOOLBAR_JS
+
+    def test_css_hides_inactive_bar(self):
+        from pathlib import Path
+
+        import ui
+        css = (Path(ui.__file__).parent / "static" / "app.css").read_text()
+        assert ".bulkbar:not(.is-active)" in css
