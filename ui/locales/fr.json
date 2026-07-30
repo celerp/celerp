@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Connecter un compte Celerp est une action d'administrateur. Demandez à votre administrateur de le configurer.",
+  "account.activate_failed": "Connecté, mais cet ordinateur n'a pas pu être relié à votre compte. Veuillez réessayer de vous connecter.",
   "account.choose_subscription": "Vous avez plusieurs abonnements. Choisissez lequel lier à cet ordinateur :",
   "account.claim_email_placeholder": "E-mail utilisé lors de l'achat",
   "account.doc_send_offer_button": "Envoyer par e-mail",

@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Connecting a Celerp account is an administrator action. Ask your administrator to set it up.",
+  "account.activate_failed": "Signed in, but this computer could not be connected to your account. Please try signing in again.",
   "account.choose_subscription": "You have more than one subscription. Choose which one to link to this computer:",
   "account.claim_email_placeholder": "Email used at checkout",
   "account.doc_send_offer_button": "Send by email",

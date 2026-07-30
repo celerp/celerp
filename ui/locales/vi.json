@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Kết nối tài khoản Celerp là thao tác của quản trị viên. Hãy nhờ quản trị viên của bạn thiết lập.",
+  "account.activate_failed": "Đã đăng nhập, nhưng máy tính này không thể kết nối với tài khoản của bạn. Vui lòng thử đăng nhập lại.",
   "account.choose_subscription": "Bạn có nhiều hơn một gói đăng ký. Chọn gói để liên kết với máy tính này:",
   "account.claim_email_placeholder": "Email đã dùng khi thanh toán",
   "account.doc_send_offer_button": "Gửi qua email",

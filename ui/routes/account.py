@@ -340,13 +340,16 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
 
 
 def _signed_in_panel(lang: str, panel_id: str, status: dict,
-                     next_action: str | None = None) -> FT:
+                     next_action: str | None = None,
+                     activate_error: str | None = None) -> FT:
     email = status.get("email") or ""
     tier = status.get("tier") or "free"
     parts = [
         H4(t("account.title", lang), cls="account-panel__title"),
         P(t("account.signed_in_as", lang, email=email)),
     ]
+    if activate_error:
+        parts.append(P(activate_error, cls="flash flash--warning"))
     claim_url = _with_next(f"/account/panel?intent=claim&panel={panel_id}", next_action)
     if status.get("pending_selection"):
         parts.append(P(t("account.choose_subscription", lang), cls="settings-hint"))
@@ -364,6 +367,13 @@ def _signed_in_panel(lang: str, panel_id: str, status: dict,
         parts.append(P(t("account.plan_free", lang), cls="settings-hint"))
     else:
         parts.append(P(t("account.plan", lang, tier=tier), cls="settings-hint"))
+    if panel_id == GATE_PANEL_ID:
+        # The panel rides in the gate modal: signed-in is a terminal state, so
+        # give it the way out (the embedded settings panels need none).
+        parts.append(Div(Button(t("btn.close", lang), id="account-gate-close",
+                                type="button", onclick=_DISMISS_GATE_MODAL,
+                                cls="btn btn--sm btn--secondary"),
+                         cls="account-panel__cancel"))
     return Div(*parts, id=panel_id, cls="cloud-connect-section")
 
 
@@ -536,23 +546,39 @@ def setup_routes(app):
             act: dict = {}
             try:
                 act = await api.activate_relay(token)
+                if act.get("reconnect"):
+                    # A previously-activated instance signing back in: the
+                    # relay rotated the key during activate, so the token it
+                    # just returned is the only live credential - apply it.
+                    act = await api.apply_relay_token(token, {
+                        "gateway_token": act.get("gateway_token", ""),
+                        "public_url": act.get("public_url"),
+                        "tos_version": act.get("tos_version")})
             except Exception:
-                pass
+                act = {"error": "unreachable"}
             # On the Web Access page the whole chrome changes once the relay
             # comes up (value-prop landing -> connected tabs), so load the
             # connected page instead of swapping only the panel.
             if panel_id == "cloud-relay-tab" and act.get("connected"):
                 return Response(status_code=204,
                                 headers={"HX-Redirect": "/settings/cloud"})
-            if act and not act.get("error"):
+            activate_error = None
+            if act.get("error"):
+                # The account is signed in on the relay but THIS install holds
+                # no credentials; say so instead of rendering a clean success.
+                activate_error = t("account.activate_failed", lang)
+            else:
                 # Activation bound the instance; show the account as the relay
                 # sees it now (the pre-bind status is masked for privacy).
                 try:
                     status = await api.account_status(token)
                 except APIError:
                     pass
-            panel = _signed_in_panel(lang, panel_id, status, next_action=next_action)
-            if (next_action and not status.get("pending_selection")
+            panel = _signed_in_panel(lang, panel_id, status,
+                                     next_action=next_action,
+                                     activate_error=activate_error)
+            if (next_action and not activate_error
+                    and not status.get("pending_selection")
                     and not status.get("linked_elsewhere")):
                 # The staged action fires only once the account is settled on
                 # THIS install; with a claim step still open it stays deferred

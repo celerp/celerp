@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Menghubungkan akun Celerp adalah tindakan administrator. Minta administrator Anda untuk menyiapkannya.",
+  "account.activate_failed": "Berhasil masuk, tetapi komputer ini tidak dapat terhubung ke akun Anda. Silakan coba masuk lagi.",
   "account.choose_subscription": "Anda memiliki lebih dari satu langganan. Pilih yang akan ditautkan ke komputer ini:",
   "account.claim_email_placeholder": "Email yang digunakan saat pembelian",
   "account.doc_send_offer_button": "Kirim lewat email",

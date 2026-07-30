@@ -1,5 +1,6 @@
 {
   "account.admin_only": "ربط حساب Celerp إجراء خاص بالمسؤول. اطلب من المسؤول إعداده.",
+  "account.activate_failed": "تم تسجيل الدخول، لكن تعذر ربط هذا الكمبيوتر بحسابك. يرجى محاولة تسجيل الدخول مرة أخرى.",
   "account.choose_subscription": "لديك أكثر من اشتراك. اختر أيها تريد ربطه بهذا الجهاز:",
   "account.claim_email_placeholder": "البريد الإلكتروني المستخدم عند الشراء",
   "account.doc_send_offer_button": "إرسال عبر البريد الإلكتروني",

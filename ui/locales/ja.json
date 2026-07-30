@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Celerpアカウントの接続は管理者の操作です。管理者に設定を依頼してください。",
+  "account.activate_failed": "サインインしましたが、このコンピューターをアカウントに接続できませんでした。もう一度サインインしてください。",
   "account.choose_subscription": "複数のサブスクリプションがあります。このコンピューターに紐づけるものを選択してください:",
   "account.claim_email_placeholder": "購入時に使用したメールアドレス",
   "account.doc_send_offer_button": "メールで送信",

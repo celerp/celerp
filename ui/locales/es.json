@@ -1,5 +1,6 @@
 {
   "account.admin_only": "Conectar una cuenta de Celerp es una acción de administrador. Pida a su administrador que la configure.",
+  "account.activate_failed": "Sesión iniciada, pero este equipo no se pudo conectar a su cuenta. Intente iniciar sesión de nuevo.",
   "account.choose_subscription": "Tiene más de una suscripción. Elija cuál vincular a este equipo:",
   "account.claim_email_placeholder": "Correo usado en la compra",
   "account.doc_send_offer_button": "Enviar por correo",

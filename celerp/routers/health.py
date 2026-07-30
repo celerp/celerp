@@ -555,7 +555,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         return {"error": r.text[:80], "instance_id": iid}
 
     if r.status_code == 404:
-        return {"error": "No subscription found for that email. Check the address and try again.", "instance_id": iid}
+        return {"error": "No subscription or free account found for that email. Check the address and try again.", "instance_id": iid}
     if r.status_code == 429:
         return {"error": "Too many attempts. Try again in an hour.", "instance_id": iid}
     if r.status_code == 403:

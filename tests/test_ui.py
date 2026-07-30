@@ -16396,6 +16396,87 @@ class TestCelerpAccountSurface:
         assert b"Signed in as" in r.content
 
     @pytest.mark.asyncio
+    async def test_poll_reconnect_applies_the_rotated_token(self, ui_client):
+        """The relay rotates the gateway key on every activate, so a reconnect
+        response's token is the only live credential: a sign-in poll must apply
+        it, not drop it and pretend the sign-in worked."""
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
+                  "pending_selection": False, "linked_elsewhere": False}
+        apply_tok = AsyncMock(return_value={"connected": True, "relay_status": "active"})
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
+                                              "public_url": None, "tos_version": None,
+                                              "instance_id": "i-1"})),
+            patch("ui.api_client.apply_relay_token", new=apply_tok),
+        ):
+            r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
+        assert apply_tok.await_count == 1
+        assert apply_tok.await_args.args[1]["gateway_token"] == "gt-1"
+        assert b"Signed in as" in r.content
+        assert b"could not be connected" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_poll_reconnect_on_web_access_page_reloads_it(self, ui_client):
+        """On the Web Access page a reconnect that applies cleanly is a full
+        connect: the page chrome changes, so the poll reloads the page."""
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "cloud",
+                  "pending_selection": False, "linked_elsewhere": False}
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
+                                              "public_url": "https://co.celerp.app",
+                                              "tos_version": None, "instance_id": "i-1"})),
+            patch("ui.api_client.apply_relay_token",
+                  new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
+        ):
+            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
+                                    cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_poll_activation_failure_is_shown_not_swallowed(self, ui_client):
+        """When activation fails the panel must say so instead of rendering a
+        clean signed-in state over a machine that holds no credentials - and a
+        staged continuation must not fire against the missing credentials."""
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
+                  "pending_selection": False, "linked_elsewhere": False}
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"error": "Cannot reach relay."})),
+        ):
+            r = await ui_client.get(
+                "/account/poll?panel=account-gate-panel&mode=google&n=3"
+                "&next=buy:acct-test:official", cookies=_authed())
+        assert b"could not be connected" in r.content
+        assert b"account-resume" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_signed_in_gate_modal_has_a_close_button(self, ui_client):
+        """The signed-in panel inside the gate modal is a journey end: without
+        a close control the user is stuck until a manual page refresh."""
+        status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
+                  "pending_selection": False, "linked_elsewhere": False}
+        with (
+            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
+            patch("ui.api_client.activate_relay",
+                  new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
+        ):
+            gate = await ui_client.get(
+                "/account/poll?panel=account-gate-panel&mode=google&n=3",
+                cookies=_authed())
+            embedded = await ui_client.get(
+                "/account/poll?panel=celerp-account-panel&mode=google&n=3",
+                cookies=_authed())
+        assert b"account-gate-close" in gate.content
+        assert b"account-gate-modal" in gate.content          # dismiss wiring
+        assert b"account-gate-close" not in embedded.content  # embedded panels need no way back
+
+    @pytest.mark.asyncio
     async def test_google_button_opens_browser_and_waits(self, ui_client):
         with patch("ui.api_client.account_methods",
                    new=AsyncMock(return_value={
