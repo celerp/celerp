@@ -336,9 +336,20 @@ _static_dir = os.path.join(os.path.dirname(__file__), "static")
 async def proxy_attachment(request: Request, path: str) -> Response:
     if not request.cookies.get(COOKIE_NAME):
         return RedirectResponse("/login", status_code=302)
-    from ui.config import API_BASE
+    from ui.config import API_BASE, get_company_id
     import httpx
-    url = f"{API_BASE}/static/attachments/{path}"
+    company_id = get_company_id(request)
+    if not company_id:
+        # Cookie present but no readable company claim: the session is unusable.
+        return RedirectResponse("/login", status_code=302)
+    # LocalBackend.store writes /static/attachments/<company_id>/<file>, so the
+    # first segment is the owning company. Anything outside it belongs to another
+    # tenant and does not exist as far as this caller is concerned. Rejecting '..'
+    # stops a path that starts inside the company folder and then climbs out.
+    segments = [s for s in path.split("/") if s not in ("", ".")]
+    if ".." in segments or not segments or segments[0] != company_id:
+        return Response(status_code=404)
+    url = f"{API_BASE}/static/attachments/{'/'.join(segments)}"
     async with httpx.AsyncClient() as c:
         r = await c.get(url)
     return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
