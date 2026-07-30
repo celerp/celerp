@@ -2135,6 +2135,54 @@ async def test_consignment_in_receive_writes_entity_id_to_line_items(client, ses
 
 
 @pytest.mark.asyncio
+async def test_consignment_in_receive_stamps_status_doc(client, session):
+    """Items received on consignment carry the consignment doc as their status doc
+    pairing, so the inventory page links them to the doc and q-search finds them
+    by its number."""
+    token = await _register(client)
+    location_id = await _create_location(client, token)
+
+    cin_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "consignment_in",
+            "contact_id": "contact:supplier",
+            "line_items": [
+                {"sku": "CIN-SD-001", "name": "Consigned Stone", "quantity": 1, "unit_price": 100, "line_total": 100},
+            ],
+            "subtotal": 100, "tax": 0, "total": 100,
+        },
+    )
+    assert cin_r.status_code == 200
+    cin_id = cin_r.json()["id"]
+    await client.post(f"/docs/{cin_id}/finalize", headers=_h(token))
+
+    rec_r = await client.post(
+        f"/docs/{cin_id}/receive",
+        headers=_h(token),
+        json={
+            "location_id": location_id,
+            "received_items": [
+                {"po_line_index": 0, "sku": "CIN-SD-001", "name": "Consigned Stone", "quantity_received": 1, "receive_as": "stock"},
+            ],
+        },
+    )
+    assert rec_r.status_code == 200
+
+    doc_state = (await client.get(f"/docs/{cin_id}", headers=_h(token))).json()
+    doc_number = doc_state.get("doc_number") or doc_state.get("ref_id")
+    assert doc_number
+
+    r = await client.get(f"/items?q={doc_number}", headers=_h(token))
+    assert r.status_code == 200
+    rows = [i for i in r.json()["items"] if i.get("sku") == "CIN-SD-001"]
+    assert rows, "consigned-in item must be findable by the consignment doc number"
+    assert rows[0]["status_doc_id"] == cin_id
+    assert rows[0]["status_doc_number"] == doc_number
+
+
+@pytest.mark.asyncio
 async def test_consignment_in_fulfill_lines_rejected(client, session):
     """consignment_in must always return 422 for fulfill-lines (inbound doc - use /receive instead)."""
     token = await _register(client)

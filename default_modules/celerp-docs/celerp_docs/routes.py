@@ -2527,6 +2527,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     landed_drawdown[_k] = round(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total, 2)
             if is_consignment:
                 item_data["consignment_flag"] = "in"
+                # Pair the new parcel with the consignment doc: inventory renders the
+                # number in the status cell and q-search matches it.
+                item_data["status_doc_id"] = entity_id
+                item_data["status_doc_number"] = row.state.get("doc_number") or row.state.get("ref_id") or ""
             new_eid = f"item:{uuid.uuid4()}"
             created_item_ids.append(new_eid)
             await emit_event(

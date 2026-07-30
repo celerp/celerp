@@ -404,6 +404,45 @@ async def test_fulfilled_item_event_carries_doc_number(client, session, auth, _s
 
 
 @pytest.mark.asyncio
+async def test_sold_item_state_carries_status_doc_and_is_searchable(client, session, auth, _setup_ids):
+    """A sold item's projection state pairs the status with the document that caused it
+    (status_doc_id + status_doc_number), so the inventory page can render SOLD with a
+    linked doc number and the q search finds sold items by that number."""
+    from celerp.models.projections import Projection
+    from celerp.services.fulfill import execute_fulfill
+    from celerp.services.pick import compute_pick_plan
+
+    item_id = await _create_item(client, auth, "STATDOC-A", 2, cost_price=2.0)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth, [{"sku": "STATDOC-A", "quantity": 2, "unit_price": 9.0}], ref_id="INV-STATDOC-1")
+
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    available_inv = [{"entity_id": item_id, "sku": inv_row.state["sku"],
+                      "quantity": float(inv_row.state["quantity"]),
+                      "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
+                      "expires_at": inv_row.state.get("expires_at"),
+                      "cost_total": float(inv_row.state.get("cost_total", 0))}]
+    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
+    await execute_fulfill(session, doc_entity_id=doc_id, doc_state=doc_row.state,
+                          pick_result=pick_result, company_id=_setup_ids["company_id"],
+                          user_id=str(_setup_ids["user_id"]), doc_type="invoice")
+    await session.commit()
+
+    expected_num = doc_row.state.get("doc_number") or doc_row.state.get("ref_id")
+    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    assert inv_row.state["status"] == "sold"
+    assert inv_row.state["status_doc_id"] == doc_id
+    assert inv_row.state["status_doc_number"] == expected_num
+
+    r = await client.get(f"/items?q={expected_num}&status=sold", headers=auth["headers"])
+    assert r.status_code == 200
+    match = [i for i in r.json()["items"] if i.get("entity_id") == item_id or i.get("id") == item_id]
+    assert match, "sold item must be findable by its status doc number"
+    assert match[0]["status_doc_number"] == expected_num
+
+
+@pytest.mark.asyncio
 async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _setup_ids):
     """Un-fulfill: restores stock and reverses JE."""
     from celerp.models.projections import Projection

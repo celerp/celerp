@@ -53,6 +53,7 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # relationships / lifecycle markers
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
     "transformed_from", "transformed_into", "fulfilled_for_docs",
+    "status_doc_id", "status_doc_number",
     # files / media
     "files", "attachments", "preview_image_id",
     # other structured internals
@@ -207,6 +208,21 @@ def _recompute_cost(current: dict) -> None:
     current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
 
 
+def _stamp_status_doc(current: dict, data: dict) -> None:
+    """Keep the status <-> document pairing in lockstep with a status change.
+
+    A doc-driven status change (fulfil, memo->invoice conversion, consignment
+    receive) sends source_doc_id + doc_number and stamps the pairing; any status
+    change without a source doc clears it, so the pairing can never outlive the
+    status that earned it."""
+    if data.get("source_doc_id"):
+        current["status_doc_id"] = data["source_doc_id"]
+        current["status_doc_number"] = data.get("doc_number") or ""
+    else:
+        current.pop("status_doc_id", None)
+        current.pop("status_doc_number", None)
+
+
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
@@ -261,6 +277,9 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     current.pop(field, None)
                 else:
                     current[field] = new_val
+                if field == "status":
+                    # A manual status edit has no source document behind it
+                    _stamp_status_doc(current, {})
             else:
                 # Category attribute — canonical under attributes["<field>"], never top-level (like
                 # `pieces`). Clearing removes it from BOTH locations so nothing lingers if the value was
@@ -290,6 +309,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.status.set":
         new_status = data["new_status"]
         current["status"] = new_status
+        _stamp_status_doc(current, data)
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
         if "updated_at" in data:
@@ -322,6 +342,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
         current["is_expired"] = event_type == "item.expired"
         current["status"] = "expired" if event_type == "item.expired" else "archived"
+        _stamp_status_doc(current, {})
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
@@ -341,6 +362,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # Emitted on source items when absorbed by a merge.
         current["quantity"] = float(data.get("original_qty") or current.get("quantity") or 0)
         current["status"] = "merged"
+        _stamp_status_doc(current, {})
         current["merged_into"] = data.get("merged_into")
     elif event_type == "item.consumed":
         current["quantity"] = max(0.0, float(current.get("quantity", 0)) - float(data["quantity_consumed"]))
@@ -363,11 +385,13 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["quantity"] = float(data.get("quantity_fulfilled", 0))
         current["quantity_fulfilled"] = float(data.get("quantity_fulfilled", 0))
         current["status"] = "memo_out" if data.get("doc_type") == "memo" else "sold"
+        _stamp_status_doc(current, data)
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":
         current["quantity"] = float(data["quantity_restored"])
         current["status"] = "available"
+        _stamp_status_doc(current, {})
         doc_id = data.get("source_doc_id")
         fulfilled_docs = current.get("fulfilled_for_docs", [])
         if doc_id and doc_id in fulfilled_docs:
@@ -376,6 +400,9 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.patched":
         # CSV upsert: merge data fields into existing state, then re-run migrations
         current.update(data)
+        if "status" in data and not data.get("status_doc_id"):
+            # An upsert that changes status without a source doc drops the stale pairing
+            _stamp_status_doc(current, {})
         _normalize_attributes(current)  # keep attributes canonical if the upsert carried them top-level
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)

@@ -4843,6 +4843,22 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
         renderers["pieces"] = _pieces_renderer
 
+    # Status renderer: a doc-driven status (sold, memo_out, consigned-in stock) carries
+    # the causing document on the item state; the badge reads STATUS: DOC-NUMBER with
+    # the number linked to the doc, so list rows are traceable and filterable by doc.
+    if "status" in schema_keys:
+        _status_def = next(f for f in schema if f["key"] == "status")
+        def _status_renderer(entity_id: str, row: dict, _f=_status_def) -> FT:
+            doc_id = str(row.get("status_doc_id") or "")
+            doc_num = str(row.get("status_doc_number") or "") or doc_id.removeprefix("doc:")
+            return display_cell(
+                entity_id=entity_id, field="status", value=row.get("status", ""),
+                cell_type=_f.get("type", "status"), options=_f.get("options"),
+                editable=_f.get("editable", True),
+                status_doc=(doc_id, doc_num) if doc_id else None,
+            )
+        renderers["status"] = _status_renderer
+
     # Category renderer: shows display name instead of slug
     if category_label_map:
         _clm = category_label_map

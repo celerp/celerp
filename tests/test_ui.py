@@ -1032,6 +1032,36 @@ class TestInventoryPage:
         assert b"Ruby" in r.content
 
     @pytest.mark.asyncio
+    async def test_inventory_status_shows_linked_doc_number(self, ui_client):
+        """A doc-driven status renders as one badge reading STATUS: DOC-NUMBER with the
+        number linking to the document, so sold/memo rows are traceable from the list.
+        A row without a status doc pairing keeps the plain badge and no link."""
+        sold = {"entity_id": "gc:200", "name": "Sapphire", "status": "sold",
+                "status_doc_id": "doc:INV-2026-0001", "status_doc_number": "INV-2026-0001",
+                "total_cost": "900.00"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [sold, _ITEM], "total": 2})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'href="/docs/doc:INV-2026-0001"' in body
+        assert "INV-2026-0001" in body
+        # The number sits inside the status badge (reads SOLD: INV-2026-0001) and the
+        # cell stays double-click editable
+        _pre, _post = body.split("cell-gc-200-status", 1)
+        sold_cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--sold" in sold_cell and "INV-2026-0001" in sold_cell
+        assert "dblclick" in sold_cell
+        # Un-paired row: plain badge, no doc link
+        _pre, _post = body.split("cell-gc-123-status", 1)
+        avail_cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--available" in avail_cell and "/docs/" not in avail_cell
+
+    @pytest.mark.asyncio
     async def test_inventory_on_memo_scope_shows_quoted_value(self, ui_client):
         """Landing from the contact card: the scope is passed to the API, the banner names
         the basis, and the per-row value is the quoted price (not the catalog price)."""
