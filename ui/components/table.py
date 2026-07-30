@@ -620,6 +620,7 @@ def searchable_select(
     multiple: bool = False,
     values: list[str] | None = None,
     count_label: str = "",
+    aria_label: str = "",
     **htmx_attrs,
 ) -> FT:
     """
@@ -640,6 +641,8 @@ def searchable_select(
         "{n}" is replaced with the count. Defaults to the same `label.n_selected`
         the bulk toolbar counts with, so a caller passes one only to say something
         other than "N selected".
+    aria_label: accessible name for the visible input, for a control whose only label
+        would otherwise be a column header the screen reader does not read with it.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
     count_label = count_label or t("label.n_selected")
@@ -700,6 +703,10 @@ def searchable_select(
     text_input_extra: dict = {}
     if search_url:
         text_input_extra["name"] = "q"
+    # The visible input is the control a screen reader lands on, so the accessible
+    # name belongs there rather than on the hidden value input.
+    if aria_label:
+        text_input_extra["aria_label"] = aria_label
 
     if multiple:
         # The bag carries the submitted values; the sibling hidden input carries no
@@ -852,17 +859,21 @@ def editable_cell(
     label_map: dict | None = None,
     placeholder: str | None = None,
     patch_url: str | None = None,
+    aria_label: str | None = None,
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
     placeholder: optional grey hint text for empty number/text inputs (e.g. a suggested value).
                  It is a hint only - never submitted - so the stored value is unaffected.
     patch_url: where the edit saves to. Defaults to the item field route, so a caller that
-               owns its own REST surface (a module) points the cell at its own endpoint."""
+               owns its own REST surface (a module) points the cell at its own endpoint.
+    aria_label: accessible name for the control. A cell editor replaces the cell it sits
+               in, so the column header is no longer beside it once the editor opens."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
     _ph = {"placeholder": str(placeholder)} if placeholder not in (None, "") else {}
+    _aria = {"aria_label": str(aria_label)} if aria_label not in (None, "") else {}
     display_val = str(value) if value is not None else ""
     if cell_type == "number" and display_val:
         display_val = _normalize_number_str(display_val)
@@ -911,6 +922,7 @@ def editable_cell(
                     hx_target="closest td",
                     hx_swap="outerHTML",
                     hx_trigger="change",
+                    **_aria,
                 ),
                 cls="cell-input-wrap",
                 onkeydown=combobox_escape_js,
@@ -925,7 +937,7 @@ def editable_cell(
                   else [Option("", value="", disabled=True, selected=True)]),
                 *[Option(lbl, value=val, selected=(val == display_val)) for val, lbl in _opt_items],
                 name="value",
-                **swap,
+                **swap, **_aria,
                 hx_trigger="change",
                 cls=f"cell-input cell-input--{cell_type}",
                 autofocus=True,
@@ -938,7 +950,7 @@ def editable_cell(
         step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
-            **swap, **_ph,
+            **swap, **_ph, **_aria,
             hx_trigger="blur delay:200ms",
             cls="cell-input cell-input--number",
             autofocus=True,
@@ -950,7 +962,7 @@ def editable_cell(
         # so an opened-but-untouched editor never sticks. Same pair the select branch uses.
         input_el = Input(
             type="date", name="value", value=display_val[:10],
-            **swap,
+            **swap, **_aria,
             hx_trigger="change",
             cls="cell-input",
             autofocus=True,
@@ -965,7 +977,7 @@ def editable_cell(
             f"event.preventDefault();}}"
         )
         input_el = Textarea(
-            display_val, name="value", **swap,
+            display_val, name="value", **swap, **_aria,
             hx_trigger="blur delay:200ms",
             cls="cell-input cell-textarea-input", rows="5",
             autofocus=True,
@@ -978,7 +990,7 @@ def editable_cell(
             Option(t("settings.no"), value="false", selected=not is_true),
             Option(t("settings.yes"), value="true", selected=is_true),
             name="value",
-            **swap,
+            **swap, **_aria,
             hx_trigger="change",
             cls="cell-input cell-input--select",
             autofocus=True,
@@ -988,7 +1000,7 @@ def editable_cell(
     else:
         input_el = Input(
             type="text", name="value", value=display_val,
-            **swap, **_ph,
+            **swap, **_ph, **_aria,
             hx_trigger="blur delay:200ms",
             cls="cell-input",
             autofocus=True,

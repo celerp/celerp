@@ -17458,3 +17458,17 @@ class TestSharedCellUrlsAndDates:
                                    cell_type="date", edit_url="/x"))
         assert "2026-07-01" in html
         assert "09:30" not in html
+
+    def test_editable_cell_accepts_aria_label(self):
+        """An open editor has replaced its cell, so the column header no longer names it."""
+        from fasthtml.common import to_xml
+        from ui.components.table import editable_cell
+        plain = to_xml(editable_cell("eq1", "interval_days", "90", cell_type="number",
+                                     aria_label="Service interval in days"))
+        assert 'aria-label="Service interval in days"' in plain
+
+        combo = to_xml(editable_cell("eq1", "location", "Bay 2", cell_type="select",
+                                     options=[f"Bay {n}" for n in range(1, 13)],
+                                     aria_label="Location"))
+        assert 'aria-label="Location"' in combo
+        assert "combobox-input" in combo
