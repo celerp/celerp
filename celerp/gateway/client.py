@@ -70,6 +70,9 @@ class GatewayClient:
         # 0.0 = none served yet this process.
         self._last_request_monotonic: float = 0.0
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
+        # One visible line per outage, not one per retry: set on the first
+        # failed attempt, cleared by hello_ack so the next outage warns again.
+        self._loss_announced = False
         self._required_tos_version: str = ""
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
         # (a dropped task = a lost proxy response or webhook sync).
@@ -137,7 +140,12 @@ class GatewayClient:
                     await self._connect_and_serve()
                     backoff = 1  # reset on clean disconnect
                 except Exception as exc:
-                    log.warning("Gateway connection lost: %s. Reconnecting in %ds.", exc, backoff)
+                    if self._loss_announced:
+                        log.debug("Gateway retry failed: %s. Next attempt in %ds.", exc, backoff)
+                    else:
+                        self._loss_announced = True
+                        log.warning("Relay connection lost. Reconnecting in the background.")
+                        log.debug("Gateway connection lost: %s. First retry in %ds.", exc, backoff)
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
                         break  # stop() was called during backoff
@@ -311,7 +319,12 @@ class GatewayClient:
                 set_session_token(session_token)
             else:
                 log.warning("Gateway hello_ack: no session_token in payload (instance=%s)", self._instance_id)
-            log.info("Gateway handshake complete (instance_id=%s)", self._instance_id)
+            if self._loss_announced:
+                self._loss_announced = False
+                log.info("Relay connection restored.")
+            else:
+                log.info("Relay connected.")
+            log.debug("Gateway handshake complete (instance_id=%s)", self._instance_id)
             feature_flags = payload.get("feature_flags", {})
             if feature_flags:
                 from celerp.gateway.state import set_feature_flags

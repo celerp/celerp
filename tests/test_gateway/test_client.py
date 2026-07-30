@@ -521,3 +521,85 @@ async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
         payload = sent[0]["payload"]
         assert payload["status"] == 403
         assert b"local machine" in _b64.b64decode(payload["body_b64"])
+
+
+# ── reconnect loop console noise ──────────────────────────────────────────────
+# The relay being down must not spam the console: one line when the connection
+# is lost, silence during retries, one line when it comes back.
+
+import asyncio as _asyncio
+import logging as _logging
+
+_real_wait_for = _asyncio.wait_for
+
+
+def _fast_loop(client, monkeypatch):
+    """Make run()'s backoff waits near-instant and disable the reaper."""
+    async def fast_wait_for(awaitable, timeout=None):
+        return await _real_wait_for(awaitable, timeout=0.005)
+
+    monkeypatch.setattr(_asyncio, "wait_for", fast_wait_for)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(client, "_reaper_loop", _noop)
+
+
+@pytest.mark.asyncio
+async def test_connection_loss_warns_once_not_per_retry(client, caplog, monkeypatch):
+    """Repeated connect failures produce exactly one visible warning; retries are
+    silent at INFO and above, with the exception detail kept at DEBUG."""
+    attempts = 0
+
+    async def failing_connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 4:
+            client.stop()
+        raise ConnectionError("boom")
+
+    monkeypatch.setattr(client, "_connect_and_serve", failing_connect)
+    _fast_loop(client, monkeypatch)
+
+    with caplog.at_level(_logging.DEBUG, logger="celerp.gateway.client"):
+        await client.run()
+
+    assert attempts >= 4
+    visible = [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    assert len(visible) == 1
+    # The visible line is calm user copy; the raw exception stays at DEBUG.
+    assert "boom" not in visible[0].getMessage()
+    debug = [r for r in caplog.records if r.levelno == _logging.DEBUG]
+    assert any("boom" in r.getMessage() for r in debug)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_announces_and_rearms_warning(client, caplog, monkeypatch):
+    """A successful handshake after a loss announces the reconnect in plain
+    language (no instance_id) and re-arms the single loss warning."""
+    attempts = 0
+
+    async def connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            await client._dispatch({"type": "hello_ack", "payload": {
+                "instance_id": "test-instance-id", "session_token": "tok"}})
+        if attempts >= 5:
+            client.stop()
+        raise ConnectionError("boom")
+
+    monkeypatch.setattr(client, "_connect_and_serve", connect)
+    _fast_loop(client, monkeypatch)
+
+    with caplog.at_level(_logging.INFO, logger="celerp.gateway.client"):
+        await client.run()
+
+    visible = [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    # One warning before the reconnect, one after it re-arms - never per retry.
+    assert len(visible) == 2
+    connected = [r for r in caplog.records
+                 if r.levelno == _logging.INFO and "onnect" in r.getMessage()]
+    assert connected
+    assert all("test-instance-id" not in r.getMessage() for r in connected)
