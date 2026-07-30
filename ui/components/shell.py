@@ -12,7 +12,6 @@ from fasthtml.common import *
 
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang
-from celerp.services.auth import ROLE_LEVELS
 from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
@@ -426,13 +425,22 @@ document.addEventListener('htmx:afterSettle', function(e) {
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
+/* Elements marked data-quiet-error surface their failure state themselves
+   (e.g. a self-retrying panel) - a toast per failed poll would only add noise. */
+function quietError(e) {
+  var el = e.detail && e.detail.elt;
+  return !!(el && el.closest && el.closest('[data-quiet-error]'));
+}
+
 document.addEventListener('htmx:responseError', function(e) {
+  if (quietError(e)) return;
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
   showGlobalUiError('Request failed (' + status + '): ' + path);
 });
 
 document.addEventListener('htmx:sendError', function(e) {
+  if (quietError(e)) return;
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   showGlobalUiError('Network error while loading: ' + path);
 });
@@ -1038,6 +1046,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
+                    Div(id="account-gate-host"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
                           cls="brand-footer-link"),
@@ -1386,6 +1395,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from ui.config import get_enabled_modules
+    from celerp.modules.loader import CORE_FOLDED
     from celerp.services.permissions import role_has_permission
 
     settings = settings or {}
@@ -1396,11 +1406,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         return role_has_permission(settings, role, perm) if perm else True
 
     def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show. Module entries only show
-        if their module is in the company's enabled set, or if enabled set is empty
-        (old JWT without modules claim - show everything as safe fallback)."""
+        """Kernel entries (no _module key) always show, as do core-folded
+        components (wired at app construction, never subject to per-company
+        enablement - their pages do their own plan gating). Other module
+        entries only show if their module is in the company's enabled set, or
+        if enabled set is empty (old JWT without modules claim - show
+        everything as safe fallback)."""
         mod = item.get("_module")
-        if mod is None:
+        if mod is None or mod in CORE_FOLDED:
             return True
         if not enabled_modules:
             return True
@@ -1502,14 +1515,27 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     if role_has_permission(settings, role, "manage_company_settings"):
         settings_link.append(
             A(t("nav.company_details", lang), href="/finance/company-details",
+              title=t("nav.company_details_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'company-details' else ''}"),
         )
     settings_link.append(
-        A(t("nav.settings", lang), href="/settings/general", cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
+        A(t("nav.settings", lang), href="/settings/general",
+          title=t("nav.settings_tip", lang),
+          cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
     )
+    # Modules is a top-level surface, not a settings tab: it sits between
+    # Global Config and Web Access.
+    if role_has_permission(settings, role, "manage_company_settings"):
+        settings_link.append(
+            A(t("nav.modules", lang), href="/modules",
+              title=t("nav.modules_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
+        )
     if role_has_permission(settings, role, "manage_integrations"):
         settings_link.append(
-            A(t("msg._web_access"), href="/settings/cloud", cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),
+            A(t("msg._web_access", lang), href="/settings/cloud",
+              title=t("nav.web_access_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),
         )
     return Nav(
         Div(

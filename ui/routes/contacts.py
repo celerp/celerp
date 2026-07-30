@@ -20,7 +20,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import _files_section as _shared_files_section, _DOCUMENT_TAGS
+from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
 from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token, get_role as _get_role

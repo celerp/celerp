@@ -20,6 +20,12 @@ contextBridge.exposeInMainWorld("celerp", {
   // Returns the current app version string.
   getVersion: () => ipcRenderer.invoke("get-version"),
 
+  // Modules page: open the modules folder in the OS file manager.
+  openModulesFolder: () => ipcRenderer.invoke("open-modules-folder"),
+
+  // Modules page: native folder picker; resolves to a path string or null.
+  pickModuleFolder: () => ipcRenderer.invoke("pick-module-folder"),
+
   // Register a callback for when an update is available.
   onUpdateAvailable: (cb) => ipcRenderer.on("update-available", (_event, info) => cb(info)),
 

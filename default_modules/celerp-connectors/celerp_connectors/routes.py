@@ -5,7 +5,7 @@ Connector routes — /connectors/*
 
 Cloud-gated: all endpoints require both:
   - User authentication (get_current_user)
-  - Active Celerp Cloud subscription (require_session_token via X-Session-Token)
+  - Active Celerp Connect subscription (require_session_token via X-Session-Token)
 
 Token flow (relay model):
   The client authenticates with relay.celerp.com to obtain a short-lived
@@ -14,7 +14,7 @@ Token flow (relay model):
 
 Self-hosted / bring-your-own-token:
   Pass access_token + store_handle directly. Core does not validate origin.
-  Session token is still required (your instance must be connected to Celerp Cloud).
+  Session token is still required (your instance must be connected to Celerp Connect).
 """
 from __future__ import annotations
 

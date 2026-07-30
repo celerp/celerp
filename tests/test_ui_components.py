@@ -22,46 +22,47 @@ def _render(ft) -> str:
 
 
 def test_upgrade_banner_contains_feature_name():
-    html = _render(upgrade_banner("Cloud Relay", "Get a public URL."))
-    assert "Cloud Relay requires Celerp Connect" in html
+    html = _render(upgrade_banner("Encrypted Backup", "Get a public URL."))
+    assert "Encrypted Backup requires Celerp Connect" in html
 
 
 def test_upgrade_banner_contains_description():
-    html = _render(upgrade_banner("Cloud Relay", "Get a public URL."))
+    html = _render(upgrade_banner("Encrypted Backup", "Get a public URL."))
     assert "Get a public URL." in html
 
 
 def test_upgrade_banner_default_price():
-    html = _render(upgrade_banner("Cloud Relay", "desc"))
+    html = _render(upgrade_banner("Encrypted Backup", "desc"))
     assert "$29/mo" in html
 
 
 def test_upgrade_banner_custom_price():
-    html = _render(upgrade_banner("Cloud AI", "desc", price="$49/mo"))
+    html = _render(upgrade_banner("Encrypted Backup", "desc", price="$49/mo"))
     assert "$49/mo" in html
 
 
-def test_upgrade_banner_no_anchor():
+def test_upgrade_banner_no_plan():
     html = _render(upgrade_banner("Feature", "desc"))
     assert _SUBSCRIBE_BASE in html
-    assert "#" not in html.split(_SUBSCRIBE_BASE)[1].split('"')[0]  # no anchor fragment
-
-
-def test_upgrade_banner_with_anchor():
-    html = _render(upgrade_banner("Feature", "desc", anchor="ai"))
-    assert _SUBSCRIBE_BASE in html
-    # The href should end with #ai (possibly with ?instance_id=... before)
     href_tail = html.split(_SUBSCRIBE_BASE)[1].split('"')[0]
-    assert href_tail.endswith("#ai")
+    assert "#" not in href_tail and "plan=" not in href_tail
+
+
+def test_upgrade_banner_with_plan():
+    html = _render(upgrade_banner("Feature", "desc", plan="ai"))
+    assert _SUBSCRIBE_BASE in html
+    # plan travels as a query param (server-visible), never a fragment
+    href_tail = html.split(_SUBSCRIBE_BASE)[1].split('"')[0]
+    assert "plan=ai" in href_tail and "#" not in href_tail
 
 
 def test_cloud_gate_not_connected_returns_banner():
     html = _render(cloud_gate(
         is_connected=False,
-        feature="Cloud Relay",
+        feature="Encrypted Backup",
         description="desc",
     ))
-    assert "Cloud Relay requires Celerp Connect" in html
+    assert "Encrypted Backup requires Celerp Connect" in html
 
 
 def test_cloud_gate_connected_returns_content():
@@ -69,7 +70,7 @@ def test_cloud_gate_connected_returns_content():
     content = P("Real UI content")
     html = _render(cloud_gate(
         is_connected=True,
-        feature="Cloud Relay",
+        feature="Encrypted Backup",
         description="desc",
         content=content,
     ))
@@ -80,7 +81,7 @@ def test_cloud_gate_connected_returns_content():
 def test_cloud_gate_connected_no_content_returns_empty_div():
     html = _render(cloud_gate(
         is_connected=True,
-        feature="Cloud Relay",
+        feature="Encrypted Backup",
         description="desc",
         content=None,
     ))

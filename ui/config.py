@@ -7,6 +7,7 @@ import os
 
 API_BASE = os.getenv("API_URL", os.getenv("CELERP_API_URL", "http://localhost:8000"))
 RELAY_URL = os.getenv("CELERP_RELAY_URL", "https://relay.celerp.com")
+PRIVACY_POLICY_URL = "https://relay.celerp.com/privacy"
 COOKIE_NAME = "celerp_token"
 REFRESH_COOKIE_NAME = "celerp_refresh"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}

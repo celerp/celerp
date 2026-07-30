@@ -661,3 +661,36 @@ async def test_cloud_status_not_connected_while_connecting_or_error(client, stat
     assert r.status_code == 200
     assert r.json()["connected"] is False, r.json()
     assert r.json()["relay_status"] == status
+
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_402_reports_needs_plan(client):
+    """A relay 402 (free account, no entitled plan) must surface the relay's
+    plain upgrade message AND the needs_plan marker so the UI can render the
+    trial CTA instead of a network-error string."""
+    token = await _register(client, "conn-402")
+
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "relay-jwt-xyz"}
+
+    gated_resp = MagicMock()
+    gated_resp.status_code = 402
+    gated_resp.json.return_value = {"detail": "Connectors need an active plan."}
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=gated_resp)
+
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["error"] == "Connectors need an active plan."
+    assert data["needs_plan"] is True
+    assert data["connectors"] == []

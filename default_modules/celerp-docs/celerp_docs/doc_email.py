@@ -61,7 +61,7 @@ def compose_doc_email(
         _due = 0.0
     due = fmt_amount(_due, currency)
     show_due_line = pay_url and due != amount
-    intro = (message or "").strip() or f"Please find attached {doc_type_label} #{doc_number}."
+    intro = (message or "").strip() or f"Here is {doc_type_label} #{doc_number}."
 
     intro_html = "".join(
         f"<p>{_esc(line)}</p>" for line in intro.splitlines() if line.strip()

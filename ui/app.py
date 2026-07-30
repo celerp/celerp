@@ -53,6 +53,7 @@ from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
     settings_contacts, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
+    modules_page, account,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse
@@ -372,7 +373,7 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
             settings_contacts, settings_cloud, settings_connectors, settings_payments,
-            notifications, events, stars):
+            notifications, events, stars, modules_page, account):
     mod.setup_routes(app)
 
 # Module-conditional UI routes
@@ -416,8 +417,11 @@ try:
 except ImportError:
     pass  # AI package not present — skip silently
 
-# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set)
-_MODULE_DIR = os.environ.get("MODULE_DIR", "")
+# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set).
+# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in.
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
+_MODULE_DIR = os.environ["MODULE_DIR"]
 if _MODULE_DIR and _ENABLED_MODULES:
     from celerp.modules.loader import load_all, register_ui_routes
     _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES)

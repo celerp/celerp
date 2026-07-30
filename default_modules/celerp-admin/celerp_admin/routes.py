@@ -904,7 +904,7 @@ async def relay_status(
     _user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
 ) -> dict:
-    """Return the current Cloud Relay (cloudflared) status.
+    """Return the current relay (cloudflared) status.
 
     Returns:
       {"status": "inactive" | "connecting" | "active" | "error",

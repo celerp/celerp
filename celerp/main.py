@@ -67,10 +67,14 @@ def _filtered_logger_handle(self, record):
 
 logging.Logger.handle = _filtered_logger_handle
 
-# Module system (opt-in: no-op if MODULE_DIR not set)
+# Module system (opt-in: no-op if MODULE_DIR not set). Correct a MODULE_DIR whose
+# first entry is the bundled default_modules/ tree so imports land in a writable
+# drop-in, never among first-party modules (the dev/bare-run footgun).
 import os as _os
 from pathlib import Path as _Path
-_MODULE_DIR = _os.environ.get("MODULE_DIR", "")
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR", ""))
+_MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
 async def _try_auto_activate() -> None:
@@ -135,15 +139,17 @@ async def _try_auto_activate() -> None:
             )
         except Exception:
             pass
-        # Start gateway WS client
-        from celerp.gateway import client as _gw
-        if _gw.get_client() is None:
-            gw = _gw.GatewayClient(gateway_token=token, instance_id=iid, gateway_url=_s.gateway_url)
-            _gw.set_client(gw)
-            asyncio.create_task(gw.run())
-        _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
-        # Start backup scheduler
-        if _s.backup_enabled and _s.backup_encryption_key:
+        # Start gateway WS client, but only where the tunnel has something to serve:
+        # a paid instance (public_url granted) or a free instance with a live share.
+        # A free instance holds no persistent gateway connection; a later share-create
+        # brings the tunnel up on demand through the relay_share seam.
+        from celerp.gateway import ensure_running, has_active_share
+        if public_url or await has_active_share():
+            ensure_running()
+            _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
+        # Start backup scheduler - paid tiers only (public_url is the paid signal;
+        # a free instance is not entitled to backups at all).
+        if public_url and _s.backup_enabled and _s.backup_encryption_key:
             from celerp.services import backup_scheduler
             backup_scheduler.start()
     except Exception as exc:
@@ -152,9 +158,6 @@ async def _try_auto_activate() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    import os
-    import uuid
-    from pathlib import Path
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with engine.begin() as conn:
@@ -223,25 +226,21 @@ async def lifespan(_app: FastAPI):
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
 
-    # Start gateway client if configured (opt-in, no-op if GATEWAY_TOKEN is blank)
-    gateway_task = None
+    # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
+    # is past first activation and never re-enters it. Paid instances (public_url set)
+    # keep the tunnel always-on; a free instance opens it at boot only when it already
+    # has a live share to serve, and otherwise stays down until a share is created.
     if settings.gateway_token:
-        from celerp.gateway import client as _gw
-        instance_id = settings.gateway_instance_id or str(uuid.uuid4())
-        gw = _gw.GatewayClient(
-            gateway_token=settings.gateway_token,
-            instance_id=instance_id,
-            gateway_url=settings.gateway_url,
-        )
-        _gw.set_client(gw)
-        gateway_task = asyncio.create_task(gw.run())
-        log.info("Gateway client started (instance_id=%s)", instance_id)
+        from celerp.gateway import ensure_running, has_active_share
+        if settings.celerp_public_url or await has_active_share():
+            ensure_running()
     else:
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
         asyncio.create_task(_try_auto_activate())
 
-    # Start backup scheduler if cloud is connected and backup is enabled
-    if settings.gateway_token and settings.backup_encryption_key and settings.backup_enabled:
+    # Start backup scheduler - paid tiers only (public_url is the paid signal;
+    # a free instance is not entitled to backups at all).
+    if settings.celerp_public_url and settings.backup_encryption_key and settings.backup_enabled:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
         log.debug("Backup scheduler started")
@@ -290,16 +289,10 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
 
-    if gateway_task:
-        from celerp.gateway import client as _gw
-        if _gw.get_client():
-            await _gw.get_client().close()
-        gateway_task.cancel()
-        try:
-            await asyncio.wait_for(gateway_task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-        _gw.set_client(None)
+    # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
+    # or a runtime share-create) - the gateway package owns that lifecycle now.
+    from celerp.gateway import shutdown as _gateway_shutdown
+    await _gateway_shutdown()
 
 
 logging.basicConfig(level=settings.log_level.upper())

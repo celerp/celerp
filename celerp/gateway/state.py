@@ -79,6 +79,23 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
+async def fetch_relay_bearer(http_client) -> str:
+    """Exchange the instance API key (gateway_token) for a short-lived relay
+    bearer JWT via POST /auth/token.
+
+    Single source of the relay auth handshake every relay REST call needs.
+    Callers pass their own httpx client so they own the timeout and connection
+    lifecycle, and reuse it for the follow-up request. Raises RuntimeError on a
+    non-200 so each caller degrades in one place.
+    """
+    from celerp.config import settings
+    resp = await http_client.post(
+        f"{relay_http_url()}/auth/token", json={"api_key": settings.gateway_token})
+    if resp.status_code != 200:
+        raise RuntimeError(f"relay auth failed ({resp.status_code})")
+    return resp.json()["access_token"]
+
+
 def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dict:
     """Build the /auth/activate request body.
 
@@ -117,22 +134,22 @@ def relay_session_headers() -> dict[str, str]:
 HANDOFF_BASE = "https://celerp.com"
 
 
-def build_handoff_url(path: str, *, medium: str = "inapp", lead: str = "", extra: str = "", anchor: str = "") -> str:
+def build_handoff_url(path: str, *, medium: str = "inapp", lead: str = "", extra: str = "") -> str:
     """Single source of truth for celerp.com handoff links (subscribe, github, ...).
 
     Keeps the format identical everywhere: an optional ``lead`` param first (e.g.
     ``instance_id=...``, so attribution tags never bury it), then the UTM tags
-    (``utm_source=app`` + the caller's ``medium``), then any ``extra`` params, then
-    an optional ``#anchor``.
+    (``utm_source=app`` + the caller's ``medium``), then any ``extra`` params.
+    Everything travels as query params, never fragments - fragments are invisible
+    to the server, so they can't attribute which CTA drove the click.
     """
     params = ([lead] if lead else []) + [f"utm_source=app&utm_medium={medium}"]
     if extra:
         params.append(extra.lstrip("?&"))
-    url = f"{HANDOFF_BASE}{path}?{'&'.join(params)}"
-    return f"{url}#{anchor}" if anchor else url
+    return f"{HANDOFF_BASE}{path}?{'&'.join(params)}"
 
 
-def build_subscribe_url(instance_id: str = "", anchor: str = "", *, topup: bool = False, extra: str = "") -> str:
+def build_subscribe_url(instance_id: str = "", *, topup: bool = False, extra: str = "") -> str:
     """In-app celerp.com/subscribe handoff URL. Thin caller of build_handoff_url.
 
     ``topup=True`` selects the /subscribe/topup variant. Callers resolve the instance
@@ -140,11 +157,12 @@ def build_subscribe_url(instance_id: str = "", anchor: str = "", *, topup: bool 
     """
     path = "/subscribe/topup" if topup else "/subscribe"
     lead = f"instance_id={instance_id}" if instance_id else ""
-    return build_handoff_url(path, medium="inapp", lead=lead, extra=extra, anchor=anchor)
+    return build_handoff_url(path, medium="inapp", lead=lead, extra=extra)
 
 
-def relay_subscribe_url(anchor: str = "") -> str:
+def relay_subscribe_url(plan: str = "") -> str:
     """Subscribe URL pre-filled with the connected gateway instance id."""
     from celerp.config import settings
-    return build_subscribe_url(_instance_id or settings.gateway_instance_id, anchor)
+    return build_subscribe_url(_instance_id or settings.gateway_instance_id,
+                               extra=f"plan={plan}" if plan else "")
 

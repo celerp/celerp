@@ -1,0 +1,27 @@
+name: News ping
+
+# Tells the website repo a release was published, so the /news feed rebuilds
+# the moment a release exists instead of waiting for a timer or an unrelated
+# website commit. Needs the NEWS_DISPATCH_TOKEN secret (fine-grained PAT
+# scoped to the celerp-cloud repo, Contents: read and write). Skips silently
+# when the secret is not set.
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    env:
+      DISPATCH_TOKEN: ${{ secrets.NEWS_DISPATCH_TOKEN }}
+    steps:
+      - name: Dispatch website rebuild
+        if: env.DISPATCH_TOKEN != ''
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/celerp/celerp-cloud/dispatches \
+            -d '{"event_type":"app-release"}'

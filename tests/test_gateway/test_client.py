@@ -32,9 +32,11 @@ def client():
 @pytest.fixture(autouse=True)
 def reset_session_token():
     original = gw_state.get_session_token()
+    original_sub = gw_state.get_subscription_state()
     gw_state.set_session_token("")
     yield
     gw_state.set_session_token(original)
+    gw_state.set_subscription_state(*original_sub)
 
 
 # ── C4: relay-state sentinel on stdout (consumed by the Electron host) ─────────
@@ -97,6 +99,29 @@ async def test_hello_ack_without_session_token_leaves_state_empty(client):
         "payload": {},
     })
     assert gw_state.get_session_token() == ""
+
+
+@pytest.mark.asyncio
+async def test_hello_ack_writes_subscription_tier(client):
+    """hello_ack carries tier/status on every connection (unlike
+    subscription_updated, which only fires on a Stripe billing event and so
+    never reaches a plain free instance)."""
+    await client._dispatch({
+        "type": "hello_ack",
+        "payload": {"tier": "free", "status": "trialing"},
+    })
+    assert gw_state.get_subscription_state() == ("free", "trialing")
+
+
+@pytest.mark.asyncio
+async def test_hello_ack_without_tier_leaves_subscription_state_unchanged(client):
+    """hello_ack with no tier field -> subscription state left as-is."""
+    gw_state.set_subscription_state("team", "active")
+    await client._dispatch({
+        "type": "hello_ack",
+        "payload": {"session_token": "tok"},
+    })
+    assert gw_state.get_subscription_state() == ("team", "active")
 
 
 # ── session.refresh ───────────────────────────────────────────────────────────

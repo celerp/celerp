@@ -230,7 +230,7 @@ class TestModulesAPIEndpoints:
         appear in loaded_modules(). list_modules must still report them running=True —
         otherwise the setup /activating page waits forever and shows "Some modules
         failed to start" (the AI/Cloud-Backup-spin-forever bug)."""
-        from celerp.modules.loader import _CORE_FOLDED
+        from celerp.modules.loader import CORE_FOLDED
 
         token = await _register(client)
         default_modules = Path(__file__).parent.parent.parent / "default_modules"
@@ -240,7 +240,7 @@ class TestModulesAPIEndpoints:
         by_name = {m["name"]: m for m in r.json()}
 
         # Every folded module present on disk must be reported running.
-        on_disk_folded = [n for n in _CORE_FOLDED if (default_modules / n).is_dir()]
+        on_disk_folded = [n for n in CORE_FOLDED if (default_modules / n).is_dir()]
         assert "celerp-ai" in on_disk_folded and "celerp-backup" in on_disk_folded, \
             "AI + Backup must be on disk for this regression test to be meaningful"
         for name in on_disk_folded:
@@ -280,3 +280,186 @@ class TestModulesAPIEndpoints:
         )
         assert meta.get("description"), "description must be non-empty"
         assert meta.get("version"), "version must be non-empty"
+
+
+# ── provenance scan + delete lifecycle ────────────────────────────────────────
+
+_PKG_INIT = ('PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", '
+             '"display_name": "{disp}"}}\n')
+
+
+def _write_pkg(dirpath: Path, name: str) -> Path:
+    pkg = dirpath / name
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(_PKG_INIT.format(name=name, disp=name.title()))
+    return pkg
+
+
+class TestModuleProvenanceAndDelete:
+    @pytest.mark.asyncio
+    async def test_scan_reports_source_and_installed_at_for_import(self, client, tmp_path):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        pkg = _write_pkg(module_dir, "acme-widgets")
+        (pkg / ".celerp-meta.json").write_text(
+            '{"source": "community", "installed_at": "2026-07-29T00:00:00+00:00"}')
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "acme-widgets")
+        assert row["source"] == "community"
+        assert row["installed_at"] == "2026-07-29T00:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_scan_reports_default_source_for_genuine_defaults(self, client):
+        # Genuine, unmodified defaults (content matches the committed lock) scan
+        # as source="default"; the content-identity predicate is the oracle.
+        from celerp.modules.loader import is_first_party
+        token = await _register(client)
+        default_modules = Path(__file__).parent.parent.parent / "default_modules"
+        with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200
+        seen_default = False
+        for m in r.json():
+            if is_first_party(default_modules / m["name"]):
+                seen_default = True
+                assert m["source"] == "default", m
+                assert m["installed_at"] is None, m
+                assert m["demoted"] is False, m
+        assert seen_default, "expected at least one default module in the scan"
+
+    @pytest.mark.asyncio
+    async def test_stray_folder_in_bundled_dir_not_in_lock_scans_non_default(
+            self, client, tmp_path, monkeypatch):
+        # Journey 2: a folder physically inside the bundled dir whose name is not a
+        # shipped default (not in the lock) scans as NON-default, even though the
+        # old name-listing check would have called it default.
+        from celerp.modules import loader
+        token = await _register(client)
+        bundled = tmp_path / "default_modules"
+        bundled.mkdir()
+        _write_pkg(bundled, "celerp-strayxyz")
+        monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
+        with patch.dict(os.environ, {"MODULE_DIR": str(bundled)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "celerp-strayxyz")
+        assert row["is_default"] is False
+        assert row["source"] != "default"
+        # Not named in the lock, so it is a stray - never a demoted default.
+        assert row["demoted"] is False
+
+    @pytest.mark.asyncio
+    async def test_scan_reports_real_source_for_demoted_module(self, client, tmp_path):
+        # A folder named after a real default but with junk content (the impostor)
+        # scans as non-default, not "default".
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg(module_dir, "celerp-manufacturing")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "celerp-manufacturing")
+        assert row["is_default"] is False
+        assert row["source"] != "default"
+        # Named in the lock but content mismatch: the scan reports the demotion
+        # itself, so the UI banner needs no cross-render state.
+        assert row["demoted"] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_allows_demoted_module_previously_refused_as_default(
+            self, client, tmp_path):
+        # The impostor (real default name, junk content) is deletable now, where
+        # the old name-based guard refused it as a default.
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg(module_dir, "celerp-manufacturing")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/celerp-manufacturing/delete", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert not (module_dir / "celerp-manufacturing").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_module_unauthenticated(self, client):
+        r = await client.post("/companies/me/modules/x/delete")
+        assert r.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_delete_disabled_nondefault_module_removes_folder_and_frees_name(
+            self, client, tmp_path):
+        from celerp.modules.importer import install_from_folder
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        src = _write_pkg(tmp_path / "src", "acme-widgets")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
+            assert (module_dir / "acme-widgets").exists()
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/delete", headers=_h(token))
+            assert r.status_code == 200, r.text
+            assert not (module_dir / "acme-widgets").exists()
+            # The name is freed: the same folder re-imports cleanly.
+            info = install_from_folder(src)
+            assert info["name"] == "acme-widgets"
+            assert (module_dir / "acme-widgets").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_default_module_refused(self, client):
+        token = await _register(client)
+        default_modules = Path(__file__).parent.parent.parent / "default_modules"
+        with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
+            r = await client.post(
+                "/companies/me/modules/celerp-labels/delete", headers=_h(token))
+        assert r.status_code in (409, 422), r.text
+        assert (default_modules / "celerp-labels").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_enabled_module_refused(self, client, tmp_path):
+        from celerp.modules.importer import install_from_folder
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        src = _write_pkg(tmp_path / "src", "acme-widgets")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
+            re = await client.post(
+                "/companies/me/modules/acme-widgets/enable", headers=_h(token))
+            assert re.status_code == 200, re.text
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/delete", headers=_h(token))
+        assert r.status_code in (409, 422), r.text
+        assert (module_dir / "acme-widgets").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_running_module_refused(self, client):
+        # celerp-ai is core-folded (is_running True) and default; delete refused.
+        token = await _register(client)
+        default_modules = Path(__file__).parent.parent.parent / "default_modules"
+        with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
+            r = await client.post(
+                "/companies/me/modules/celerp-ai/delete", headers=_h(token))
+        assert r.status_code in (409, 422), r.text
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_module_404s(self, client, tmp_path):
+        from celerp.modules.importer import install_from_folder
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        src = _write_pkg(tmp_path / "src", "ghost-mod")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
+            r = await client.post(
+                "/companies/me/modules/ghost-mod/delete", headers=_h(token))
+            assert r.status_code == 200, r.text
+            # A second delete of the same name is the never-installed case:
+            # the live route reports the module itself as missing.
+            r = await client.post(
+                "/companies/me/modules/ghost-mod/delete", headers=_h(token))
+        assert r.status_code == 404, r.text

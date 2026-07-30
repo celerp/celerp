@@ -116,3 +116,6 @@ update_categories.py
 # Internal working files - never commit
 tmp/
 celerp-droplet/
+
+# Test download, not a real module
+default_modules/acme-maintenance/

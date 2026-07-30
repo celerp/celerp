@@ -54,7 +54,7 @@ celerp upgrade    # pip install --upgrade celerp + migrate
 | `--db-url` | `postgresql+asyncpg://celerp:celerp@localhost:5432/celerp` | PostgreSQL connection URL |
 | `--api-port` | `8000` | API server port |
 | `--ui-port` | `8080` | UI server port |
-| `--cloud-token` | _(empty)_ | Celerp Cloud token (optional) |
+| `--cloud-token` | _(empty)_ | Celerp Connect token (optional) |
 | `--force` | off | Overwrite existing config |
 | `--yes` / `-y` | off | Skip the `--force` wipe confirmation (non-interactive) |
 | `--no-start` | off | Set up, then exit WITHOUT launching servers (service-managed/headless) |

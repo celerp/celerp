@@ -200,14 +200,15 @@ async def _fetch_access_token(platform: str, token: str) -> dict:
     return data
 
 
-async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str]:
+async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str, bool]:
     """Fetch connector catalog via API process proxy (which holds the gateway token).
-    Returns (connectors, error_detail) - error_detail is "" on success."""
+    Returns (connectors, error_detail, needs_plan) - error_detail is "" on
+    success; needs_plan means the relay refused with 402 (no entitled plan)."""
     from ui.api_client import get_connectors_catalog
     try:
         return await get_connectors_catalog(token)
     except Exception as exc:
-        return [], str(exc)
+        return [], str(exc), False
 
 
 async def _get_last_runs(company_id: str) -> dict[str, object]:
@@ -465,8 +466,11 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
 def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_poll: bool = False) -> FT:
     """Status table wrapped in a self-re-triggering container. While a sync is in progress
     (or force_poll, right after kicking one off) the fragment re-fetches itself every 2s
-    (native `load delay` idiom - the app does not use `every`); when all entities are
-    terminal it renders WITHOUT the trigger, stopping the poll. aria-live announces it."""
+    via the one-shot `load delay` idiom - fine here because the polled endpoint is the
+    local app, so requests succeed and each swap re-arms the trigger (an `every` trigger
+    is needed only where a request can fail mid-poll, as in the modules restart panel);
+    when all entities are terminal it renders WITHOUT the trigger, stopping the poll.
+    aria-live announces it."""
     polling = force_poll or _any_in_progress(runs)
     attrs: dict = {}
     if polling:
@@ -691,31 +695,47 @@ def _connector_card(
 
 def _entitlement_cta(lang: str = "en") -> FT:
     """Shown when connecting is blocked by no active/trialing subscription - the trial
-    paywall moment. A clear CTA to start the trial, not a raw error."""
+    paywall moment. A clear CTA to start the trial, not a raw error. Links straight to
+    the relay's subscribe flow (same build_subscribe_url used on the status/plans
+    pages) rather than back to /settings/cloud, which would cost the user an extra
+    click to find the actual subscribe button."""
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import build_subscribe_url
+    href = build_subscribe_url(ensure_instance_id(), extra="plan=cloud")
     return Div(
         P(t("connectors.no_subscription", lang), cls="settings-hint"),
-        A(t("connectors.start_trial", lang), href="/settings/cloud", cls="btn btn--sm btn--primary"),
+        A(t("connectors.start_trial", lang), href=href, target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
 
-async def connectors_tab_content(lang: str, token: str) -> FT:
-    """Render the full connectors tab (catalog grouped by category)."""
+async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
+    """Render one connectors tab: the catalog entries of a single category
+    ("website" or "accounting" - each has its own tab on the Web Access page)."""
     from celerp.config import ensure_instance_id
-    from celerp.gateway.client import get_client
     from ui.config import RELAY_URL
 
-    gw = get_client()
     relay_url = RELAY_URL
     iid = ensure_instance_id()
 
-    catalog, _fetch_err = await _fetch_catalog(relay_url, iid, token=token)
+    catalog, fetch_err, needs_plan = await _fetch_catalog(relay_url, iid, token=token)
 
     if not catalog:
+        if needs_plan:
+            # Free account: the relay's 402 is an entitlement gate, not a
+            # network problem - show the trial CTA, same as the authorize path.
+            return Div(_entitlement_cta(lang), cls="settings-card")
         return Div(
-            P(t("connectors.fetch_error", lang,
+            P(fetch_err or t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
               cls="flash flash--warning"),
+            cls="settings-card",
+        )
+
+    catalog = [c for c in catalog if c.get("category", "website") == category]
+    if not catalog:
+        return Div(
+            P(t("connectors.none_in_category", lang), cls="settings-hint"),
             cls="settings-card",
         )
 
@@ -736,55 +756,20 @@ async def connectors_tab_content(lang: str, token: str) -> FT:
         if c.get("connected") and last_runs.get(c["id"]) is None:
             _spawn(_autosync_once(iid, c["id"], token))
 
-    # Group by category, labelled by what the sync does for the customer
-    group_labels = {
-        "website": t("connectors.group_website", lang, default="Website Sync"),
-        "accounting": t("connectors.group_accounting", lang, default="Accounting Sync"),
-    }
-    categories: dict[str, list[dict]] = {}
-    for c in catalog:
-        categories.setdefault(c.get("category", "other"), []).append(c)
-
-    # Stable order: website first, then accounting, then anything else
-    order = ["website", "accounting"]
-    ordered_cats = sorted(
-        categories, key=lambda k: (order.index(k) if k in order else len(order), k)
-    )
-
-    sections: list[FT] = []
-    for cat in ordered_cats:
-        label = group_labels.get(cat, cat.title())
-        cards = [
-            _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
-                          config=configs.get(c["id"]), lang=lang)
-            for c in categories[cat]
-        ]
-        sections.append(
-            Div(
-                P(label, cls="connector-section-title"),
-                *cards,
-            )
-        )
+    # The tab label already names the category, so the cards render directly.
+    cards = [
+        _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
+                      config=configs.get(c["id"]), lang=lang)
+        for c in catalog
+    ]
 
     return Div(
-        *sections,
+        *cards,
         cls="settings-card",
     )
 
 
 def setup_routes(app):
-
-    @app.get("/settings/connectors/tab")
-    async def connectors_tab_htmx(request: Request):
-        """HTMX partial: render connectors tab content."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="flash flash--warning")
-        if (r := await _check_permission(request, "manage_integrations")):
-            return r
-        from ui.i18n import get_lang
-        lang = get_lang(request)
-        return await connectors_tab_content(lang, token=token)
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
@@ -865,7 +850,7 @@ def setup_routes(app):
             )
             await session.commit()
 
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -908,7 +893,7 @@ def setup_routes(app):
             )
             await session.commit()
 
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -952,7 +937,7 @@ def setup_routes(app):
             from starlette.responses import Response
             return Response(status_code=204, headers={"HX-Redirect": "/settings?tab=connectors"})
 
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
@@ -1036,7 +1021,7 @@ def setup_routes(app):
 
         iid = ensure_instance_id()
         lang = get_lang(request)
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c = next((x for x in catalog if x["id"] == platform),
                  {"id": platform, "name": platform.title(), "category": "website"})
         config = await _get_connector_config(iid, platform)
@@ -1130,7 +1115,7 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
 

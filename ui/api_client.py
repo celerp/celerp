@@ -450,12 +450,6 @@ async def patch_base_price_list(token: str, name: str) -> dict:
         return _raise(await c.patch("/companies/me/base-price-list", json={"name": name})).json()
 
 
-async def restart_system(token: str) -> dict:
-    """POST /system/restart - graceful server restart (admin)."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/system/restart")).json()
-
-
 async def get_default_price_list(token: str) -> str:
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/default-price-list")).json()
@@ -2076,6 +2070,73 @@ async def disable_module(token: str, module_name: str) -> dict:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
 
 
+async def delete_module(token: str, module_name: str) -> dict:
+    """POST /companies/me/modules/{name}/delete - remove a disabled, non-default module (admin only)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+
+
+async def import_module_zip(token: str, filename: str, data: bytes,
+                            source: str = "sideloaded") -> dict:
+    """POST /companies/me/modules/import - install a module from a .zip (admin only).
+
+    `source` records the module's provenance (a plain sideload by default; the
+    community-import surface passes "community")."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/companies/me/modules/import",
+            files={"file": (filename, data, "application/zip")},
+            data={"source": source},
+        )).json()
+
+
+async def import_module_path(token: str, path: str) -> dict:
+    """POST /companies/me/modules/import-path - install a module from a local folder."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/import-path", json={"path": path})).json()
+
+
+async def buy_module(token: str, slug: str, kind: str, custom_text: str = "") -> dict:
+    """POST /companies/me/modules/buy - get a Stripe Checkout URL for a paid module.
+    custom_text carries the buyer-language purchase disclosures shown on the
+    Checkout page."""
+    payload: dict = {"slug": slug, "kind": kind}
+    if custom_text:
+        payload["custom_text"] = custom_text
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/buy", json=payload)).json()
+
+
+async def module_licenses(token: str) -> list[str]:
+    """GET /companies/me/modules/licenses - slugs with an active license."""
+    async with _api_client(token) as c:
+        r = await c.get("/companies/me/modules/licenses")
+        return (r.json().get("licensed", []) or []) if r.status_code == 200 else []
+
+
+async def marketplace_download(token: str, slug: str) -> dict:
+    """POST /companies/me/modules/marketplace-download - fetch a marketplace
+    module from the relay and stage it for install (the download can take a
+    while). Returns the staged path the following Install reads."""
+    async with _api_client(token, timeout=90.0) as c:
+        return _raise(await c.post("/companies/me/modules/marketplace-download",
+                                   json={"slug": slug})).json()
+
+
+async def marketplace_install(token: str, path: str) -> dict:
+    """POST /companies/me/modules/marketplace-install - install a previously
+    staged marketplace archive. The module lands disabled, ready to enable."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/companies/me/modules/marketplace-install",
+                                   json={"path": path})).json()
+
+
+async def restart_system(token: str) -> dict:
+    """POST /system/restart - graceful restart; the process manager respawns."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/system/restart")).json()
+
+
 # ---------------------------------------------------------------------------
 # Verticals / Category Library
 # ---------------------------------------------------------------------------
@@ -2156,6 +2217,13 @@ async def get_relay_status(token: str) -> dict:
     """GET /settings/cloud-status — returns {connected, relay_status, ...}."""
     async with _api_client(token) as c:
         return _raise(await c.get("/settings/cloud-status")).json()
+
+
+async def get_billing_portal_url(token: str) -> str:
+    """POST /settings/cloud/billing-portal - Stripe portal URL for managing the
+    Celerp subscription (cancel, change card, invoices)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/cloud/billing-portal")).json()["portal_url"]
 
 
 async def get_backup_status(token: str) -> dict:
@@ -2259,6 +2327,24 @@ async def get_instance_id(token: str) -> str:
         return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
 
+async def account_methods(token: str) -> dict:
+    """GET /settings/account-methods - optional sign-in methods + Google start URL."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/settings/account-methods")).json()
+
+
+async def account_signup(token: str, email: str) -> dict:
+    """POST /settings/account-signup - send the magic sign-in link."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/account-signup", json={"email": email})).json()
+
+
+async def account_status(token: str) -> dict:
+    """GET /settings/account-status - poll the relay account state."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/settings/account-status")).json()
+
+
 async def send_otp(token: str, email: str) -> dict:
     """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
     async with _api_client(token) as c:
@@ -2271,12 +2357,13 @@ async def cloud_claim(token: str, payload: dict) -> dict:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 
-async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
+async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:
     """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
-    Returns (connectors, error_detail). error_detail is "" on success."""
+    Returns (connectors, error_detail, needs_plan). error_detail is "" on success;
+    needs_plan is True when the relay refused with 402 (no entitled plan)."""
     async with _api_client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
-    return data.get("connectors", []), data.get("error", "")
+    return data.get("connectors", []), data.get("error", ""), bool(data.get("needs_plan"))
 
 
 async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:

@@ -58,7 +58,7 @@ from celerp.session_gate import require_session_token
 def _upgrade_url() -> str:
     from celerp.config import settings
     from celerp.gateway.state import build_subscribe_url
-    return build_subscribe_url(settings.gateway_instance_id, "ai")
+    return build_subscribe_url(settings.gateway_instance_id, extra="plan=ai")
 _CLOUD_FILE_LIMIT = 1
 
 # AI-specific rate limiter: tighter than the global 60/min default.

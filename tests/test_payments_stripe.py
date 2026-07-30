@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Online invoice payment via Stripe Connect, brokered by Celerp Cloud (mocked).
+"""Online invoice payment via Stripe Connect, brokered by Celerp Connect (mocked).
 
 The instance holds no Stripe credentials - checkout creation, session status and
 Connect onboarding are all cloud calls, mocked here at the payments-service boundary.
@@ -248,7 +248,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     eid, token = await _payable_invoice(client, tok)
 
     # 1. Merchant clicks Send: the email leads with a Pay button for the balance due.
-    r = await client.post(f"/docs/{eid}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{eid}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200, r.text
     await _asyncio.wait_for(email_done.wait(), timeout=2)
     assert f"/pay/{token}" in sent["html"] and ">Pay USD 1,070.00<" in sent["html"]
@@ -439,7 +439,7 @@ async def test_send_email_includes_pay_link(client, payments_on, monkeypatch):
 
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
-    r = await client.post(f"/docs/{eid}/send", json={"sent_to": "cust@x.com"}, headers=_h(tok))
+    r = await client.post(f"/docs/{eid}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
     await asyncio.wait_for(done.wait(), timeout=2)
     assert f"/pay/{token}" in captured["html"]

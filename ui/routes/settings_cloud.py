@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Settings - Web Access: Cloud Relay connection, TOS, Team infrastructure."""
+"""Settings - Web Access: Celerp Connect connection, TOS, Team infrastructure."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from ui.routes.settings import (
     _check_permission,
     _token,
     _cloud_relay_tab,
+    PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
 
@@ -28,10 +29,13 @@ def _has_team_features() -> bool:
 
 
 def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") -> FT:
-    tabs = [("status", t("cloud.tab_connection", lang))]
+    tabs = [("status", t("settings.team_url", lang))]
     if has_team_features:
         tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
-    tabs.append(("connectors", t("cloud.tab_connectors", lang, default="Connectors")))
+    # One tab per connector category, labelled by what the sync does for the
+    # customer (same keys as the old in-tab section headings).
+    tabs.append(("website", t("connectors.group_website", lang)))
+    tabs.append(("accounting", t("connectors.group_accounting", lang)))
     # Payments lives with Web Access: it only works cloud-connected, and a
     # not-yet-connected visitor lands amid the plans/features pitch instead of
     # a dead Connect button. Links to its own page (needs live status).
@@ -70,9 +74,6 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 def _value_prop_page(iid: str, lang: str = "en") -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
-    from celerp.gateway.state import build_subscribe_url
-    subscribe_base = build_subscribe_url(iid)
-
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -84,6 +85,20 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-hero",
         ),
+        _plans_ad(iid, lang=lang),
+        # Already subscribed / connect section
+        _connect_section(iid, lang=lang),
+        cls="content-area",
+    )
+
+
+def _plans_ad(iid: str, lang: str = "en") -> FT:
+    """The paid-plan advertisement: feature cards, trial banner, plan cards.
+    Shown on the not-connected landing page and, below the status tab, to
+    connected free-tier accounts (the plans are what they are missing)."""
+    from celerp.gateway.state import build_subscribe_url
+
+    return Div(
         # Feature cards - three platform features on top...
         Div(
             _feature_card(
@@ -138,7 +153,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b3", lang),
                     t("cloud.plan_cloud_b4", lang),
                 ],
-                subscribe_base + "#cloud",
+                build_subscribe_url(iid, extra="plan=cloud"),
                 lang=lang,
             ),
             _plan_card(
@@ -148,9 +163,8 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b1", lang),
                     t("cloud.plan_ai_b2", lang),
                     t("cloud.plan_ai_b3", lang),
-                    t("cloud.plan_ai_b4", lang),
                 ],
-                subscribe_base + "#cloud-ai",
+                build_subscribe_url(iid, extra="plan=ai"),
                 featured=True,
                 lang=lang,
             ),
@@ -163,75 +177,21 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_team_b3", lang),
                     t("cloud.plan_team_b4", lang),
                 ],
-                subscribe_base + "#team",
+                build_subscribe_url(iid, extra="plan=team"),
                 lang=lang,
             ),
             cls="cloud-plans",
         ),
-        # Already subscribed / connect section
-        _connect_section(iid, lang=lang),
-        cls="content-area",
     )
 
 
 def _connect_section(iid: str, lang: str = "en") -> FT:
-    """'Already subscribed?' block with both auto-connect button and email claim form.
-
-    The outer div carries id="cloud-relay-tab" so HTMX responses from
-    cloud-activate and cloud-claim can replace the entire block on success.
-    """
-    return Div(
-        H4(t("page.already_subscribed", lang), style="margin:0 0 4px;"),
-        P(t("settings.if_you_already_subscribed_on_the_website_we_can_li", lang),
-            cls="settings-hint",
-            style="margin-bottom:12px;",
-        ),
-        # Auto-connect button (tries to match by instance_id)
-        Div(
-            Button(t("btn.connect_automatically", lang),
-                cls="btn btn--primary",
-                hx_post="/settings/cloud-activate",
-                hx_target="#cloud-relay-tab",
-                hx_swap="outerHTML",
-                hx_indicator="#cloud-connecting",
-                id="cloud-connect-btn",
-            ),
-            Span(t("settings.connecting", lang), id="cloud-connecting",
-                 cls="settings-hint htmx-indicator", style="margin-left:12px;display:none;"),
-            style="margin-bottom:16px;",
-        ),
-        # Auto-trigger on first page load
-        Script("""
-(function(){
-  if (sessionStorage.getItem('cloud_activate_tried')) return;
-  sessionStorage.setItem('cloud_activate_tried', '1');
-  var btn = document.getElementById('cloud-connect-btn');
-  if (btn) htmx.trigger(btn, 'click');
-})();
-"""),
-        # Email claim form (always visible)
-        P(t("settings.or_enter_the_email_address_you_used_at_checkout", lang),
-            cls="settings-hint",
-        ),
-        Form(
-            Input(
-                type="email",
-                name="claim_email",
-                placeholder="Email used at checkout",
-                required=True,
-                cls="input input--sm",
-                style="width:260px;",
-            ),
-            Button(t("btn.link_subscription", lang), type="submit",
-                   cls="btn btn--sm btn--outline", style="margin-left:8px;"),
-            hx_post="/settings/cloud-send-otp",
-            hx_target="#cloud-relay-tab",
-            hx_swap="outerHTML",
-            style="display:flex;align-items:center;margin-top:8px;",
-        ),
-        id="cloud-relay-tab",
-        cls="cloud-connect-section",
-    )
+    """The Celerp-account surface in its claim-led variant (this page's context
+    is an existing/prospective subscriber). ONE component app-wide - see
+    ui/routes/account.py. Keeps id="cloud-relay-tab" so the shipped
+    cloud-activate/cloud-claim responses replace the same element."""
+    from ui.routes.account import account_panel
+    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab")
 
 
 def _parse_db_url(url: str) -> dict:
@@ -489,10 +449,12 @@ def setup_routes(app):
         # Fetch relay status from the API process (the gateway client lives there)
         relay_status = "inactive"
         public_url = ""
+        tier = ""
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
             public_url = rs.get("public_url", "")
+            tier = rs.get("tier") or ""
         except (_APIError, Exception):
             lc = _local_get_client()
             relay_status = lc.relay_status if lc else "inactive"
@@ -518,16 +480,30 @@ def setup_routes(app):
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab()
-        elif tab == "connectors":
+        elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
-            content = await connectors_tab_content(lang, token=token)
+            content = await connectors_tab_content(lang, token=token, category=tab)
         else:
             backup_data: dict | None = None
             try:
                 backup_data = await _api.get_backup_status(token)
             except Exception:
                 pass
-            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data))
+            # Backups are a paid-tier feature (like connectors); a free instance has
+            # no public_url and no backup entitlement, so the summary card is omitted
+            # entirely rather than showing scheduler/pending state for a plan that
+            # never runs backups.
+            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier),
+                     _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
+            # A connected free-tier account keeps its free tabs but still sees
+            # the paid-plan advertisement the not-connected page carries - the
+            # plans are exactly what the free tier is missing. An unknown tier
+            # (status round trip failed/pending) degrades to showing the ad,
+            # never to silently hiding it - only a confirmed paid tier suppresses it.
+            if tier not in PAID_TIERS:
+                from celerp.config import ensure_instance_id
+                parts.append(_plans_ad(ensure_instance_id(), lang=lang))
+            content = Div(*parts)
             tab = "status"
 
         return await base_shell(
@@ -545,6 +521,10 @@ def setup_routes(app):
     async def cloud_test_db(request: Request):
         """HTMX: test database connectivity with provided credentials."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if await _check_permission(request, "manage_integrations"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -575,6 +555,10 @@ def setup_routes(app):
     async def cloud_test_storage(request: Request):
         """HTMX: test S3-compatible storage connectivity."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if await _check_permission(request, "manage_integrations"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -607,6 +591,10 @@ def setup_routes(app):
     async def cloud_save_infra(request: Request):
         """Save infrastructure config (DB + storage) to config.toml."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if await _check_permission(request, "manage_integrations"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -666,6 +654,10 @@ def setup_routes(app):
     async def cloud_restore_db(request: Request):
         """Restore the previous database URL (GDR undo support)."""
         token = _token(request)
+        # Infra changes (DB/storage endpoints) are admin/owner actions - the
+        # page is role-gated, so its fragments must be too.
+        if await _check_permission(request, "manage_integrations"):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 

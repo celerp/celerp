@@ -889,7 +889,7 @@ async def run_doctor(
 async def relay_status(
     _user=Depends(get_current_user),
 ) -> dict:
-    """Return the current Cloud Relay (cloudflared) status.
+    """Return the current relay (cloudflared) status.
 
     Returns:
       {"status": "inactive" | "connecting" | "active" | "error",

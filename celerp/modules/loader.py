@@ -30,20 +30,27 @@ Called from ui/app.py after core route setup:
 from __future__ import annotations
 
 import ast
+import fnmatch
+import functools
+import hashlib
 import importlib
 import importlib.util
+import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
-from celerp.modules.license import check_license, is_premium_path
+from celerp.modules.importer import PREMIUM_MARKER
+from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
+from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import register as register_slot
 
 log = logging.getLogger(__name__)
 
-# BSL internals that modules are NOT allowed to import.
-# Importing these bypasses revenue gates (session token, AI quota).
+# First-party BSL internals that third-party modules are not allowed to import
+# (licensing boundary). Module authors use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
     "celerp.ai.service",
@@ -69,21 +76,231 @@ def _resolve_bundled_dirs() -> tuple[Path, ...]:
     base = Path(__file__).resolve().parent.parent.parent / "default_modules"
     extra_raw = os.environ.get("CELERP_TRUSTED_MODULE_DIRS", "")
     extras = [Path(p.strip()).resolve() for p in extra_raw.split(",") if p.strip()]
-    # Include the seeded destination too: when Electron points MODULE_DIR at DATA_DIR/modules,
-    # those seeded copies must also be trusted.
-    module_dir_raw = os.environ.get("MODULE_DIR", "")
-    module_dirs = [Path(p.strip()).resolve() for p in module_dir_raw.split(",") if p.strip()]
-    return tuple({base.resolve(), *extras, *module_dirs})
+    return tuple({base.resolve(), *extras})
 
 
 _BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
 
-# Loaded manifests — populated by load_all()
+
+def is_bundled_dir(path: Path) -> bool:
+    """True if `path` is (or sits inside) a bundled source module dir.
+
+    This is a location predicate, not a trust decision (first-party trust is by
+    content - see is_first_party). It is the sole source of truth for the rule
+    that an import must never write into the shipped source tree, shared by the
+    importer guard and the writable-dir helper.
+    """
+    try:
+        rp = path.resolve()
+    except OSError:
+        return False
+    for bundled in _BUNDLED_MODULES_DIRS:
+        try:
+            b = bundled.resolve()
+        except OSError:
+            continue
+        if rp == b or b in rp.parents:
+            return True
+    return False
+
+
+def writable_module_dir() -> Path:
+    """The dedicated writable drop-in for imported modules: data_dir/modules.
+
+    Kept distinct from the read-only bundled default_modules/ tree so a sideload
+    never lands among first-party modules. Created on demand; raises OSError on a
+    read-only data dir so callers can fall back honestly."""
+    from celerp.config import settings
+    d = settings.data_dir / "modules"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def with_writable_module_dir(module_dir_env: str) -> str:
+    """Ensure a launch path's MODULE_DIR writes imports to a safe location.
+
+    The importer installs into MODULE_DIR.split(",")[0]. If that first entry is a
+    bundled/trusted dir (the dev/CLI footgun: MODULE_DIR=default_modules), a
+    writable data-dir drop-in is prepended so imports land there, with the bundled
+    dir kept on the path for default discovery. An already-safe first entry, or an
+    unset MODULE_DIR (module system off), is returned unchanged."""
+    entries = [e.strip() for e in module_dir_env.split(",") if e.strip()]
+    if not entries or not is_bundled_dir(Path(entries[0])):
+        return module_dir_env
+    try:
+        writable = writable_module_dir()
+    except OSError:
+        return module_dir_env
+    rest = [e for e in entries if Path(e).resolve() != writable.resolve()]
+    return ",".join([str(writable), *rest])
+
+
+# Files that are never copied into a seeded module dir and never enter the
+# content digest: bytecode caches, VCS metadata, and the runtime sidecars the app
+# itself writes into a module folder after it is installed (the meta sidecar and
+# the premium marker). One tuple feeds two derivations - the importer's copy-ignore
+# and the content digest - so the copied set and the hashed set cannot drift (DRY).
+# META_FILENAME / PREMIUM_MARKER are imported, never re-typed here, so renaming
+# either constant cannot silently desync this exclusion set.
+_DIGEST_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "__pycache__", "*.pyc", ".git", ".github", META_FILENAME, PREMIUM_MARKER,
+)
+
+
+def _is_excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pat) for pat in _DIGEST_EXCLUDE_GLOBS)
+
+
+def module_content_digest(pkg_path: Path) -> str | None:
+    """Deterministic sha256 over a module's source content, or None if it cannot
+    be read.
+
+    Excludes _DIGEST_EXCLUDE_GLOBS (bytecode, VCS metadata, runtime sidecars) so a
+    seeded copy hashes identically to the shipped source it was copied from. The
+    walk never follows a symlink and rejects any symlinked component outright
+    (returning None) rather than dereferencing it, so a symlink escaping pkg_path
+    cannot inline foreign bytes into the hash. Any OSError yields None - fail
+    closed, so an unreadable tree is never mistaken for a first-party match.
+
+    Relative paths are hashed in POSIX form and line endings are normalised to
+    LF before hashing, so the same shipped source produces the same digest on
+    every platform (a Windows checkout that lands CRLF, or a build there, still
+    matches a lock generated on Linux). The generator digests the same way, so
+    the committed lock and the running content agree regardless of platform.
+    """
+    entries: list[tuple[str, str]] = []
+    try:
+        for root, dirs, files in os.walk(pkg_path, followlinks=False):
+            root_p = Path(root)
+            dirs[:] = [d for d in dirs if not _is_excluded(d)]
+            for d in dirs:
+                if (root_p / d).is_symlink():
+                    return None
+            for fname in files:
+                if _is_excluded(fname):
+                    continue
+                fpath = root_p / fname
+                if fpath.is_symlink():
+                    return None
+                rel = fpath.relative_to(pkg_path).as_posix()
+                data = fpath.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                entries.append((rel, hashlib.sha256(data).hexdigest()))
+    except OSError as exc:
+        log.warning("Cannot digest module at %s: %s", pkg_path, exc)
+        return None
+    digest = hashlib.sha256()
+    for rel, file_hash in sorted(entries):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_hash.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _lock_path() -> Path:
+    """Path to the committed first-party lock, installed beside default_modules/.
+    A separate function so tests can patch it without touching the read logic."""
+    return Path(__file__).resolve().parent.parent.parent / "default_modules" / "first_party.lock.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _first_party_lock() -> dict[str, str]:
+    """The committed {module_name: content_digest} map, or {} if it cannot be read
+    or is malformed (fail closed: no module is trusted rather than a wrong one).
+
+    Cached so the fail-closed log line is emitted once per process. Trust flows
+    only from this committed file - never from CELERP_TRUSTED_MODULE_DIRS or any
+    directory listing - so no environment variable can grant first-party trust.
+    """
+    path = _lock_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        log.error("First-party lock missing at %s; no module will be trusted.", path)
+        return {}
+    except (OSError, ValueError) as exc:
+        log.error("First-party lock unreadable at %s: %s; no module will be trusted.", path, exc)
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(v, str) for v in raw.values()):
+        log.error("First-party lock at %s is not a name->digest map; no module will be trusted.", path)
+        return {}
+    if not raw:
+        log.warning("First-party lock at %s is empty; no module treated as first-party.", path)
+    return raw
+
+
+def is_first_party(pkg_path: Path) -> bool:
+    """True only if pkg_path's folder name is in the committed lock AND its live
+    content digest matches the locked digest.
+
+    Trust is by content, never by folder name or filesystem location: an impostor
+    dropped into any module search dir is not trusted, and a modified default is
+    demoted (with a warning) so it stops skipping the BSL import checks.
+    """
+    lock = _first_party_lock()
+    expected = lock.get(pkg_path.name)
+    if expected is None:
+        return False
+    digest = module_content_digest(pkg_path)
+    if digest is None:
+        return False
+    if digest != expected:
+        log.warning(
+            "Module %r content does not match its first-party lock entry; "
+            "treating it as not first-party.", pkg_path.name)
+        return False
+    return True
+
+
+def first_party_names() -> frozenset[str]:
+    """The module names the committed lock claims as first-party.
+
+    A scanned module whose name is here but whose content no longer matches the
+    lock is a demoted default - the scan reports that as a per-module fact so the
+    UI can surface it without keeping any cross-render state."""
+    return frozenset(_first_party_lock())
+
+
+def resolve_module_path(name: str) -> Path | None:
+    """The first <entry>/<name> package (a dir with __init__.py) across the
+    MODULE_DIR search entries, or None if no entry holds it.
+
+    Mirrors the scan's directory walk so a module living in any configured search
+    entry - not only the first install target - is found. The delete guard needs a
+    real Path to ask is_first_party the same content question the scan asks.
+    """
+    for entry in os.environ.get("MODULE_DIR", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        candidate = Path(entry) / name
+        if candidate.is_dir() and (candidate / "__init__.py").exists():
+            return candidate
+    return None
+
+
+def _purge_pycache(pkg_path: Path) -> None:
+    """Remove every __pycache__ under pkg_path before the module is imported.
+
+    The content digest excludes *.pyc, so a stale or tampered bytecode cache with a
+    matching header would otherwise be executed in preference to recompiling the
+    just-verified source. Purging first guarantees the bytes CPython runs are the
+    bytes that were content-verified. Best effort: a purge failure is logged, not
+    fatal, and Python still validates cache headers against source mtime.
+    """
+    try:
+        for cache in pkg_path.rglob("__pycache__"):
+            if cache.is_dir() and not cache.is_symlink():
+                shutil.rmtree(cache, ignore_errors=True)
+    except OSError as exc:
+        log.warning("Could not purge bytecode cache under %s: %s", pkg_path, exc)
+
+# Loaded manifests - populated by load_all()
 _loaded: list[dict] = []
 
 # Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
 # ui/app.py), never loaded as pluggable/replaceable modules.
-_CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-connectors"})
+CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-connectors"})
 
 
 class ModuleLoadError(Exception):
@@ -122,7 +339,7 @@ def _read_depends_on(pkg_path: Path) -> list[str]:
     return list(read_manifest(pkg_path).get("depends_on") or [])
 
 
-def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
+def _topo_sort(pkg_paths: list[Path], enabled: set[str], errors: dict[str, str] | None = None) -> list[Path]:
     """Return pkg_paths sorted so dependencies come before dependents.
 
     Modules with unresolvable hard deps are excluded with a warning.
@@ -133,29 +350,43 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
         deps_by_name[p.name] = _read_depends_on(p)
 
     result: list[Path] = []
-    visited: set[str] = set()
+    done: set[str] = set()       # fully resolved and appended to result
+    on_stack: set[str] = set()   # currently being visited (for cycle detection)
     skipped: set[str] = set()
 
     def _visit(name: str) -> None:
-        if name in visited or name in skipped:
+        if name in done or name in skipped:
             return
-        visited.add(name)
+        if name in on_stack:
+            # A back-edge to a module still being visited: a dependency cycle.
+            # Skip it with a clear error rather than accepting an order that
+            # cannot actually satisfy the deps.
+            log.warning("Module %r is part of a dependency cycle - skipping", name)
+            if errors is not None:
+                errors.setdefault(name, "Part of a dependency cycle.")
+            skipped.add(name)
+            return
+        on_stack.add(name)
         for dep in deps_by_name.get(name, []):
             if dep not in enabled:
                 log.warning(
                     "Module %r requires %r which is not enabled — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors.setdefault(name, f"Requires {dep!r}, which is not enabled.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
             if dep not in path_by_name:
                 log.warning(
                     "Module %r requires %r which is not installed — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors.setdefault(name, f"Requires {dep!r}, which is not installed.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
             _visit(dep)
             if dep in skipped:
@@ -163,15 +394,29 @@ def _topo_sort(pkg_paths: list[Path], enabled: set[str]) -> list[Path]:
                     "Module %r requires %r which was skipped — skipping %r",
                     name, dep, name,
                 )
+                if errors is not None:
+                    errors.setdefault(name, f"Requires {dep!r}, which failed to load.")
                 skipped.add(name)
-                visited.discard(name)
+                on_stack.discard(name)
                 return
+        on_stack.discard(name)
+        done.add(name)
         result.append(path_by_name[name])
 
     for p in pkg_paths:
         _visit(p.name)
 
     return result
+
+
+# Per-module load failures from the last load_all() run: name -> message.
+# The modules UI surfaces these so a broken module fails loudly, not silently.
+_load_errors: dict[str, str] = {}
+
+
+def load_errors() -> dict[str, str]:
+    """Return {module_name: error message} for modules that failed to load."""
+    return dict(_load_errors)
 
 
 def loaded_modules() -> list[dict]:
@@ -183,7 +428,7 @@ def is_core_folded(pkg_name: str) -> bool:
     """True if a module is a proprietary cloud component folded into core (ai/backup/
     connectors). These are wired directly into the app at construction, so they never
     appear in ``loaded_modules()`` — yet they ARE running whenever the app is up."""
-    return pkg_name in _CORE_FOLDED
+    return pkg_name in CORE_FOLDED
 
 
 def is_running(pkg_name: str) -> bool:
@@ -200,7 +445,8 @@ def is_running(pkg_name: str) -> bool:
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
-    "display_name", "label", "version", "description", "author", "depends_on",
+    "name", "display_name", "label", "version", "description", "author",
+    "depends_on", "license", "min_celerp_version",
 })
 
 
@@ -256,12 +502,11 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
         List of successfully loaded PLUGIN_MANIFEST dicts.
     """
     _loaded.clear()
+    _load_errors.clear()
 
     # Support comma-separated module directories
     raw = str(module_dir)
     dirs = [Path(d.strip()) for d in raw.split(",") if d.strip()]
-
-    resolved_bundled = {d.resolve() for d in _BUNDLED_MODULES_DIRS if d.exists()}
 
     # Collect enabled packages from all directories
     candidate_paths = []
@@ -277,7 +522,7 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 continue
             if p.name not in enabled:
                 continue
-            if p.name in _CORE_FOLDED:
+            if p.name in CORE_FOLDED:
                 # Proprietary cloud core (ai/backup/connectors) is wired directly at app construction
                 # (see celerp/main.py and ui/app.py), never as a pluggable module. Skip it here so it is
                 # not double-registered and cannot be replaced by a user-supplied module of the same name.
@@ -290,38 +535,95 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 sys.path.insert(0, p_str)
             candidate_paths.append(p)
 
-    # Sort by dependency order
-    ordered = _topo_sort(candidate_paths, enabled)
+    # Sort by dependency order (skip reasons land in _load_errors)
+    ordered = _topo_sort(candidate_paths, enabled, errors=_load_errors)
+
+    # Relay credentials for the premium-license gate, resolved lazily and ONCE
+    # per load pass: the JWT is the same for every module, and there must be no
+    # network call at all when no premium module is present. gateway_token is
+    # the real, documented credential (GATEWAY_TOKEN / GATEWAY_URL in
+    # .env.production.example on a hosted deploy; set by /auth/activate on
+    # desktop), exchanged for a short-lived JWT via /auth/token - the same
+    # pattern celerp.routers.health uses. A prior version read
+    # CELERP_RELAY_URL / CELERP_INSTANCE_JWT, which are set in no environment
+    # (and an instance JWT expires hourly, so it could never be a static env
+    # var), so as written this gate could not verify a license once premium
+    # modules shipped.
+    _premium_creds: dict = {}
+
+    def _resolve_premium_creds() -> tuple[str, str | None, str, str]:
+        if not _premium_creds:
+            from celerp.config import ensure_instance_id, settings as _settings
+            from celerp.gateway.state import relay_http_url
+            api_key = _settings.gateway_token
+            relay_url = relay_http_url() if api_key else ""
+            _premium_creds["relay_url"] = relay_url
+            _premium_creds["jwt"] = (
+                exchange_api_key_for_jwt(relay_url, api_key) if api_key else None)
+            _premium_creds["data_dir"] = os.environ.get("DATA_DIR", "/tmp/celerp-data")
+            # The instance's own canonical id (offline-available): a lifetime
+            # license is validated against this via its `sub` claim.
+            _premium_creds["instance_id"] = ensure_instance_id()
+        return (_premium_creds["relay_url"], _premium_creds["jwt"],
+                _premium_creds["data_dir"], _premium_creds["instance_id"])
 
     for pkg_path in ordered:
         pkg_name = pkg_path.name
-        trusted = pkg_path.parent.resolve() in resolved_bundled
-        # License gate for premium modules (only when relay credentials configured)
+        # Trust is by content identity, decided ONCE here: the folder name is in
+        # the committed lock AND the live content digest matches. Location and name
+        # alone grant nothing, so a forged folder in a trusted dir is not trusted.
+        first_party = is_first_party(pkg_path)
+        trusted = first_party
+        # License gate for premium modules (only when this instance has a relay
+        # identity - i.e. it has activated / been given a GATEWAY_TOKEN).
         if is_premium_path(pkg_path):
-            relay_url = os.environ.get("CELERP_RELAY_URL", "")
-            instance_jwt = os.environ.get("CELERP_INSTANCE_JWT", "")
-            data_dir = os.environ.get("DATA_DIR", "/tmp/celerp-data")
-            if relay_url and instance_jwt:
+            relay_url, instance_jwt, data_dir, instance_id = _resolve_premium_creds()
+            if relay_url:
+                # This instance has a relay identity, so a premium module is
+                # verified. Verify even when the live token exchange failed
+                # (instance_jwt is None): check_license still decides from the
+                # offline lifetime JWT and the grace cache, so a transient
+                # startup failure falls back to cached state rather than skipping
+                # the check. Only a genuinely never-activated install (no
+                # gateway_token -> relay_url == "") skips it.
                 if not check_license(
                     slug=pkg_name,
                     relay_url=relay_url,
-                    instance_jwt=instance_jwt,
+                    instance_jwt=instance_jwt or "",
                     cache_dir=Path(data_dir),
+                    instance_id=instance_id,
+                    offline_only=instance_jwt is None,
                 ):
                     log.warning(
                         "Premium module %r skipped: no valid license", pkg_name
                     )
+                    _load_errors[pkg_name] = "Premium module: no valid license."
                     continue
             else:
                 log.debug(
-                    "Premium module %r: CELERP_RELAY_URL/CELERP_INSTANCE_JWT not set"
-                    " — skipping license check (dev mode)", pkg_name,
+                    "Premium module %r: no relay identity (never activated) - "
+                    "skipping license check (dev mode)",
+                    pkg_name,
                 )
+        # Run the source just content-verified, never a stale/tampered .pyc that a
+        # matching cache header would execute in preference (the digest omits *.pyc).
+        _purge_pycache(pkg_path)
         try:
             manifest = _load_one(pkg_path, pkg_name, trusted=trusted)
-        except ModuleLoadError:
+        except ModuleLoadError as exc:
+            # A default module IS the product (a boot without documents is not
+            # a working app): fail startup naming the module and error.
+            # Third-party modules keep load-and-continue; their failure shows
+            # as the failed badge in the Modules UI.
+            if first_party:
+                raise ModuleLoadError(
+                    f"Default module {pkg_name!r} failed to load: {exc}") from exc
+            _load_errors[pkg_name] = str(exc)
             manifest = None
         if manifest is not None:
+            # Carry the trust decision on the manifest so route registration reads
+            # it rather than recomputing (and re-hashing) per module.
+            manifest["first_party"] = first_party
             _loaded.append(manifest)
 
     log.info(
@@ -355,14 +657,13 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         sys.modules[pkg_name] = mod
         spec.loader.exec_module(mod)
 
-    except ModuleLoadError as exc:
-        log.error("Module %r rejected: %s", pkg_name, exc)
+    except ModuleLoadError:
         sys.modules.pop(pkg_name, None)
-        return None
+        raise
     except Exception as exc:
         log.error("Module %r failed to import (%s: %s) — skipping", pkg_name, type(exc).__name__, exc)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
     # Revenue protection: reject modules that reference protected BSL internals.
     # Trusted (first-party bundled) modules are exempt — they ARE the internals.
@@ -407,14 +708,14 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     if not manifest:
         log.warning("Module %r has no PLUGIN_MANIFEST — skipping", pkg_name)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError("No PLUGIN_MANIFEST in __init__.py.")
 
     # Validate required manifest fields
     missing = [f for f in ("name", "version") if not manifest.get(f)]
     if missing:
         log.error("Module %r manifest missing required fields: %s — skipping", pkg_name, missing)
         sys.modules.pop(pkg_name, None)
-        return None
+        raise ModuleLoadError(f"Manifest missing required fields: {', '.join(missing)}.")
 
     # Validate hard deps are loaded
     for dep in (manifest.get("depends_on") or []):
@@ -468,70 +769,195 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
     return manifest
 
 
-def register_api_routes(app, loaded: list[dict]) -> None:
-    """Register API routes from all loaded modules into the FastAPI app."""
+def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:
+    """Route-registration failure policy: a first-party module fails boot loudly
+    (a boot without it is not a working product); a third-party module keeps
+    load-and-continue, with the failure recorded for the Modules UI badge. The
+    manifest carries its own first-party verdict (set by load_all), so the policy
+    reads it directly rather than re-deriving trust here."""
+    name = manifest["name"]
+    if manifest.get("first_party"):
+        raise ModuleLoadError(
+            f"Default module {name!r} {kind} failed to register "
+            f"({type(exc).__name__}: {exc})") from exc
+    log.error("Module %r %s failed (%s: %s)", name, kind, type(exc).__name__, exc)
+    _load_errors[name] = f"{kind} failed ({type(exc).__name__}: {exc})"
+
+
+class RouteConflictError(Exception):
+    """A module declared a route path already claimed by core or an earlier
+    module. Starlette matches the first-registered route, so a duplicate would
+    silently shadow the original - the second module is refused instead."""
+
+
+def _route_keys(route) -> set:
+    """(path, method) pairs a route answers, for collision comparison. A route
+    with no path (Mount host rules) contributes nothing; one with no methods
+    (websocket, mount) keys on its path alone."""
+    path = getattr(route, "path", None)
+    if path is None:
+        return set()
+    methods = getattr(route, "methods", None)
+    if methods:
+        return {(path, m) for m in methods}
+    return {(path, None)}
+
+
+def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
+    """Register `{kind}` routes (kind in {"api","ui"}) for every loaded module,
+    refusing any module whose route collides with an already-registered one.
+
+    Core routes are registered before modules, so a module can never shadow core;
+    between two modules the first loaded wins and the second is recorded as a load
+    error (failed badge). The refused module's just-added routes are rolled back so
+    nothing half-registers."""
+    manifest_key = f"{kind}_routes"
+    setup_attr = f"setup_{kind}_routes"
     for manifest in loaded:
-        route_mod_path = manifest.get("api_routes")
+        route_mod_path = manifest.get(manifest_key)
         if not route_mod_path:
             continue
+        name = manifest["name"]
+        routes = None
+        start = 0
         try:
             mod = importlib.import_module(route_mod_path)
-            mod.setup_api_routes(app)
-            log.info("Module %r: API routes registered", manifest["name"])
+            routes = app.router.routes
+            existing = {k for r in routes for k in _route_keys(r)}
+            start = len(routes)
+            getattr(mod, setup_attr)(app)
         except Exception as exc:
-            log.error("Module %r api_routes failed (%s: %s)", manifest["name"], type(exc).__name__, exc)
+            if routes is not None:
+                del routes[start:]
+            _route_failure(manifest, manifest_key, exc)
+            continue
+        clashes = sorted({
+            path for r in routes[start:]
+            for (path, _method) in _route_keys(r) & existing
+        })
+        if clashes:
+            del routes[start:]
+            _route_failure(manifest, manifest_key, RouteConflictError(
+                "route path(s) already registered: " + ", ".join(clashes)))
+            continue
+        log.info("Module %r: %s routes registered", name, kind.upper())
+
+
+def register_api_routes(app, loaded: list[dict]) -> None:
+    """Register API routes from all loaded modules into the FastAPI app."""
+    _register_module_routes(app, loaded, "api")
 
 
 def register_ui_routes(app, loaded: list[dict]) -> None:
     """Register UI routes from all loaded modules into the FastHTML app."""
-    for manifest in loaded:
-        route_mod_path = manifest.get("ui_routes")
-        if not route_mod_path:
-            continue
-        try:
-            mod = importlib.import_module(route_mod_path)
-            mod.setup_ui_routes(app)
-            log.info("Module %r: UI routes registered", manifest["name"])
-        except Exception as exc:
-            log.error("Module %r ui_routes failed (%s: %s)", manifest["name"], type(exc).__name__, exc)
+    _register_module_routes(app, loaded, "ui")
+
+
+def _protected_hit(name: str) -> str | None:
+    """The protected internal `name` names/imports from, or None."""
+    for protected in _PROTECTED_BSL_INTERNALS:
+        if name == protected or name.startswith(protected + "."):
+            return protected
+    return None
+
+
+def _flag_dynamic_import(node: ast.Call, violations: set[str]) -> None:
+    """Flag importlib.import_module("celerp.ai.quota") / __import__("...") /
+    importlib.__import__("...") whose first arg is a string literal naming a
+    protected internal - a static Import/ImportFrom walk cannot see these."""
+    fn = node.func
+    if isinstance(fn, ast.Name):
+        fname = fn.id            # __import__(...)
+    elif isinstance(fn, ast.Attribute):
+        fname = fn.attr          # importlib.import_module(...) / importlib.__import__(...)
+    else:
+        return
+    if fname not in ("import_module", "__import__") or not node.args:
+        return
+    arg = node.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        hit = _protected_hit(arg.value)
+        if hit:
+            violations.add(hit)
 
 
 def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
-    """Return set of protected BSL internal imports found anywhere in the given module file.
+    """Protected-BSL-internal imports reachable from the given entry module.
 
-    Resolves dotted_module_path (e.g. 'celerp_foo.routes') to a .py file relative
-    to pkg_path, then walks all AST Import/ImportFrom nodes at any depth.
-    Returns empty set if the file cannot be found or parsed.
+    Follows local (in-package) imports transitively and flags dynamic
+    importlib.import_module / __import__ calls whose literal argument names a
+    protected internal. Static analysis is best-effort; the authoritative
+    enforcement of paid capabilities is server-side. Returns empty set if the
+    entry file cannot be found or parsed.
     """
-    # Resolve dotted path to a file path relative to pkg_path's parent (module_dir)
     parts = dotted_module_path.split(".")
-    # The first part is the package name (same as pkg_path.name)
-    if parts[0] == pkg_path.name:
-        rel_parts = parts[1:]
-    else:
-        rel_parts = parts
+    top_pkg = parts[0]
+    # Directory of the importable top-level package. Flat layout: pkg_path IS
+    # that package (its folder name == the package). Nested (GitHub-style)
+    # layout: the package lives one level in, at pkg_path/<top_pkg>.
+    pkg_dir = pkg_path if pkg_path.name == top_pkg else pkg_path / top_pkg
 
-    candidate = pkg_path.joinpath(*rel_parts).with_suffix(".py")
-    if not candidate.exists():
-        candidate = pkg_path.joinpath(*rel_parts, "__init__.py")
-    if not candidate.exists():
-        return set()
+    def _resolve_local(module: str | None, level: int) -> Path | None:
+        """The .py file inside the package that this import refers to, or None
+        if it is not in-package (stdlib / third-party / escapes the package)."""
+        if level > 1:
+            return None  # from ..x import y - escapes the package
+        if level == 1:
+            rel = (module or "").split(".") if module else []
+        else:
+            p = (module or "").split(".")
+            if not p or p[0] != top_pkg:
+                return None  # absolute import of something outside the package
+            rel = p[1:]
+        base = pkg_dir.joinpath(*rel) if rel else pkg_dir
+        for cand in (base.with_suffix(".py"), base / "__init__.py"):
+            if cand.exists():
+                return cand
+        return None
 
-    try:
-        tree = ast.parse(candidate.read_text())
-    except Exception:
+    entry = pkg_dir.joinpath(*parts[1:]).with_suffix(".py")
+    if not entry.exists():
+        entry = pkg_dir.joinpath(*parts[1:], "__init__.py")
+    if not entry.exists():
         return set()
 
     violations: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for protected in _PROTECTED_BSL_INTERNALS:
-                    if alias.name == protected or alias.name.startswith(protected + "."):
-                        violations.add(protected)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            for protected in _PROTECTED_BSL_INTERNALS:
-                if module == protected or module.startswith(protected + "."):
-                    violations.add(protected)
+    seen: set[Path] = set()
+    queue: list[Path] = [entry]
+    while queue:
+        f = queue.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            tree = ast.parse(f.read_text())
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    hit = _protected_hit(alias.name)
+                    if hit:
+                        violations.add(hit)
+                    local = _resolve_local(alias.name, 0)
+                    if local:
+                        queue.append(local)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                hit = _protected_hit(module)
+                if hit:
+                    violations.add(hit)
+                local = _resolve_local(node.module, node.level)
+                if local:
+                    queue.append(local)
+                # `from . import impl` / `from pkg import impl`: each name may be
+                # a local submodule to follow.
+                if node.level or (module.split(".")[:1] == [top_pkg]):
+                    for alias in node.names:
+                        target = (module + "." + alias.name) if module else alias.name
+                        sub = _resolve_local(target, node.level)
+                        if sub:
+                            queue.append(sub)
+            elif isinstance(node, ast.Call):
+                _flag_dynamic_import(node, violations)
     return violations

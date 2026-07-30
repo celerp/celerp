@@ -759,44 +759,90 @@ function setLoadingStatus(msg) {
   }
 }
 
-function setupAppMenu() {
-  // macOS: build a native menu that includes Uninstall items in the app menu.
-  // On other platforms there is no standard app-menu slot; skip.
-  if (process.platform !== "darwin") return;
+// Restart the way the in-app "Restart" button does: drop the sentinel and let
+// the API process exit so watchForRestart respawns API + UI, leaving the embedded
+// Postgres running. A full app.relaunch()/quit() instead tears down the whole
+// process - before-quit's async pgInstance.stop() isn't awaited by Electron, so
+// the relaunched instance can race the still-shutting-down Postgres for the
+// shared data-dir lock and fail to boot. Falls back to a full relaunch only if
+// the sentinel can't be written or no API process is running.
+function requestServerRestart() {
+  try {
+    const sentinel = path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested");
+    fs.writeFileSync(sentinel, "");
+    if (apiProcess) {
+      apiProcess.kill();   // its exit handler sees the sentinel and respawns servers
+      return;
+    }
+    // No live API process to recycle - fall through to a full relaunch.
+    try { fs.unlinkSync(sentinel); } catch { /* ignore */ }
+  } catch (e) {
+    console.error("[restart] sentinel write failed; falling back to full relaunch:", e);
+  }
+  app.relaunch();
+  app.quit();
+}
 
-  const template = [
-    {
-      label: app.name,
-      submenu: [
-        { role: "about" },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        {
-          label: "Uninstall Celerp…",
-          submenu: [
-            {
-              label: "Quit and Keep Data",
-              click: () => ipcMain.emit("_uninstall-keep-data-menu"),
-            },
-            {
-              label: "Quit and Delete All Data…",
-              click: () => ipcMain.emit("_uninstall-delete-data-menu"),
-            },
-          ],
+function setupAppMenu() {
+  // Cross-platform menu. The File menu carries the module workflow (import,
+  // open folder, restart) so desktop users find it where they look first;
+  // macOS additionally gets the app-name menu with the Uninstall items.
+  const fileMenu = {
+    label: "File",
+    submenu: [
+      {
+        label: "Import Module…",
+        click: () => {
+          // The modules page opens its import dialog when ?import=1 is present.
+          if (mainWindow && uiPort) mainWindow.loadURL(`http://127.0.0.1:${uiPort}/modules?import=1`);
         },
-        { type: "separator" },
-        { role: "quit" },
-      ],
-    },
-    { role: "editMenu" },
-    { role: "viewMenu" },
-    { role: "windowMenu" },
-  ];
+      },
+      {
+        label: "Open Modules Folder",
+        click: () => { shell.openPath(MODULE_DIR); },
+      },
+      { type: "separator" },
+      {
+        label: "Restart Celerp",
+        click: () => { requestServerRestart(); },
+      },
+      { type: "separator" },
+      { role: "quit" },
+    ],
+  };
+
+  const darwinAppMenu = {
+    label: app.name,
+    submenu: [
+      { role: "about" },
+      { type: "separator" },
+      { role: "services" },
+      { type: "separator" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "unhide" },
+      { type: "separator" },
+      {
+        label: "Uninstall Celerp…",
+        submenu: [
+          {
+            label: "Quit and Keep Data",
+            click: () => ipcMain.emit("_uninstall-keep-data-menu"),
+          },
+          {
+            label: "Quit and Delete All Data…",
+            click: () => ipcMain.emit("_uninstall-delete-data-menu"),
+          },
+        ],
+      },
+      { type: "separator" },
+      { role: "quit" },
+    ],
+  };
+
+  const template = process.platform === "darwin"
+    ? [darwinAppMenu, fileMenu, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }]
+    : [fileMenu, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
@@ -1019,6 +1065,15 @@ ipcMain.on("install-update", async () => {
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
+
+// Modules page bridge: open the modules folder in the OS file manager, and a
+// native folder picker for Import Module (the picked path goes to the local
+// API, which validates and installs it - same code path as the zip upload).
+ipcMain.handle("open-modules-folder", () => shell.openPath(MODULE_DIR));
+ipcMain.handle("pick-module-folder", async () => {
+  const r = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+  return (r.canceled || !r.filePaths.length) ? null : r.filePaths[0];
+});
 
 // show-confirm: renderer calls window.celerp.showConfirm(message) for hx-confirm
 // dialogs. window.confirm() is silently stubbed to false in Electron's renderer,

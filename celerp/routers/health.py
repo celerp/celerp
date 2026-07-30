@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,8 +89,13 @@ async def cloud_status() -> dict:
     if not connected:
         return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
 
-    # Try to fetch relay status from cloud
-    tier: str | None = None
+    # Tier comes from the gateway's own WS push (set_subscription_state, on the
+    # "subscription_updated" message) whenever that's arrived - it needs no extra
+    # round trip and is available as soon as the tunnel is up. last_backup/email
+    # quota aren't carried over WS, so those still come from the relay HTTP call.
+    from celerp.gateway.state import get_subscription_state
+    ws_tier, _ws_status = get_subscription_state()
+    tier: str | None = ws_tier or None
     last_backup: str | None = None
     email_quota: int = 0
     email_used: int = 0
@@ -107,7 +112,7 @@ async def cloud_status() -> dict:
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    tier = data.get("tier")
+                    tier = data.get("tier") or tier
                     last_backup = data.get("last_backup")
                     email_quota = int(data.get("email_quota", 0))
                     email_used = int(data.get("email_used", 0))
@@ -126,6 +131,19 @@ async def cloud_status() -> dict:
     }
 
 
+@router.post("/settings/cloud/billing-portal")
+async def cloud_billing_portal() -> dict:
+    """Create a Stripe Billing Portal session via the relay so the merchant can
+    manage their subscription (cancel, change card, download invoices)."""
+    from celerp.services.payments import billing_portal_url
+    url = await billing_portal_url()
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not open subscription management. Check that web access is connected, then try again.")
+    return {"portal_url": url}
+
+
 @router.get("/settings/backup-status")
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
@@ -139,6 +157,7 @@ async def backup_status() -> dict:
         "running": running,
         "active": is_active(),
         "gateway_token_set": bool(settings.gateway_token),
+        "public_url": settings.celerp_public_url,
         "enc_ok": bool(settings.backup_encryption_key),
         "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
@@ -220,20 +239,20 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
     except Exception:
         pass
 
-    if _gw.get_client() is None:
-        gw = _gw.GatewayClient(
-            gateway_token=token,
-            instance_id=iid,
-            gateway_url=_s.gateway_url,
-        )
-        _gw.set_client(gw)
-        asyncio.create_task(gw.run())
+    # Route through ensure_running() - the single construction site - rather than
+    # constructing GatewayClient inline; it applies the same lazy-tunnel gate as
+    # boot and auto-activate (paid public_url, or a free instance with a live share).
+    from celerp.gateway import ensure_running, has_active_share
+    if _s.celerp_public_url or await has_active_share():
+        ensure_running()
+        gw = _gw.get_client()
         for _ in range(15):
-            if gw.relay_status == "active":
+            if gw and gw.relay_status == "active":
                 break
             await asyncio.sleep(0.2)
 
-    if _s.backup_enabled and _s.backup_encryption_key:
+    # Backups are a paid-tier feature; public_url is the paid signal.
+    if _s.celerp_public_url and _s.backup_enabled and _s.backup_encryption_key:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
 
@@ -258,12 +277,12 @@ async def cloud_activate_api() -> dict:
         return {"error": f"Could not reach relay: {type(exc).__name__}: {exc}"}
 
     if r.status_code == 404:
-        body = ""
-        try:
-            body = r.json().get("detail", "")
-        except Exception:
-            body = r.text[:120]
-        return {"error": f"No active subscription found for this instance ({iid}). {body} Subscribe first, or link by email below.", "instance_id": iid}
+        return {
+            "error": f"No active subscription found for this instance ({iid}). "
+                     "Complete checkout first, or if you need to move your subscription "
+                     "to this instance, use the Link Subscription field below.",
+            "instance_id": iid,
+        }
     if r.status_code == 402:
         return {"error": r.json().get("detail", "Subscription not active.")}
     if r.status_code != 200:
@@ -343,6 +362,97 @@ async def cloud_instance_id() -> dict:
     return {"instance_id": ensure_instance_id()}
 
 
+@router.get("/settings/account-methods")
+async def account_methods_api() -> dict:
+    """Which optional sign-in methods the relay offers, plus the browser URL for
+    the Google flow (started in the system browser, bound to this instance).
+    Degrades to email-only when the relay is unreachable - never an error."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    relay_base = _rhu()
+    iid = ensure_instance_id()
+    google = False
+    free_email_quota = 0
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(f"{relay_base}/auth/methods")
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict):
+                google = bool(data.get("google"))
+                free_email_quota = int(data.get("free_email_quota") or 0)
+    except Exception:
+        pass
+    return {
+        "google": google,
+        "free_email_quota": free_email_quota,
+        "google_start_url": f"{relay_base}/auth/google/start?instance_id={iid}",
+    }
+
+
+@router.post("/settings/account-signup")
+async def account_signup_api(payload: dict) -> dict:
+    """Proxy the magic-link signup request using the API-process instance_id."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    email = str(payload.get("email", "")).strip()
+    if not email:
+        return {"error": "Email required."}
+    relay_base = _rhu()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(f"{relay_base}/auth/signup/request",
+                             json={"email": email, "instance_id": ensure_instance_id()})
+    except httpx.HTTPError:
+        return {"error": f"Cannot reach {relay_base} - check your internet connection."}
+    if r.status_code == 202:
+        return {"sent": True}
+    try:
+        detail = r.json().get("detail", r.text[:120])
+    except Exception:
+        detail = r.text[:120]
+    return {"error": str(detail), "status_code": r.status_code}
+
+
+@router.get("/settings/account-status")
+async def account_status_api() -> dict:
+    """Proxy the relay account status for the app's post-sign-in polling.
+
+    Once the instance is activated it holds a permanent API key; exchange it
+    for a short-lived JWT (the connectors-catalog idiom) so the relay can
+    return the full record to the instance that owns it. Without a key, or
+    when the exchange fails, fall back to the unauthenticated GET and its
+    masked record - polling keeps working either way."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.gateway.state import relay_http_url as _rhu
+    relay_base = _rhu()
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            headers = {}
+            api_key = _s.gateway_token
+            if api_key:
+                tok_r = await c.post(f"{relay_base}/auth/token",
+                                     json={"api_key": api_key})
+                if tok_r.status_code == 200:
+                    headers = {"Authorization": f"Bearer {tok_r.json()['access_token']}"}
+            if headers:
+                r = await c.get(f"{relay_base}/auth/account",
+                                params={"instance_id": ensure_instance_id()},
+                                headers=headers)
+            else:
+                r = await c.get(f"{relay_base}/auth/account",
+                                params={"instance_id": ensure_instance_id()})
+    except httpx.HTTPError:
+        return {"error": "unreachable"}
+    if r.status_code != 200:
+        return {"error": f"status {r.status_code}"}
+    data = r.json()
+    return data if isinstance(data, dict) else {"error": "unexpected response"}
+
+
 @router.post("/settings/cloud-send-otp")
 async def cloud_send_otp_api(payload: dict) -> dict:
     """Proxy /billing/claim/send-otp to relay using API-process instance_id."""
@@ -380,7 +490,13 @@ async def cloud_send_otp_api(payload: dict) -> dict:
 
 @router.post("/settings/cloud-claim")
 async def cloud_claim_api(payload: dict) -> dict:
-    """Proxy /billing/claim to relay using API-process instance_id, then activate."""
+    """Proxy /billing/claim to relay using API-process instance_id, then activate.
+
+    If a gateway_token is configured, exchange it at /auth/token for a
+    short-lived bearer and attach it to the claim request alongside
+    X-Instance-ID. Without a token, the claim is sent with X-Instance-ID and
+    the email/OTP payload only.
+    """
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
 
@@ -400,12 +516,18 @@ async def cloud_claim_api(payload: dict) -> dict:
     if otp_code:
         claim_payload["otp_code"] = otp_code
 
+    headers = {"X-Instance-ID": iid}
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
+            api_key = _s.gateway_token
+            if api_key:
+                tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+                if tok_r.status_code == 200:
+                    headers["Authorization"] = f"Bearer {tok_r.json()['access_token']}"
             r = await c.post(
                 f"{relay_base}/billing/claim",
                 json=claim_payload,
-                headers={"X-Instance-ID": iid},
+                headers=headers,
             )
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}
@@ -433,7 +555,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         return {"error": r.text[:80], "instance_id": iid}
 
     if r.status_code == 404:
-        return {"error": "No subscription found for that email. Check the address and try again.", "instance_id": iid}
+        return {"error": "No subscription or free account found for that email. Check the address and try again.", "instance_id": iid}
     if r.status_code == 429:
         return {"error": "Too many attempts. Try again in an hour.", "instance_id": iid}
     if r.status_code == 403:
@@ -498,6 +620,15 @@ async def connectors_catalog_api() -> dict:
 
     if r.status_code == 200:
         return {"connectors": r.json().get("connectors", [])}
+    if r.status_code == 402:
+        # Free accounts reach this page but connectors need a paid plan - show
+        # the relay's plain upgrade message, not a bare status code.
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = ""
+        return {"error": detail or "Connectors need an active Celerp Connect plan.",
+                "needs_plan": True, "connectors": []}
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 

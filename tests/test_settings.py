@@ -137,15 +137,15 @@ class TestSettingsGeneral:
         assert b"Alice" in r.content
 
     @pytest.mark.asyncio
-    async def test_settings_general_modules_tab(self, ui_client):
-        """GET /settings/general?tab=modules returns 200."""
+    async def test_settings_general_has_no_modules_tab(self, ui_client):
+        """Modules moved to its own /modules page; the settings tab is gone."""
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
         ):
-            r = await ui_client.get("/settings/general?tab=modules", cookies=_authed())
+            r = await ui_client.get("/settings/general", cookies=_authed())
         assert r.status_code == 200
+        assert b"?tab=modules" not in r.content
 
     @pytest.mark.asyncio
     async def test_settings_general_unauthenticated(self, ui_client):

@@ -33,22 +33,20 @@ def _pitch() -> FT:
             Li(t("pay.pitch_li1")),
             Li(t("pay.pitch_li2")),
             Li(t("pay.pitch_li3")),
-            style="text-align:left;display:inline-block;margin:0 auto 20px;line-height:1.9;",
+            style="margin:0 0 20px;line-height:1.9;",
         ),
         Form(Button(t("pay.connect_with_stripe"), type="submit", cls="btn btn--primary"),
              method="post", action="/settings/payments/connect"),
-        # Button microcopy: "Free to set up." centered tight under the CTA,
-        # where it reads as part of the button's promise. The remaining fine
-        # print sits left-aligned in a narrow centered column (centered
-        # multi-line text reads as a wall); the Stripe line sits apart, one
+        # Button microcopy: "Free to set up." tight under the CTA, where it
+        # reads as part of the button's promise. The fine print is capped at
+        # 400px so its lines stay readable; the Stripe line sits apart, one
         # step smaller and lighter, as a trust footer rather than more copy.
         P(t("pay.pitch_free"), cls="form-hint", style="margin-top:8px;"),
         P(t("pay.pitch_fineprint"), cls="form-hint",
-          style="margin:14px auto 0;max-width:400px;text-align:left;line-height:1.6;"),
+          style="margin-top:14px;max-width:400px;line-height:1.6;"),
         P(t("pay.pitch_stripe_cred"),
-          style="margin:12px auto 0;max-width:400px;text-align:left;font-size:0.7rem;color:#9aa0b5;"),
+          style="margin-top:12px;max-width:400px;font-size:0.7rem;color:#9aa0b5;"),
         cls="settings-card",
-        style="text-align:center;max-width:560px;margin:24px auto;padding:32px;",
     )
 
 
@@ -83,7 +81,7 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
           bank_accounts: list[dict], saved: bool = False) -> FT:
     if not relay_ok:
-        body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), anchor="cloud")
+        body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
     elif not enabled:
         body = _pitch()
     else:

@@ -170,3 +170,52 @@ class TestAutoActivateProbe:
         assert cfg["cloud"]["instance_id"] == mod.settings.gateway_instance_id
         assert cfg["cloud"]["public_url"] == "https://abc.celerp.com"
         assert cfg["cloud"]["backup_encryption_key"]  # generated and persisted
+
+    @respx.mock
+    async def test_free_tier_response_does_not_start_gateway_ws_client(self, tmp_path, monkeypatch):
+        """/auth/activate now issues a gateway_token to free tier too (decision
+        3, marketplace plan - buy an official module without Connect), but
+        withholds public_url since free tier has no tunnel. The WS client
+        must not start for that case - there is nothing for it to serve, and
+        the free instance has no business holding a persistent gateway
+        connection at all."""
+        mod, _ = self._prepare(tmp_path, monkeypatch)
+        respx.post("https://relay.test/auth/activate").respond(200, json={
+            "gateway_token": "gw-tok-free",
+            "public_url": None,
+        })
+        from celerp.gateway import client as _gw
+        _prev_client = _gw.get_client()
+        _gw.set_client(None)
+        try:
+            from celerp.main import _try_auto_activate
+            await _try_auto_activate()
+            assert _gw.get_client() is None, "WS client must not start without a public_url"
+        finally:
+            _gw.set_client(_prev_client)
+        assert mod.settings.gateway_token == "gw-tok-free"  # credential still applied
+
+    @respx.mock
+    async def test_entitled_response_starts_gateway_ws_client(self, tmp_path, monkeypatch):
+        """Regression guard for the gate above: a response WITH public_url
+        must still start the WS client as before. GatewayClient.run is
+        stubbed to a no-op so no real network connection is attempted."""
+        mod, _ = self._prepare(tmp_path, monkeypatch)
+        respx.post("https://relay.test/auth/activate").respond(200, json={
+            "gateway_token": "gw-tok-paid",
+            "public_url": "https://abc.celerp.com",
+        })
+        from celerp.gateway import client as _gw
+
+        async def _noop_run(self):
+            return None
+
+        monkeypatch.setattr(_gw.GatewayClient, "run", _noop_run)
+        _prev_client = _gw.get_client()
+        _gw.set_client(None)
+        try:
+            from celerp.main import _try_auto_activate
+            await _try_auto_activate()
+            assert _gw.get_client() is not None, "WS client must start when a public_url is granted"
+        finally:
+            _gw.set_client(_prev_client)

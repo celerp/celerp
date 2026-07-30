@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Online invoice payment via Stripe, brokered by Celerp Cloud.
+"""Online invoice payment via Stripe, brokered by Celerp Connect.
 
-The instance stores no Stripe credentials: it asks Celerp Cloud to create a Checkout
+The instance stores no Stripe credentials: it asks Celerp Connect to create a Checkout
 Session on the merchant's connected account and to report its status. Payment
 surfaces are gated on a "payments enabled" flag; confirmed payments record through
 the same path as a manual payment.
@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 def payments_enabled() -> bool:
-    """Whether online payment is available (cached flag from Celerp Cloud).
+    """Whether online payment is available (cached flag from Celerp Connect).
 
     Cheap enough for the per-render pay-button gate.
     """
@@ -101,3 +101,13 @@ async def connect_status() -> dict:
 async def disconnect() -> bool:
     """Disconnect the merchant's account via Cloud."""
     return bool(await _cloud_post("/billing/connect/disconnect", {}))
+
+
+# ── Subscription management (merchant-facing, from Web Access settings) ──────
+
+async def billing_portal_url() -> str | None:
+    """Stripe Billing Portal URL for the merchant's Celerp subscription (cancel,
+    change card, invoices). None if the relay is unreachable or no billing
+    account is linked to this instance."""
+    result = await _cloud_post("/billing/portal", {})
+    return (result or {}).get("portal_url") or None

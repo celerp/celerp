@@ -255,9 +255,20 @@ def _config_to_env(cfg: dict) -> dict:
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
     if cfg["cloud"]["token"]:
         env["GATEWAY_TOKEN"] = cfg["cloud"]["token"]
-    # Module directories: default (core) + premium (opt-in add-ons).
+    # Module directories: a writable drop-in for imports FIRST (the importer
+    # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
+    # default (core) and premium (opt-in add-ons) trees. Keeping the writable
+    # dir separate means a sideload never lands in default_modules/.
+    from celerp.modules.loader import writable_module_dir
     _pkg_root = Path(__file__).parent.parent
     _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
+    try:
+        _mod_dirs.insert(0, writable_module_dir())
+    except OSError:
+        # A read-only data dir is unusual; fall back to the bundled dirs so the
+        # app still starts. Imports will fail with a clear "no module directory"
+        # message rather than silently writing into default_modules/.
+        pass
     env["MODULE_DIR"] = ",".join(str(d) for d in _mod_dirs if d.exists())
     # Set ENABLED_MODULES from config (explicit; no implicit defaults)
     enabled = cfg.get("modules", {}).get("enabled", [])
@@ -812,7 +823,7 @@ def main() -> None:
 @click.option("--db-url", default=None, help="PostgreSQL connection URL.")
 @click.option("--api-port", default=None, type=int, help="API server port (default 8000).")
 @click.option("--ui-port", default=None, type=int, help="UI server port (default 8080).")
-@click.option("--cloud-token", default=None, help="Celerp Cloud token (optional).")
+@click.option("--cloud-token", default=None, help="Celerp Connect token (optional).")
 @click.option("--force", is_flag=True, help="Reconfigure: WIPES the database and all attached files.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Skip the --force wipe confirmation (non-interactive use).")
 @click.option(

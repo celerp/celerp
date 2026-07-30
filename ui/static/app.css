@@ -448,6 +448,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px;
 }
 .search-input:focus { outline: none; border-color: var(--c-accent); }
+.table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .filter-select {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
   border-radius: var(--radius); padding: 5px 10px; font-size: 12px; cursor: pointer;
@@ -2692,15 +2693,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 .connector-action-area { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
-.connector-section-title {
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  margin: 24px 0 10px;
-}
-
 /* --- Form hints --- */
 .form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
 
@@ -2727,6 +2719,119 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   background: rgba(0,0,0,0.5);
   backdrop-filter: blur(2px);
 }
+/* ── Account panel (ui/routes/account.py) ─────────────────────────────
+   Base layout for the one account surface, as embedded in settings pages. */
+.account-panel__title { margin: 0 0 4px; }
+.account-panel__benefit { margin-bottom: 8px; }
+.account-panel__lead { margin-bottom: 12px; }
+.account-panel__form { display: flex; align-items: center; gap: 8px; }
+/* The email field has no shared .input base to inherit from, so give it its own
+   frame and interior padding - without it the typed text sits flush against the
+   left edge. */
+.account-panel__email {
+  width: 260px;
+  padding: 8px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: 0.9rem;
+}
+.account-panel__methods { display: flex; gap: 18px; margin: 0 0 14px; }
+.account-panel__method {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.account-panel__method input { accent-color: var(--c-accent); cursor: pointer; }
+.account-panel__email-hint { margin: 6px 0 12px; }
+.account-panel__notice { margin: 0 0 12px; }
+.account-panel__google { margin-bottom: 12px; }
+.account-panel__alt { margin-top: 4px; }
+.account-panel__cancel { margin-top: 8px; }
+
+/* The account-gate panel rides inside the shared modal dialog. The panel is
+   the same .cloud-connect-section used embedded in pages, so drop the
+   embedded chrome (outer margin, border) - the dialog is the frame - and
+   neutralize the modal's stacked-form layout: the panel's own form rules
+   lay it out. */
+.account-gate-modal .cloud-connect-section {
+  margin-top: 0;
+  border: none;
+  padding: 28px 28px 20px;
+}
+/* Compound selector: outranks the later `.modal-dialog form` stacked-form
+   rule (a bare `.account-gate-modal form` would tie on specificity and lose
+   to source order). */
+.account-gate-modal.modal-dialog form {
+  padding: 0;
+  gap: 0;
+  flex-direction: row;
+}
+/* Gate-modal hierarchy: the headline sells, the benefit line states what the
+   click unlocks, the email row is the single full-width action, and the
+   compliance/footer text steps down out of the way. */
+.account-gate-modal .account-panel__title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+.account-gate-modal .account-panel__benefit {
+  font-size: 0.95rem;
+  color: var(--c-text);
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+.account-gate-modal .account-panel__lead {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+/* Compound selector: must outrank `.account-gate-modal.modal-dialog form`
+   above, which zeroes gap - both target the same <form> element. */
+.account-gate-modal.modal-dialog .account-panel__form {
+  gap: 10px;
+  width: 100%;
+}
+.account-gate-modal .account-panel__email {
+  flex: 1;
+  width: auto;
+  height: 40px;
+  padding: 0 14px;
+  font-size: 0.9rem;
+}
+/* Smaller than the field it sits beside, so the button reads as the action and
+   leaves breathing room inside the row. */
+.account-gate-modal .account-panel__form .btn {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.account-gate-modal .account-panel__email-hint { margin: 8px 0 14px; }
+.account-gate-modal .account-panel__notice {
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+.account-gate-modal .account-panel__google { margin-bottom: 14px; }
+.account-gate-modal .account-panel__google .btn {
+  width: 100%;
+  height: 36px;
+  font-size: 0.85rem;
+}
+.account-gate-modal .account-panel__alt { margin: 0; }
+.account-gate-modal .account-panel__alt a { font-size: 12px; }
+.account-gate-modal .account-panel__cancel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--c-border);
+  display: flex;
+  justify-content: flex-end;
+}
+
 .modal-dialog__header {
   display: flex;
   align-items: center;
@@ -3018,3 +3123,47 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* Discreet reload control beside the doc price-list select (repulls current prices). */
 .reprice-refresh { display: flex; align-items: center; justify-content: center; padding: 2px; background: none; border: none; border-radius: var(--radius); cursor: pointer; color: var(--c-text2); }
 .reprice-refresh:hover { color: var(--c-text); background: var(--c-bg2); }
+
+/* ── Marketplace catalog (repo-direct) ─────────────────────────────────── */
+/* The trust icon marks a verified or official marketplace listing; community
+   rows carry no badge. Tooltips get aria-labels. */
+.trust-icon { display: inline-flex; vertical-align: -2px; margin-right: 6px; cursor: help; }
+.trust-icon--trusted { color: var(--c-text); }
+/* Source provenance shield beside an installed module's name: gold for bundled
+   defaults, muted grey for community modules. Marketplace reuses --trusted. */
+.trust-icon--default { color: var(--c-amber); }
+/* A restart-needed badge rendered as a button reads and posts like a control
+   without looking unlike the passive badges beside it. */
+.badge-btn { font-family: inherit; cursor: pointer; }
+/* Delete X on a disabled, non-default row: a small danger control to the right
+   of Enable. */
+.module-delete-btn { margin-left: 6px; font-weight: 700; }
+/* A disabled module row is shaded so its off state reads at a glance. */
+.module-row--disabled td { background: var(--c-bg3); }
+/* The shield badge on the Verified Marketplace tab: no help cursor, sits on the
+   tab baseline next to the label. */
+.tab-badge { margin-right: 6px; vertical-align: -2px; cursor: inherit; }
+.marketplace-card__links { display: flex; gap: 14px; margin: 8px 0; font-size: 12px; }
+.marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }
+.module-license-upsell { margin-top: 6px; padding: 10px 12px; max-width: 360px; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
+.module-load-error { margin-top: 4px; }
+/* Modules tables carry multi-line cells (name + description + disclosures), so
+   they need vertical breathing room the fixed-height app tables do not. Scoped
+   to the two modules panels; the global .data-table rule is untouched. */
+#local-modules-panel .data-table td,
+#community-zone .data-table td,
+#marketplace-panel .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+/* Standard module column: bound the name/description column so long copy wraps at
+   a readable measure instead of stretching the table off-screen. Same on all
+   three module lists. */
+#local-modules-panel .data-table td:first-child,
+#community-zone .data-table td:first-child,
+#marketplace-panel .data-table td:first-child { max-width: 34rem; }
+/* Community disclosures sit below the description and read quieter than it. */
+.community-disclosure { margin: 2px 0; font-size: 11px; font-style: italic; color: var(--c-text2); }
+/* The self-declared caveat, stated once above the community table. */
+.community-unverified-note { margin-bottom: 12px; }
+/* Gap between the build-your-own card and the community listings below it. */
+.module-build-card { margin-bottom: 24px; }
+/* Keep the file chooser clear of the installed-modules table below it. */
+.module-import { margin-bottom: 20px; }

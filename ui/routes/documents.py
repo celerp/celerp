@@ -21,7 +21,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import _files_section as _shared_doc_files_section
+from ui.components.files import files_section as _shared_doc_files_section
 
 
 from celerp.output.doc_print import (
@@ -30,6 +30,32 @@ from celerp.output.doc_print import (
     compose_address as _compose_company_address,
     render_doc_print_html,
 )
+
+# Free-send quota advertised by the relay's public auth-methods endpoint.
+# Checked once per process, like the entitlement check at startup, with a
+# non-blocking background fetch; until it lands (or when the relay was
+# unreachable at check time) the quota reads 0 and the send offer simply
+# does not render. A restart picks up relay-side changes.
+_free_send_quota_cache: dict = {"value": 0, "fetched": False, "pending": False}
+
+
+def _free_send_quota(token: str) -> int:
+    import asyncio
+    if not _free_send_quota_cache["fetched"] and not _free_send_quota_cache["pending"]:
+        _free_send_quota_cache["pending"] = True
+
+        async def _refresh():
+            value = 0
+            try:
+                methods = await api.account_methods(token)
+                value = int(methods.get("free_email_quota") or 0)
+            except Exception:
+                value = 0
+            _free_send_quota_cache.update(
+                {"value": value, "fetched": True, "pending": False})
+
+        asyncio.create_task(_refresh())
+    return int(_free_send_quota_cache["value"])
 
 
 async def _company_letterhead(token: str) -> dict:
@@ -354,7 +380,7 @@ def _render_fulfillment_badge(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
-        return Span(t("doc.fulfilled"), cls="badge badge--green")
+        return Span(t("doc.fulfilled"), cls="badge badge--active")
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
@@ -467,7 +493,7 @@ def _render_receive_return_section(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
-        return Span(t("doc.fulfilled"), cls="badge badge--green")
+        return Span(t("doc.fulfilled"), cls="badge badge--active")
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
@@ -1952,8 +1978,13 @@ celerpUpdateBulkAlloc();
         try:
             _relay_status = await api.get_relay_status(token)
             _relay_connected = bool(_relay_status.get("connected"))
-            # Share needs the public URL that serves the link, not just a live tunnel.
-            _share_enabled = bool(_relay_status.get("public_url"))
+            # Share needs a relay-bound instance that can mint a link. A paid
+            # instance serves it from its own public URL; a free relay-bound
+            # instance mints a share.celerp.com envelope on demand. Only a
+            # self-hosted instance with no relay token can never mint, so it
+            # stays hidden. The offline case surfaces the online-only note, it
+            # does not hide the panel (GDR 2e).
+            _share_enabled = bool(_relay_status.get("gateway_token_set"))
         except Exception:
             pass
         _payments_on: bool = False
@@ -2025,7 +2056,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, free_send_quota=(0 if _relay_connected else _free_send_quota(token)), share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3235,7 +3266,7 @@ celerpUpdateBulkAlloc();
                 Td(fmt_money(p["amount"], p.get("currency")), cls="cell--number"),
                 Td(
                     Span(t("doc.voided"), cls="badge badge--void") if voided
-                    else Span(t("th.active"), cls="badge badge--green"),
+                    else Span(t("th.active"), cls="badge badge--active"),
                 ),
                 cls=row_cls,
             )
@@ -3356,6 +3387,7 @@ celerpUpdateBulkAlloc();
 
         return Div(
             P(t("doc.share_hint") if active else t("doc.share_hint_off"), cls="form-hint"),
+            *([P(t("doc.share_online_note"), cls="form-hint")] if active else []),
             url_row,
             controls,
         )
@@ -5416,7 +5448,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, free_send_quota: int = 0, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5710,9 +5742,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     )
     # Share is independent of Send's status gates: any customer-facing document or list
     # can be shared for viewing (a paid invoice is a receipt). Supplier/inbound docs
-    # (bills, POs, consignment-in) are never shared. Gated on a reachable cloud public
-    # URL — NOT merely "connected" — because the link is served at that URL; without it
-    # the link would be dead.
+    # (bills, POs, consignment-in) are never shared. Gated on a relay-bound instance
+    # (gateway_token_set) that can mint a link: a paid instance serves it from its own
+    # public URL, a free instance mints one through the relay. Only a self-hosted
+    # instance with no relay stays hidden, since it can never mint.
     _can_share = (
         share_enabled and not suppress_doc_actions
         and (is_list or doc_type not in NO_SEND_DOC_TYPES)
@@ -5726,7 +5759,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             company_name = doc.get("company_name") or "Your Company"
             _type_label_send = doc_type.replace("_", " ").title()
             default_subject = f"{_type_label_send} #{doc_number} from {company_name}" if doc_number else ""
-            default_body = f"Please find attached {_type_label_send} #{doc_number}." if doc_number else ""
+            default_body = f"Here is {_type_label_send} #{doc_number}." if doc_number else ""
             modal_id = f"send-modal-{entity_id.replace(':', '-')}"
             action_btns_left.append(
                 Button(t("btn.send"), type="button",
@@ -5773,6 +5806,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             Textarea(default_body, name="message", rows="3", cls="form-input"),
                             P(t("doc.send_appends_hint") if share_enabled else t("doc.send_appends_hint_offline"),
                               cls="form-hint"),
+                            *([P(t("doc.share_online_note"), cls="form-hint")] if share_enabled else []),
                             # Online payment, payable docs only: a quiet state line. On, it
                             # confirms the Pay button and the exact amount due (net of
                             # payments/credits); off, it is the discovery path to setup.
@@ -5801,6 +5835,26 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     id=modal_id,
                     cls="modal-dialog",
                 )
+            )
+            # One-shot continuation from the send-offer signup: the poll page
+            # reloads with a sessionStorage marker; consume it and open the
+            # dialog the user originally asked for, prefilled as usual.
+            action_btns_left.append(Script(
+                "(function(){if(sessionStorage.getItem('celerp_open_send')){"
+                "sessionStorage.removeItem('celerp_open_send');"
+                f"document.getElementById('{modal_id}').showModal();}}}})();"
+            ))
+        elif _send_ok and free_send_quota > 0:
+            # No relay bound: offer sending through a free Celerp account
+            # instead of hiding the send path. The click opens the shared
+            # account-gate modal; after verification the poll reloads this
+            # page with the relay connected and the dialog auto-opens.
+            action_btns_left.append(
+                Button(t("account.doc_send_offer_button"), type="button",
+                       hx_get="/account/panel?intent=signup"
+                              "&panel=account-gate-panel&next=doc-send&modal=1",
+                       hx_target="#account-gate-host", hx_swap="outerHTML",
+                       cls="btn btn--secondary"),
             )
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")

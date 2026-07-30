@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 """Online invoice payment - Stripe checkout for a shared invoice, brokered by
-Celerp Cloud.
+Celerp Connect.
 
 Public: /pay/{token} (start), /pay/{token}/return (reconcile on the customer's
 return); a backup confirmation covers a closed tab. Authed: the merchant's payment

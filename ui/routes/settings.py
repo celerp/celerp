@@ -18,6 +18,7 @@ from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
+from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -1454,116 +1455,6 @@ def setup_routes(app):
         return _R("", status_code=204)
 
     # ── Module toggle endpoints ──────────────────────────────────────
-    @app.post("/settings/modules/{module_name}/enable")
-    async def module_enable_route(request: Request, module_name: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.enable_module(token, module_name)
-            modules = await api.get_modules(token)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            modules = []
-        return _modules_tab(modules, restart_pending=True)
-
-    @app.post("/settings/modules/{module_name}/disable")
-    async def module_disable_route(request: Request, module_name: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.disable_module(token, module_name)
-            modules = await api.get_modules(token)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            modules = []
-        return _modules_tab(modules, restart_pending=True)
-
-    @app.get("/settings/marketplace")
-    async def marketplace_browse(request: Request):
-        """HTMX fragment: fetch and render available marketplace modules."""
-        import httpx
-        from ui.config import RELAY_URL
-
-        token = _token(request)
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as c:
-                r = await c.get(f"{RELAY_URL}/marketplace/modules")
-                if r.status_code == 200:
-                    data = r.json()
-                    modules_list = data.get("items") or []
-                else:
-                    modules_list = []
-        except Exception:
-            return Div(
-                P(t("settings.could_not_reach_the_celerp_marketplace_check_your"), cls="text-muted"),
-                id="marketplace-panel",
-            )
-
-        installed = set()
-        if token:
-            try:
-                installed_mods = await api.get_modules(token)
-                installed = {m["name"] for m in installed_mods}
-            except Exception:
-                pass
-
-        if not modules_list:
-            return Div(
-                P(t("settings.no_modules_available_in_the_marketplace_yet"), cls="text-muted"),
-                id="marketplace-panel",
-            )
-
-        rows = []
-        for m in modules_list:
-            slug = m.get("slug", "")
-            name = m.get("display_name", slug)
-            description = m.get("description", "")
-            author = m.get("author", "")
-            version = m.get("latest_version", "")
-            price = m.get("price_monthly")
-            license_type = m.get("license", "")
-            already = slug in installed
-
-            price_label = f"${price:.2f}/mo" if price else "Free"
-            install_btn = (
-                Span(t("settings.installed"), cls="badge badge--green")
-                if already
-                else A(t("settings.view_install"),
-                    href=f"https://celerp.com/marketplace/{slug}",
-                    target="_blank",
-                    cls="btn btn--sm btn--primary",
-                )
-            )
-
-            rows.append(Tr(
-                Td(Div(
-                    Strong(name),
-                    Div(description, cls="text-muted small") if description else "",
-                    cls="module-name-cell",
-                )),
-                Td(f"v{version}" if version else ""),
-                Td(author),
-                Td(license_type),
-                Td(price_label),
-                Td(install_btn),
-            ))
-
-        return Div(
-            Table(
-                Thead(Tr(
-                    Th(t("th.module")), Th(t("th.version")), Th(t("th.author")), Th(t("th.license")), Th(t("th.price")), Th(""),
-                )),
-                Tbody(*rows),
-                cls="data-table",
-            ),
-            id="marketplace-panel",
-        )
-
-    # ── Locations PATCH endpoints ────────────────────────────────────
     @app.post("/settings/locations/new")
     async def create_location_route(request: Request):
         from starlette.responses import Response as _R
@@ -1797,13 +1688,6 @@ def setup_routes(app):
         connected = data.get("connected", False)
 
         iid = ensure_instance_id()
-        # Include local app URL so Stripe success page can offer a direct return link
-        local_url = str(request.base_url).rstrip("/")
-        from celerp.gateway.state import build_subscribe_url
-        subscribe_url = build_subscribe_url(iid, extra=f"local_url={local_url}")
-
-        billing_portal_url = f"{subscribe_url}#manage"
-
         if connected:
             tier = data.get("tier") or "unknown"
             last_backup = data.get("last_backup")
@@ -1816,10 +1700,26 @@ def setup_routes(app):
                 Br(),
                 Span(f"Email: {email_used} / {email_quota} sent this period", cls="settings-hint"),
                 Br(),
-                A(t("settings.manage_subscription"), href=billing_portal_url, target="_blank", cls="auth-link"),
+                A(t("settings.manage_subscription"), href="/settings/billing-portal", target="_blank", cls="auth-link"),
                 cls="cloud-status-connected",
             )
         return _cloud_relay_unconnected(iid)
+
+    @app.get("/settings/billing-portal")
+    async def billing_portal_redirect(request: Request):
+        """Open the Stripe Billing Portal for the Celerp subscription (cancel,
+        change card, invoices). Linked from the Web Access connected-status card."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        redir = await _check_permission(request, "manage_integrations")
+        if redir:
+            return redir
+        try:
+            url = await api.get_billing_portal_url(token)
+        except APIError as e:
+            return await base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
+        return RedirectResponse(url, status_code=302)
 
     def _relay_base() -> str:
         from celerp.config import settings as _s
@@ -1832,6 +1732,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
 
@@ -1858,10 +1760,10 @@ def setup_routes(app):
                 data.get("tos_version"),
             )
 
-        return _cloud_relay_tab(
-            relay_status=data.get("relay_status", "connecting"),
-            public_url=data.get("public_url", ""),
-        )
+        # Connected: the page chrome changes with the relay state (value-prop
+        # landing vs connected tabs), so load the page fresh instead of
+        # swapping only the panel.
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
     @app.get("/topbar-company-switcher")
     async def topbar_company_switcher(request: Request):
@@ -1930,29 +1832,37 @@ def setup_routes(app):
     ) -> FT:
         """Shown when activate returns reconnect=True.
 
-        Lets the user confirm reconnecting to the same subscription or start
-        the claim flow to pick a different one.
+        Lets the user confirm reconnecting or start the claim flow to pick a
+        different account. The relay returns a public URL exactly when the
+        tier is entitled to one, so no public URL means a free account: those
+        get sign-back-in wording, never subscription wording.
         """
-        display_url = public_url or t("settings.tab_cloud_relay")
+        if public_url:
+            prompt = P(t("settings.this_instance_was_previously_connected_to"),
+                       B(public_url),
+                       t("settings.reconnect_to_same_subscription"),
+                       cls="settings-hint", style="margin-bottom:12px;")
+            confirm_label = t("btn.reconnect_to") + public_url
+            other_label = t("btn.use_a_different_subscription")
+        else:
+            prompt = P(t("settings.previously_signed_in_free"),
+                       cls="settings-hint", style="margin-bottom:12px;")
+            confirm_label = t("btn.sign_back_in")
+            other_label = t("btn.use_a_different_account")
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-            P(t("settings.this_instance_was_previously_connected_to"),
-                B(display_url),
-                ". Reconnect to the same subscription?",
-                cls="settings-hint",
-                style="margin-bottom:12px;",
-            ),
+            prompt,
             Div(
                 Form(
                     Input(type="hidden", name="_reconnect_token", value=token),
                     Input(type="hidden", name="_reconnect_public_url", value=public_url or ""),
                     Input(type="hidden", name="_reconnect_tos_version", value=tos_version or ""),
-                    Button("Reconnect to " + display_url, type="submit", cls="btn btn--primary"),
+                    Button(confirm_label, type="submit", cls="btn btn--primary"),
                     hx_post="/settings/cloud-reconnect-confirm",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
                 ),
-                Button(t("btn.use_a_different_subscription"),
+                Button(other_label,
                     cls="btn btn--outline",
                     style="margin-left:8px;",
                     hx_post="/settings/cloud-disconnect",
@@ -1984,10 +1894,8 @@ def setup_routes(app):
             return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
-        return _cloud_relay_tab(
-            relay_status=data.get("relay_status", "connecting"),
-            public_url=data.get("public_url", ""),
-        )
+        # Same as cloud_activate: connecting changes the whole page, reload it.
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
     def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
         """Render the subscription selection UI when multiple subs match an email.
@@ -1998,7 +1906,7 @@ def setup_routes(app):
         chosen subscription_id and the original email.
         """
         def _tier_label(tier: str) -> str:
-            return {"cloud": "Connect", "ai": "AI + Connect", "team": "Team"}.get(tier, tier.title())
+            return {"cloud": "Connect", "ai": "Connect + AI", "team": "Team"}.get(tier, tier.title())
 
         def _match_row(m: dict, idx: int) -> FT:
             slug = m.get("slug")
@@ -2131,6 +2039,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
         """HTMX: send OTP via API process (uses canonical instance_id)."""
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
@@ -2159,6 +2069,8 @@ def setup_routes(app):
         Using the API process ensures the same instance_id is used for both
         the /billing/claim relay call and the subsequent /auth/activate call.
         """
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
@@ -2204,10 +2116,8 @@ def setup_routes(app):
             return _cloud_relay_unconnected(iid, error=err)
 
         if data.get("connected"):
-            return _cloud_relay_tab(
-                relay_status=data.get("relay_status", "connecting"),
-                public_url=data.get("public_url", ""),
-            )
+            # Same as cloud_activate: connecting changes the whole page, reload it.
+            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
         # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
         return _cloud_relay_unconnected(
@@ -2233,6 +2143,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
         """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         ui_token = _token(request)
@@ -3800,7 +3712,7 @@ def _cloud_relay_unconnected(
     show_email_form: bool = True,
     show_header: bool = True,
 ) -> FT:
-    """Render the unconnected state of the Cloud Relay tab (used by HTMX responses too).
+    """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
     Args:
         show_header: When False, suppress the H3 title, description, and Subscribe button.
@@ -3899,7 +3811,7 @@ def _tos_acceptance_card(required_version: str) -> FT:
             Label(t("label.i_agree_to_the"),
                 A(t("settings.terms_of_service"), href="https://relay.celerp.com/terms", target="_blank"),
                 " and ",
-                A(t("settings.privacy_policy"), href="https://relay.celerp.com/privacy", target="_blank"),
+                A(t("settings.privacy_policy"), href=PRIVACY_POLICY_URL, target="_blank"),
                 **{"for": "tos-agree-checkbox"},
             ),
             style="display:flex;align-items:center;margin-bottom:16px;",
@@ -3917,11 +3829,22 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
-    """Cloud Relay settings tab.
+# Billing tiers above free. Any tier NOT in this set (including "", None, and
+# "free" itself) is treated as free - an unconfirmed tier must default to the
+# more restrictive, upsell-showing state, never silently hide the free-tier
+# note and sales funnel because a status round trip hasn't landed yet.
+PAID_TIERS = frozenset({"cloud", "ai", "team"})
+
+
+def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
+                      tier: str | None = None) -> FT:
+    """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
+    tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); anything
+    other than a known paid tier (including None/"" while unknown) is treated
+    as free, so the free-tier note degrades to shown, never hidden.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3967,16 +3890,37 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                   style="margin:4px 0 0;"),
             )))
 
+        free_tier_note = Div(
+            P(
+                Span(t("cloud.free_tier_badge"), cls="badge badge--inactive", style="margin-right:6px;"),
+                t("cloud.free_tier_note"),
+                cls="settings-hint",
+            ),
+            Ul(
+                Li(t("cloud.free_b1")),
+                Li(t("cloud.free_b2")),
+                Li(t("cloud.free_b3")),
+                Li(t("cloud.free_b4")),
+                style="margin:6px 0 0;padding-left:20px;",
+            ),
+            Button(t("btn.link_subscription"), type="button",
+                   hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
+                   hx_target="#account-gate-host", hx_swap="outerHTML",
+                   cls="btn btn--sm btn--outline", style="margin-top:8px;"),
+            style="margin-top:12px;",
+        ) if tier not in PAID_TIERS else ""
+
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(*rows, cls="detail-table"),
+            free_tier_note,
             Div(
                 Button(t("btn.disconnect"),
                     cls="btn btn--sm btn--outline btn--danger",
                     hx_post="/settings/cloud-disconnect",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
-                    hx_confirm="Disconnect from Cloud Relay? You can reconnect anytime.",
+                    hx_confirm="Disconnect web access? You can reconnect anytime.",
                 ),
                 style="margin-top:12px;",
             ),
@@ -3996,9 +3940,12 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
-    # gw_ok is derived from the API response - reading get_client() here would
-    # always return None because the gateway client lives in the API process.
-    gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))
+    # gw_ok gates on public_url, not just a gateway_token: a free instance now holds
+    # a gateway_token too (marketplace purchases), but backups are a paid-tier
+    # feature and public_url is only granted to paid tiers (mirrors the lazy-tunnel
+    # gate). Derived from the API response - reading get_client()/settings here
+    # would always return the UI process's own state, not the API process's.
+    gw_ok = bool(backup_data and backup_data.get("public_url"))
 
     if not gw_ok:
         return Div(
@@ -4007,7 +3954,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
                 t("cloud.backup_feature_name", lang),
                 t("cloud.backup_desc", lang),
                 price="USD $29/mo",
-                anchor="cloud",
+                plan="cloud",
                 lang=lang,
             ),
             # Local export/import always available
@@ -4166,7 +4113,7 @@ def _connectors_tab() -> FT:
                 "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
                 "OAuth is handled by Celerp Connect - no API keys to manage.",
                 price="USD $29/mo",
-                anchor="cloud",
+                plan="cloud",
             ),
             cls="settings-card",
         )
@@ -4314,106 +4261,6 @@ def _bulk_attach_tab() -> FT:
         ),
         Span(t("settings.processing"), id="bulk-attach-spinner", cls="htmx-indicator"),
         Div(id="bulk-attach-result"),
-        cls="settings-card",
-    )
-
-
-def _modules_tab(modules: list[dict], restart_pending: bool = False) -> FT:
-    """Modules tab - list installed modules, toggle enabled/disabled state."""
-    # Build reverse dependency map: module_name -> set of enabled modules that depend on it
-    enabled_names = {m["name"] for m in modules if m.get("enabled") or m.get("running")}
-    required_by: dict[str, list[str]] = {}
-    for m in modules:
-        if not (m.get("enabled") or m.get("running")):
-            continue
-        for dep in (m.get("depends_on") or []):
-            required_by.setdefault(dep, []).append(m.get("label") or m["name"])
-
-    rows = []
-    for m in modules:
-        name = m["name"]
-        label = m.get("label") or name
-        version = m.get("version", "")
-        description = m.get("description", "")
-        author = m.get("author", "")
-        enabled = bool(m.get("enabled"))
-        running = bool(m.get("running"))
-        effectively_enabled = enabled or running
-
-        status_parts = []
-        if running:
-            status_parts.append(Span("running", cls="badge badge--green"))
-        elif enabled:
-            status_parts.append(Span(t("settings.restart_needed"), cls="badge badge--yellow"))
-        else:
-            status_parts.append(Span("disabled", cls="badge badge--grey"))
-
-        dependents = required_by.get(name, [])
-        if effectively_enabled:
-            if dependents:
-                dep_label = ", ".join(dependents)
-                toggle_btn = Button(t("btn.disable"),
-                    title=f"Required by: {dep_label}",
-                    disabled=True,
-                    cls="btn btn--sm btn--danger btn--disabled",
-                )
-            else:
-                toggle_btn = Button(t("btn.disable"),
-                    hx_post=f"/settings/modules/{name}/disable",
-                    hx_target="#modules-panel",
-                    hx_swap="outerHTML",
-                    cls="btn btn--sm btn--danger",
-                )
-        else:
-            toggle_btn = Button(t("btn.enable"),
-                hx_post=f"/settings/modules/{name}/enable",
-                hx_target="#modules-panel",
-                hx_swap="outerHTML",
-                cls="btn btn--sm btn--primary",
-            )
-
-        rows.append(Tr(
-            Td(Div(Strong(label), Div(description, cls="text-muted small") if description else "", cls="module-name-cell")),
-            Td(f"v{version}" if version and version != "unknown" else ""),
-            Td(author),
-            Td(*status_parts),
-            Td(toggle_btn),
-        ))
-
-    restart_banner = Div(t("settings._a_restart_is_required_for_module_changes_to_take"),
-        id="modules-restart-banner",
-        cls="error-banner mb-md",
-    ) if restart_pending else Div(id="modules-restart-banner")
-
-    if not rows:
-        content = P(t("settings.no_modules_installed_drop_module_packages_into_the"), cls="text-muted")
-    else:
-        content = Table(
-            Thead(Tr(Th(t("th.module")), Th(t("th.version")), Th(t("th.author")), Th(t("th.status")), Th(""))),
-            Tbody(*rows),
-            cls="data-table",
-        )
-
-    return Div(
-        restart_banner,
-        H3(t("page.installed_modules"), cls="section-title"),
-        content,
-        H3(t("page.explore_marketplace"), cls="section-title mt-lg"),
-        Div(
-            P(t("settings.browse_premium_and_community_modules_available_for"),
-                cls="text-muted mb-sm",
-            ),
-            Button(t("btn.load_available_modules"),
-                hx_get="/settings/marketplace",
-                hx_target="#marketplace-panel",
-                hx_swap="outerHTML",
-                hx_indicator="#mkt-loading",
-                cls="btn btn--sm btn--secondary",
-            ),
-            Span(" ", id="mkt-loading", cls="htmx-indicator text-muted"),
-            Div(id="marketplace-panel"),
-        ),
-        id="modules-panel",
         cls="settings-card",
     )
 

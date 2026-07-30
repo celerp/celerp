@@ -31,7 +31,6 @@ from ui.routes.settings import (
     _user_display_cell,
     _preference_display_cell,
     _backup_tab,
-    _modules_tab,
     _company_tab,
     _users_tab,
     _password_form,
@@ -44,7 +43,6 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
         tabs += [
             ("company", t("settings.tab_company", lang)),
             ("users", t("settings.tab_users", lang)),
-            ("modules", t("settings.tab_modules", lang)),
             ("backup", t("settings.tab_backup", lang)),
         ]
     tabs.append(("password", t("settings.change_password", lang)))
@@ -100,7 +98,6 @@ def setup_routes(app):
                 import asyncio as _asyncio
                 results = await _asyncio.gather(
                     api.get_users(token),
-                    api.get_modules(token),
                     return_exceptions=True,
                 )
                 # Re-raise 401 so the auth guard below can redirect properly
@@ -108,19 +105,16 @@ def setup_routes(app):
                     if isinstance(r, APIError) and r.status == 401:
                         return RedirectResponse("/login", status_code=302)
                 users_resp = results[0] if not isinstance(results[0], Exception) else {}
-                modules   = results[1] if not isinstance(results[1], Exception) else []
                 users = users_resp.get("items", []) if isinstance(users_resp, dict) else []
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
-                users, modules = [], []
+                users = []
 
             if tab == "company":
                 content = _company_tab(company, lang=lang, is_owner=is_owner)
             elif tab == "users":
                 content = _users_tab(users, company.get("settings"), lang=lang, is_owner=is_owner)
-            elif tab == "modules":
-                content = _modules_tab(modules, restart_pending=False)
             elif tab == "backup":
                 backup_data: dict | None = None
                 try:

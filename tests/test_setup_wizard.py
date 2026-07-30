@@ -455,7 +455,7 @@ class TestSetupCloud:
     async def test_renders_cloud_page(self, ui_client):
         r = await ui_client.get("/setup/cloud", cookies=_authed())
         assert r.status_code == 200
-        assert b"Cloud" in r.content or b"cloud" in r.content.lower()
+        assert b"Connect" in r.content
 
     @pytest.mark.asyncio
     async def test_unauthenticated_redirects_to_login(self, ui_client):
@@ -745,9 +745,11 @@ class TestSettingsSectionTabs:
     def test_general_tabs_admin_sees_kernel_tabs(self):
         from ui.routes.settings_general import _general_tabs
         html = self._xml(_general_tabs("company", is_admin=True))
-        for tab in ("company", "users", "modules", "backup"):
+        for tab in ("company", "users", "backup"):
             assert f"tab={tab}" in html, f"kernel tab '{tab}' missing for admin"
         assert "tab=password" in html
+        # Modules moved to its own sidebar section; no longer a settings tab.
+        assert "tab=modules" not in html
         # Payments lives under Web Access (_cloud_tabs), not Global Config.
         assert "/settings/payments" not in html
 
@@ -755,8 +757,9 @@ class TestSettingsSectionTabs:
         from ui.routes.settings_general import _general_tabs
         html = self._xml(_general_tabs("password", is_admin=False))
         assert "tab=password" in html
-        for tab in ("company", "users", "modules", "backup"):
+        for tab in ("company", "users", "backup"):
             assert f"tab={tab}" not in html
+        assert "tab=modules" not in html
         assert "/settings/payments" not in html
 
     def test_general_tabs_active_class_marks_correct_tab(self):
@@ -782,10 +785,24 @@ class TestSettingsSectionTabs:
     def test_cloud_tabs_carry_payments_and_gate_infrastructure(self):
         from ui.routes.settings_cloud import _cloud_tabs
         html = self._xml(_cloud_tabs("status", has_team_features=False))
-        assert "tab=status" in html and "tab=connectors" in html
+        assert "tab=status" in html
+        # One tab per connector category, no combined Connectors tab
+        assert "tab=website" in html and "tab=accounting" in html
+        assert "tab=connectors" not in html
         assert "/settings/payments" in html
         assert "tab=infrastructure" not in html
         assert "tab=infrastructure" in self._xml(_cloud_tabs("status", has_team_features=True))
+
+    def test_value_prop_plan_ctas_carry_plan_params(self):
+        """Each plan card's subscribe CTA sends its plan as a query param so
+        the website can attribute the click server-side; fragments never
+        reach the server."""
+        from ui.routes.settings_cloud import _value_prop_page
+        html = self._xml(_value_prop_page("test-instance"))
+        for plan in ("cloud", "ai", "team"):
+            assert f"plan={plan}" in html, f"plan={plan} CTA missing"
+        for frag in ("#cloud", "#ai", "#team"):
+            assert frag + '"' not in html, f"stale {frag} fragment in CTA"
 
     def test_dead_monolith_tab_builder_is_gone(self):
         """Regression: _settings_tabs was unreachable dead code that still let

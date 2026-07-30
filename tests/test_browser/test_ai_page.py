@@ -109,11 +109,11 @@ class TestShowcasePage:
         assert cards.count() == 2
 
     def test_showcase_cta_cloud_card(self, page, ui_server):
-        """Cloud Relay card has correct content."""
+        """Celerp Connect card has correct content."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
         cards = page.locator(".ai-showcase__cta-card")
         cloud_card = cards.first
-        assert "Cloud Relay" in cloud_card.inner_text()
+        assert "Celerp Connect" in cloud_card.inner_text()
         assert "$29/mo" in cloud_card.inner_text()
         assert "Start Here" in cloud_card.inner_text()
         assert "Cancel anytime" in cloud_card.inner_text()

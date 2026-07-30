@@ -252,3 +252,11 @@ async def test_doc_file_delete(client):
     doc = r.json()
     files = doc.get("files", [])
     assert not any(f.get("id") == fid for f in files), "File should be deleted"
+
+
+def test_files_section_is_public_symbol():
+    """The shared files section is public: a module renders it against its own endpoints."""
+    import ui.components.files as files_mod
+
+    assert hasattr(files_mod, "files_section")
+    assert not hasattr(files_mod, "_files_section")

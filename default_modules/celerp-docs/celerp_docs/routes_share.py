@@ -38,7 +38,7 @@ from celerp.config import settings
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.models.share import DocShareToken
+from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
@@ -249,10 +249,9 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _share_active(row: DocShareToken) -> bool:
-    """A link resolves while it is not revoked and not past its expiry instant."""
-    if row.revoked_at is not None:
-        return False
-    return row.expires_at is None or row.expires_at > datetime.now(timezone.utc)
+    """A link resolves while it is not revoked and not past its expiry instant.
+    The rule lives once in celerp.models.share; this is its module-side name."""
+    return share_is_active(row)
 
 
 async def _find_share_row(session: AsyncSession, company_id, entity_id: str) -> DocShareToken | None:
@@ -287,10 +286,16 @@ async def get_or_create_share_token(session: AsyncSession, company_id, entity_id
     return row
 
 
-def public_view_url(token: str) -> str | None:
-    """Direct link to the branded read-only view, or None if not cloud-connected."""
+async def public_view_url(token: str) -> str | None:
+    """Direct link to the branded read-only view, or None when no link can be
+    minted. A paid instance builds `<public_url>/share/<token>`; a free
+    relay-bound instance mints a `share.celerp.com` envelope through the relay
+    seam; a self-hosted instance (no relay) returns None."""
     base = (settings.celerp_public_url or "").rstrip("/")
-    return f"{base}/share/{token}" if base else None
+    if base:
+        return f"{base}/share/{token}"
+    from celerp.services import relay_share
+    return await relay_share.mint_free_share_url(token)
 
 
 # Emailing a document always shares it for this long, so the recipient's view
@@ -300,17 +305,18 @@ SEND_SHARE_DAYS = 30
 
 async def send_view_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
     """Activate the public share link for a send and return its URL, or None
-    when not cloud-connected (the branded view is only reachable then).
+    when no link can be minted (a self-hosted instance with no relay).
 
     Sending IS the share: the link is reactivated and given a fresh
-    SEND_SHARE_DAYS window each time, so every emailed link is live. Caller
-    commits."""
-    if not (settings.celerp_public_url or "").strip():
-        return None
+    SEND_SHARE_DAYS window each time, so every emailed link is live. A free
+    relay-bound instance brings its lazy tunnel up so the link resolves once
+    sent. Caller commits."""
     row = await get_or_create_share_token(session, company_id, entity_id)
     row.revoked_at = None
     row.expires_at = datetime.now(timezone.utc) + timedelta(days=SEND_SHARE_DAYS)
-    return public_view_url(row.token)
+    from celerp.services import relay_share
+    relay_share.ensure_running()
+    return await public_view_url(row.token)
 
 
 async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str | None:
@@ -326,7 +332,7 @@ async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str
     return f"{base}/pay/{row.token}"
 
 
-def _share_status(row: DocShareToken | None) -> dict:
+async def _share_status(row: DocShareToken | None) -> dict:
     """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
         return {"shared": False, "active": False, "revoked": False, "expired": False,
@@ -339,7 +345,7 @@ def _share_status(row: DocShareToken | None) -> dict:
         "expired": row.revoked_at is None and not active,
         "token": row.token,
         "url": _share_url(row.token),
-        "view_url": public_view_url(row.token),
+        "view_url": await public_view_url(row.token),
         "expires_at": row.expires_at.date().isoformat() if row.expires_at else None,
     }
 
@@ -376,7 +382,7 @@ async def share_status(
         raise HTTPException(status_code=404, detail="Document not found")
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
-    return _share_status(share_row)
+    return await _share_status(share_row)
 
 
 @router.post("/docs/{entity_id}/share")
@@ -406,8 +412,12 @@ async def create_share_link(
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     share_row.revoked_at = None
     share_row.expires_at = expires
+    # A free instance's tunnel is lazy: creating a share brings it up on demand
+    # so the link resolves. A no-op for a paid (always-on) or self-hosted instance.
+    from celerp.services import relay_share
+    relay_share.ensure_running()
     await session.commit()
-    return _share_status(share_row)
+    return await _share_status(share_row)
 
 
 @router.delete("/docs/{entity_id}/share")
@@ -424,7 +434,7 @@ async def revoke_share_link(
         raise HTTPException(status_code=404, detail="No share link found")
     token_row.revoked_at = datetime.now(timezone.utc)
     await session.commit()
-    return _share_status(token_row)
+    return await _share_status(token_row)
 
 
 # ---------------------------------------------------------------------------

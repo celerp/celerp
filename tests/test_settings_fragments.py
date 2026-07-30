@@ -101,6 +101,7 @@ async def test_cloud_status_connected_relay_unreachable(client):
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
         patch.object(gw_state, "_session_token", "sess"),
+        patch.object(gw_state, "_subscription_tier", ""),
         patch("celerp.config.settings.gateway_instance_id", "inst-123"),
         patch("celerp.config.settings.gateway_http_url", ""),
         patch("httpx.AsyncClient", return_value=mock_inner_client),
@@ -113,6 +114,56 @@ async def test_cloud_status_connected_relay_unreachable(client):
     assert data["tier"] is None
     assert data["email_quota"] == 0
     assert data["email_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client):
+    """The gateway's own WS push (subscription_updated) already told us the tier;
+    a free instance's session_token may never resolve a live /billing/status call,
+    so tier must not silently fall back to None when the WS already supplied it
+    (regression: this used to hide the free-tier note whenever the HTTP round trip
+    to the relay failed or session_token wasn't set)."""
+    with (
+        patch("celerp.config.settings.gateway_token", "tok"),
+        patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
+        patch.object(gw_state, "_session_token", ""),
+        patch.object(gw_state, "_subscription_tier", "free"),
+        patch.object(gw_state, "_subscription_status", "active"),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["connected"] is True
+    assert data["tier"] == "free"
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client):
+    """The relay's live /billing/status answer (e.g. after an upgrade) still wins
+    over a WS-pushed tier that may be stale until the next subscription_updated push."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"tier": "team", "email_quota": 1000, "email_used": 42}
+
+    mock_inner_client = AsyncMock()
+    mock_inner_client.get = AsyncMock(return_value=mock_response)
+    mock_inner_client.__aenter__ = AsyncMock(return_value=mock_inner_client)
+    mock_inner_client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("celerp.config.settings.gateway_token", "tok"),
+        patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
+        patch("celerp.gateway.state.get_session_token", return_value="sess-token"),
+        patch.object(gw_state, "_subscription_tier", "free"),
+        patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
+        patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
+        patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    assert r.json()["tier"] == "team"
 
 
 @pytest.mark.asyncio
@@ -158,6 +209,30 @@ async def test_cloud_status_connected_relay_ok(client):
     # Verify correct auth params are sent
     assert captured_params.get("instance_id") == "inst-abc"
     assert captured_params.get("session_token") == "sess-token"
+
+
+# ---------------------------------------------------------------------------
+# /settings/cloud/billing-portal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_billing_portal_returns_relay_url(client):
+    """Proxies the relay's Stripe Billing Portal session URL to the UI."""
+    with patch("celerp.services.payments.billing_portal_url",
+               AsyncMock(return_value="https://billing.stripe.com/p/session_x")):
+        r = await client.post("/settings/cloud/billing-portal")
+    assert r.status_code == 200
+    assert r.json()["portal_url"] == "https://billing.stripe.com/p/session_x"
+
+
+@pytest.mark.asyncio
+async def test_billing_portal_unavailable_is_an_error(client):
+    """Relay unreachable or no billing account: an explanatory 502, never a
+    fabricated URL."""
+    with patch("celerp.services.payments.billing_portal_url", AsyncMock(return_value=None)):
+        r = await client.post("/settings/cloud/billing-portal")
+    assert r.status_code == 502
+    assert "subscription management" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

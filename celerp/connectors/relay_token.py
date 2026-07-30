@@ -7,7 +7,7 @@ inside the core process, so unlike the manual sync route — where the UI passes
 the token in the request body — they must fetch the token themselves. The relay
 holds the encrypted token and returns a short-lived copy to the authenticated
 instance. Returns None when there is no relay session (e.g. a self-hosted
-instance not connected to Celerp Cloud), in which case the caller skips.
+instance not connected to Celerp Connect), in which case the caller skips.
 """
 from __future__ import annotations
 

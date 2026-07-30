@@ -19,9 +19,9 @@ def test_handoff_default_medium():
         "https://celerp.com/github?utm_source=app&utm_medium=inapp"
 
 
-def test_handoff_lead_extra_anchor():
-    url = build_handoff_url("/x", medium="m", lead="id=1", extra="?a=b", anchor="sec")
-    assert url == "https://celerp.com/x?id=1&utm_source=app&utm_medium=m&a=b#sec"
+def test_handoff_lead_extra():
+    url = build_handoff_url("/x", medium="m", lead="id=1", extra="?a=b")
+    assert url == "https://celerp.com/x?id=1&utm_source=app&utm_medium=m&a=b"
 
 
 # ── build_subscribe_url (behavior preserved by the DRY refactor) ───────────────
@@ -36,6 +36,6 @@ def test_subscribe_with_instance():
         "https://celerp.com/subscribe?instance_id=iid&utm_source=app&utm_medium=inapp"
 
 
-def test_subscribe_topup_anchor_extra():
-    assert build_subscribe_url("iid", "go", topup=True, extra="?p=1") == \
-        "https://celerp.com/subscribe/topup?instance_id=iid&utm_source=app&utm_medium=inapp&p=1#go"
+def test_subscribe_topup_extra():
+    assert build_subscribe_url("iid", topup=True, extra="?p=1") == \
+        "https://celerp.com/subscribe/topup?instance_id=iid&utm_source=app&utm_medium=inapp&p=1"

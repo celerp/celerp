@@ -105,6 +105,10 @@ The onboarding wizard lets you pick your industry. Modules can be toggled any ti
 
 ### Build your own
 
+> "My vision for Celerp is that anyone with AI coding tools can describe what their business needs and get a module that imports right into the system."
+>
+> Noah Severs, Founder
+
 Every feature above is a module on one loader API, and you can build against the same API. A module is a Python package you drop into Celerp's `modules/` folder; it adds its own tables, API routes, and UI pages, no fork or build step.
 
 - [**celerp-module-template**](https://github.com/celerp/celerp-module-template) - a working example module you can run in about ten minutes, plus a lint script

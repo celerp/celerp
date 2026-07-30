@@ -1145,7 +1145,8 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
     if sent_to:
         # Emailing a document always shares it (an email with no viewable
-        # document is pointless); send_view_url returns None if not cloud-connected.
+        # document is pointless); send_view_url returns None only when no link
+        # can be minted (a self-hosted instance with no relay).
         from celerp_docs.routes_share import send_pay_url, send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
         # Pay button only while something is owed: it charges the remaining
