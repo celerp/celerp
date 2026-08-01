@@ -3848,7 +3848,7 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
-                      tier: str | None = None) -> FT:
+                      tier: str | None = None, token_bound: bool = False) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
@@ -3856,6 +3856,10 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); anything
     other than a known paid tier (including None/"" while unknown) is treated
     as free, so the free-tier note degrades to shown, never hidden.
+    token_bound: the instance holds a gateway_token (it is signed in), which a
+    free tier does WITHOUT a live tunnel - the WS client never starts for it, so
+    relay_status stays "inactive". Treat that as connected so a signed-in free
+    account still gets the account/disconnect view, not the subscribe/claim page.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3871,7 +3875,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
-    is_connected = relay_status not in ("inactive",) or gw is not None
+    is_connected = token_bound or relay_status not in ("inactive",) or gw is not None
     if is_connected:
         badge_cls = {
             "active": "badge--active",

@@ -457,16 +457,22 @@ def setup_routes(app):
         public_url = ""
         tier = ""
         disconnected = False
+        token_bound = False
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
             public_url = rs.get("public_url", "")
             tier = rs.get("tier") or ""
             disconnected = bool(rs.get("cloud_disconnected"))
+            token_bound = bool(rs.get("gateway_token_set"))
         except (_APIError, Exception):
             lc = _local_get_client()
             relay_status = lc.relay_status if lc else "inactive"
-        gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
+        # A free tier is signed in (holds a gateway_token) but never starts the WS
+        # client - it has no tunnel to serve - so relay_status stays "inactive".
+        # Treat a token-bound instance as connected so a signed-in free account
+        # gets the account/disconnect view plus the upgrade ad, not the landing page.
+        gw_ok = relay_status in ("active", "tos_required", "connecting", "error") or token_bound
 
         # If not connected, show value-prop landing. A sticky-disconnected install
         # keeps its preserved credential, so the connect section withholds its
@@ -504,7 +510,7 @@ def setup_routes(app):
             # no public_url and no backup entitlement, so the summary card is omitted
             # entirely rather than showing scheduler/pending state for a plan that
             # never runs backups.
-            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier),
+            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
                      _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the

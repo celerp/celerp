@@ -9982,6 +9982,32 @@ class TestWebAccessPlansAd:
         assert "cloud-hero" in r.text
         assert "cloud-plans" in r.text
 
+    @pytest.mark.asyncio
+    async def test_signed_in_free_tier_tunnel_down_shows_account_view(self, ui_client):
+        """Regression: a free tier is signed in (holds a gateway_token) but never
+        starts the WS client - it has no tunnel to serve - so relay_status stays
+        "inactive". The page must detect that via gateway_token_set and show the
+        account view (disconnect control + free-tier note + upgrade ad), NOT the
+        not-connected landing page. Before the fix it gated only on relay_status,
+        so a signed-in free account was dropped onto the subscribe/claim landing
+        with no way to log out and no upgrade ad."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                "ui.api_client.get_relay_status",
+                new=AsyncMock(return_value={
+                    "connected": False, "relay_status": "inactive", "public_url": "",
+                    "tier": "free", "gateway_token_set": True})))
+            stack.enter_context(patch(
+                "ui.api_client.get_backup_status",
+                new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": ""})))
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "cloud-hero" not in r.text                 # NOT the landing page
+        assert "/settings/cloud-disconnect" in r.text     # log-out / disconnect control
+        assert "Free Tier" in r.text                      # free-tier note
+        assert "cloud-plans" in r.text                    # upgrade ad below
+
 
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
