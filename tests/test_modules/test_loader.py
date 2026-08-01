@@ -1067,6 +1067,21 @@ class TestModuleContentDigest:
         (pkg / PREMIUM_MARKER).write_text("")
         assert _fpt_loader.module_content_digest(pkg) == before
 
+    def test_digest_excludes_coverage_and_pytest_artifacts(self, tmp_path):
+        # A local `pytest --cov` run drops .coverage next to the source and a
+        # .pytest_cache/ dir. Those are tooling artifacts, never module source, so
+        # they must not change the digest (else a developer running a module's own
+        # tests silently demotes it - the celerp-labels regression this fixes).
+        pkg = _make_module(tmp_path, "cov-mod", '{"name": "cov-mod", "version": "1.0"}')
+        before = _fpt_loader.module_content_digest(pkg)
+        (pkg / ".coverage").write_bytes(b"SQLite format 3\x00coverage-junk")
+        (pkg / ".coverage.host.12345").write_bytes(b"parallel-run-data")
+        (pkg / "htmlcov").mkdir()
+        (pkg / "htmlcov" / "index.html").write_text("<html>report</html>")
+        (pkg / ".pytest_cache").mkdir()
+        (pkg / ".pytest_cache" / "CACHEDIR.TAG").write_text("Signature")
+        assert _fpt_loader.module_content_digest(pkg) == before
+
     def test_digest_changes_when_a_source_file_changes(self, tmp_path):
         pkg = _make_module(tmp_path, "chg-mod", '{"name": "chg-mod", "version": "1.0"}')
         before = _fpt_loader.module_content_digest(pkg)
@@ -1152,12 +1167,42 @@ class TestIsFirstParty:
         assert _fpt_loader.is_first_party(pkg) is True
 
     def test_modified_default_demotes_and_warns(self, tmp_path, caplog):
+        # Clear the per-process warned-set so this test sees its warning regardless
+        # of whether an earlier test already demoted a "celerp-labels" path.
+        _fpt_loader._demotion_warned.discard("celerp-labels")
         pkg = _copy_default("celerp-labels", tmp_path)
         (pkg / "__init__.py").write_text(
             (pkg / "__init__.py").read_text() + "\n# tampered\n")
         with caplog.at_level(logging.WARNING, logger="celerp.modules.loader"):
             assert _fpt_loader.is_first_party(pkg) is False
         assert any("celerp-labels" in r.message for r in caplog.records)
+
+    def test_coverage_artifact_does_not_demote_default(self, tmp_path):
+        # A seeded default that a developer then ran tests against (leaving a
+        # .coverage file) stays first-party - the artifact is excluded from the
+        # digest, so it never trips the demotion the console-spam issue reported.
+        pkg = _copy_default("celerp-labels", tmp_path)
+        assert _fpt_loader.is_first_party(pkg) is True
+        (pkg / ".coverage").write_bytes(b"SQLite format 3\x00coverage-junk")
+        (pkg / ".pytest_cache").mkdir(exist_ok=True)
+        (pkg / ".pytest_cache" / "v").mkdir()
+        assert _fpt_loader.is_first_party(pkg) is True
+
+    def test_demotion_warning_logged_once_per_process(self, tmp_path, caplog):
+        # The loader is called on every scan (boot, each /modules render, the delete
+        # guard); a demoted module must warn ONCE, not once per call (console-spam
+        # issue). is_first_party still returns False every time - only the log is
+        # deduped.
+        _fpt_loader._demotion_warned.discard("celerp-labels")
+        pkg = _copy_default("celerp-labels", tmp_path)
+        (pkg / "__init__.py").write_text(
+            (pkg / "__init__.py").read_text() + "\n# tampered\n")
+        with caplog.at_level(logging.WARNING, logger="celerp.modules.loader"):
+            for _ in range(4):
+                assert _fpt_loader.is_first_party(pkg) is False
+        hits = [r for r in caplog.records if "celerp-labels" in r.message
+                and "first-party lock entry" in r.message]
+        assert len(hits) == 1, f"expected one warning, got {len(hits)}"
 
 
 class TestFirstPartyLock:

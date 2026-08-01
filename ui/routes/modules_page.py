@@ -124,19 +124,6 @@ def _restart_badge(lang: str) -> FT:
     )
 
 
-def _demoted(modules: list[dict]) -> list[str]:
-    """Sorted names of demoted defaults: modules the backend scan found whose name
-    is in the committed first-party lock but whose content no longer matches.
-
-    Content-identity can demote a default silently (it is handled as an imported
-    module from then on), so the change is surfaced to the user rather than left
-    to a backend log (GDR 2d). A per-render fact from the scan itself - never a
-    diff against a previous render, so a failed or empty fetch cannot fabricate
-    a demotion.
-    """
-    return sorted(m["name"] for m in modules if m.get("demoted"))
-
-
 # ── tabs chrome ────────────────────────────────────────────────────────────────
 
 def _tabs(active: str, lang: str) -> FT:
@@ -336,16 +323,10 @@ def _local_panel(modules: list[dict], lang: str = "en",
         cls="error-banner mb-md",
     ) if _restart_pending(modules) else Div(id="modules-restart-banner")
 
-    # Unmissable on-page notice for any demoted default the scan found (its
-    # content stopped matching the committed lock, so it is handled as an
-    # imported module now). Shown as long as the mismatch exists - it names a
-    # real, current state, not a one-off event.
-    dropped = _demoted(modules)
-    reclass_banner = Div(
-        Span(t("modules.reclassified_notice", lang, names=", ".join(dropped))),
-        id="modules-reclass-banner",
-        cls="error-banner mb-md",
-    ) if dropped else None
+    # A demoted default (content no longer matches the committed lock, so it now
+    # runs untrusted) is surfaced in the notification bell at boot - visible from
+    # any page and dismissible - rather than an always-on banner pinned here that
+    # the user could never clear. See celerp.modules.demotion.
 
     flash_div = Div(
         flash_text,
@@ -453,7 +434,6 @@ def _local_panel(modules: list[dict], lang: str = "en",
     return Div(
         folder_row,
         banner,
-        reclass_banner,
         flash_div,
         import_section,
         content,

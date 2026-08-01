@@ -17461,12 +17461,12 @@ class TestReconciliationImportResponse:
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
 
 
-# ── Module reclassification banner (GDR 2d) ───────────────────────────────────
-# When the backend scan reports a demoted default (named in the committed
-# first-party lock but content changed), the modules page must surface it in an
-# unmissable on-page banner, not only a backend log. The banner is driven by the
-# per-render "demoted" fact from the scan - never a diff against a previous
-# render, so a failed or empty fetch can never fabricate a demotion.
+# ── Demoted default → notification bell, not an /modules banner ───────────────
+# A demoted default (named in the committed first-party lock but content changed)
+# is now surfaced in the notification bell at boot (celerp.modules.demotion), so
+# it is visible from any page and can be dismissed - not pinned on /modules as an
+# always-on banner the user could never clear. The /modules panel therefore never
+# renders the old reclassification banner, whatever the scan reports.
 
 class TestModuleReclassificationBanner:
     def _mod(self, name, is_default, source="default", demoted=False):
@@ -17475,13 +17475,13 @@ class TestModuleReclassificationBanner:
                 "depends_on": [], "is_default": is_default, "source": source,
                 "installed_at": None, "demoted": demoted}
 
-    def test_reclassification_banner_shown_for_demoted_default(self):
+    def test_no_reclass_banner_even_for_demoted_default(self):
+        # The notice moved to the bell: a demoted default renders no /modules banner.
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
         body = to_xml(mp._local_panel(
             [self._mod("celerp-labels", False, source="sideloaded", demoted=True)]))
-        assert "modules-reclass-banner" in body
-        assert "celerp-labels" in body
+        assert "modules-reclass-banner" not in body
 
     def test_no_reclassification_banner_when_stable(self):
         from fasthtml.common import to_xml
@@ -17490,21 +17490,15 @@ class TestModuleReclassificationBanner:
         assert "modules-reclass-banner" not in body
 
     def test_no_banner_for_community_module(self):
-        # A community module was never in the lock: it is not a demoted default
-        # and must never trip the banner, whatever its enable/disable state.
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
         body = to_xml(mp._local_panel(
             [self._mod("equipment-maintenance", False, source="community")]))
         assert "modules-reclass-banner" not in body
 
-    def test_empty_module_list_never_fabricates_banner(self):
-        # Regression: the old implementation diffed first-party names between
-        # renders, so an empty list (a failed fetch fell back to []) reported
-        # every bundled default as demoted. An empty scan renders no banner.
+    def test_empty_module_list_renders_no_banner(self):
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
-        to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
         body = to_xml(mp._local_panel([]))
         assert "modules-reclass-banner" not in body
 
