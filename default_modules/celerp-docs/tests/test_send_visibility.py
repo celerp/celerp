@@ -41,7 +41,7 @@ def test_sendable_doc_types_not_in_no_send():
 
 # ── _doc_detail() HTML rendering ──────────────────────────────────────────────
 
-def _render_doc(doc_type: str, status: str, relay_connected: bool = False) -> str:
+def _render_doc(doc_type: str, status: str, share_enabled: bool = False) -> str:
     """Render _doc_detail() for a minimal doc and return the HTML string."""
     from ui.routes.documents import _doc_detail
     doc = {
@@ -53,7 +53,7 @@ def _render_doc(doc_type: str, status: str, relay_connected: bool = False) -> st
         "company_name": "Test Co",
         "line_items": [],
     }
-    result = _doc_detail(doc, role="owner", relay_connected=relay_connected)
+    result = _doc_detail(doc, role="owner", share_enabled=share_enabled)
     from fasthtml.common import to_xml
     return to_xml(result)
 
@@ -61,7 +61,7 @@ def _render_doc(doc_type: str, status: str, relay_connected: bool = False) -> st
 @pytest.mark.parametrize("doc_type", ["bill", "purchase_order", "consignment_in"])
 @pytest.mark.parametrize("status", ["draft", "sent", "final", "awaiting_payment", "paid"])
 def test_no_send_for_internal_doc_types(doc_type, status):
-    html = _render_doc(doc_type, status, relay_connected=True)
+    html = _render_doc(doc_type, status, share_enabled=True)
     assert "send-modal-" not in html, f"{doc_type}/{status} should not have send modal"
     assert 'action/mark_sent' not in html, f"{doc_type}/{status} should not have mark_sent"
     assert 'action/unmark_sent' not in html, f"{doc_type}/{status} should not have unmark_sent"
@@ -69,55 +69,55 @@ def test_no_send_for_internal_doc_types(doc_type, status):
 
 @pytest.mark.parametrize("status", ["paid", "void"])
 def test_no_send_modal_for_no_send_statuses(status):
-    html = _render_doc("invoice", status, relay_connected=True)
+    html = _render_doc("invoice", status, share_enabled=True)
     assert "send-modal-" not in html, f"invoice/{status} should not have send modal"
 
 
-def test_send_modal_visible_when_relay_connected_and_eligible_status():
-    html = _render_doc("invoice", "draft", relay_connected=True)
+def test_send_modal_visible_when_share_enabled_and_eligible_status():
+    html = _render_doc("invoice", "draft", share_enabled=True)
     assert "send-modal-" in html, "invoice/draft with relay should show send modal"
     assert "modal-dialog" in html
 
 
 def test_send_modal_visible_on_final_status_with_relay():
-    html = _render_doc("invoice", "final", relay_connected=True)
+    html = _render_doc("invoice", "final", share_enabled=True)
     assert "send-modal-" in html, "invoice/final with relay should show send modal"
 
 
 def test_send_modal_hidden_when_relay_not_connected():
-    html = _render_doc("invoice", "draft", relay_connected=False)
+    html = _render_doc("invoice", "draft", share_enabled=False)
     assert "send-modal-" not in html, "Send modal must be hidden when relay is not connected"
 
 
 def test_mark_as_sent_visible_on_draft_sendable_type():
     # relay not required for mark_as_sent
-    html = _render_doc("invoice", "draft", relay_connected=False)
+    html = _render_doc("invoice", "draft", share_enabled=False)
     assert 'action/mark_sent' in html
 
 
 def test_mark_as_sent_hidden_on_non_draft():
-    html = _render_doc("invoice", "final", relay_connected=False)
+    html = _render_doc("invoice", "final", share_enabled=False)
     assert 'action/mark_sent' not in html
 
 
 def test_unmark_sent_visible_on_sent_status():
-    html = _render_doc("invoice", "sent", relay_connected=False)
+    html = _render_doc("invoice", "sent", share_enabled=False)
     assert 'action/unmark_sent' in html
 
 
 def test_unmark_sent_hidden_on_non_sent():
-    html = _render_doc("invoice", "draft", relay_connected=False)
+    html = _render_doc("invoice", "draft", share_enabled=False)
     assert 'action/unmark_sent' not in html
 
 
 def test_send_modal_has_cc_and_bcc_fields():
-    html = _render_doc("invoice", "draft", relay_connected=True)
+    html = _render_doc("invoice", "draft", share_enabled=True)
     assert 'name="cc"' in html
     assert 'name="bcc"' in html
 
 
 def test_send_modal_has_multiple_address_hint():
-    html = _render_doc("invoice", "draft", relay_connected=True)
+    html = _render_doc("invoice", "draft", share_enabled=True)
     assert "comma" in html.lower() or "send_multiple_hint" not in html  # i18n key resolves
 
 
