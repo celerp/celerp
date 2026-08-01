@@ -1965,8 +1965,8 @@ celerpUpdateBulkAlloc();
             doc_notes = await api.list_doc_notes(token, entity_id)
         except Exception:
             pass
-        # Check relay connection for Send button visibility
-        _relay_connected: bool = False
+        # Relay binding drives Send/Share visibility (gateway_token_set), and the
+        # quota line reads email usage from the same status call.
         _share_enabled: bool = False
         _share_active: bool = False
         _email_used: int = 0
@@ -1974,7 +1974,6 @@ celerpUpdateBulkAlloc();
         _email_resets_on: str | None = None
         try:
             _relay_status = await api.get_relay_status(token)
-            _relay_connected = bool(_relay_status.get("connected"))
             _email_used = int(_relay_status.get("email_used") or 0)
             _email_quota = int(_relay_status.get("email_quota") or 0)
             _email_resets_on = _relay_status.get("email_resets_on")
@@ -2056,7 +2055,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, free_send_quota=(0 if _relay_connected else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _share_enabled else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -4135,7 +4134,6 @@ celerpUpdateBulkAlloc();
             _list_locations = (await api.get_locations(token)).get("items", [])
         except APIError:
             _list_locations = []
-        _list_relay = False
         _list_share = False
         _list_share_active = False
         _ls_used: int = 0
@@ -4143,7 +4141,6 @@ celerpUpdateBulkAlloc();
         _ls_resets_on: str | None = None
         try:
             _ls_status = await api.get_relay_status(token)
-            _list_relay = bool(_ls_status.get("connected"))
             _list_share = bool(_ls_status.get("public_url"))
             _ls_used = int(_ls_status.get("email_used") or 0)
             _ls_quota = int(_ls_status.get("email_quota") or 0)
@@ -4160,7 +4157,7 @@ celerpUpdateBulkAlloc();
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
-                        relay_connected=_list_relay, email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
+                        email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         line_identifier_mode=_ident_mode),
             title=f"List {ref} - Celerp",
             nav_active="lists",
@@ -5454,7 +5451,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, free_send_quota: int = 0, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_quota: int = 0, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5757,9 +5754,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         and (is_list or doc_type not in NO_SEND_DOC_TYPES)
     )
     if _can_send:
-        # Send via relay - modal popup, only when relay connected and status allows it
+        # Send via relay - modal popup, shown whenever this instance is relay-bound
+        # (gateway_token_set) and the status allows it. Gate on relay-bound, NOT on a
+        # live tunnel (relay_connected): a signed-in free account keeps its tunnel
+        # lazily down until a share is created, yet can send - the send flow brings
+        # the tunnel up on demand. Gating on the live tunnel wrongly dropped such an
+        # account into the "connect your account" offer below despite being signed in.
         _send_ok = (status == _LF and not _list_sent) if is_list else (status not in NO_SEND_STATUSES)
-        if relay_connected and _send_ok:
+        if share_enabled and _send_ok:
             contact_email = doc.get("contact_email") or ""
             doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
             company_name = doc.get("company_name") or "Your Company"

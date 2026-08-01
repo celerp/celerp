@@ -2492,6 +2492,25 @@ class TestDocumentPolish:
         assert b'hx-get="/docs/d:1/share"' in r.content
 
     @pytest.mark.asyncio
+    async def test_send_modal_shown_for_signed_in_free_account_tunnel_down(self, ui_client):
+        """A signed-in free account is relay-bound (gateway_token_set) but keeps its
+        lazy tunnel down (connected False) until a share exists. The real Send modal
+        must still render - the send flow brings the tunnel up on demand - instead of
+        the "connect your account" offer that gating on the live tunnel wrongly showed."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        # Real send modal present...
+        assert b"send-modal-d-1" in r.content
+        # ...and the account-gate signup offer (next=doc-send) absent.
+        assert b"next=doc-send" not in r.content
+
+    @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
         """The online-only note renders in both the send modal and the share panel."""
         note = b"Please note this URL will only work while your terminal is online."
@@ -12598,7 +12617,8 @@ class TestDocumentsOverhaul:
     async def test_send_form_shows_email_fields(self, ui_client):
         """Draft doc shows Send modal with To, Subject, Message, CC, BCC fields when relay connected."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={"connected": True})):
+             patch("ui.api_client.get_relay_status",
+                   new=AsyncMock(return_value={"connected": True, "gateway_token_set": True})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert 'name="sent_to"' in content
@@ -12614,14 +12634,15 @@ class TestDocumentsOverhaul:
         the date it resets; the line is omitted when the relay doesn't
         report the quota (self-hosted, or relay unreachable)."""
         _relay = AsyncMock(return_value={
-            "connected": True, "email_quota": 10, "email_used": 1,
+            "connected": True, "gateway_token_set": True,
+            "email_quota": 10, "email_used": 1,
             "email_resets_on": "2026-08-01"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         assert "(1/10) Resets 2026-08-01" in r.content.decode()
 
-        _no_quota = AsyncMock(return_value={"connected": True})
+        _no_quota = AsyncMock(return_value={"connected": True, "gateway_token_set": True})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_quota):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
@@ -12743,7 +12764,7 @@ class TestDocumentsOverhaul:
         be the only read-only field), and the send modal prefills the To field
         with it while staying replaceable."""
         doc = dict(_BLANK_DOC, contact_email="billing@acme.com", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
@@ -12908,7 +12929,7 @@ class TestDocumentsOverhaul:
         assert "location.reload" in content
 
         doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r2 = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())

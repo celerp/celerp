@@ -558,9 +558,10 @@ def test_doc_detail_shows_share_button_only_when_share_enabled():
 
 
 def test_share_hidden_when_connected_but_no_public_url():
-    """The bug this guards: connected tunnel but no public URL yet (e.g. tos_required
-    / mid-activation) must NOT show a Share button that would copy a dead link."""
-    xml = _detail_xml(_invoice(), relay_connected=True, share_enabled=False)
+    """The bug this guards: connected tunnel but nothing to mint a link with yet
+    (share_enabled False, e.g. tos_required / mid-activation) must NOT show a Share
+    button that would copy a dead link."""
+    xml = _detail_xml(_invoice(), share_enabled=False)
     assert "share-modal-doc-x1" not in xml
 
 
