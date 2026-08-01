@@ -32,6 +32,14 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=23.0",
     "httpx>=0.27",
+    # httpcore calls current_async_library() on every request; when sniffio is
+    # absent it does a `try: import sniffio` that raises and falls back. A failed
+    # import is never cached, so each call re-walks sys.path, and two concurrent
+    # httpx clients (e.g. a page render awaiting one call while a fire-and-forget
+    # task opens another) can race and deadlock that import until the loop times
+    # out - a page-load/browser-test hang. anyio requires sniffio but the resolver
+    # does not always pull it, so depend on it directly.
+    "sniffio>=1.3",
     "slowapi>=0.1.9",
     "reportlab>=4.0",
     # 0.14 is the floor that works with Starlette 1.0, which dropped the
