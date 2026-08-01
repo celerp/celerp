@@ -962,7 +962,6 @@
   "modules.license_move_body": "This module runs on the computer you bought it on. Add Celerp Connect to use it on any computer you sign in on, without buying it again.",
   "modules.license_move_title": "Use this module on this computer",
   "modules.loading_catalog": "Loading catalog...",
-  "modules.reclassified_notice": "The bundled module {names} was changed on this computer, so it now counts as an imported module. It keeps working. If you did not change it, reinstall Celerp to restore the original.",
   "modules.required_by": "Required by: {names}",
   "modules.restart_confirm": "Restart Celerp now to apply module changes? The app will reload.",
   "modules.restart_timeout": "Restart is taking longer than expected. Reload the page manually once Celerp is back.",
