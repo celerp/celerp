@@ -699,7 +699,8 @@ async def test_connectors_catalog_402_reports_needs_plan(client):
 @pytest.mark.asyncio
 async def test_cloud_disconnect_is_sticky(client):
     """Disconnect records the user's choice in settings and config so the
-    startup probe cannot quietly re-link the install."""
+    startup probe cannot quietly re-link the install - while PRESERVING the
+    credential (the association) so reconnecting is a local one-click operation."""
     token = await _register(client, "sticky")
     gw = _mock_gw("active")
 
@@ -712,13 +713,54 @@ async def test_cloud_disconnect_is_sticky(client):
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.gateway.client.set_client"),
         patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
-        patch("celerp.config.read_config", return_value={"cloud": {"token": "old-token"}}),
+        patch("celerp.config.read_config",
+              return_value={"cloud": {"token": "old-token", "public_url": "https://co.celerp.app"}}),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
     assert r.status_code == 200
     assert _s.cloud_disconnected is True
     assert written["cloud"]["disconnected"] is True
+    # The credential is NOT wiped - it is the association that makes reconnect one click.
+    assert written["cloud"]["token"] == "old-token"
+    assert written["cloud"]["public_url"] == "https://co.celerp.app"
+    # Live credential cleared in-memory so the tunnel drops and share-minting stops.
+    assert _s.gateway_token == ""
+
+
+@pytest.mark.asyncio
+async def test_cloud_activate_reconnects_via_stored_token(client):
+    """A sticky-disconnected install reconnects from the preserved credential:
+    /settings/cloud-activate re-applies the stored token locally (no relay
+    /auth/activate round-trip, no re-entering email) and ends the disconnect."""
+    token = await _register(client, "reconnect-stored")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = True
+    _s.gateway_token = ""
+    _s.backup_enabled = False  # keep the scheduler out of this unit test
+
+    written = {}
+    stored = {"cloud": {"token": "stored-tok", "public_url": "https://co.celerp.app"}}
+    with (
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
+        patch("celerp.config.read_config", return_value=stored),
+    ):
+        r = await client.post("/settings/cloud-activate", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    # connected=True with the exact stored credential proves the local fast-path
+    # ran: a fall-through to /auth/activate (no relay mocked here) would have
+    # errored, and could never yield this token.
+    assert data["connected"] is True
+    assert data["public_url"] == "https://co.celerp.app"
+    assert _s.gateway_token == "stored-tok"
+    assert _s.cloud_disconnected is False
 
 
 @pytest.mark.asyncio
@@ -730,15 +772,18 @@ async def test_cloud_apply_token_clears_disconnect_flag(client):
 
     from celerp.config import settings as _s
     _s.cloud_disconnected = True
+    _s.backup_enabled = False  # keep the scheduler out of this unit test
 
     written = {}
     with (
-        patch("celerp.gateway.client.get_client", return_value=None),
-        patch("celerp.gateway.client.set_client"),
-        patch("celerp.gateway.client.GatewayClient", return_value=gw),
+        # Patch ensure_running (not asyncio.create_task): letting the real
+        # ensure_running run under a mocked create_task leaves celerp.gateway._run_task
+        # a MagicMock that a later test's shutdown() would await (xdist state leak).
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
         patch("celerp.config.read_config", return_value={"cloud": {"disconnected": True}}),
-        patch("asyncio.create_task"),
     ):
         r = await client.post(
             "/settings/cloud-apply-token",

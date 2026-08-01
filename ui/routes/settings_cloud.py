@@ -72,8 +72,13 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     )
 
 
-def _value_prop_page(iid: str, lang: str = "en") -> FT:
-    """Full value-proposition landing page shown when not connected to cloud."""
+def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
+    """Full value-proposition landing page shown when not connected to cloud.
+
+    `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
+    so the connect section withholds its auto-connect (landing here must not
+    silently undo the disconnect) while the Connect button still reconnects in
+    one click."""
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -87,7 +92,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
         ),
         _plans_ad(iid, lang=lang),
         # Already subscribed / connect section
-        _connect_section(iid, lang=lang),
+        _connect_section(iid, lang=lang, disconnected=disconnected),
         cls="content-area",
     )
 
@@ -185,13 +190,14 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
     )
 
 
-def _connect_section(iid: str, lang: str = "en") -> FT:
+def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
     """The Celerp-account surface in its claim-led variant (this page's context
     is an existing/prospective subscriber). ONE component app-wide - see
     ui/routes/account.py. Keeps id="cloud-relay-tab" so the shipped
     cloud-activate/cloud-claim responses replace the same element."""
     from ui.routes.account import account_panel
-    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab")
+    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab",
+                         suppress_autoconnect=disconnected)
 
 
 def _parse_db_url(url: str) -> dict:
@@ -450,24 +456,29 @@ def setup_routes(app):
         relay_status = "inactive"
         public_url = ""
         tier = ""
+        disconnected = False
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
             public_url = rs.get("public_url", "")
             tier = rs.get("tier") or ""
+            disconnected = bool(rs.get("cloud_disconnected"))
         except (_APIError, Exception):
             lc = _local_get_client()
             relay_status = lc.relay_status if lc else "inactive"
         gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
 
-        # If not connected, show value-prop landing
+        # If not connected, show value-prop landing. A sticky-disconnected install
+        # keeps its preserved credential, so the connect section withholds its
+        # auto-connect (a page visit must not silently undo the disconnect) while
+        # the Connect button still reconnects in one click.
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return await base_shell(
                 _section_breadcrumb("Web Access"),
                 page_header("Web Access"),
-                _value_prop_page(iid, lang=lang),
+                _value_prop_page(iid, lang=lang, disconnected=disconnected),
                 title="Web Access - Celerp",
                 nav_active="web-access",
                 lang=lang,

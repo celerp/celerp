@@ -243,3 +243,39 @@ class TestStickyDisconnect:
         mod.write_config({"cloud": {"disconnected": True}})
         mod.load_cloud_config()
         assert mod.settings.cloud_disconnected is True
+
+    def test_boot_while_disconnected_withholds_credential_but_keeps_identity(
+            self, tmp_path, monkeypatch):
+        # The credential stays in config for a one-click reconnect, but must not go
+        # live on boot: gateway_token/public_url are withheld (tunnel down,
+        # share-minting off, probe skipped), while instance_id still loads.
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_token = ""
+        mod.settings.celerp_public_url = ""
+        mod.settings.gateway_instance_id = ""
+        mod.settings.cloud_disconnected = False
+        mod.write_config({"cloud": {
+            "token": "tok-keep", "instance_id": "iid-9",
+            "public_url": "https://co.celerp.app", "disconnected": True}})
+        mod.load_cloud_config()
+        assert mod.settings.cloud_disconnected is True
+        assert mod.settings.gateway_token == "", "credential must not go live while disconnected"
+        assert mod.settings.celerp_public_url == ""
+        assert mod.settings.gateway_instance_id == "iid-9", "identity still loads"
+        # And the credential is still on disk for the reconnect path to re-apply.
+        assert mod.read_config()["cloud"]["token"] == "tok-keep"
+
+    def test_connected_config_loads_credential(self, tmp_path, monkeypatch):
+        # The mirror of the above: with no disconnect flag, the credential loads
+        # and the tunnel comes up as before.
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_token = ""
+        mod.settings.celerp_public_url = ""
+        mod.settings.cloud_disconnected = False
+        mod.write_config({"cloud": {
+            "token": "tok-live", "instance_id": "iid-9",
+            "public_url": "https://co.celerp.app"}})
+        mod.load_cloud_config()
+        assert mod.settings.gateway_token == "tok-live"
+        assert mod.settings.celerp_public_url == "https://co.celerp.app"
+        assert mod.settings.cloud_disconnected is False

@@ -161,16 +161,22 @@ def load_cloud_config() -> None:
     cloud = cfg.get("cloud", {})
     if not cloud:
         return
-    if cloud.get("token") and not settings.gateway_token:
+    disconnected = bool(cloud.get("disconnected"))
+    if disconnected:
+        settings.cloud_disconnected = True
+    # A sticky disconnect keeps the credential in config for a one-click reconnect
+    # but must NOT bring it live: leaving gateway_token/public_url unset holds the
+    # tunnel down, share-minting off, and the startup probe skipped, so the
+    # disconnected choice survives the restart. instance_id and the backup key are
+    # identity, not the live connection, so they still load.
+    if cloud.get("token") and not settings.gateway_token and not disconnected:
         settings.gateway_token = cloud["token"]
     if cloud.get("instance_id") and not settings.gateway_instance_id:
         settings.gateway_instance_id = cloud["instance_id"]
-    if cloud.get("public_url") and not settings.celerp_public_url:
+    if cloud.get("public_url") and not settings.celerp_public_url and not disconnected:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
         settings.backup_encryption_key = cloud["backup_encryption_key"]
-    if cloud.get("disconnected"):
-        settings.cloud_disconnected = True
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True

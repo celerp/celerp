@@ -89,6 +89,44 @@ async def test_cloud_status_not_connected(client):
 
 
 @pytest.mark.asyncio
+async def test_cloud_status_reports_disconnected_flag(client):
+    """cloud-status carries cloud_disconnected so the UI can withhold auto-connect
+    on a sticky-disconnected install."""
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    assert r.json()["cloud_disconnected"] is True
+
+
+def test_unconnected_fragment_suppresses_autoconnect_when_disconnected():
+    """The disconnect response must not carry the on-load auto-connect script, or
+    it would instantly re-fire Connect and undo the disconnect; the default
+    (fresh/subscribed install) still auto-connects."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_unconnected
+    on = to_xml(_cloud_relay_unconnected("iid-1"))
+    off = to_xml(_cloud_relay_unconnected("iid-1", suppress_autoconnect=True))
+    assert "cloud_activate_tried" in on
+    assert "cloud_activate_tried" not in off
+    # The Connect button itself stays either way (one-click reconnect).
+    assert "cloud-connect-btn" in off
+
+
+def test_claim_panel_suppresses_autoconnect_when_disconnected():
+    from fasthtml.common import to_xml
+    from ui.routes.account import account_panel
+    on = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab"))
+    off = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab",
+                               suppress_autoconnect=True))
+    assert "cloud_activate_tried" in on
+    assert "cloud_activate_tried" not in off
+    assert "cloud-connect-btn" in off
+
+
+@pytest.mark.asyncio
 async def test_cloud_status_connected_relay_unreachable(client):
     """Returns connected=True but defaults when relay API times out."""
     import httpx

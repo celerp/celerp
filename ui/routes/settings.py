@@ -2137,7 +2137,10 @@ def setup_routes(app):
         except Exception:
             pass
         iid = ensure_instance_id()
-        return _cloud_relay_unconnected(iid)
+        # Sticky disconnect: the credential is preserved (one-click reconnect via
+        # the Connect button), but the fragment must not auto-fire Connect and
+        # undo the disconnect the user just chose.
+        return _cloud_relay_unconnected(iid, suppress_autoconnect=True)
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
@@ -3710,6 +3713,7 @@ def _cloud_relay_unconnected(
     info: str | None = None,
     show_email_form: bool = True,
     show_header: bool = True,
+    suppress_autoconnect: bool = False,
 ) -> FT:
     """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
@@ -3717,6 +3721,11 @@ def _cloud_relay_unconnected(
         show_header: When False, suppress the H3 title, description, and Subscribe button.
             Used when embedding inside the Web Access value-prop page which already
             has its own plan cards and CTAs.
+        suppress_autoconnect: When True, omit the on-load auto-connect script. Set by
+            the disconnect response so the fragment it swaps in cannot immediately
+            re-fire Connect and undo the disconnect the user just performed; the
+            Connect button stays and reconnects in one click from the preserved
+            credential.
     """
     from celerp.gateway.state import build_subscribe_url
     subscribe_url = build_subscribe_url(iid)
@@ -3752,9 +3761,12 @@ def _cloud_relay_unconnected(
             style="display:flex;align-items:center;flex-wrap:wrap;gap:0;margin-top:12px;",
         )
     )
-    # Auto-trigger on first load (silently tries to activate; shows result inline)
-    children.append(
-        Script("""
+    # Auto-trigger on first load (silently tries to activate; shows result inline).
+    # Withheld after a deliberate disconnect so the swapped-in fragment cannot
+    # instantly reconnect and undo it.
+    if not suppress_autoconnect:
+        children.append(
+            Script("""
 (function(){
   if (sessionStorage.getItem('cloud_activate_tried')) return;
   sessionStorage.setItem('cloud_activate_tried', '1');
@@ -3762,7 +3774,7 @@ def _cloud_relay_unconnected(
   if (btn) htmx.trigger(btn, 'click');
 })();
 """)
-    )
+        )
 
     if show_email_form:
         children += [

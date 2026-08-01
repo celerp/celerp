@@ -87,7 +87,7 @@ async def cloud_status() -> dict:
     # "green but still 502" the user sees while the relay has no live upstream.
     connected = relay_status in ("active", "tos_required")
     if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "email_resets_on": None, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
+        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "email_resets_on": None, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token), "cloud_disconnected": settings.cloud_disconnected}
 
     # Tier comes from the gateway's own WS push (set_subscription_state, on the
     # "subscription_updated" message) whenever that's arrived - it needs no extra
@@ -131,6 +131,7 @@ async def cloud_status() -> dict:
         "email_resets_on": email_resets_on,
         "public_url": settings.celerp_public_url,
         "gateway_token_set": bool(settings.gateway_token),
+        "cloud_disconnected": settings.cloud_disconnected,
     }
 
 
@@ -181,11 +182,15 @@ async def email_status() -> dict:
 
 @router.post("/settings/cloud-disconnect")
 async def cloud_disconnect() -> dict:
-    """Stop the gateway WebSocket client and clear credentials from config.
+    """Stop the gateway WebSocket client and record a sticky Cloud disconnect.
 
-    instance_id is preserved and the relay-side link survives, but the
-    disconnect is sticky: nothing reconnects automatically until the user
-    does so from Cloud settings or completes a sign-in.
+    The credential (token, public_url) is PRESERVED in config, only marked
+    disconnected: the association is not lost, so reconnecting is a local
+    one-click operation with no relay round-trip and no re-entering email
+    (see cloud_activate_api). The live credential is cleared in-memory so the
+    tunnel drops and share-minting stops at once. Nothing reconnects
+    automatically - not on restart, not on a settings visit - until the user
+    reconnects from Cloud settings or completes a sign-in.
     """
     from celerp.config import settings as _s, read_config, write_config
     from celerp.gateway import client as _gw
@@ -208,8 +213,8 @@ async def cloud_disconnect() -> dict:
     try:
         cfg = read_config()
         cloud_cfg = cfg.setdefault("cloud", {})
-        cloud_cfg["token"] = ""
-        cloud_cfg.pop("public_url", None)
+        # Keep cloud_cfg["token"]/["public_url"] intact - the credential is the
+        # association, and preserving it is what makes reconnect one click.
         cloud_cfg["disconnected"] = True
         write_config(cfg)
     except Exception:
@@ -278,9 +283,28 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
 async def cloud_activate_api() -> dict:
     """Call relay /auth/activate, apply token, start gateway client. Returns status."""
     import httpx
-    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.config import settings as _s, ensure_instance_id, read_config
 
     iid = ensure_instance_id()
+
+    # Sticky-disconnect reconnect: the credential was preserved at disconnect, so
+    # bringing the tunnel back is a local operation - re-apply the stored token
+    # with no relay round-trip and no re-entering email. _apply_gateway_token_api
+    # clears the disconnect flag. A disconnected install with no stored token
+    # (never connected) falls through to the normal /auth/activate probe below.
+    if _s.cloud_disconnected:
+        cloud = read_config().get("cloud", {})
+        stored = cloud.get("token") or ""
+        if stored:
+            await _apply_gateway_token_api(
+                stored, iid,
+                public_url=cloud.get("public_url") or None,
+                tos_version=cloud.get("tos_version") or None,
+            )
+            gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+            return {"connected": True, "relay_status": gw.relay_status if gw else "connecting",
+                    "public_url": cloud.get("public_url") or "", "instance_id": iid}
+
     from celerp.gateway.state import activate_payload, relay_http_url as _rhu; relay_base = _rhu()
 
     try:
