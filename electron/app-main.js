@@ -472,6 +472,7 @@ function startApi(dbUrl, cfg) {
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_INSTALL_CHANNEL: "electron",
+      CELERP_MODE: "desktop",
       // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
       // path reads the version from /health (it has no window.celerp), so pass the Electron
       // app version through to the API; /health reports it instead of the Python package
@@ -526,6 +527,7 @@ function startUi(dbUrl, cfg) {
       MODULE_DIR: MODULE_DIR,
       CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      CELERP_MODE: "desktop",
       CELERP_UI_PORT: String(uiPort),
       CELERP_API_PORT: String(apiPort),
       CELERP_PG_BIN_DIR: pgBinDir(),

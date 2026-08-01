@@ -96,12 +96,21 @@ async def fetch_relay_bearer(http_client) -> str:
     return resp.json()["access_token"]
 
 
+def _launch_mode() -> str | None:
+    """The launch channel, when the launcher told us one. Electron sets
+    CELERP_MODE=desktop; a headless service sets headless. A bare or dev run
+    reports nothing rather than guessing: the relay treats a real install with
+    no channel as pypi, and dev builds are already excluded by version."""
+    import os
+    return os.environ.get("CELERP_MODE")
+
+
 def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dict:
     """Build the /auth/activate request body.
 
     Single source of truth for every activation call site (startup probe,
-    Cloud settings, claim-by-email), so the relay always learns version and
-    platform. first_boot is only known by the startup probe.
+    Cloud settings, claim-by-email), so the relay always learns version,
+    platform, and launch mode. first_boot is only known by the startup probe.
     """
     import platform as _platform
 
@@ -111,6 +120,7 @@ def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dic
         "instance_id": instance_id,
         "version": __version__,
         "platform": _platform.system(),
+        "mode": _launch_mode(),
     }
     if first_boot is not None:
         payload["first_boot"] = first_boot

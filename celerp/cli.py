@@ -255,6 +255,12 @@ def _config_to_env(cfg: dict) -> dict:
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
     if cfg["cloud"]["token"]:
         env["GATEWAY_TOKEN"] = cfg["cloud"]["token"]
+    # A headless service install (`init --no-start`, then a process manager runs
+    # `start`) reports its launch channel on activation, the same way the desktop
+    # launcher does; a plain local run reports none. setdefault never clobbers an
+    # explicit channel.
+    if cfg.get("server", {}).get("headless"):
+        env.setdefault("CELERP_MODE", "headless")
     # Module directories: a writable drop-in for imports FIRST (the importer
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
