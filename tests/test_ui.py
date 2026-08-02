@@ -12859,7 +12859,17 @@ class TestDocumentsOverhaul:
     def _reset_send_quota_cache():
         from ui.routes import documents
         documents._free_send_quota_cache.update(
-            {"value": 0, "fetched_at": 0.0, "pending": False})
+            {"value": 0, "fetched_at": 0.0, "pending": False, "task": None})
+
+    @staticmethod
+    async def _settle_quota_refresh():
+        # The priming GET starts the refresh as a background task; await it
+        # directly so the second GET reads the fetched value regardless of
+        # event-loop scheduling.
+        from ui.routes import documents
+        task = documents._free_send_quota_cache.get("task")
+        if task is not None:
+            await task
 
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
@@ -12875,6 +12885,7 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.account_methods", new=_methods):
                 # first GET primes the quota cache in the background
                 await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                await self._settle_quota_refresh()
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" in content
@@ -12897,6 +12908,7 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
                 await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                await self._settle_quota_refresh()
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" not in content
