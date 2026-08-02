@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -32,16 +33,17 @@ from celerp.output.doc_print import (
 )
 
 # Free-send quota advertised by the relay's public auth-methods endpoint.
-# Checked once per process, like the entitlement check at startup, with a
-# non-blocking background fetch; until it lands (or when the relay was
-# unreachable at check time) the quota reads 0 and the send offer simply
-# does not render. A restart picks up relay-side changes.
-_free_send_quota_cache: dict = {"value": 0, "fetched": False, "pending": False}
+# Refreshed with a non-blocking background fetch at most once per TTL; until a
+# fetch lands (or when the relay was unreachable at fetch time) the quota reads
+# 0 and the send offer simply does not render, retrying at the next expiry.
+_FREE_SEND_QUOTA_TTL = 300.0
+_free_send_quota_cache: dict = {"value": 0, "fetched_at": 0.0, "pending": False}
 
 
 def _free_send_quota(token: str) -> int:
     import asyncio
-    if not _free_send_quota_cache["fetched"] and not _free_send_quota_cache["pending"]:
+    expired = time.monotonic() - _free_send_quota_cache["fetched_at"] > _FREE_SEND_QUOTA_TTL
+    if expired and not _free_send_quota_cache["pending"]:
         _free_send_quota_cache["pending"] = True
 
         async def _refresh():
@@ -52,9 +54,16 @@ def _free_send_quota(token: str) -> int:
             except Exception:
                 value = 0
             _free_send_quota_cache.update(
-                {"value": value, "fetched": True, "pending": False})
+                {"value": value, "fetched_at": time.monotonic()})
 
-        asyncio.create_task(_refresh())
+        def _done(task: asyncio.Task) -> None:
+            _free_send_quota_cache.update({"pending": False, "task": None})
+
+        task = asyncio.create_task(_refresh())
+        # The cache holds a strong reference so the task cannot be collected
+        # mid-flight, which would leave pending=True wedged forever.
+        _free_send_quota_cache["task"] = task
+        task.add_done_callback(_done)
     return int(_free_send_quota_cache["value"])
 
 
