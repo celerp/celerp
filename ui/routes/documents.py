@@ -37,12 +37,16 @@ from celerp.output.doc_print import (
 # fetch lands (or when the relay was unreachable at fetch time) the quota reads
 # 0 and the send offer simply does not render, retrying at the next expiry.
 _FREE_SEND_QUOTA_TTL = 300.0
-_free_send_quota_cache: dict = {"value": 0, "fetched_at": 0.0, "pending": False}
+_free_send_quota_cache: dict = {"value": 0, "fetched_at": None, "pending": False}
 
 
 def _free_send_quota(token: str) -> int:
     import asyncio
-    expired = time.monotonic() - _free_send_quota_cache["fetched_at"] > _FREE_SEND_QUOTA_TTL
+    # fetched_at None means never fetched. It must not be a numeric sentinel:
+    # time.monotonic() counts from boot, so 0.0 would read as "fetched at boot"
+    # and suppress the first refresh for the TTL on a freshly started machine.
+    fetched_at = _free_send_quota_cache["fetched_at"]
+    expired = fetched_at is None or time.monotonic() - fetched_at > _FREE_SEND_QUOTA_TTL
     if expired and not _free_send_quota_cache["pending"]:
         _free_send_quota_cache["pending"] = True
 

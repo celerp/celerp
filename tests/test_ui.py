@@ -12859,7 +12859,7 @@ class TestDocumentsOverhaul:
     def _reset_send_quota_cache():
         from ui.routes import documents
         documents._free_send_quota_cache.update(
-            {"value": 0, "fetched_at": 0.0, "pending": False, "task": None})
+            {"value": 0, "fetched_at": None, "pending": False, "task": None})
 
     @staticmethod
     async def _settle_quota_refresh():
@@ -17807,7 +17807,7 @@ def _reset_free_send_quota_cache_full():
     from ui.routes import documents
     documents._free_send_quota_cache.clear()
     documents._free_send_quota_cache.update(
-        {"value": 0, "fetched": False, "fetched_at": 0.0, "pending": False})
+        {"value": 0, "fetched_at": None, "pending": False, "task": None})
 
 
 async def _drain_quota_task():
