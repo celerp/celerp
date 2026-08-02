@@ -1976,7 +1976,7 @@ celerpUpdateBulkAlloc();
             pass
         # Relay binding drives Send/Share visibility (gateway_token_set), and the
         # quota line reads email usage from the same status call.
-        _share_enabled: bool = False
+        _token_bound: bool = False
         _share_active: bool = False
         _email_used: int = 0
         _email_quota: int = 0
@@ -1992,11 +1992,11 @@ celerpUpdateBulkAlloc();
             # self-hosted instance with no relay token can never mint, so it
             # stays hidden. The offline case surfaces the online-only note, it
             # does not hide the panel (GDR 2e).
-            _share_enabled = bool(_relay_status.get("gateway_token_set"))
+            _token_bound = bool(_relay_status.get("gateway_token_set"))
         except Exception:
             pass
         _payments_on: bool = False
-        if _share_enabled:
+        if _token_bound:
             try:
                 _share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
             except Exception:
@@ -2064,7 +2064,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _share_enabled else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_share_enabled, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _token_bound else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
