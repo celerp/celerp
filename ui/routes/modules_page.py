@@ -234,6 +234,18 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_filter = t("modules.badge_disabled", lang)
             status_parts.append(Span(status_filter, cls="badge badge--inactive"))
 
+        # A demoted default (named in the committed first-party lock, but its
+        # content no longer matches, so it runs untrusted) carries the state on
+        # its own row for as long as the mismatch stands. This sits alongside the
+        # run-state badge rather than replacing it: the module still runs, and
+        # trust is a separate fact from whether it is loaded. The bell notice is
+        # read once and cleared; the row is what remains.
+        if m.get("demoted"):
+            status_parts.append(Span(t("modules.badge_not_verified", lang),
+                cls="badge badge--warning",
+                title=t("modules.not_verified_tip", lang),
+            ))
+
         dependents = required_by.get(name, [])
         if effectively_enabled:
             if not enabled and not m.get("is_default"):
@@ -323,10 +335,12 @@ def _local_panel(modules: list[dict], lang: str = "en",
         cls="error-banner mb-md",
     ) if _restart_pending(modules) else Div(id="modules-restart-banner")
 
-    # A demoted default (content no longer matches the committed lock, so it now
-    # runs untrusted) is surfaced in the notification bell at boot - visible from
-    # any page and dismissible - rather than an always-on banner pinned here that
-    # the user could never clear. See celerp.modules.demotion.
+    # A demoted default is surfaced twice, and neither is a page-wide banner: the
+    # notification bell announces it at boot, visible from any page and
+    # dismissible once read (see celerp.modules.demotion), and the module's own
+    # row carries a standing "not verified" badge for as long as the content
+    # mismatch lasts. The state outlives the announcement, so the row is where it
+    # lives; a banner pinned here could name it but never be cleared.
 
     flash_div = Div(
         flash_text,

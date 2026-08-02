@@ -17521,12 +17521,14 @@ class TestReconciliationImportResponse:
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
 
 
-# ── Demoted default → notification bell, not an /modules banner ───────────────
+# ── Demoted default → notification bell plus a standing row badge ─────────────
 # A demoted default (named in the committed first-party lock but content changed)
-# is now surfaced in the notification bell at boot (celerp.modules.demotion), so
-# it is visible from any page and can be dismissed - not pinned on /modules as an
+# is surfaced in the notification bell at boot (celerp.modules.demotion), so it is
+# visible from any page and can be dismissed - not pinned on /modules as an
 # always-on banner the user could never clear. The /modules panel therefore never
-# renders the old reclassification banner, whatever the scan reports.
+# renders the old reclassification banner, whatever the scan reports. Dismissing
+# the notice does not end the demotion, so the module's row carries a standing
+# "not verified" badge while the mismatch lasts.
 
 class TestModuleReclassificationBanner:
     def _mod(self, name, is_default, source="default", demoted=False):
@@ -17561,6 +17563,32 @@ class TestModuleReclassificationBanner:
         from ui.routes import modules_page as mp
         body = to_xml(mp._local_panel([]))
         assert "modules-reclass-banner" not in body
+
+    def test_demoted_module_row_carries_not_verified_badge(self):
+        """The bell notice is dismissible; the demotion is not. The row states it
+        for as long as the scan reports the mismatch, so a user who has already
+        read and cleared the notice can still see which module is untrusted."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes import modules_page as mp
+        badge = f'>{t("modules.badge_not_verified", "en")}<'
+        body = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded", demoted=True)]))
+        assert badge in body
+        assert t("modules.not_verified_tip", "en") in body
+
+    def test_non_demoted_module_row_has_no_not_verified_badge(self):
+        """A plain sideload was never a verified default, so nothing on its row
+        may claim it was demoted - the badge tracks the scan, not the source."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes import modules_page as mp
+        badge = f'>{t("modules.badge_not_verified", "en")}<'
+        body = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded")]))
+        assert badge not in body
+        body = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        assert badge not in body
 
 
 # ── Honest degradation when the modules list cannot load ──────────────────────
