@@ -629,6 +629,7 @@ async def submit_batch(
     """
     await _enforce_cloud_file_limit(body.file_ids)
 
+    credits = _calculate_query_credits(body.file_ids, company_id)
     job = await create_batch_job(
         session, company_id, user.id, body.query, body.file_ids, credits,
     )

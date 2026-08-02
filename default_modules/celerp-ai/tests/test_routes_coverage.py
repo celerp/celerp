@@ -326,6 +326,39 @@ async def test_batch_status_404(auth_client):
 
 
 @pytest.mark.asyncio
+async def test_submit_batch_records_integer_credits(auth_client, session, monkeypatch):
+    """POST /ai/batch must record the computed credit count as an integer.
+    The endpoint previously passed an unassigned name that resolved to a Python
+    builtin, so the value reaching create_batch_job was not a number at all."""
+    c, h = auth_client
+
+    # Two real uploads so the credit calculation reads genuine files.
+    files = [("files", (f"receipt{i}.jpg", b"fake jpeg data", "image/jpeg")) for i in range(2)]
+    up = await c.post("/ai/upload", headers=h, files=files)
+    assert up.status_code == 201
+    file_ids = up.json()["file_ids"]
+
+    captured = {}
+
+    async def _capture_create(sess, company_id, user_id, query, fids, credits):
+        captured["credits"] = credits
+        job = MagicMock()
+        job.id = uuid.uuid4()
+        return job
+
+    # Local mode: no relay, so the cloud file-limit check is a no-op.
+    monkeypatch.setattr("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value=None))
+    monkeypatch.setattr("celerp_ai.routes.run_batch", AsyncMock())
+    monkeypatch.setattr(session, "refresh", AsyncMock())
+    with patch("celerp_ai.routes.create_batch_job", _capture_create):
+        r = await c.post("/ai/batch", headers=h, json={"query": "", "file_ids": file_ids})
+
+    assert r.status_code == 202
+    assert isinstance(captured["credits"], int)
+    assert captured["credits"] == 2
+
+
+@pytest.mark.asyncio
 async def test_confirm_bills_success(auth_client):
     """POST /ai/confirm-bills creates draft bills and returns feedback."""
     c, h = auth_client
