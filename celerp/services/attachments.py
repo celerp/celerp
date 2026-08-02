@@ -50,6 +50,36 @@ _CERT_MIMES = {
 }
 _ALLOWED_MIMES = _IMAGE_MIMES | _VIDEO_MIMES | _CERT_MIMES
 
+# The stored extension is decided by the validated type, never the caller's
+# chosen name, so a crafted name cannot make the file be served as something it
+# is not. One entry per allowlisted MIME keeps the extension deterministic
+# across hosts: resolving a type against the host's own registry can yield a
+# different extension, or none, on another machine.
+_MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/avif": ".avif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-msvideo": ".avi",
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "text/plain": ".txt",
+}
+
+
+def _stored_extension(mime: str) -> str:
+    """Extension for the stored file, from the validated type alone.
+
+    Unknown types get no extension rather than a guessed one, so a path is never
+    fabricated for a type the allowlist does not admit."""
+    return _MIME_EXTENSIONS.get(mime, "")
+
+
 _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
@@ -69,7 +99,6 @@ class StorageBackend(Protocol):
         self,
         company_id: str,
         att_id: str,
-        filename: str,
         content: bytes,
         mime: str,
     ) -> str:
@@ -96,12 +125,10 @@ class LocalBackend:
         self,
         company_id: str,
         att_id: str,
-        filename: str,
         content: bytes,
         mime: str,
     ) -> str:
-        ext = Path(filename).suffix or (mimetypes.guess_extension(mime) or "")
-        dest_name = f"{att_id}{ext}"
+        dest_name = f"{att_id}{_stored_extension(mime)}"
         dest = self._company_dir(company_id) / dest_name
         dest.write_bytes(content)
         return f"/static/attachments/{company_id}/{dest_name}"
@@ -122,14 +149,12 @@ class S3Backend:
         self,
         company_id: str,
         att_id: str,
-        filename: str,
         content: bytes,
         mime: str,
     ) -> str:
         import aiobotocore.session  # type: ignore[import]
 
-        ext = Path(filename).suffix or (mimetypes.guess_extension(mime) or "")
-        key = f"attachments/{company_id}/{att_id}{ext}"
+        key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
         session = aiobotocore.session.get_session()
         async with session.create_client(
@@ -204,7 +229,7 @@ async def store_upload(
     att_id = str(uuid.uuid4())
     filename = file.filename or f"file_{att_id}"
 
-    url = await get_backend().store(company_id, att_id, filename, content, mime)
+    url = await get_backend().store(company_id, att_id, content, mime)
 
     return {
         "id": att_id,
