@@ -17880,7 +17880,7 @@ async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
 async def test_account_panel_names_connect_tier(ui_client):
     """The signed-in account panel shows the tier's display name (Connect),
     never the raw internal tier key (cloud)."""
-    status = {"email_verified": True, "tier": "cloud", "email": "o@acme.example"}
+    status = {"email_verified": True, "tier": "cloud"}
     with patch("ui.api_client.account_status", new=AsyncMock(return_value=status)), \
          patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})):
         r = await ui_client.get("/account/poll?panel=account-gate-panel",
