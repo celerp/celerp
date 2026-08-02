@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
+from celerp.services.auth import get_current_user
 from celerp.services.system_health import get_system_health
 
 router = APIRouter()
@@ -180,7 +181,7 @@ async def email_status() -> dict:
     }
 
 
-@router.post("/settings/cloud-disconnect")
+@router.post("/settings/cloud-disconnect", dependencies=[Depends(get_current_user)])
 async def cloud_disconnect() -> dict:
     """Stop the gateway WebSocket client and record a sticky Cloud disconnect.
 
@@ -279,7 +280,7 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
         backup_scheduler.start()
 
 
-@router.post("/settings/cloud-activate")
+@router.post("/settings/cloud-activate", dependencies=[Depends(get_current_user)])
 async def cloud_activate_api() -> dict:
     """Call relay /auth/activate, apply token, start gateway client. Returns status."""
     import httpx
@@ -403,7 +404,7 @@ async def cloud_instance_id() -> dict:
     return {"instance_id": ensure_instance_id()}
 
 
-@router.get("/settings/account-methods")
+@router.get("/settings/account-methods", dependencies=[Depends(get_current_user)])
 async def account_methods_api() -> dict:
     """Which optional sign-in methods the relay offers, plus the browser URL for
     the Google flow (started in the system browser, bound to this instance).

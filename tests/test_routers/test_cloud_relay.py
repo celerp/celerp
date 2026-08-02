@@ -803,3 +803,15 @@ def test_legacy_relay_toggle_routes_absent():
     registered = set(_app.openapi().get("paths", {}).keys())
     assert "/companies/me/relay/enable" not in registered
     assert "/companies/me/relay/disable" not in registered
+
+
+@pytest.mark.asyncio
+async def test_relay_settings_endpoints_reject_unauthenticated(client):
+    """Relay account endpoints mutate or expose account state, so a request
+    without credentials is rejected instead of executing."""
+    r = await client.post("/settings/cloud-disconnect")
+    assert r.status_code == 401
+    r = await client.post("/settings/cloud-activate")
+    assert r.status_code == 401
+    r = await client.get("/settings/account-methods")
+    assert r.status_code == 401
