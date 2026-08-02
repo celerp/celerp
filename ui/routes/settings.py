@@ -22,7 +22,7 @@ from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
 
 
@@ -1904,13 +1904,10 @@ def setup_routes(app):
         plus tier and status. Confirm re-POSTs to /settings/cloud-claim with the
         chosen subscription_id and the original email.
         """
-        def _tier_label(tier: str) -> str:
-            return {"cloud": "Connect", "ai": "Connect + AI", "team": "Team"}.get(tier, tier.title())
-
         def _match_row(m: dict, idx: int) -> FT:
             slug = m.get("slug")
             sub_id = m["subscription_id"]
-            tier = _tier_label(m.get("tier", ""))
+            tier = tier_label(m.get("tier", ""))
             status = m.get("status", "")
             if slug:
                 primary = f"{slug}.celerp.com"

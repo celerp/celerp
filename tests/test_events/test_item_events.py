@@ -264,3 +264,30 @@ def test_status_doc_pairing_follows_status_writers() -> None:
     assert "status_doc_number" not in (state.get("attributes") or {})
     state = apply_item_event(state, "item.patched", {"status": "available"})
     assert "status_doc_id" not in state and "status_doc_number" not in state
+
+
+def _sold_with_pairing() -> dict:
+    state = apply_item_event({}, "item.created", {"sku": "S", "name": "A", "quantity": 1})
+    return apply_item_event(state, "item.status.set", {
+        "new_status": "sold", "source_doc_id": "doc:INV-2026-0005",
+        "doc_number": "INV-2026-0005"})
+
+
+def test_item_patched_number_without_id_drops_pairing() -> None:
+    """An upsert carrying status_doc_number but no status_doc_id leaves an
+    unverifiable half-pair; the pairing is dropped, not merged."""
+    state = apply_item_event(_sold_with_pairing(), "item.patched",
+                             {"status_doc_number": "INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+    # An empty-string id counts as absent (the CSV path feeds unfiltered values)
+    state = apply_item_event(_sold_with_pairing(), "item.patched",
+                             {"status_doc_id": "", "status_doc_number": "INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+
+def test_item_patched_id_without_number_drops_pairing() -> None:
+    """The reverse half-pair (id without number) is dropped the same way."""
+    state = apply_item_event(_sold_with_pairing(), "item.patched",
+                             {"status_doc_id": "doc:INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state

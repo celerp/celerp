@@ -32,7 +32,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import toast_header
 from ui.config import PRIVACY_POLICY_URL, get_role as _get_role
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
@@ -381,7 +381,7 @@ def _signed_in_panel(lang: str, panel_id: str, status: dict,
     elif tier == "free":
         parts.append(P(t("account.plan_free", lang), cls="settings-hint"))
     else:
-        parts.append(P(t("account.plan", lang, tier=tier), cls="settings-hint"))
+        parts.append(P(t("account.plan", lang, tier=tier_label(tier)), cls="settings-hint"))
     if panel_id == GATE_PANEL_ID:
         # The panel rides in the gate modal: signed-in is a terminal state, so
         # give it the way out (the embedded settings panels need none).

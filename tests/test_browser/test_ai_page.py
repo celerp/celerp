@@ -122,11 +122,11 @@ class TestShowcasePage:
         assert btn.get_attribute("href").startswith("https://celerp.com/subscribe")
 
     def test_showcase_cta_ai_card(self, page, ui_server):
-        """AI Plan card has correct content and featured styling."""
+        """Connect + AI card has correct content and featured styling."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
         cards = page.locator(".ai-showcase__cta-card")
         ai_card = cards.last
-        assert "Celerp AI Plan" in ai_card.inner_text()
+        assert "Celerp Connect + AI" in ai_card.inner_text()
         assert "$49/mo" in ai_card.inner_text()
         assert "Recommended" in ai_card.inner_text()
         assert "Cancel anytime" in ai_card.inner_text()

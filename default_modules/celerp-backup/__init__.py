@@ -8,8 +8,8 @@ Cloud-gated: requires an active Celerp Connect subscription (X-Session-Token).
 PLUGIN_MANIFEST = {
     "name": "celerp-backup",
     "version": "1.0.0",
-    "display_name": "Cloud Backup",
-    "description": "Encrypted cloud backup to Celerp-managed R2 storage. Requires Cloud subscription.",
+    "display_name": "Connect Backup",
+    "description": "Encrypted cloud backup to Celerp-managed R2 storage. Requires a Connect subscription.",
     "license": "LicenseRef-Proprietary",
     "author": "Celerp",
     "api_routes": "celerp_backup.setup",

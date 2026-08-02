@@ -606,3 +606,18 @@ async def test_reconnect_announces_and_rearms_warning(client, caplog, monkeypatc
                  if r.levelno == _logging.INFO and "onnect" in r.getMessage()]
     assert connected
     assert all("test-instance-id" not in r.getMessage() for r in connected)
+
+
+# ── stop()/close() reset transient announce state ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stop_resets_loss_announced(client):
+    """A stopped client must not carry the connection-loss announcement latch
+    into a later start(); both shutdown paths clear it."""
+    client._loss_announced = True
+    client.stop()
+    assert client._loss_announced is False
+
+    client._loss_announced = True
+    await client.close()
+    assert client._loss_announced is False

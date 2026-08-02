@@ -12858,7 +12858,8 @@ class TestDocumentsOverhaul:
     @staticmethod
     def _reset_send_quota_cache():
         from ui.routes import documents
-        documents._free_send_quota_cache.update({"value": 0, "fetched": False, "pending": False})
+        documents._free_send_quota_cache.update(
+            {"value": 0, "fetched_at": 0.0, "pending": False})
 
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
@@ -17786,3 +17787,104 @@ class TestToastHeader:
             toast_header("No.", "error", celerpRestoreCell=True)["HX-Trigger"])
         assert payload["celerpRestoreCell"] is True
         assert payload["celerpToast"]["message"] == "No."
+
+
+# ── Free-send quota cache TTL (ui/routes/documents.py) ────────────────────────
+
+def _reset_free_send_quota_cache_full():
+    from ui.routes import documents
+    documents._free_send_quota_cache.clear()
+    documents._free_send_quota_cache.update(
+        {"value": 0, "fetched": False, "fetched_at": 0.0, "pending": False})
+
+
+async def _drain_quota_task():
+    import asyncio
+    from ui.routes import documents
+    task = documents._free_send_quota_cache.get("task")
+    if task is not None:
+        await task
+    else:
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_free_send_quota_refetches_after_ttl(monkeypatch):
+    """The advertised free-send quota is a TTL cache, not a process-lifetime
+    latch: once the TTL expires, a fresh background fetch replaces the value."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 1000.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = []
+
+    async def _methods(token):
+        calls.append(token)
+        return {"free_email_quota": 7}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert documents._free_send_quota_cache["value"] == 7
+        now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert len(calls) == 2
+        assert documents._free_send_quota_cache["value"] == 7
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+@pytest.mark.asyncio
+async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
+    """A failed quota fetch serves 0 (nothing fabricated) and retries after the
+    TTL instead of pinning the quota to 0 for the process lifetime."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 1000.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = {"n": 0}
+
+    async def _methods(token):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("relay unreachable")
+        return {"free_email_quota": 9}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        assert documents._free_send_quota("tok") == 0
+        await _drain_quota_task()
+        assert documents._free_send_quota_cache["value"] == 0
+        now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert calls["n"] == 2
+        assert documents._free_send_quota_cache["value"] == 9
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+# ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_account_panel_names_connect_tier(ui_client):
+    """The signed-in account panel shows the tier's display name (Connect),
+    never the raw internal tier key (cloud)."""
+    status = {"email_verified": True, "tier": "cloud", "email": "o@acme.example"}
+    with patch("ui.api_client.account_status", new=AsyncMock(return_value=status)), \
+         patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})):
+        r = await ui_client.get("/account/poll?panel=account-gate-panel",
+                                cookies=_authed())
+    content = r.content.decode()
+    assert "Plan: Connect" in content
+    assert "Plan: cloud" not in content
