@@ -93,9 +93,8 @@ async def test_hello_ack_writes_session_token(client):
 
 @pytest.mark.asyncio
 async def test_hello_ack_without_session_token_clears_stale_token(client):
-    """An ack with no session token is the relay's verdict (free tier gets
-    none): a stale token from a paid past must be cleared, not kept, or the
-    concurrent-login gate stays open after a downgrade."""
+    """An ack without a session token is the relay's verdict: any stale
+    stored token is cleared, never kept."""
     gw_state.set_session_token("stale-paid-token")
     await client._dispatch({
         "type": "hello_ack",

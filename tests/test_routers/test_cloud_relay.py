@@ -112,9 +112,8 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
 async def test_cloud_disconnect_clears_session_token(client, session):
     """Disconnect must clear the in-memory session token.
 
-    Regression: without this, get_session_token() remains truthy after disconnect,
-    bypassing the single-user login gate so concurrent logins are allowed even
-    when the relay is no longer connected.
+    Regression: without this, get_session_token() remains truthy after
+    disconnect even though the relay connection is gone.
     """
     import celerp.gateway.state as gw_state
     from celerp.services.session_tracker import clear as _clear_tracker, register_token as _register_token
@@ -136,11 +135,11 @@ async def test_cloud_disconnect_clears_session_token(client, session):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
     assert r.status_code == 200
-    # Session token must be cleared so the login gate activates.
+    # The stored session token must be empty after disconnect.
     # Check the underlying variable (conftest patches get_session_token globally).
     assert gw_state._session_token == "", "session_token must be cleared on disconnect"
 
-    # Verify the login gate now actually fires (patch relay token to empty, as disconnect does)
+    # Verify post-disconnect behavior with the cleared token.
     from datetime import datetime, timedelta, timezone as _tz
     await _clear_tracker(session)
     from test_helpers import ensure_user
