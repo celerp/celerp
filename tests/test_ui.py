@@ -17914,6 +17914,34 @@ async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
         _reset_free_send_quota_cache_full()
 
 
+@pytest.mark.asyncio
+async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
+    """A freshly booted process has time.monotonic() near 0, the same value a
+    numeric fetched_at sentinel would hold: the cache must still fetch."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 0.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = []
+
+    async def _methods(token):
+        calls.append(token)
+        return {"free_email_quota": 5}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert len(calls) == 1
+        assert documents._free_send_quota_cache["value"] == 5
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
 # ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
 
 @pytest.mark.asyncio
