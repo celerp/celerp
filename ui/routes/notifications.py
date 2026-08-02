@@ -15,13 +15,14 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
-from ui.config import API_BASE, get_token as _token
+from ui.config import get_token as _token
 
 
 def setup_routes(app):
 
     @app.get("/notifications")
     async def proxy_notifications(request: Request) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response('{"items":[],"unread_count":0}', media_type="application/json", status_code=200)
@@ -39,6 +40,7 @@ def setup_routes(app):
 
     @app.post("/notifications/read-all")
     async def proxy_notifications_read_all(request: Request) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response(status_code=401)
@@ -54,6 +56,7 @@ def setup_routes(app):
 
     @app.post("/notifications/{notification_id}/read")
     async def proxy_notification_read(request: Request, notification_id: str) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response(status_code=401)
@@ -77,6 +80,7 @@ def setup_routes(app):
             return StreamingResponse(_empty(), media_type="text/event-stream")
 
         async def _stream():
+            from ui.config import API_BASE
             # Yield a keepalive immediately to commit the 200 response and
             # prevent any subsequent exception from becoming a 500.
             yield ": keepalive\n\n"
