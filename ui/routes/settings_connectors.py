@@ -935,7 +935,7 @@ def setup_routes(app):
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.
             from starlette.responses import Response
-            return Response(status_code=204, headers={"HX-Redirect": "/settings?tab=connectors"})
+            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
@@ -1012,7 +1012,7 @@ def setup_routes(app):
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if _validate_platform(platform) is not None:
-            return RedirectResponse("/settings?tab=connectors", status_code=302)
+            return RedirectResponse("/settings/cloud?tab=website", status_code=302)
 
         from celerp.config import ensure_instance_id
         from ui.components.shell import base_shell, page_header
@@ -1029,10 +1029,10 @@ def setup_routes(app):
         icon = _CONNECTOR_ICONS.get(platform, "🔌")
         name = c.get("name", platform.title())
         return await base_shell(
-            breadcrumbs([(t("settings.tab_connectors", lang), "/settings?tab=connectors"), (name, None)]),
+            breadcrumbs([(t("settings.tab_connectors", lang), f"/settings/cloud?tab={c.get('category', 'website')}"), (name, None)]),
             page_header(
                 f"{icon} {name}",
-                A(t("connectors.back_to_connectors", lang), href="/settings?tab=connectors",
+                A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
                   cls="btn btn--secondary btn--sm"),
             ),
             _connector_detail_body(c, runs, config, lang),

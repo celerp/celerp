@@ -116,3 +116,42 @@ async def test_connectors_tab_empty_category_degrades_honestly():
     html = to_xml(panel)
     assert "No connectors available here yet." in html
     assert "Shopify" not in html
+
+
+@pytest.mark.asyncio
+async def test_connector_backlinks_target_cloud_tab():
+    """Connector detail back-links land on the live Connect settings tabs
+    (/settings/cloud?tab={category}); the legacy /settings?tab=connectors target
+    no longer exists anywhere in the module."""
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+
+    from ui.app import app as ui_app
+
+    cookies = {"celerp_token": make_test_token(role="owner")}
+    async with AsyncClient(
+        transport=ASGITransport(app=ui_app),
+        base_url="http://ui",
+        follow_redirects=False,
+    ) as ui_client:
+        with patch("ui.routes.settings_connectors._fetch_catalog",
+                   AsyncMock(return_value=([], None, False))), \
+             patch("ui.routes.settings_connectors._get_connector_config",
+                   AsyncMock(return_value={})), \
+             patch("ui.routes.settings_connectors._entity_runs",
+                   AsyncMock(return_value={})), \
+             patch("celerp.config.ensure_instance_id", return_value="iid-x"):
+            r = await ui_client.get("/settings/connectors/woocommerce", cookies=cookies)
+            r_invalid = await ui_client.get("/settings/connectors/not-a-platform",
+                                            cookies=cookies)
+
+    assert r.status_code == 200
+    html = r.content.decode()
+    assert "/settings/cloud?tab=" in html
+    assert "/settings?tab=connectors" not in html
+
+    assert r_invalid.status_code == 302
+    assert "/settings/cloud?tab=website" in r_invalid.headers.get("location", "")
+
+    src = (UI_DIR / "routes" / "settings_connectors.py").read_text(encoding="utf-8")
+    assert "/settings?tab=connectors" not in src

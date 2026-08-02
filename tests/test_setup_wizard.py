@@ -771,11 +771,6 @@ class TestSettingsSectionTabs:
         active_pos = html.find("tab--active")
         assert active_pos != -1 and abs(active_pos - users_pos) < 120
 
-    def test_sales_tabs_connectors_gated_on_module(self):
-        from ui.routes.settings_sales import _sales_tabs
-        assert "tab=connectors" not in self._xml(_sales_tabs("taxes", set()))
-        assert "tab=connectors" in self._xml(_sales_tabs("taxes", {"celerp-connectors"}))
-
     def test_inventory_tabs_present(self):
         from ui.routes.settings_inventory import _inventory_tabs
         html = self._xml(_inventory_tabs("locations"))

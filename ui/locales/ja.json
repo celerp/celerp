@@ -1216,7 +1216,6 @@
   "settings.categories_hint": "Category schemas add type-specific fields to your inventory items.",
   "settings.celerp_runs": "Celerp が実行されます",
   "settings.change_password": "パスワードを変更",
-  "settings.coming_soon": "近日公開",
   "settings.company_details": "会社概要",
   "settings.configure_reusable_terms_conditions_templates_assi": "再利用可能な契約条件テンプレートを構成します。それらをドキュメントタイプに割り当て、デフォルトを設定します。",
   "settings.confirm_password": "新しいパスワードを確認",

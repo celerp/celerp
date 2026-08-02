@@ -651,7 +651,7 @@ def setup_routes(app):
         """Redirect legacy /settings to the new /settings/general."""
         # Preserve tab redirects for backward-compat deep links
         tab = request.query_params.get("tab", "")
-        _SALES_TABS = {"taxes", "terms", "connectors"}
+        _SALES_TABS = {"taxes", "terms"}
         _INVENTORY_TABS = {"schema", "locations", "import-history", "bulk-attach", "verticals"}
         _ACCOUNTING_TABS = {"bank-accounts"}
         if tab in _SALES_TABS:
@@ -4100,63 +4100,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         actions,
         flash_target,
         history_section,
-        cls="settings-card",
-    )
-
-
-def _connectors_tab() -> FT:
-    """Connectors settings tab - lists available connectors and their connection status."""
-    from celerp.gateway.client import get_client
-    from ui.components.cloud_gate import upgrade_banner
-
-    gw_ok = get_client() is not None
-
-    _CONNECTORS = [
-        ("shopify",    "Shopify",    "Orders, products, customers, inventory"),
-        ("woocommerce","WooCommerce","Orders, products, customers"),
-        ("quickbooks", "QuickBooks", "Invoices, contacts, chart of accounts"),
-        ("xero",       "Xero",       "Invoices, contacts, bank reconciliation"),
-        ("lazada",     "Lazada",     "Orders, products, inventory (SEA)"),
-        ("shopee",     "Shopee",     "Orders, products, inventory (SEA)"),
-    ]
-
-    if not gw_ok:
-        return Div(
-            H3(t("settings.tab_connectors"), cls="settings-section-title"),
-            upgrade_banner(
-                "Connectors",
-                "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
-                "OAuth is handled by Celerp Connect - no API keys to manage.",
-                price="USD $29/mo",
-                plan="cloud",
-            ),
-            cls="settings-card",
-        )
-
-    rows = [
-        Tr(
-            Td(name, cls="detail-label"),
-            Td(desc, cls="settings-hint p-sm"),
-            Td(
-                Span(t("settings.coming_soon"), cls="badge badge--inactive"),
-            ),
-        )
-        for key, name, desc in _CONNECTORS
-    ]
-
-    return Div(
-        H3(t("settings.tab_connectors"), cls="settings-section-title"),
-        P(
-            "Your instance is connected to Celerp Connect. "
-            "Connectors use OAuth handled by the relay - no API keys needed on your side.",
-            cls="settings-hint",
-        ),
-        Table(*rows, cls="detail-table"),
-        P(
-            "Connector activation launches in the next release. "
-            "You'll connect each platform directly from this tab.",
-            cls="settings-hint mt-md",
-        ),
         cls="settings-card",
     )
 
