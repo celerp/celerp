@@ -313,12 +313,15 @@ class GatewayClient:
                 log.debug("Gateway: canonical instance_id updated %s -> %s", self._instance_id, canonical_id)
                 self._instance_id = canonical_id
             set_instance_id(self._instance_id)
-            # Store short-lived session token - required for cloud-gated endpoints
+            # Store the short-lived session token - required for cloud-gated
+            # endpoints. An empty token is the relay's verdict, not an omission:
+            # free-tier connections get none, and a stale token from a paid past
+            # must not keep the session-gated features or the concurrent-login
+            # gate open, so store whatever arrived, including "".
             session_token = payload.get("session_token", "")
-            if session_token:
-                set_session_token(session_token)
-            else:
-                log.warning("Gateway hello_ack: no session_token in payload (instance=%s)", self._instance_id)
+            set_session_token(session_token)
+            if not session_token:
+                log.debug("Gateway hello_ack: no session token (free tier, instance=%s)", self._instance_id)
             if self._loss_announced:
                 self._loss_announced = False
                 log.info("Relay connection restored.")
