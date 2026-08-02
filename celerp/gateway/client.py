@@ -140,7 +140,8 @@ class GatewayClient:
                     await self._connect_and_serve()
                     backoff = 1  # reset on clean disconnect
                 except Exception as exc:
-                    if self._loss_announced:
+                    if self._loss_announced or not self._running:
+                        # A failure while stopping is shutdown, not a loss to announce.
                         log.debug("Gateway retry failed: %s. Next attempt in %ds.", exc, backoff)
                     else:
                         self._loss_announced = True
@@ -163,6 +164,7 @@ class GatewayClient:
     def stop(self) -> None:
         """Signal the run loop to stop. Call close() from async context for clean WS shutdown."""
         self._running = False
+        self._loss_announced = False
         self._stop_event.set()
         self._reaper_stop.set()
 
@@ -174,6 +176,7 @@ class GatewayClient:
         exits cleanly, which lets the gateway_task finish without Uvicorn hanging.
         """
         self._running = False
+        self._loss_announced = False
         self._stop_event.set()
         self._reaper_stop.set()
         ws = self._ws
