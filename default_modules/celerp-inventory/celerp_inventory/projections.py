@@ -400,8 +400,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.patched":
         # CSV upsert: merge data fields into existing state, then re-run migrations
         current.update(data)
-        if "status" in data and not data.get("status_doc_id"):
-            # An upsert that changes status without a source doc drops the stale pairing
+        # Pairing invariant: status_doc_number and status_doc_id travel together.
+        # An upsert carrying exactly one of them (truthy; "" counts as absent), or
+        # changing status without a source doc, drops the stale pairing.
+        has_number = bool(data.get("status_doc_number"))
+        has_id = bool(data.get("status_doc_id"))
+        if has_number != has_id or ("status" in data and not has_id):
             _stamp_status_doc(current, {})
         _normalize_attributes(current)  # keep attributes canonical if the upsert carried them top-level
         current = _migrate_sell_by(current)
