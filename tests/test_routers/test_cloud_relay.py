@@ -794,3 +794,13 @@ async def test_cloud_apply_token_clears_disconnect_flag(client):
     assert r.status_code == 200
     assert _s.cloud_disconnected is False
     assert "disconnected" not in written.get("cloud", {})
+
+
+def test_legacy_relay_toggle_routes_absent():
+    """The dead relay enable/disable endpoints are gone: activation goes through
+    the token-apply path and disconnect through /settings/cloud-disconnect."""
+    from celerp.main import app as _app
+
+    registered = set(_app.openapi().get("paths", {}).keys())
+    assert "/companies/me/relay/enable" not in registered
+    assert "/companies/me/relay/disable" not in registered
