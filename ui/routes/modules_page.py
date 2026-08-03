@@ -192,6 +192,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 
     rows = []
+    load_error_toasts = []
     for m in modules:
         name = m["name"]
         label = m.get("label") or name
@@ -226,10 +227,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_parts.append(Span(status_filter, cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
-            # A broken module fails loudly, not silently.
+            # A broken module fails loudly, not silently: the row keeps the Failed
+            # badge and the reason is surfaced as a corner toast, so a long error
+            # (a migration traceback, say) never stretches the status column and
+            # breaks the table layout.
             status_filter = t("modules.badge_failed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
-            status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
+            load_error_toasts.append((name, label, load_error))
         elif enabled:
             # Enabled but not yet loaded: surface the restart as a control, not
             # a passive label, so the change can be applied from the row itself.
@@ -464,6 +468,25 @@ def _local_panel(modules: list[dict], lang: str = "en",
     })();
     """)
 
+    # Module load failures ride the app-wide corner toast, not the table: the
+    # status cell keeps only its Failed badge, so a long reason cannot stretch the
+    # column. Deduped per page so a panel swap does not re-announce a standing
+    # failure; a full reload starts fresh and re-announces.
+    if load_error_toasts:
+        payload = [{"key": f"{n}|{e}", "msg": f"{lbl}: {e}"}
+                   for n, lbl, e in load_error_toasts]
+        errors_json = json.dumps(payload).replace("</", "<\\/")
+        load_error_js = Script(
+            "(function(){if(!window.celerpToast)return;"
+            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{};"
+            "var errs=" + errors_json + ";"
+            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown[x.key])return;"
+            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);});"
+            "})();"
+        )
+    else:
+        load_error_js = ""
+
     return Div(
         folder_row,
         banner,
@@ -471,6 +494,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         import_section,
         content,
         desktop_js,
+        load_error_js,
         id="local-modules-panel",
         cls="settings-card",
     )

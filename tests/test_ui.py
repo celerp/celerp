@@ -8628,7 +8628,9 @@ class TestModulesUI:
 
     @pytest.mark.asyncio
     async def test_modules_page_shows_load_error(self, ui_client):
-        """An enabled module that failed to load shows a failed badge + message."""
+        """An enabled module that failed to load keeps its failed badge, but the
+        reason rides the corner toast instead of stretching the status cell - so a
+        long error (a migration traceback) cannot break the table layout."""
         broken = [{**_MODULES_LIST[1], "enabled": True, "running": False,
                    "load_error": "Failed to import (RuntimeError: boom)"}]
         from contextlib import ExitStack
@@ -8638,8 +8640,10 @@ class TestModulesUI:
                 stack.enter_context(patch(k, new=v))
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
-        assert b"boom" in r.content
-        assert b"badge--danger" in r.content
+        assert b"badge--danger" in r.content                 # still fails loudly
+        assert b"module-load-error" not in r.content         # reason left the table
+        assert b"celerpToast(" in r.content                  # delivered as a corner toast
+        assert b"boom" in r.content                          # reason still surfaced
 
     @pytest.mark.asyncio
     async def test_status_badges_use_real_css_tokens(self, ui_client):
