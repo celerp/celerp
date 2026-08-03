@@ -1585,6 +1585,10 @@ async def list_modules(
                     "description": manifest_source.get("description", ""),
                     "author": manifest_source.get("author", ""),
                     "depends_on": list(manifest_source.get("depends_on") or []),
+                    # The module's owned table prefix, surfaced so the UI can
+                    # gate the irreversible Purge action on a module that owns
+                    # tables. None when the manifest declares none.
+                    "table_prefix": manifest_source.get("table_prefix") or None,
                     "enabled": pkg_name in enabled_names,
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.

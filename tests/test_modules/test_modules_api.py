@@ -557,6 +557,23 @@ class TestModuleDataPurge:
         assert "acme-widgets" in [m["name"] for m in listing.json()]
 
     @pytest.mark.asyncio
+    async def test_list_modules_surfaces_table_prefix_for_purge_button(
+            self, client, tmp_path):
+        """A disabled module declaring table_prefix must expose it in the listing;
+        the UI gates the Purge button on this field, so without it the button
+        never renders in production."""
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        m = next(x for x in r.json() if x["name"] == "acme-widgets")
+        assert m["enabled"] is False
+        assert m["table_prefix"] == "acme_"
+
+    @pytest.mark.asyncio
     async def test_purge_data_refused_while_module_enabled(self, client, session, tmp_path):
         from sqlalchemy import text
         token = await _register(client)

@@ -492,7 +492,7 @@ def is_running(pkg_name: str) -> bool:
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
     "name", "display_name", "label", "version", "description", "author",
-    "depends_on", "license", "min_celerp_version",
+    "depends_on", "license", "min_celerp_version", "table_prefix",
 })
 
 
