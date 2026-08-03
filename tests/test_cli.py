@@ -397,7 +397,8 @@ def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
     if not db_url:
         pytest.skip("needs a live database")
     import sqlalchemy as sa
-    from celerp.cli import _MIGRATION_LOCK_KEY, _migrate_to_head, _sync_url
+    from celerp.cli import _migrate_to_head, _sync_url
+    from celerp.db import _MIGRATION_LOCK_KEY
 
     with patch("celerp.cli._run_migrations"), \
          patch("celerp.cli._post_migration_grants"), \
