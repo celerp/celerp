@@ -192,3 +192,40 @@ async def test_switch_company_updates_refresh_token():
     assert "celerp_refresh=" in cookies_header
     # The refresh cookie must contain the new refresh token value
     assert new_refresh in cookies_header
+
+
+def test_maybe_refresh_bearer_preserves_email_and_modules():
+    """The Bearer sliding re-mint must carry the source token's email and modules
+    claims through, not drop them.
+
+    Regression: _maybe_refresh_bearer re-minted via create_access_token without
+    email or modules, so the refreshed token decoded to email == "" and
+    modules == []. An empty modules claim makes the UI sidebar fall back to
+    showing every nav entry, and a dropped email loses identity for the session.
+    """
+    from celerp.middleware import _maybe_refresh_bearer
+    from celerp.config import settings
+    from jose import jwt as _jwt
+    import uuid
+
+    now = time.time()
+    total_ttl = int(settings.access_token_expire_minutes) * 60
+    stale_jti = str(uuid.uuid4())
+    stale_payload = {
+        "sub": "user-abc",
+        "email": "admin@example.com",
+        "company_id": "company-xyz",
+        "role": "admin",
+        "jti": stale_jti,
+        "snonce": "test-nonce-value",
+        "modules": ["acme-maintenance", "acme-crm"],
+        "exp": int(now + total_ttl * 0.49),  # past half-life
+    }
+    stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+    result = _maybe_refresh_bearer(stale_token)
+    assert result is not None, "Stale token should trigger a refresh"
+    new_token, _returned_jti, _new_expiry = result
+    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    assert new_claims["email"] == "admin@example.com", "email claim must survive the re-mint"
+    assert new_claims["modules"] == ["acme-maintenance", "acme-crm"], "modules claim must survive the re-mint"
