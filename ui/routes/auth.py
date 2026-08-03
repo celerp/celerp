@@ -25,7 +25,7 @@ from ui.api_client import login as api_login, login_force as api_login_force, lo
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash, star_supporter_card, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
 
@@ -164,7 +164,7 @@ def setup_routes(app):
         except Exception as e:
             return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
         resp = RedirectResponse(nxt, status_code=302)
-        _set_tokens(resp, access_token, refresh_token, request)
+        set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
     @app.post("/login-force")
@@ -182,7 +182,7 @@ def setup_routes(app):
         except Exception as e:
             return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
         resp = RedirectResponse(nxt, status_code=302)
-        _set_tokens(resp, access_token, refresh_token, request)
+        set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
     # ── Bootstrap wizard: first-admin + company setup ───────────────────────
@@ -322,7 +322,7 @@ def setup_routes(app):
         except Exception as e:
             return _fail(f"Server error: {e}")
         resp = RedirectResponse("/setup/company", status_code=302)
-        _set_tokens(resp, access_token, refresh_token, request)
+        set_session_cookies(resp, access_token, refresh_token, request)
         return resp
 
     # ── Post-login landing: company picker or onboarding/dashboard ──────────
@@ -400,7 +400,7 @@ def setup_routes(app):
         except APIError as e:
             return RedirectResponse(f"/?error={e.detail}", status_code=302)
         resp = RedirectResponse("/", status_code=302)
-        _set_tokens(resp, new_access, new_refresh, request)
+        set_session_cookies(resp, new_access, new_refresh, request)
         return resp
 
     # ── Logout ───────────────────────────────────────────────────────────────
@@ -411,7 +411,7 @@ def setup_routes(app):
         if token:
             await api_logout(token)
         resp = RedirectResponse("/login", status_code=302)
-        _clear_tokens(resp)
+        clear_session_cookies(resp)
         return resp
 
     @app.get("/logout")
@@ -425,7 +425,7 @@ def setup_routes(app):
                                     ("next", request.query_params.get("next", ""))) if v}
         dest = f"/login?{urlencode(params)}" if params else "/login"
         resp = RedirectResponse(dest, status_code=302)
-        _clear_tokens(resp)
+        clear_session_cookies(resp)
         return resp
 
     @app.get("/auth/session-watch")
@@ -555,21 +555,6 @@ def setup_routes(app):
             return auth_shell(_reset_password_form(token=token, error=detail), title="Reset password - Celerp")
         except Exception as e:
             return auth_shell(_reset_password_form(token=token, error=f"Server error: {e}"), title="Reset password - Celerp")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _set_tokens(resp, access_token: str, refresh_token: str, request=None) -> None:
-    domain = cookie_domain(request) if request is not None else None
-    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=domain)
-    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=86400 * 30, secure=_settings.cookie_secure, domain=domain)
-
-
-def _clear_tokens(resp) -> None:
-    resp.delete_cookie(COOKIE_NAME)
-    resp.delete_cookie(REFRESH_COOKIE_NAME)
 
 
 # ---------------------------------------------------------------------------

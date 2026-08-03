@@ -353,7 +353,7 @@ def setup_routes(app):
             import urllib.parse
             return RedirectResponse(f"/setup/new-company?error={urllib.parse.quote(e.detail)}", status_code=302)
         from celerp.config import settings as _s
-        from ui.routes.auth import cookie_domain
+        from ui.config import cookie_domain
         resp = RedirectResponse("/setup/company", status_code=302)
         resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_s.cookie_secure, domain=cookie_domain(request))
         return resp
