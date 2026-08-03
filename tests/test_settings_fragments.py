@@ -365,6 +365,18 @@ def test_cloud_tab_error_shows_recovery_only():
     assert "Link subscription" not in html
 
 
+def test_cloud_tab_connecting_polls_for_outcome():
+    """The connecting card refreshes itself so the outcome (account view or the
+    failure card) appears without a manual page reload; terminal states render
+    without the polling wiring, which stops the refresh cycle."""
+    html = _relay_tab_html("connecting", token_bound=True)
+    assert 'hx-get="/settings/cloud-relay-tab"' in html
+    assert 'hx-trigger="every 2s"' in html
+    for terminal in ("error", "active"):
+        html = _relay_tab_html(terminal, token_bound=True)
+        assert "/settings/cloud-relay-tab" not in html
+
+
 def test_cloud_tab_signed_in_free_shows_account_view():
     """A signed-in free instance (token held, no live tunnel) keeps the account
     view: tier note, subscription link, disconnect."""

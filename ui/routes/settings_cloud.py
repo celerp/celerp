@@ -437,7 +437,50 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
 
+async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
+    """Fetch relay state from the API process (the gateway client lives there).
+
+    Returns (relay_status, public_url, tier, disconnected, token_bound); on an
+    unreachable API, degrades to the local client's status alone.
+    """
+    from celerp.gateway.client import get_client as _local_get_client
+    import ui.api_client as _api
+    from ui.api_client import APIError as _APIError
+    relay_status = "inactive"
+    public_url = ""
+    tier = ""
+    disconnected = False
+    token_bound = False
+    try:
+        rs = await _api.get_relay_status(token)
+        relay_status = rs.get("relay_status", "inactive")
+        public_url = rs.get("public_url", "")
+        tier = rs.get("tier") or ""
+        disconnected = bool(rs.get("cloud_disconnected"))
+        token_bound = bool(rs.get("gateway_token_set"))
+    except (_APIError, Exception):
+        lc = _local_get_client()
+        relay_status = lc.relay_status if lc else "inactive"
+    return relay_status, public_url, tier, disconnected, token_bound
+
+
 def setup_routes(app):
+
+    @app.get("/settings/cloud-relay-tab")
+    async def cloud_relay_tab_fragment(request: Request):
+        """HTMX fragment: re-render the relay tab with fresh state.
+
+        Polled by the connecting card so the connection outcome (account view
+        or the failure card) appears without a manual page reload.
+        """
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
+        relay_status, public_url, tier, _, token_bound = await _relay_state(token)
+        return _cloud_relay_tab(relay_status=relay_status, public_url=public_url,
+                                tier=tier, token_bound=token_bound)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -447,27 +490,9 @@ def setup_routes(app):
         if (r := await _check_permission(request, "manage_integrations")):
             return r
 
-        from celerp.gateway.client import get_client as _local_get_client
         import ui.api_client as _api
-        from ui.api_client import APIError as _APIError
         lang = get_lang(request)
-
-        # Fetch relay status from the API process (the gateway client lives there)
-        relay_status = "inactive"
-        public_url = ""
-        tier = ""
-        disconnected = False
-        token_bound = False
-        try:
-            rs = await _api.get_relay_status(token)
-            relay_status = rs.get("relay_status", "inactive")
-            public_url = rs.get("public_url", "")
-            tier = rs.get("tier") or ""
-            disconnected = bool(rs.get("cloud_disconnected"))
-            token_bound = bool(rs.get("gateway_token_set"))
-        except (_APIError, Exception):
-            lc = _local_get_client()
-            relay_status = lc.relay_status if lc else "inactive"
+        relay_status, public_url, tier, disconnected, token_bound = await _relay_state(token)
         # A free tier is signed in (holds a gateway_token) but never starts the WS
         # client - it has no tunnel to serve - so relay_status stays "inactive".
         # Treat a token-bound instance as connected so a signed-in free account

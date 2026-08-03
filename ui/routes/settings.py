@@ -3891,6 +3891,13 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         badge_cls = "badge--warning" if relay_status == "connecting" else "badge--error"
         status_hint = ("Establishing connection..." if relay_status == "connecting"
                        else "Connection failed. Try disconnecting and reconnecting.")
+        # While connecting, the card polls itself so the outcome (account view
+        # or the failure card) appears without a manual reload; the swap
+        # replaces the element, so a terminal state stops the polling.
+        poll_attrs = ({"hx_get": "/settings/cloud-relay-tab",
+                       "hx_trigger": "every 2s",
+                       "hx_swap": "outerHTML"}
+                      if relay_status == "connecting" else {})
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(Tr(Td(t("th.status"), cls="detail-label"), Td(
@@ -3900,6 +3907,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             disconnect_button if relay_status == "error" else "",
             id="cloud-relay-tab",
             cls="settings-card",
+            **poll_attrs,
         )
 
     is_connected = token_bound or relay_status == "active"
