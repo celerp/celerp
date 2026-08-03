@@ -154,14 +154,18 @@ async def test_session_refresh_empty_token_ignored(client):
 
 @pytest.mark.asyncio
 async def test_error_message_logged(client, caplog):
-    """A generic error message -> logged at ERROR level, no exception raised."""
+    """A generic error message -> logged at ERROR level; an auth_failed frame is
+    NOT generically logged (its first strikes are quiet retries)."""
     import logging
     with caplog.at_level(logging.ERROR, logger="celerp.gateway.client"):
         await client._dispatch({
             "type": "error",
             "payload": {"code": "quota_exceeded", "message": "Monthly quota reached"},
         })
+        await client._dispatch(_auth_failed_frame())
     assert "quota_exceeded" in caplog.text
+    assert "auth_failed" not in caplog.text
+    assert len(caplog.records) == 1
 
 
 @pytest.mark.asyncio
