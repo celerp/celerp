@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
+from celerp.services.auth import get_current_user
 from celerp.services.system_health import get_system_health
 
 router = APIRouter()
@@ -87,7 +88,7 @@ async def cloud_status() -> dict:
     # "green but still 502" the user sees while the relay has no live upstream.
     connected = relay_status in ("active", "tos_required")
     if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
+        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "email_resets_on": None, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token), "cloud_disconnected": settings.cloud_disconnected}
 
     # Tier comes from the gateway's own WS push (set_subscription_state, on the
     # "subscription_updated" message) whenever that's arrived - it needs no extra
@@ -99,6 +100,7 @@ async def cloud_status() -> dict:
     last_backup: str | None = None
     email_quota: int = 0
     email_used: int = 0
+    email_resets_on: str | None = None
     try:
         import httpx
         from celerp.gateway.state import relay_http_url as _relay_http_url
@@ -116,6 +118,7 @@ async def cloud_status() -> dict:
                     last_backup = data.get("last_backup")
                     email_quota = int(data.get("email_quota", 0))
                     email_used = int(data.get("email_used", 0))
+                    email_resets_on = data.get("email_resets_on")
     except Exception:
         pass
 
@@ -126,8 +129,10 @@ async def cloud_status() -> dict:
         "last_backup": last_backup,
         "email_quota": email_quota,
         "email_used": email_used,
+        "email_resets_on": email_resets_on,
         "public_url": settings.celerp_public_url,
         "gateway_token_set": bool(settings.gateway_token),
+        "cloud_disconnected": settings.cloud_disconnected,
     }
 
 
@@ -176,12 +181,17 @@ async def email_status() -> dict:
     }
 
 
-@router.post("/settings/cloud-disconnect")
+@router.post("/settings/cloud-disconnect", dependencies=[Depends(get_current_user)])
 async def cloud_disconnect() -> dict:
-    """Stop the gateway WebSocket client and clear credentials from config.
+    """Stop the gateway WebSocket client and record a sticky Cloud disconnect.
 
-    instance_id is preserved - the relay can re-issue a token on next
-    /auth/activate call using the same instance_id.
+    The credential (token, public_url) is PRESERVED in config, only marked
+    disconnected: the association is not lost, so reconnecting is a local
+    one-click operation with no relay round-trip and no re-entering email
+    (see cloud_activate_api). The live credential is cleared in-memory so the
+    tunnel drops and share-minting stops at once. Nothing reconnects
+    automatically - not on restart, not on a settings visit - until the user
+    reconnects from Cloud settings or completes a sign-in.
     """
     from celerp.config import settings as _s, read_config, write_config
     from celerp.gateway import client as _gw
@@ -199,13 +209,15 @@ async def cloud_disconnect() -> dict:
     _set_session_token("")  # must clear before touching config (gate reads this)
     _s.gateway_token = ""
     _s.celerp_public_url = ""
+    _s.cloud_disconnected = True
 
     try:
         cfg = read_config()
-        if cfg and "cloud" in cfg:
-            cfg["cloud"]["token"] = ""
-            cfg["cloud"].pop("public_url", None)
-            write_config(cfg)
+        cloud_cfg = cfg.setdefault("cloud", {})
+        # Keep cloud_cfg["token"]/["public_url"] intact - the credential is the
+        # association, and preserving it is what makes reconnect one click.
+        cloud_cfg["disconnected"] = True
+        write_config(cfg)
     except Exception:
         pass
 
@@ -214,13 +226,24 @@ async def cloud_disconnect() -> dict:
 
 
 async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
-    """Apply a gateway token in the API process: persist config, start WS client."""
+    """Apply a gateway token in the API process: persist config, start WS client.
+
+    Every path here is user-initiated (settings reconnect, sign-in poll, claim),
+    so it also ends a sticky Cloud disconnect."""
     import asyncio
-    from celerp.config import settings as _s, persist_cloud_settings
+    from celerp.config import read_config, settings as _s, persist_cloud_settings, write_config
     from celerp.gateway import client as _gw
 
     _s.gateway_token = token
     _s.gateway_instance_id = iid
+    if _s.cloud_disconnected:
+        _s.cloud_disconnected = False
+        try:
+            cfg = read_config()
+            if cfg.get("cloud", {}).pop("disconnected", None) is not None:
+                write_config(cfg)
+        except Exception:
+            pass
     if public_url:
         _s.celerp_public_url = public_url
 
@@ -257,13 +280,32 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
         backup_scheduler.start()
 
 
-@router.post("/settings/cloud-activate")
+@router.post("/settings/cloud-activate", dependencies=[Depends(get_current_user)])
 async def cloud_activate_api() -> dict:
     """Call relay /auth/activate, apply token, start gateway client. Returns status."""
     import httpx
-    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.config import settings as _s, ensure_instance_id, read_config
 
     iid = ensure_instance_id()
+
+    # Sticky-disconnect reconnect: the credential was preserved at disconnect, so
+    # bringing the tunnel back is a local operation - re-apply the stored token
+    # with no relay round-trip and no re-entering email. _apply_gateway_token_api
+    # clears the disconnect flag. A disconnected install with no stored token
+    # (never connected) falls through to the normal /auth/activate probe below.
+    if _s.cloud_disconnected:
+        cloud = read_config().get("cloud", {})
+        stored = cloud.get("token") or ""
+        if stored:
+            await _apply_gateway_token_api(
+                stored, iid,
+                public_url=cloud.get("public_url") or None,
+                tos_version=cloud.get("tos_version") or None,
+            )
+            gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+            return {"connected": True, "relay_status": gw.relay_status if gw else "connecting",
+                    "public_url": cloud.get("public_url") or "", "instance_id": iid}
+
     from celerp.gateway.state import activate_payload, relay_http_url as _rhu; relay_base = _rhu()
 
     try:
@@ -362,32 +404,66 @@ async def cloud_instance_id() -> dict:
     return {"instance_id": ensure_instance_id()}
 
 
-@router.get("/settings/account-methods")
+@router.get("/settings/account-methods", dependencies=[Depends(get_current_user)])
 async def account_methods_api() -> dict:
     """Which optional sign-in methods the relay offers, plus the browser URL for
     the Google flow (started in the system browser, bound to this instance).
-    Degrades to email-only when the relay is unreachable - never an error."""
+    Degrades to email-only when the relay is unreachable - never an error.
+
+    An activated install exchanges its gateway credential for a JWT and asks
+    the relay for an owner-initiated start URL: that sign-in may CHANGE which
+    account this computer is linked to, which the open door refuses. A
+    disconnected install re-obtains its credential from /auth/activate first,
+    so the switch also works after a Cloud disconnect. Fresh installs (nothing
+    linked, activate 404s) get the open-door URL - they have no link to
+    change. The UI fetches this at click time, so the URL is always fresh."""
     import httpx
-    from celerp.config import ensure_instance_id
+    from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import relay_http_url as _rhu
     relay_base = _rhu()
     iid = ensure_instance_id()
     google = False
     free_email_quota = 0
+    start_url = f"{relay_base}/auth/google/start?instance_id={iid}"
     try:
         async with httpx.AsyncClient(timeout=6.0) as c:
             r = await c.get(f"{relay_base}/auth/methods")
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, dict):
-                google = bool(data.get("google"))
-                free_email_quota = int(data.get("free_email_quota") or 0)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    google = bool(data.get("google"))
+                    free_email_quota = int(data.get("free_email_quota") or 0)
+            api_key = _s.gateway_token
+            if google and not api_key:
+                # A Cloud disconnect clears only the local token; the relay-side
+                # link survives (cloud_disconnect above). Re-prove possession the
+                # same way the startup probe does: /auth/activate is keyed on the
+                # preserved instance_id and 404s when nothing is linked, which
+                # keeps fresh installs on the open door below.
+                from celerp.gateway.state import activate_payload
+                act = await c.post(f"{relay_base}/auth/activate",
+                                   json=activate_payload(iid))
+                if act.status_code == 200:
+                    api_key = str(act.json().get("gateway_token") or "")
+            if google and api_key:
+                tok_r = await c.post(f"{relay_base}/auth/token",
+                                     json={"api_key": api_key})
+                if tok_r.status_code == 200:
+                    su = await c.get(
+                        f"{relay_base}/auth/google/start-url",
+                        params={"instance_id": iid},
+                        headers={"Authorization":
+                                 f"Bearer {tok_r.json()['access_token']}"})
+                    if su.status_code == 200:
+                        su_data = su.json()
+                        if isinstance(su_data, dict) and su_data.get("url"):
+                            start_url = str(su_data["url"])
     except Exception:
         pass
     return {
         "google": google,
         "free_email_quota": free_email_quota,
-        "google_start_url": f"{relay_base}/auth/google/start?instance_id={iid}",
+        "google_start_url": start_url,
     }
 
 

@@ -137,14 +137,22 @@ def with_writable_module_dir(module_dir_env: str) -> str:
 
 
 # Files that are never copied into a seeded module dir and never enter the
-# content digest: bytecode caches, VCS metadata, and the runtime sidecars the app
-# itself writes into a module folder after it is installed (the meta sidecar and
-# the premium marker). One tuple feeds two derivations - the importer's copy-ignore
-# and the content digest - so the copied set and the hashed set cannot drift (DRY).
-# META_FILENAME / PREMIUM_MARKER are imported, never re-typed here, so renaming
-# either constant cannot silently desync this exclusion set.
+# content digest: bytecode caches, VCS metadata, test-run tooling artifacts
+# (a coverage run drops .coverage next to the source, pytest drops .pytest_cache),
+# and the runtime sidecars the app itself writes into a module folder after it is
+# installed (the meta sidecar and the premium marker). None of these are module
+# source - they are never imported by the loader - so hashing them would demote a
+# first-party module purely because a developer ran its tests. One tuple feeds two
+# derivations - the importer's copy-ignore and the content digest - so the copied
+# set and the hashed set cannot drift (DRY). META_FILENAME / PREMIUM_MARKER are
+# imported, never re-typed here, so renaming either constant cannot silently desync
+# this exclusion set. The lock generator digests only git-tracked files, so these
+# gitignored artifacts never enter the committed lock either - excluding them here
+# keeps the runtime digest in agreement with it.
 _DIGEST_EXCLUDE_GLOBS: tuple[str, ...] = (
-    "__pycache__", "*.pyc", ".git", ".github", META_FILENAME, PREMIUM_MARKER,
+    "__pycache__", "*.pyc", ".git", ".github",
+    ".coverage", ".coverage.*", "htmlcov", ".pytest_cache",
+    META_FILENAME, PREMIUM_MARKER,
 )
 
 
@@ -230,6 +238,14 @@ def _first_party_lock() -> dict[str, str]:
     return raw
 
 
+# Names already warned about a lock mismatch this process. is_first_party is a hot
+# predicate - called on every module scan (boot, each /modules render, the delete
+# guard) - so without this a single demoted module spams one WARNING per call.
+# One line per module per process is enough to surface the state; the bell carries
+# the durable, user-facing notice (see celerp.modules.demotion).
+_demotion_warned: set[str] = set()
+
+
 def is_first_party(pkg_path: Path) -> bool:
     """True only if pkg_path's folder name is in the committed lock AND its live
     content digest matches the locked digest.
@@ -246,9 +262,11 @@ def is_first_party(pkg_path: Path) -> bool:
     if digest is None:
         return False
     if digest != expected:
-        log.warning(
-            "Module %r content does not match its first-party lock entry; "
-            "treating it as not first-party.", pkg_path.name)
+        if pkg_path.name not in _demotion_warned:
+            _demotion_warned.add(pkg_path.name)
+            log.warning(
+                "Module %r content does not match its first-party lock entry; "
+                "treating it as not first-party.", pkg_path.name)
         return False
     return True
 
@@ -260,6 +278,22 @@ def first_party_names() -> frozenset[str]:
     lock is a demoted default - the scan reports that as a per-module fact so the
     UI can surface it without keeping any cross-render state."""
     return frozenset(_first_party_lock())
+
+
+def demoted_first_party(enabled: set[str]) -> list[str]:
+    """Sorted names of enabled modules the lock claims as first-party but whose
+    live content no longer matches (demoted). Mirrors the /modules scan's
+    per-module verdict via the same content check, so the boot-time bell notice
+    and the page agree. Catches a genuine tamper whether or not the module still
+    loads - it asks the filesystem, not the loaded set (a demoted default that
+    then trips the BSL checks never reaches the loaded manifests)."""
+    lock_names = first_party_names()
+    out: list[str] = []
+    for name in sorted(enabled & lock_names):
+        path = resolve_module_path(name)
+        if path is not None and not is_first_party(path):
+            out.append(name)
+    return out
 
 
 def resolve_module_path(name: str) -> Path | None:

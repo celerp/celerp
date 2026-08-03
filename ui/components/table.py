@@ -1022,14 +1022,23 @@ def _normalize_number_str(s: str) -> str:
         return s
 
 
-def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
-    """Format a value for display. Empty/null → EMPTY constant."""
+def _display_val(value, cell_type: str, currency: str | None = None,
+                 status_doc: tuple[str, str] | None = None) -> FT:
+    """Format a value for display. Empty/null → EMPTY constant.
+
+    status_doc: for status cells only - (doc_entity_id, doc_number) of the document
+    that caused the status. The badge then reads STATUS: DOC-NUMBER with the number
+    linking to the document."""
     s = str(value).strip() if value is not None else ""
     if cell_type == "bool":
         is_true = str(value).strip().lower() in ("true", "1", "yes")
         return Span("Yes" if is_true else "No", cls="badge badge--yes" if is_true else "badge badge--no")
     if cell_type == "status":
-        return Span(s or EMPTY, cls=f"badge badge--{s.lower().replace(' ', '-')}" if s else "")
+        badge_cls = f"badge badge--{s.lower().replace(' ', '-')}" if s else ""
+        if s and status_doc:
+            doc_id, doc_number = status_doc
+            return Span(s, ": ", A(doc_number, href=f"/docs/{doc_id}", cls="badge__doc-link"), cls=badge_cls)
+        return Span(s or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
             return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
@@ -1071,6 +1080,7 @@ def display_cell(
     edit_url: str | None = None,
     label_map: dict | None = None,
     placeholder: str | None = None,
+    status_doc: tuple[str, str] | None = None,
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
@@ -1080,13 +1090,15 @@ def display_cell(
     label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name.
     placeholder: optional grey hint shown ONLY when the cell is empty (e.g. a suggested
                  reorder value). It is display-only guidance, never a stored value; the cell
-                 stays click-to-edit and saving still uses whatever the user types."""
+                 stays click-to-edit and saving still uses whatever the user types.
+    status_doc: status cells only - (doc_entity_id, doc_number) of the causing document,
+                rendered inside the badge as a link (see _display_val)."""
     display_value = label_map.get(value, value) if label_map and value is not None else value
     # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
     # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
     if _is_mixed(value):
         display_value = MIXED_VALUE
-    inner = _display_val(display_value, cell_type, currency)
+    inner = _display_val(display_value, cell_type, currency, status_doc=status_doc)
     # Empty cell + a suggestion -> show it greyed (a hint, not a stored value). The
     # edit trigger below is unchanged, so the cell stays fully editable.
     if placeholder not in (None, "") and (value is None or str(value).strip() in ("", EMPTY)):

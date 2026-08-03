@@ -463,3 +463,17 @@ class TestModuleProvenanceAndDelete:
             r = await client.post(
                 "/companies/me/modules/ghost-mod/delete", headers=_h(token))
         assert r.status_code == 404, r.text
+
+
+def test_module_descriptions_use_connect_naming():
+    """First-party manifest display strings name the paid tiers by their product
+    names (Connect, Connect + AI); the retired Cloud naming is gone."""
+    root = Path(__file__).resolve().parent.parent.parent / "default_modules"
+    stale = ("Cloud subscription", "Cloud+AI", "Cloud + AI", "Cloud Backup")
+    offenders = []
+    for init in sorted(root.glob("*/__init__.py")):
+        for n, line in enumerate(init.read_text(encoding="utf-8").splitlines(), 1):
+            if '"description"' in line or '"display_name"' in line:
+                if any(s in line for s in stale):
+                    offenders.append(f"{init.parent.name}/__init__.py:{n}: {line.strip()}")
+    assert offenders == []

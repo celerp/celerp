@@ -22,7 +22,7 @@ from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
 
 
@@ -651,7 +651,7 @@ def setup_routes(app):
         """Redirect legacy /settings to the new /settings/general."""
         # Preserve tab redirects for backward-compat deep links
         tab = request.query_params.get("tab", "")
-        _SALES_TABS = {"taxes", "terms", "connectors"}
+        _SALES_TABS = {"taxes", "terms"}
         _INVENTORY_TABS = {"schema", "locations", "import-history", "bulk-attach", "verticals"}
         _ACCOUNTING_TABS = {"bank-accounts"}
         if tab in _SALES_TABS:
@@ -1904,13 +1904,10 @@ def setup_routes(app):
         plus tier and status. Confirm re-POSTs to /settings/cloud-claim with the
         chosen subscription_id and the original email.
         """
-        def _tier_label(tier: str) -> str:
-            return {"cloud": "Connect", "ai": "Connect + AI", "team": "Team"}.get(tier, tier.title())
-
         def _match_row(m: dict, idx: int) -> FT:
             slug = m.get("slug")
             sub_id = m["subscription_id"]
-            tier = _tier_label(m.get("tier", ""))
+            tier = tier_label(m.get("tier", ""))
             status = m.get("status", "")
             if slug:
                 primary = f"{slug}.celerp.com"
@@ -2137,7 +2134,10 @@ def setup_routes(app):
         except Exception:
             pass
         iid = ensure_instance_id()
-        return _cloud_relay_unconnected(iid)
+        # Sticky disconnect: the credential is preserved (one-click reconnect via
+        # the Connect button), but the fragment must not auto-fire Connect and
+        # undo the disconnect the user just chose.
+        return _cloud_relay_unconnected(iid, suppress_autoconnect=True)
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
@@ -3710,6 +3710,7 @@ def _cloud_relay_unconnected(
     info: str | None = None,
     show_email_form: bool = True,
     show_header: bool = True,
+    suppress_autoconnect: bool = False,
 ) -> FT:
     """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
@@ -3717,6 +3718,11 @@ def _cloud_relay_unconnected(
         show_header: When False, suppress the H3 title, description, and Subscribe button.
             Used when embedding inside the Web Access value-prop page which already
             has its own plan cards and CTAs.
+        suppress_autoconnect: When True, omit the on-load auto-connect script. Set by
+            the disconnect response so the fragment it swaps in cannot immediately
+            re-fire Connect and undo the disconnect the user just performed; the
+            Connect button stays and reconnects in one click from the preserved
+            credential.
     """
     from celerp.gateway.state import build_subscribe_url
     subscribe_url = build_subscribe_url(iid)
@@ -3752,9 +3758,12 @@ def _cloud_relay_unconnected(
             style="display:flex;align-items:center;flex-wrap:wrap;gap:0;margin-top:12px;",
         )
     )
-    # Auto-trigger on first load (silently tries to activate; shows result inline)
-    children.append(
-        Script("""
+    # Auto-trigger on first load (silently tries to activate; shows result inline).
+    # Withheld after a deliberate disconnect so the swapped-in fragment cannot
+    # instantly reconnect and undo it.
+    if not suppress_autoconnect:
+        children.append(
+            Script("""
 (function(){
   if (sessionStorage.getItem('cloud_activate_tried')) return;
   sessionStorage.setItem('cloud_activate_tried', '1');
@@ -3762,7 +3771,7 @@ def _cloud_relay_unconnected(
   if (btn) htmx.trigger(btn, 'click');
 })();
 """)
-    )
+        )
 
     if show_email_form:
         children += [
@@ -3836,7 +3845,7 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
-                      tier: str | None = None) -> FT:
+                      tier: str | None = None, token_bound: bool = False) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
@@ -3844,6 +3853,10 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); anything
     other than a known paid tier (including None/"" while unknown) is treated
     as free, so the free-tier note degrades to shown, never hidden.
+    token_bound: the instance holds a gateway_token (it is signed in), which a
+    free tier does WITHOUT a live tunnel - the WS client never starts for it, so
+    relay_status stays "inactive". Treat that as connected so a signed-in free
+    account still gets the account/disconnect view, not the subscribe/claim page.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3859,21 +3872,49 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
-    is_connected = relay_status not in ("inactive",) or gw is not None
-    if is_connected:
-        badge_cls = {
-            "active": "badge--active",
-            "connecting": "badge--warning",
-            "error": "badge--error",
-            "inactive": "badge--inactive",
-        }.get(relay_status, "badge--inactive")
+    disconnect_button = Div(
+        Button(t("btn.disconnect"),
+            cls="btn btn--sm btn--outline btn--danger",
+            hx_post="/settings/cloud-disconnect",
+            hx_target="#cloud-relay-tab",
+            hx_swap="outerHTML",
+            hx_confirm="Disconnect web access? You can reconnect anytime.",
+        ),
+        style="margin-top:12px;",
+    )
 
-        # Status explanation for non-active states
-        status_hint = {
-            "connecting": "Establishing connection...",
-            "error": "Connection failed. Try disconnecting and reconnecting.",
-            "inactive": "Initializing connection...",
-        }.get(relay_status, "")
+    if relay_status in ("connecting", "error"):
+        # The relay has not accepted this instance's credentials yet (or has
+        # refused them): show only the connection state. Account details and
+        # tier content render once authentication succeeds; a failed connection
+        # offers disconnect as the recovery path.
+        badge_cls = "badge--warning" if relay_status == "connecting" else "badge--error"
+        status_hint = ("Establishing connection..." if relay_status == "connecting"
+                       else "Connection failed. Try disconnecting and reconnecting.")
+        # While connecting, the card polls itself so the outcome (account view
+        # or the failure card) appears without a manual reload; the swap
+        # replaces the element, so a terminal state stops the polling.
+        poll_attrs = ({"hx_get": "/settings/cloud-relay-tab",
+                       "hx_trigger": "every 2s",
+                       "hx_swap": "outerHTML"}
+                      if relay_status == "connecting" else {})
+        return Div(
+            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+            Table(Tr(Td(t("th.status"), cls="detail-label"), Td(
+                Span(relay_status.capitalize(), cls=f"badge {badge_cls}"),
+                Span(f" - {status_hint}", cls="settings-hint"),
+            )), cls="detail-table"),
+            disconnect_button if relay_status == "error" else "",
+            id="cloud-relay-tab",
+            cls="settings-card",
+            **poll_attrs,
+        )
+
+    is_connected = token_bound or relay_status == "active"
+    if is_connected:
+        badge_cls = "badge--active" if relay_status == "active" else "badge--inactive"
+        # Status explanation for the signed-in-without-tunnel state
+        status_hint = "Initializing connection..." if relay_status == "inactive" else ""
 
         rows = [
             Tr(Td(t("th.status"), cls="detail-label"), Td(
@@ -3913,16 +3954,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(*rows, cls="detail-table"),
             free_tier_note,
-            Div(
-                Button(t("btn.disconnect"),
-                    cls="btn btn--sm btn--outline btn--danger",
-                    hx_post="/settings/cloud-disconnect",
-                    hx_target="#cloud-relay-tab",
-                    hx_swap="outerHTML",
-                    hx_confirm="Disconnect web access? You can reconnect anytime.",
-                ),
-                style="margin-top:12px;",
-            ),
+            disconnect_button,
             id="cloud-relay-tab",
             cls="settings-card",
         )
@@ -4084,63 +4116,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         actions,
         flash_target,
         history_section,
-        cls="settings-card",
-    )
-
-
-def _connectors_tab() -> FT:
-    """Connectors settings tab - lists available connectors and their connection status."""
-    from celerp.gateway.client import get_client
-    from ui.components.cloud_gate import upgrade_banner
-
-    gw_ok = get_client() is not None
-
-    _CONNECTORS = [
-        ("shopify",    "Shopify",    "Orders, products, customers, inventory"),
-        ("woocommerce","WooCommerce","Orders, products, customers"),
-        ("quickbooks", "QuickBooks", "Invoices, contacts, chart of accounts"),
-        ("xero",       "Xero",       "Invoices, contacts, bank reconciliation"),
-        ("lazada",     "Lazada",     "Orders, products, inventory (SEA)"),
-        ("shopee",     "Shopee",     "Orders, products, inventory (SEA)"),
-    ]
-
-    if not gw_ok:
-        return Div(
-            H3(t("settings.tab_connectors"), cls="settings-section-title"),
-            upgrade_banner(
-                "Connectors",
-                "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
-                "OAuth is handled by Celerp Connect - no API keys to manage.",
-                price="USD $29/mo",
-                plan="cloud",
-            ),
-            cls="settings-card",
-        )
-
-    rows = [
-        Tr(
-            Td(name, cls="detail-label"),
-            Td(desc, cls="settings-hint p-sm"),
-            Td(
-                Span(t("settings.coming_soon"), cls="badge badge--inactive"),
-            ),
-        )
-        for key, name, desc in _CONNECTORS
-    ]
-
-    return Div(
-        H3(t("settings.tab_connectors"), cls="settings-section-title"),
-        P(
-            "Your instance is connected to Celerp Connect. "
-            "Connectors use OAuth handled by the relay - no API keys needed on your side.",
-            cls="settings-hint",
-        ),
-        Table(*rows, cls="detail-table"),
-        P(
-            "Connector activation launches in the next release. "
-            "You'll connect each platform directly from this tab.",
-            cls="settings-hint mt-md",
-        ),
         cls="settings-card",
     )
 

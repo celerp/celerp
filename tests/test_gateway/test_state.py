@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
-from celerp.gateway.state import build_handoff_url, build_subscribe_url
+from celerp.gateway.state import activate_payload, build_handoff_url, build_subscribe_url
+
+_IID = "00000000-0000-0000-0000-000000000000"
 
 
 # ── build_handoff_url ─────────────────────────────────────────────────────────
@@ -39,3 +41,15 @@ def test_subscribe_with_instance():
 def test_subscribe_topup_extra():
     assert build_subscribe_url("iid", topup=True, extra="?p=1") == \
         "https://celerp.com/subscribe/topup?instance_id=iid&utm_source=app&utm_medium=inapp&p=1"
+
+
+# ── activate_payload launch mode ───────────────────────────────────────────────
+
+def test_activate_mode_none_without_env(monkeypatch):
+    monkeypatch.delenv("CELERP_MODE", raising=False)
+    assert activate_payload(_IID)["mode"] is None
+
+
+def test_activate_mode_reports_launcher_channel(monkeypatch):
+    monkeypatch.setenv("CELERP_MODE", "desktop")
+    assert activate_payload(_IID)["mode"] == "desktop"

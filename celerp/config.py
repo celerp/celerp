@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # No `[gateway_token]` means no gateway connection, no product telemetry, and
     # no cloud dependency, except a startup subscription check.
     gateway_token: str = ""
+    # True after an explicit Cloud disconnect: the startup probe must not
+    # re-link the install. Cleared when the user reconnects (settings or a
+    # sign-in flow applies a fresh token). Persisted as [cloud] disconnected.
+    cloud_disconnected: bool = False
     gateway_url: str = "wss://relay.celerp.com/ws/connect"
     # Unique instance identifier sent to gateway (auto-generated if blank).
     gateway_instance_id: str = ""
@@ -157,11 +161,19 @@ def load_cloud_config() -> None:
     cloud = cfg.get("cloud", {})
     if not cloud:
         return
-    if cloud.get("token") and not settings.gateway_token:
+    disconnected = bool(cloud.get("disconnected"))
+    if disconnected:
+        settings.cloud_disconnected = True
+    # A sticky disconnect keeps the credential in config for a one-click reconnect
+    # but must NOT bring it live: leaving gateway_token/public_url unset holds the
+    # tunnel down, share-minting off, and the startup probe skipped, so the
+    # disconnected choice survives the restart. instance_id and the backup key are
+    # identity, not the live connection, so they still load.
+    if cloud.get("token") and not settings.gateway_token and not disconnected:
         settings.gateway_token = cloud["token"]
     if cloud.get("instance_id") and not settings.gateway_instance_id:
         settings.gateway_instance_id = cloud["instance_id"]
-    if cloud.get("public_url") and not settings.celerp_public_url:
+    if cloud.get("public_url") and not settings.celerp_public_url and not disconnected:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
         settings.backup_encryption_key = cloud["backup_encryption_key"]
@@ -283,8 +295,12 @@ def write_config(cfg: dict) -> None:
             f'public_url = {_str(cloud.get("public_url", ""))}',
             f'backup_encryption_key = {_str(cloud.get("backup_encryption_key", ""))}',
             f'tos_version = {_str(cloud.get("tos_version", ""))}',
-            "",
         ]
+        # Absent key = never explicitly disconnected (all configs written
+        # before this shipped), matching the embedded/headless idiom.
+        if cloud.get("disconnected"):
+            lines.append("disconnected = true")
+        lines.append("")
 
     if "storage" in cfg:
         st = cfg["storage"]

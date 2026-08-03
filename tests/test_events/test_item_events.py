@@ -200,3 +200,103 @@ def test_split_does_not_mark_unavailable():
     assert is_item_available(state)
     assert state["children"] == ["item:c1", "item:c2"]
     assert state["child_skus"] == ["C1", "C2"]
+
+
+def test_status_doc_pairing_follows_status_writers() -> None:
+    """The status cell shows the document that caused the current status. Doc-driven
+    status changes (fulfil, memo->invoice conversion) stamp status_doc_id/_number;
+    every doc-less status change clears the pairing so it can never go stale."""
+    state = apply_item_event({}, "item.created", {"sku": "S", "name": "A", "quantity": 2})
+    assert "status_doc_id" not in state
+
+    # Fulfil to a memo stamps the memo's number
+    state = apply_item_event(state, "item.fulfilled", {
+        "quantity_fulfilled": 2.0, "source_doc_id": "doc:MEMO-2026-0001",
+        "doc_number": "MEMO-2026-0001", "doc_type": "memo"})
+    assert state["status"] == "memo_out"
+    assert state["status_doc_id"] == "doc:MEMO-2026-0001"
+    assert state["status_doc_number"] == "MEMO-2026-0001"
+
+    # memo->invoice conversion re-stamps with the invoice via item.status.set
+    state = apply_item_event(state, "item.status.set", {
+        "new_status": "sold", "source_doc_id": "doc:INV-2026-0001",
+        "doc_number": "INV-2026-0001"})
+    assert state["status"] == "sold"
+    assert state["status_doc_id"] == "doc:INV-2026-0001"
+    assert state["status_doc_number"] == "INV-2026-0001"
+
+    # Unfulfil clears the pairing with the status
+    state = apply_item_event(state, "item.fulfillment_reversed", {
+        "quantity_restored": 2.0, "source_doc_id": "doc:INV-2026-0001"})
+    assert state["status"] == "available"
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+    # A doc-less manual status set clears any stamp
+    state = apply_item_event(state, "item.fulfilled", {
+        "quantity_fulfilled": 2.0, "source_doc_id": "doc:INV-2026-0002",
+        "doc_number": "INV-2026-0002", "doc_type": "invoice"})
+    state = apply_item_event(state, "item.status.set", {"new_status": "available"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+    # A manual field edit of status clears too
+    state = apply_item_event(state, "item.fulfilled", {
+        "quantity_fulfilled": 2.0, "source_doc_id": "doc:INV-2026-0003",
+        "doc_number": "INV-2026-0003", "doc_type": "invoice"})
+    state = apply_item_event(state, "item.updated", {
+        "fields_changed": {"status": {"old": "sold", "new": "available"}}})
+    assert state["status"] == "available"
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+    # Terminal states clear as well
+    state = apply_item_event(state, "item.status.set", {
+        "new_status": "sold", "source_doc_id": "doc:INV-2026-0004",
+        "doc_number": "INV-2026-0004"})
+    state = apply_item_event(state, "item.expired", {})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+    # CSV upsert that changes status without a source doc clears; one that does not
+    # touch status leaves the pairing alone (and keeps it top-level, not an attribute)
+    state = apply_item_event(state, "item.status.set", {
+        "new_status": "sold", "source_doc_id": "doc:INV-2026-0005",
+        "doc_number": "INV-2026-0005"})
+    state = apply_item_event(state, "item.patched", {"notes": "recount"})
+    assert state["status_doc_number"] == "INV-2026-0005"
+    assert "status_doc_number" not in (state.get("attributes") or {})
+    state = apply_item_event(state, "item.patched", {"status": "available"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+
+
+def _sold_with_pairing() -> dict:
+    state = apply_item_event({}, "item.created", {"sku": "S", "name": "A", "quantity": 1})
+    return apply_item_event(state, "item.status.set", {
+        "new_status": "sold", "source_doc_id": "doc:INV-2026-0005",
+        "doc_number": "INV-2026-0005"})
+
+
+def test_item_patched_number_without_id_drops_pairing() -> None:
+    """An upsert carrying status_doc_number but no status_doc_id leaves an
+    unverifiable half-pair; the pairing is dropped, not merged."""
+    paired = _sold_with_pairing()
+    assert paired["status_doc_id"] == "doc:INV-2026-0005"
+    assert paired["status_doc_number"] == "INV-2026-0005"
+    state = apply_item_event(paired, "item.patched", {"status_doc_number": "INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+    assert "status_doc_number" not in (state.get("attributes") or {})
+
+    # An empty-string id counts as absent (the CSV path feeds unfiltered values)
+    paired = _sold_with_pairing()
+    assert paired["status_doc_id"] == "doc:INV-2026-0005"
+    state = apply_item_event(paired, "item.patched",
+                             {"status_doc_id": "", "status_doc_number": "INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+    assert "status_doc_number" not in (state.get("attributes") or {})
+
+
+def test_item_patched_id_without_number_drops_pairing() -> None:
+    """The reverse half-pair (id without number) is dropped the same way."""
+    paired = _sold_with_pairing()
+    assert paired["status_doc_id"] == "doc:INV-2026-0005"
+    assert paired["status_doc_number"] == "INV-2026-0005"
+    state = apply_item_event(paired, "item.patched", {"status_doc_id": "doc:INV-9999"})
+    assert "status_doc_id" not in state and "status_doc_number" not in state
+    assert "status_doc_id" not in (state.get("attributes") or {})

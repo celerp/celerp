@@ -9,7 +9,7 @@ PLUGIN_MANIFEST = {
     "name": "celerp-ai",
     "version": "1.0.0",
     "display_name": "AI Assistant",
-    "description": "Natural language queries against ERP data. Requires Cloud+AI subscription.",
+    "description": "Natural language queries against ERP data. Requires a Connect + AI subscription.",
     "license": "LicenseRef-Proprietary",
     "author": "Celerp",
     "api_routes": "celerp_ai.setup",

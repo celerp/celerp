@@ -1503,63 +1503,6 @@ async def put_units(
     return settings["units"]
 
 
-# ---------------------------------------------------------------------------
-# Web access relay toggle
-# ---------------------------------------------------------------------------
-
-class RelayEnablePayload(BaseModel):
-    gateway_token: str = Field(..., description="GATEWAY_TOKEN issued by celerp.com subscription.")
-    instance_id: str = Field("", description="Optional stable instance identifier.")
-
-
-@router.post("/me/relay/enable", dependencies=[require_permission("manage_integrations")])
-async def enable_relay(
-    payload: RelayEnablePayload,
-    _company_id=Depends(get_current_company_id),
-) -> dict:
-    """Activate the relay for this instance.
-
-    Stores the gateway token in runtime settings and starts the WS connection
-    immediately (no restart required). Admin-only.
-    """
-    import asyncio
-    from celerp.config import settings as _cfg
-    from celerp.gateway import client as _gw
-
-    _cfg.gateway_token = payload.gateway_token
-    if payload.instance_id:
-        _cfg.gateway_instance_id = payload.instance_id
-
-    if _gw.get_client() is None:
-        import uuid as _uuid
-        instance_id = _cfg.gateway_instance_id or str(_uuid.uuid4())
-        gw = _gw.GatewayClient(
-            gateway_token=payload.gateway_token,
-            instance_id=instance_id,
-            gateway_url=_cfg.gateway_url,
-        )
-        _gw.set_client(gw)
-        asyncio.create_task(gw.run())
-
-    return {"ok": True, "message": "Web access activated."}
-
-
-@router.post("/me/relay/disable", dependencies=[require_permission("manage_integrations")])
-async def disable_relay(_company_id=Depends(get_current_company_id)) -> dict:
-    """Deactivate the relay. Stops cloudflared and closes the WS connection. Admin-only."""
-    from celerp.config import settings as _cfg
-    from celerp.gateway import client as _gw
-    from celerp.gateway.state import set_session_token
-
-    client = _gw.get_client()
-    if client:
-        client.stop()
-        _gw.set_client(None)
-    _cfg.gateway_token = ""
-    set_session_token("")
-    return {"ok": True, "message": "Web access deactivated."}
-
-
 # ── Module management ──────────────────────────────────────────────────────────
 
 @router.get("/me/modules")

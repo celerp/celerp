@@ -81,6 +81,8 @@ async def _try_auto_activate() -> None:
     """Probe the relay for an existing subscription and auto-connect if found.
 
     Called at startup when gateway_token is empty. Silent on any failure.
+    Skipped entirely after an explicit Cloud disconnect: staying disconnected
+    is the user's recorded choice, and reconnecting is always explicit.
     """
     _log = logging.getLogger(__name__)
     try:
@@ -88,6 +90,8 @@ async def _try_auto_activate() -> None:
 
         import httpx
         from celerp.config import settings as _s, ensure_instance_id, config_path, persist_cloud_settings
+        if _s.cloud_disconnected:
+            return
         first_boot = not config_path().exists()
         iid = ensure_instance_id()
         from celerp.gateway.state import activate_payload, relay_http_url as _rhu
@@ -201,6 +205,22 @@ async def lifespan(_app: FastAPI):
             async with _SessionLocal() as _sess:
                 await _fire("on_modules_ready", session=_sess)
                 await _sess.commit()
+
+            # A bundled default whose content no longer matches the first-party
+            # lock is demoted to untrusted. Surface that in the notification bell
+            # (deduped, company-wide) so it is visible from any page rather than
+            # only on /modules. Best-effort - a notify failure must never block boot.
+            try:
+                from celerp.modules.loader import demoted_first_party
+                _demoted = demoted_first_party(_enabled)
+                if _demoted:
+                    from celerp.modules.demotion import notify_demoted_modules
+                    async with _SessionLocal() as _dsess:
+                        await notify_demoted_modules(_dsess, _demoted)
+                        await _dsess.commit()
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Demoted-module notification skipped (non-fatal)", exc_info=True)
 
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot

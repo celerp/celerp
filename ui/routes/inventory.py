@@ -22,7 +22,7 @@ from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
-from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
+from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
@@ -1498,6 +1498,7 @@ def setup_routes(app):
     @app.get("/api/items/{entity_id}/label-templates")
     async def item_label_templates(request: Request, entity_id: str):
         """Return label template dropdown options for the print button."""
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -1505,7 +1506,7 @@ def setup_routes(app):
             import httpx
             async with httpx.AsyncClient(timeout=5) as c:
                 r = await c.get(
-                    f"{_api_base}/api/labels/templates",
+                    f"{API_BASE}/api/labels/templates",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 templates = r.json().get("items", []) if r.status_code == 200 else []
@@ -4842,6 +4843,22 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 )
             return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
         renderers["pieces"] = _pieces_renderer
+
+    # Status renderer: a doc-driven status (sold, memo_out, consigned-in stock) carries
+    # the causing document on the item state; the badge reads STATUS: DOC-NUMBER with
+    # the number linked to the doc, so list rows are traceable and filterable by doc.
+    if "status" in schema_keys:
+        _status_def = next(f for f in schema if f["key"] == "status")
+        def _status_renderer(entity_id: str, row: dict, _f=_status_def) -> FT:
+            doc_id = str(row.get("status_doc_id") or "")
+            doc_num = str(row.get("status_doc_number") or "") or doc_id.removeprefix("doc:")
+            return display_cell(
+                entity_id=entity_id, field="status", value=row.get("status", ""),
+                cell_type=_f.get("type", "status"), options=_f.get("options"),
+                editable=_f.get("editable", True),
+                status_doc=(doc_id, doc_num) if doc_id else None,
+            )
+        renderers["status"] = _status_renderer
 
     # Category renderer: shows display name instead of slug
     if category_label_map:

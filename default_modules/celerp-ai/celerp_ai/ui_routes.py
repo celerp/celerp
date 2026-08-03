@@ -200,7 +200,7 @@ def setup_ui_routes(app) -> None:
             if "subscription" in str(detail).lower() or "subscribe" in str(detail).lower():
                 return Div(
                     user_bubble,
-                    _msg_bubble("ai", "A Cloud + AI subscription is required to use the AI assistant."),
+                    _msg_bubble("ai", "A Connect + AI subscription is required to use the AI assistant."),
                     A(t("msg.subscribe_at_celerpcom_u2192"),
                       href=_subscribe_url("ai"),
                       target="_blank", cls="btn btn--primary mt-sm"),

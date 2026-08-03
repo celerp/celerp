@@ -14,7 +14,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from ui.config import API_BASE, get_token as _token
+from ui.config import get_token as _token
 
 _RETRY_DELAYS = [1, 2, 4, 8, 16]
 
@@ -26,6 +26,7 @@ def setup_routes(app):
         token = _token(request)
 
         async def _stream():
+            from ui.config import API_BASE
             # Commit the 200 immediately so any downstream exception won't become a 500.
             yield ": keepalive\n\n"
 

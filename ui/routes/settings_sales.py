@@ -20,7 +20,6 @@ from ui.routes.settings import (
     _token,
     _check_permission,
     _taxes_tab,
-    _connectors_tab,
     _terms_conditions_tab,
 )
 from ui.routes.settings_general import _section_breadcrumb
@@ -40,15 +39,13 @@ _DOC_TYPE_LABELS = {
 _SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note"})
 
 
-def _sales_tabs(active: str, enabled_modules: set[str], lang: str = "en") -> FT:
+def _sales_tabs(active: str, lang: str = "en") -> FT:
     tabs: list[tuple[str, str]] = [
         ("taxes", t("settings.tab_taxes", lang)),
         ("terms-conditions", "Terms & Conditions"),
         ("numbering", "Numbering"),
         ("line-items", t("settings.tab_line_items", lang)),
     ]
-    if "celerp-connectors" in enabled_modules:
-        tabs.append(("connectors", t("settings.tab_connectors", lang)))
     return Div(
         *[
             A(label, href=f"/settings/sales?tab={key}",
@@ -186,13 +183,11 @@ def setup_routes(app):
         tab = request.query_params.get("tab", "taxes")
         try:
             taxes = await api.get_taxes(token)
-            modules = await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            taxes, modules = [], []
+            taxes = []
 
-        enabled_modules = {m["name"] for m in modules if m.get("enabled")}
         lang = get_lang(request)
 
         if tab == "taxes":
@@ -215,8 +210,6 @@ def setup_routes(app):
             except (APIError, Exception):
                 company = {}
             content = _line_items_tab(company, lang=lang)
-        elif tab == "connectors":
-            content = _connectors_tab()
         else:
             content = _taxes_tab(taxes, lang=lang)
             tab = "taxes"
@@ -224,7 +217,7 @@ def setup_routes(app):
         return await base_shell(
             _section_breadcrumb("Sales"),
             page_header("Sales Documents Settings"),
-            _sales_tabs(tab, enabled_modules=enabled_modules, lang=lang),
+            _sales_tabs(tab, lang=lang),
             content,
             title="Settings - Celerp",
             nav_active="settings",

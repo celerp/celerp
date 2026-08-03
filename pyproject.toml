@@ -78,7 +78,9 @@ dev = [
     "pytest-cov>=5.0",
     "faker>=24.0",
     "respx>=0.21",
-    "playwright>=1.43",
+    # <1.62: 1.62.0 hangs page teardown (tracing/close) under CI load, deadlocking
+    # every browser shard at its first document page. Re-test before raising the cap.
+    "playwright>=1.43,<1.62",
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",

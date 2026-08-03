@@ -420,3 +420,64 @@ class TestREG006LabelsApiBaseUsesEnvVar:
             "inventory.py constructs label template URL from request.url.port (hardcoded pattern). "
             "Use ui.config.API_BASE instead."
         )
+
+
+# ── REG-007: API_BASE is read late, never frozen at import time ───────────────
+
+def test_no_import_time_api_base_binding():
+    """Module-level `from ui.config import API_BASE` freezes the value before
+    Electron (or a test) can point it at the real API port; every consumer must
+    import it function-locally so ui.config.API_BASE stays the single source."""
+    import pathlib
+    import re
+
+    ui_dir = pathlib.Path(__file__).parent.parent / "ui"
+    offenders = []
+    for p in sorted(ui_dir.rglob("*.py")):
+        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if re.match(r"^from ui\.config import", line) and "API_BASE" in line:
+                offenders.append(f"{p.relative_to(ui_dir.parent)}:{n}")
+    assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_health_proxy_follows_patched_api_base():
+    """The UI /health proxy must call whatever ui.config.API_BASE is NOW, not the
+    value at import time."""
+    from unittest.mock import patch
+
+    import ui.config
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "ok", "version": "test"}
+
+    class _FakeClient:
+        def __init__(self, base_url=None, **kwargs):
+            captured["base_url"] = base_url
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, path, **kwargs):
+            return _FakeResponse()
+
+    with patch.object(ui.config, "API_BASE", "http://sentinel-api:1"), \
+         patch("httpx.AsyncClient", _FakeClient):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui"
+        ) as c:
+            r = await c.get("/health")
+
+    assert r.status_code == 200
+    assert captured["base_url"] == "http://sentinel-api:1"

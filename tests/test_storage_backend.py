@@ -48,7 +48,7 @@ async def test_local_backend_stores_file(tmp_path, monkeypatch):
     backend = LocalBackend()
     monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
     content = b"fake image data"
-    url = await backend.store("company-1", "att-123", "photo.png", content, "image/png")
+    url = await backend.store("company-1", "att-123", content, "image/png")
     assert url.startswith("/static/attachments/company-1/att-123")
     stored = next((tmp_path / "company-1").glob("att-123*"))
     assert stored.read_bytes() == content
@@ -58,7 +58,7 @@ async def test_local_backend_stores_file(tmp_path, monkeypatch):
 async def test_local_backend_creates_company_dir(tmp_path, monkeypatch):
     backend = LocalBackend()
     monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
-    await backend.store("new-company", "id1", "f.pdf", b"data", "application/pdf")
+    await backend.store("new-company", "id1", b"data", "application/pdf")
     assert (tmp_path / "new-company").is_dir()
 
 
@@ -101,7 +101,7 @@ async def test_s3_backend_calls_put_object():
         access_key="key",
         secret_key="secret",
     )
-    url = await backend.store("company-1", "att-456", "img.jpg", b"data", "image/jpeg")
+    url = await backend.store("company-1", "att-456", b"data", "image/jpeg")
 
     mock_client.put_object.assert_awaited_once()
     call_kwargs = mock_client.put_object.call_args.kwargs
@@ -119,7 +119,7 @@ async def test_s3_backend_url_with_custom_endpoint():
         access_key="k",
         secret_key="s",
     )
-    url = await backend.store("co", "id1", "x.png", b"", "image/png")
+    url = await backend.store("co", "id1", b"", "image/png")
 
     assert url.startswith("https://minio.example.com/mybucket/")
 
@@ -129,7 +129,7 @@ async def test_s3_backend_url_without_endpoint():
     """When no custom endpoint, URL should use standard AWS S3 format."""
     _make_s3_mock()
     backend = S3Backend(endpoint="", bucket="mybucket", access_key="k", secret_key="s")
-    url = await backend.store("co", "id1", "x.png", b"", "image/png")
+    url = await backend.store("co", "id1", b"", "image/png")
 
     assert "mybucket.s3.amazonaws.com" in url
 
@@ -171,7 +171,7 @@ async def test_store_upload_uses_backend(monkeypatch):
     captured = {}
 
     class FakeBackend:
-        async def store(self, company_id, att_id, filename, content, mime):
+        async def store(self, company_id, att_id, content, mime):
             captured.update({"company_id": company_id, "mime": mime})
             return f"/fake/{att_id}.png"
 
@@ -223,6 +223,85 @@ async def test_store_upload_rejects_bad_mime():
     )
     with pytest.raises(ValueError, match="Unsupported"):
         await store_upload("co-1", upload)
+
+
+# ── stored extension derives from the validated type, not the filename ────────
+
+async def _upload(filename: str, content_type: str, content: bytes = b"data"):
+    from fastapi import UploadFile
+    from starlette.datastructures import Headers
+
+    upload = UploadFile(
+        file=io.BytesIO(content),
+        filename=filename,
+        headers=Headers({"content-type": content_type}),
+    )
+    return await store_upload("co-1", upload)
+
+
+@pytest.mark.asyncio
+async def test_stored_extension_comes_from_validated_mime(tmp_path, monkeypatch):
+    """A part declaring a text type with an HTML filename is stored under the
+    text extension. The name the user chose never reaches the stored path."""
+    backend = LocalBackend()
+    monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
+    import celerp.services.attachments as _mod
+    original = _mod._backend
+    _mod._backend = backend
+    try:
+        result = await _upload("payload.html", "text/plain")
+    finally:
+        _mod._backend = original
+
+    assert Path(result["url"]).suffix == ".txt"
+    assert not result["url"].endswith(".html")
+
+
+@pytest.mark.asyncio
+async def test_stored_path_is_never_served_as_html(tmp_path, monkeypatch):
+    """No allowlisted upload, whatever its filename, produces a path a static
+    mount would serve as text/html."""
+    import mimetypes
+
+    from celerp.services.attachments import _ALLOWED_MIMES
+    import celerp.services.attachments as _mod
+
+    backend = LocalBackend()
+    monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
+    original = _mod._backend
+    _mod._backend = backend
+    try:
+        for mime in sorted(_ALLOWED_MIMES):
+            result = await _upload("payload.html", mime)
+            guessed = mimetypes.guess_type(result["url"])[0]
+            assert guessed != "text/html", f"{mime} upload served as html: {result['url']}"
+    finally:
+        _mod._backend = original
+
+
+@pytest.mark.asyncio
+async def test_s3_backend_key_uses_validated_extension():
+    """The S3 object key for a text upload with an HTML filename ends in the
+    text extension, so the same defect cannot ride the S3 path either. The key
+    is embedded in the returned URL."""
+    _make_s3_mock()
+    backend = S3Backend(
+        endpoint="https://minio.example.com",
+        bucket="test-bucket",
+        access_key="key",
+        secret_key="secret",
+    )
+    import celerp.services.attachments as _mod
+    original = _mod._backend
+    _mod._backend = backend
+    try:
+        result = await _upload("payload.html", "text/plain")
+    finally:
+        _mod._backend = original
+
+    key = result["url"].split("test-bucket/", 1)[1]
+    assert key.endswith(".txt")
+    assert not key.endswith(".html")
 
 
 # ── merge / remove / resolve_preview ─────────────────────────────────────────

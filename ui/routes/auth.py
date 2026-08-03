@@ -28,7 +28,6 @@ from ui.components.shell import auth_shell, flash, star_supporter_card, toast_he
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
-from ui.config import API_BASE
 
 
 def _consume_restore_notice() -> dict | None:
@@ -215,6 +214,7 @@ def setup_routes(app):
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
+        from ui.config import API_BASE
         import httpx
         try:
             bootstrapped = await bootstrap_status()
@@ -443,6 +443,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
 
         async def _stream():
+            from ui.config import API_BASE
             try:
                 async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
                     async with c.stream(
@@ -468,6 +469,7 @@ def setup_routes(app):
     @app.get("/health")
     async def health_proxy():
         """Proxy /health to the API so version checks work from the UI port."""
+        from ui.config import API_BASE
         from starlette.responses import JSONResponse
         import httpx
         try:
@@ -480,6 +482,7 @@ def setup_routes(app):
     @app.get("/health/system")
     async def health_system_proxy():
         """Proxy /health/system to the API so the UI health banner works on any port."""
+        from ui.config import API_BASE
         from starlette.responses import JSONResponse
         import httpx
         try:
@@ -514,6 +517,7 @@ def setup_routes(app):
 
     @app.post("/forgot-password")
     async def forgot_password_submit(request: Request):
+        from ui.config import API_BASE
         form = await request.form()
         email = str(form.get("email", "")).strip()
         import httpx
@@ -534,6 +538,7 @@ def setup_routes(app):
 
     @app.post("/reset-password")
     async def reset_password_submit(request: Request):
+        from ui.config import API_BASE
         form = await request.form()
         token = str(form.get("token", ""))
         new_password = str(form.get("new_password", ""))

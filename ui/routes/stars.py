@@ -15,7 +15,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from ui.config import API_BASE, get_token as _token
+from ui.config import get_token as _token
 
 
 def _claim_result_page(title: str, body: str) -> str:
@@ -34,6 +34,7 @@ def setup_routes(app):
 
     @app.get("/stars/cta")
     async def proxy_star_cta(request: Request) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response("{}", media_type="application/json")
@@ -47,6 +48,7 @@ def setup_routes(app):
 
     @app.get("/stars/badge")
     async def proxy_star_badge(request: Request) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response('{"badge":null}', media_type="application/json")
@@ -59,6 +61,7 @@ def setup_routes(app):
 
     @app.post("/stars/dismiss")
     async def proxy_star_dismiss(request: Request) -> Response:
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response(status_code=401)
@@ -73,6 +76,7 @@ def setup_routes(app):
     async def stars_claim(request: Request):
         """Badge-claim handshake. No cred -> bounce to the relay verify flow with this
         page as the return URL. With cred -> store the badge and confirm."""
+        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)

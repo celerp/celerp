@@ -1032,6 +1032,36 @@ class TestInventoryPage:
         assert b"Ruby" in r.content
 
     @pytest.mark.asyncio
+    async def test_inventory_status_shows_linked_doc_number(self, ui_client):
+        """A doc-driven status renders as one badge reading STATUS: DOC-NUMBER with the
+        number linking to the document, so sold/memo rows are traceable from the list.
+        A row without a status doc pairing keeps the plain badge and no link."""
+        sold = {"entity_id": "gc:200", "name": "Sapphire", "status": "sold",
+                "status_doc_id": "doc:INV-2026-0001", "status_doc_number": "INV-2026-0001",
+                "total_cost": "900.00"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [sold, _ITEM], "total": 2})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert 'href="/docs/doc:INV-2026-0001"' in body
+        assert "INV-2026-0001" in body
+        # The number sits inside the status badge (reads SOLD: INV-2026-0001) and the
+        # cell stays double-click editable
+        _pre, _post = body.split("cell-gc-200-status", 1)
+        sold_cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--sold" in sold_cell and "INV-2026-0001" in sold_cell
+        assert "dblclick" in sold_cell
+        # Un-paired row: plain badge, no doc link
+        _pre, _post = body.split("cell-gc-123-status", 1)
+        avail_cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--available" in avail_cell and "/docs/" not in avail_cell
+
+    @pytest.mark.asyncio
     async def test_inventory_on_memo_scope_shows_quoted_value(self, ui_client):
         """Landing from the contact card: the scope is passed to the API, the banner names
         the basis, and the per-row value is the quoted price (not the catalog price)."""
@@ -2460,6 +2490,95 @@ class TestDocumentPolish:
             r = await ui_client.get("/docs/d:1", cookies=_authed())
         assert r.status_code == 200
         assert b'hx-get="/docs/d:1/share"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_send_modal_shown_for_signed_in_free_account_tunnel_down(self, ui_client):
+        """A signed-in free account is relay-bound (gateway_token_set) but keeps its
+        lazy tunnel down (connected False) until a share exists. The real Send modal
+        must still render - the send flow brings the tunnel up on demand - instead of
+        the "connect your account" offer that gating on the live tunnel wrongly showed."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        # Real send modal present...
+        assert b"send-modal-d-1" in r.content
+        # ...and the account-gate signup offer (next=doc-send) absent.
+        assert b"next=doc-send" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_send_offers_email_path_when_relay_credential_rejected(self, ui_client):
+        """relay_status "error" is terminal - the relay refused this instance's
+        credential - so a relay send is guaranteed to fail. Unlike the lazy-tunnel
+        case above, the page must fall back to the signed-out email offer, hide
+        Share (minting would fail the same way), and say why with a pointer to
+        Settings. Gating on gateway_token_set alone kept showing the relay modal."""
+        import time
+        from ui.routes import documents
+        documents._free_send_quota_cache.update(
+            {"value": 3, "fetched_at": time.monotonic(), "pending": False})
+        try:
+            with (
+                patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+                patch("ui.api_client.get_relay_status", new=AsyncMock(
+                    return_value={"connected": False, "relay_status": "error",
+                                  "gateway_token_set": True, "public_url": ""})),
+            ):
+                r = await ui_client.get("/docs/d:1", cookies=_authed())
+            assert r.status_code == 200
+            content = r.content.decode()
+            assert "send-modal-d-1" not in content
+            assert "next=doc-send" in content
+            assert "Web access connection failed" in content
+            assert 'href="/settings/cloud"' in content
+            assert 'hx-get="/docs/d:1/share"' not in content
+        finally:
+            documents._free_send_quota_cache.update(
+                {"value": 0, "fetched_at": None, "pending": False})
+
+    @pytest.mark.asyncio
+    async def test_send_modal_kept_while_relay_connecting(self, ui_client):
+        """"connecting" is a transient state, not a rejection: the real Send modal
+        stays and no failure notice renders."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "relay_status": "connecting",
+                              "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b"send-modal-d-1" in r.content
+        assert b"next=doc-send" not in r.content
+        assert b"Web access connection failed" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_list_send_hidden_when_relay_credential_rejected(self, ui_client):
+        """Lists gate their Send modal on public_url, which a paid instance keeps
+        in the error payload - so a rejected credential left the quotation Send
+        modal up too. Same fallback: modal gone, notice with the Settings pointer."""
+        quotation = {
+            "entity_id": "list:1", "list_type": "quotation", "status": "finalized",
+            "receiver_type": "contact", "receiver": "Acme", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "relay_status": "error",
+                              "gateway_token_set": True,
+                              "public_url": "https://x.celerp.com"})),
+        ):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        assert "send-modal-list-1" not in content
+        assert "Web access connection failed" in content
 
     @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
@@ -9933,6 +10052,32 @@ class TestWebAccessPlansAd:
         assert "cloud-hero" in r.text
         assert "cloud-plans" in r.text
 
+    @pytest.mark.asyncio
+    async def test_signed_in_free_tier_tunnel_down_shows_account_view(self, ui_client):
+        """Regression: a free tier is signed in (holds a gateway_token) but never
+        starts the WS client - it has no tunnel to serve - so relay_status stays
+        "inactive". The page must detect that via gateway_token_set and show the
+        account view (disconnect control + free-tier note + upgrade ad), NOT the
+        not-connected landing page. Before the fix it gated only on relay_status,
+        so a signed-in free account was dropped onto the subscribe/claim landing
+        with no way to log out and no upgrade ad."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                "ui.api_client.get_relay_status",
+                new=AsyncMock(return_value={
+                    "connected": False, "relay_status": "inactive", "public_url": "",
+                    "tier": "free", "gateway_token_set": True})))
+            stack.enter_context(patch(
+                "ui.api_client.get_backup_status",
+                new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": ""})))
+            r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "cloud-hero" not in r.text                 # NOT the landing page
+        assert "/settings/cloud-disconnect" in r.text     # log-out / disconnect control
+        assert "Free Tier" in r.text                      # free-tier note
+        assert "cloud-plans" in r.text                    # upgrade ad below
+
 
 class TestPaymentsSettingsPage:
     """The payments page must actually be registered (regression: it was
@@ -12568,7 +12713,8 @@ class TestDocumentsOverhaul:
     async def test_send_form_shows_email_fields(self, ui_client):
         """Draft doc shows Send modal with To, Subject, Message, CC, BCC fields when relay connected."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
-             patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={"connected": True})):
+             patch("ui.api_client.get_relay_status",
+                   new=AsyncMock(return_value={"connected": True, "gateway_token_set": True})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert 'name="sent_to"' in content
@@ -12577,6 +12723,26 @@ class TestDocumentsOverhaul:
         assert 'name="cc"' in content
         assert 'name="bcc"' in content
         assert "modal-dialog" in content
+
+    @pytest.mark.asyncio
+    async def test_send_modal_shows_quota_usage_and_reset_date(self, ui_client):
+        """The send modal footer shows the email quota used this period and
+        the date it resets; the line is omitted when the relay doesn't
+        report the quota (self-hosted, or relay unreachable)."""
+        _relay = AsyncMock(return_value={
+            "connected": True, "gateway_token_set": True,
+            "email_quota": 10, "email_used": 1,
+            "email_resets_on": "2026-08-01"})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_relay):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "(1/10) Resets 2026-08-01" in r.content.decode()
+
+        _no_quota = AsyncMock(return_value={"connected": True, "gateway_token_set": True})
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=_no_quota):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert "Resets" not in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_mark_as_sent_button_on_draft(self, ui_client):
@@ -12694,7 +12860,7 @@ class TestDocumentsOverhaul:
         be the only read-only field), and the send modal prefills the To field
         with it while staying replaceable."""
         doc = dict(_BLANK_DOC, contact_email="billing@acme.com", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
@@ -12762,7 +12928,18 @@ class TestDocumentsOverhaul:
     @staticmethod
     def _reset_send_quota_cache():
         from ui.routes import documents
-        documents._free_send_quota_cache.update({"value": 0, "fetched": False, "pending": False})
+        documents._free_send_quota_cache.update(
+            {"value": 0, "fetched_at": None, "pending": False, "task": None})
+
+    @staticmethod
+    async def _settle_quota_refresh():
+        # The priming GET starts the refresh as a background task; await it
+        # directly so the second GET reads the fetched value regardless of
+        # event-loop scheduling.
+        from ui.routes import documents
+        task = documents._free_send_quota_cache.get("task")
+        if task is not None:
+            await task
 
     @pytest.mark.asyncio
     async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
@@ -12778,6 +12955,7 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.account_methods", new=_methods):
                 # first GET primes the quota cache in the background
                 await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                await self._settle_quota_refresh()
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" in content
@@ -12800,6 +12978,7 @@ class TestDocumentsOverhaul:
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
                 await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+                await self._settle_quota_refresh()
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" not in content
@@ -12859,7 +13038,7 @@ class TestDocumentsOverhaul:
         assert "location.reload" in content
 
         doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
-        _relay = AsyncMock(return_value={"connected": True, "public_url": "https://x.celerp.com"})
+        _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r2 = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
@@ -17412,12 +17591,14 @@ class TestReconciliationImportResponse:
         assert b'href="/accounting?tab=bank-accounts"' not in r.content
 
 
-# ── Module reclassification banner (GDR 2d) ───────────────────────────────────
-# When the backend scan reports a demoted default (named in the committed
-# first-party lock but content changed), the modules page must surface it in an
-# unmissable on-page banner, not only a backend log. The banner is driven by the
-# per-render "demoted" fact from the scan - never a diff against a previous
-# render, so a failed or empty fetch can never fabricate a demotion.
+# ── Demoted default → notification bell plus a standing row badge ─────────────
+# A demoted default (named in the committed first-party lock but content changed)
+# is surfaced in the notification bell at boot (celerp.modules.demotion), so it is
+# visible from any page and can be dismissed - not pinned on /modules as an
+# always-on banner the user could never clear. The /modules panel therefore never
+# renders the old reclassification banner, whatever the scan reports. Dismissing
+# the notice does not end the demotion, so the module's row carries a standing
+# "not verified" badge while the mismatch lasts.
 
 class TestModuleReclassificationBanner:
     def _mod(self, name, is_default, source="default", demoted=False):
@@ -17426,13 +17607,13 @@ class TestModuleReclassificationBanner:
                 "depends_on": [], "is_default": is_default, "source": source,
                 "installed_at": None, "demoted": demoted}
 
-    def test_reclassification_banner_shown_for_demoted_default(self):
+    def test_no_reclass_banner_even_for_demoted_default(self):
+        # The notice moved to the bell: a demoted default renders no /modules banner.
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
         body = to_xml(mp._local_panel(
             [self._mod("celerp-labels", False, source="sideloaded", demoted=True)]))
-        assert "modules-reclass-banner" in body
-        assert "celerp-labels" in body
+        assert "modules-reclass-banner" not in body
 
     def test_no_reclassification_banner_when_stable(self):
         from fasthtml.common import to_xml
@@ -17441,23 +17622,43 @@ class TestModuleReclassificationBanner:
         assert "modules-reclass-banner" not in body
 
     def test_no_banner_for_community_module(self):
-        # A community module was never in the lock: it is not a demoted default
-        # and must never trip the banner, whatever its enable/disable state.
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
         body = to_xml(mp._local_panel(
             [self._mod("equipment-maintenance", False, source="community")]))
         assert "modules-reclass-banner" not in body
 
-    def test_empty_module_list_never_fabricates_banner(self):
-        # Regression: the old implementation diffed first-party names between
-        # renders, so an empty list (a failed fetch fell back to []) reported
-        # every bundled default as demoted. An empty scan renders no banner.
+    def test_empty_module_list_renders_no_banner(self):
         from fasthtml.common import to_xml
         from ui.routes import modules_page as mp
-        to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
         body = to_xml(mp._local_panel([]))
         assert "modules-reclass-banner" not in body
+
+    def test_demoted_module_row_carries_not_verified_badge(self):
+        """The bell notice is dismissible; the demotion is not. The row states it
+        for as long as the scan reports the mismatch, so a user who has already
+        read and cleared the notice can still see which module is untrusted."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes import modules_page as mp
+        badge = f'>{t("modules.badge_not_verified", "en")}<'
+        body = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded", demoted=True)]))
+        assert badge in body
+        assert t("modules.not_verified_tip", "en") in body
+
+    def test_non_demoted_module_row_has_no_not_verified_badge(self):
+        """A plain sideload was never a verified default, so nothing on its row
+        may claim it was demoted - the badge tracks the scan, not the source."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes import modules_page as mp
+        badge = f'>{t("modules.badge_not_verified", "en")}<'
+        body = to_xml(mp._local_panel(
+            [self._mod("celerp-labels", False, source="sideloaded")]))
+        assert badge not in body
+        body = to_xml(mp._local_panel([self._mod("celerp-labels", True)]))
+        assert badge not in body
 
 
 # ── Honest degradation when the modules list cannot load ──────────────────────
@@ -17696,3 +17897,132 @@ class TestToastHeader:
             toast_header("No.", "error", celerpRestoreCell=True)["HX-Trigger"])
         assert payload["celerpRestoreCell"] is True
         assert payload["celerpToast"]["message"] == "No."
+
+
+# ── Free-send quota cache TTL (ui/routes/documents.py) ────────────────────────
+
+def _reset_free_send_quota_cache_full():
+    from ui.routes import documents
+    documents._free_send_quota_cache.clear()
+    documents._free_send_quota_cache.update(
+        {"value": 0, "fetched_at": None, "pending": False, "task": None})
+
+
+async def _drain_quota_task():
+    import asyncio
+    from ui.routes import documents
+    task = documents._free_send_quota_cache.get("task")
+    if task is not None:
+        await task
+    else:
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_free_send_quota_refetches_after_ttl(monkeypatch):
+    """The advertised free-send quota is a TTL cache, not a process-lifetime
+    latch: once the TTL expires, a fresh background fetch replaces the value."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 1000.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = []
+
+    async def _methods(token):
+        calls.append(token)
+        return {"free_email_quota": 7}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert documents._free_send_quota_cache["value"] == 7
+        now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert len(calls) == 2
+        assert documents._free_send_quota_cache["value"] == 7
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+@pytest.mark.asyncio
+async def test_free_send_quota_retries_after_failed_fetch(monkeypatch):
+    """A failed quota fetch serves 0 (nothing fabricated) and retries after the
+    TTL instead of pinning the quota to 0 for the process lifetime."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 1000.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = {"n": 0}
+
+    async def _methods(token):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("relay unreachable")
+        return {"free_email_quota": 9}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        assert documents._free_send_quota("tok") == 0
+        await _drain_quota_task()
+        assert documents._free_send_quota_cache["value"] == 0
+        now["t"] += getattr(documents, "_FREE_SEND_QUOTA_TTL", 300.0) + 1.0
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert calls["n"] == 2
+        assert documents._free_send_quota_cache["value"] == 9
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+@pytest.mark.asyncio
+async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
+    """A freshly booted process has time.monotonic() near 0, the same value a
+    numeric fetched_at sentinel would hold: the cache must still fetch."""
+    import types
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+    now = {"t": 0.0}
+    monkeypatch.setattr(documents, "time",
+                        types.SimpleNamespace(monotonic=lambda: now["t"]),
+                        raising=False)
+    calls = []
+
+    async def _methods(token):
+        calls.append(token)
+        return {"free_email_quota": 5}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        documents._free_send_quota("tok")
+        await _drain_quota_task()
+        assert len(calls) == 1
+        assert documents._free_send_quota_cache["value"] == 5
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+# ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_account_panel_names_connect_tier(ui_client):
+    """The signed-in account panel shows the tier's display name (Connect),
+    never the raw internal tier key (cloud)."""
+    status = {"email_verified": True, "tier": "cloud"}
+    with patch("ui.api_client.account_status", new=AsyncMock(return_value=status)), \
+         patch("ui.api_client.activate_relay", new=AsyncMock(return_value={})):
+        r = await ui_client.get("/account/poll?panel=account-gate-panel",
+                                cookies=_authed())
+    content = r.content.decode()
+    assert "Plan: Connect" in content
+    assert "Plan: cloud" not in content

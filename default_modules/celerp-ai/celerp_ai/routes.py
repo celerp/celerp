@@ -167,7 +167,7 @@ async def _enforce_cloud_file_limit(file_ids: list[str] | None) -> None:
         raise HTTPException(
             status_code=403,
             detail=(
-                f"Batch file processing requires the AI Plan. "
+                f"Batch file processing requires Connect + AI. "
                 f"You can upload {_CLOUD_FILE_LIMIT} file at a time on your current plan. "
                 f"Upgrade at {_upgrade_url()}"
             ),
@@ -629,6 +629,7 @@ async def submit_batch(
     """
     await _enforce_cloud_file_limit(body.file_ids)
 
+    credits = _calculate_query_credits(body.file_ids, company_id)
     job = await create_batch_job(
         session, company_id, user.id, body.query, body.file_ids, credits,
     )

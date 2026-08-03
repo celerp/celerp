@@ -92,8 +92,10 @@ async def test_hello_ack_writes_session_token(client):
 
 
 @pytest.mark.asyncio
-async def test_hello_ack_without_session_token_leaves_state_empty(client):
-    """hello_ack with no session_token field -> state unchanged."""
+async def test_hello_ack_without_session_token_clears_stale_token(client):
+    """An ack without a session token is the relay's verdict: any stale
+    stored token is cleared, never kept."""
+    gw_state.set_session_token("stale-paid-token")
     await client._dispatch({
         "type": "hello_ack",
         "payload": {},
@@ -152,14 +154,18 @@ async def test_session_refresh_empty_token_ignored(client):
 
 @pytest.mark.asyncio
 async def test_error_message_logged(client, caplog):
-    """error message -> logged at ERROR level, no exception raised."""
+    """A generic error message -> logged at ERROR level; an auth_failed frame is
+    NOT generically logged (its first strikes are quiet retries)."""
     import logging
     with caplog.at_level(logging.ERROR, logger="celerp.gateway.client"):
         await client._dispatch({
             "type": "error",
-            "payload": {"code": "AUTH_FAILED", "message": "Invalid token"},
+            "payload": {"code": "quota_exceeded", "message": "Monthly quota reached"},
         })
-    assert "AUTH_FAILED" in caplog.text
+        await client._dispatch(_auth_failed_frame())
+    assert "quota_exceeded" in caplog.text
+    assert "auth_failed" not in caplog.text
+    assert len(caplog.records) == 1
 
 
 @pytest.mark.asyncio
@@ -521,3 +527,175 @@ async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
         payload = sent[0]["payload"]
         assert payload["status"] == 403
         assert b"local machine" in _b64.b64decode(payload["body_b64"])
+
+
+# ── reconnect loop console noise ──────────────────────────────────────────────
+# The relay being down must not spam the console: one line when the connection
+# is lost, silence during retries, one line when it comes back.
+
+import asyncio as _asyncio
+import logging as _logging
+
+_real_wait_for = _asyncio.wait_for
+
+
+def _fast_loop(client, monkeypatch):
+    """Make run()'s backoff waits near-instant and disable the reaper."""
+    async def fast_wait_for(awaitable, timeout=None):
+        return await _real_wait_for(awaitable, timeout=0.005)
+
+    monkeypatch.setattr(_asyncio, "wait_for", fast_wait_for)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(client, "_reaper_loop", _noop)
+
+
+@pytest.mark.asyncio
+async def test_connection_loss_warns_once_not_per_retry(client, caplog, monkeypatch):
+    """Repeated connect failures produce exactly one visible warning; retries are
+    silent at INFO and above, with the exception detail kept at DEBUG."""
+    attempts = 0
+
+    async def failing_connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 4:
+            client.stop()
+        raise ConnectionError("boom")
+
+    monkeypatch.setattr(client, "_connect_and_serve", failing_connect)
+    _fast_loop(client, monkeypatch)
+
+    with caplog.at_level(_logging.DEBUG, logger="celerp.gateway.client"):
+        await client.run()
+
+    assert attempts >= 4
+    visible = [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    assert len(visible) == 1
+    # The visible line is calm user copy; the raw exception stays at DEBUG.
+    assert "boom" not in visible[0].getMessage()
+    debug = [r for r in caplog.records if r.levelno == _logging.DEBUG]
+    assert any("boom" in r.getMessage() for r in debug)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_announces_and_rearms_warning(client, caplog, monkeypatch):
+    """A successful handshake after a loss announces the reconnect in plain
+    language (no instance_id) and re-arms the single loss warning."""
+    attempts = 0
+
+    async def connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            await client._dispatch({"type": "hello_ack", "payload": {
+                "instance_id": "test-instance-id", "session_token": "tok"}})
+        if attempts >= 5:
+            client.stop()
+        raise ConnectionError("boom")
+
+    monkeypatch.setattr(client, "_connect_and_serve", connect)
+    _fast_loop(client, monkeypatch)
+
+    with caplog.at_level(_logging.INFO, logger="celerp.gateway.client"):
+        await client.run()
+
+    visible = [r for r in caplog.records if r.levelno >= _logging.WARNING]
+    # One warning before the reconnect, one after it re-arms - never per retry.
+    assert len(visible) == 2
+    connected = [r for r in caplog.records
+                 if r.levelno == _logging.INFO and "onnect" in r.getMessage()]
+    assert connected
+    assert all("test-instance-id" not in r.getMessage() for r in connected)
+
+
+# ── stop()/close() reset transient announce state ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stop_resets_loss_announced(client):
+    """A stopped client must not carry the connection-loss announcement latch
+    into a later start(); both shutdown paths clear it."""
+    client._loss_announced = True
+    client.stop()
+    assert client._loss_announced is False
+
+    client._loss_announced = True
+    await client.close()
+    assert client._loss_announced is False
+
+
+@pytest.mark.asyncio
+async def test_stop_resets_auth_rejection_state(client):
+    """Disconnecting clears the auth-rejection latch and strike count on both
+    shutdown paths, so a reconnect with fresh credentials starts clean."""
+    client._auth_failures = 2
+    client._auth_rejected = True
+    client.stop()
+    assert client._auth_failures == 0
+    assert client._auth_rejected is False
+
+    client._auth_failures = 2
+    client._auth_rejected = True
+    await client.close()
+    assert client._auth_failures == 0
+    assert client._auth_rejected is False
+
+
+# ── auth_failed handling ──────────────────────────────────────────────────────
+
+def _auth_failed_frame():
+    return {"type": "error", "payload": {"code": "auth_failed", "message": "Invalid GATEWAY_TOKEN"}}
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_becomes_terminal_after_bounded_retries(client, caplog):
+    """Repeated auth_failed frames stop the client instead of retrying forever.
+
+    The first rejections are quiet retries (a mid-deploy blip should not kill the
+    connection); the third is terminal: status flips to error and exactly one
+    ERROR line is emitted, not one per attempt."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="celerp.gateway.client"):
+        await client._dispatch(_auth_failed_frame())
+        await client._dispatch(_auth_failed_frame())
+        assert client.relay_status != "error"
+        await client._dispatch(_auth_failed_frame())
+    assert client.relay_status == "error"
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_halts_reconnect_loop(client, monkeypatch):
+    """After the terminal rejection, run() idles without reconnecting."""
+    import asyncio
+
+    for _ in range(3):
+        await client._dispatch(_auth_failed_frame())
+    connect_calls = []
+
+    async def fake_connect():
+        connect_calls.append(1)
+
+    monkeypatch.setattr(client, "_connect_and_serve", fake_connect)
+    task = asyncio.create_task(client.run())
+    await asyncio.sleep(0.1)
+    client.stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert connect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_hello_ack_clears_auth_failure_strikes(client):
+    """A successful handshake resets the rejection count: two old strikes plus
+    two new ones must not trip the terminal state; only a fresh third does."""
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch({"type": "hello_ack", "payload": {}})
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch(_auth_failed_frame())
+    assert client.relay_status != "error"
+    await client._dispatch(_auth_failed_frame())
+    assert client.relay_status == "error"

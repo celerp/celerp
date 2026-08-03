@@ -85,6 +85,45 @@ async def test_cloud_status_not_connected(client):
     assert data["connected"] is False
     assert data["tier"] is None
     assert data["email_quota"] == 0
+    assert data["email_resets_on"] is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_reports_disconnected_flag(client):
+    """cloud-status carries cloud_disconnected so the UI can withhold auto-connect
+    on a sticky-disconnected install."""
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
+    ):
+        r = await client.get("/settings/cloud-status")
+    assert r.status_code == 200
+    assert r.json()["cloud_disconnected"] is True
+
+
+def test_unconnected_fragment_suppresses_autoconnect_when_disconnected():
+    """The disconnect response must not carry the on-load auto-connect script, or
+    it would instantly re-fire Connect and undo the disconnect; the default
+    (fresh/subscribed install) still auto-connects."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_unconnected
+    on = to_xml(_cloud_relay_unconnected("iid-1"))
+    off = to_xml(_cloud_relay_unconnected("iid-1", suppress_autoconnect=True))
+    assert "cloud_activate_tried" in on
+    assert "cloud_activate_tried" not in off
+    # The Connect button itself stays either way (one-click reconnect).
+    assert "cloud-connect-btn" in off
+
+
+def test_claim_panel_suppresses_autoconnect_when_disconnected():
+    from fasthtml.common import to_xml
+    from ui.routes.account import account_panel
+    on = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab"))
+    off = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab",
+                               suppress_autoconnect=True))
+    assert "cloud_activate_tried" in on
+    assert "cloud_activate_tried" not in off
+    assert "cloud-connect-btn" in off
 
 
 @pytest.mark.asyncio
@@ -176,6 +215,7 @@ async def test_cloud_status_connected_relay_ok(client):
         "last_backup": "2026-03-15T06:00:00Z",
         "email_quota": 1000,
         "email_used": 42,
+        "email_resets_on": "2026-08-01",
     }
 
     captured_params = {}
@@ -205,6 +245,7 @@ async def test_cloud_status_connected_relay_ok(client):
     assert data["tier"] == "team"
     assert data["email_quota"] == 1000
     assert data["email_used"] == 42
+    assert data["email_resets_on"] == "2026-08-01"
     assert data["last_backup"] == "2026-03-15T06:00:00Z"
     # Verify correct auth params are sent
     assert captured_params.get("instance_id") == "inst-abc"
@@ -294,3 +335,58 @@ def test_forgot_password_email_form_exists():
     html = to_xml(_forgot_password_form())
     assert 'action="/forgot-password"' in html
     assert "Send reset link" in html
+
+
+# ── Celerp Connect tab: account view only after authentication ───────────────
+
+def _relay_tab_html(relay_status, token_bound):
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    with patch("celerp.gateway.client.get_client", return_value=None):
+        return to_xml(_cloud_relay_tab(relay_status=relay_status, public_url="",
+                                       tier="free", token_bound=token_bound))
+
+
+def test_cloud_tab_connecting_hides_account_view():
+    """While the relay has not yet accepted the token, the tab shows only the
+    connection state - no tier benefits, no subscription link, no disconnect."""
+    html = _relay_tab_html("connecting", token_bound=True)
+    assert "Establishing connection" in html
+    assert "Link subscription" not in html
+    assert "cloud-disconnect" not in html
+
+
+def test_cloud_tab_error_shows_recovery_only():
+    """A failed connection shows the failure and the disconnect recovery path,
+    never the account view."""
+    html = _relay_tab_html("error", token_bound=True)
+    assert "Connection failed" in html
+    assert "cloud-disconnect" in html
+    assert "Link subscription" not in html
+
+
+def test_cloud_tab_connecting_polls_for_outcome():
+    """The connecting card refreshes itself so the outcome (account view or the
+    failure card) appears without a manual page reload; terminal states render
+    without the polling wiring, which stops the refresh cycle."""
+    html = _relay_tab_html("connecting", token_bound=True)
+    assert 'hx-get="/settings/cloud-relay-tab"' in html
+    assert 'hx-trigger="every 2s"' in html
+    for terminal in ("error", "active"):
+        html = _relay_tab_html(terminal, token_bound=True)
+        assert "/settings/cloud-relay-tab" not in html
+
+
+def test_cloud_tab_signed_in_free_shows_account_view():
+    """A signed-in free instance (token held, no live tunnel) keeps the account
+    view: tier note, subscription link, disconnect."""
+    html = _relay_tab_html("inactive", token_bound=True)
+    assert "Link subscription" in html
+    assert "cloud-disconnect" in html
+
+
+def test_cloud_tab_active_shows_account_view():
+    """An authenticated connection renders the full account view."""
+    html = _relay_tab_html("active", token_bound=True)
+    assert "Link subscription" in html
+    assert "cloud-disconnect" in html

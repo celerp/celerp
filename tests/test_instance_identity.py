@@ -219,3 +219,63 @@ class TestAutoActivateProbe:
             assert _gw.get_client() is not None, "WS client must start when a public_url is granted"
         finally:
             _gw.set_client(_prev_client)
+
+
+class TestStickyDisconnect:
+    """An explicit Cloud disconnect must hold until the user reconnects:
+    the startup probe never quietly re-links a disconnected install."""
+
+    @respx.mock
+    async def test_disconnected_install_never_probes(self, tmp_path, monkeypatch):
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_http_url = "https://relay.test"
+        mod.settings.gateway_token = ""
+        mod.settings.cloud_disconnected = True
+        route = respx.post("https://relay.test/auth/activate").respond(
+            200, json={"gateway_token": "tok-1"})
+        from celerp.main import _try_auto_activate
+        await _try_auto_activate()
+        assert route.call_count == 0
+        assert mod.settings.gateway_token == ""
+
+    def test_disconnect_flag_survives_restart(self, tmp_path, monkeypatch):
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"cloud": {"disconnected": True}})
+        mod.load_cloud_config()
+        assert mod.settings.cloud_disconnected is True
+
+    def test_boot_while_disconnected_withholds_credential_but_keeps_identity(
+            self, tmp_path, monkeypatch):
+        # The credential stays in config for a one-click reconnect, but must not go
+        # live on boot: gateway_token/public_url are withheld (tunnel down,
+        # share-minting off, probe skipped), while instance_id still loads.
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_token = ""
+        mod.settings.celerp_public_url = ""
+        mod.settings.gateway_instance_id = ""
+        mod.settings.cloud_disconnected = False
+        mod.write_config({"cloud": {
+            "token": "tok-keep", "instance_id": "iid-9",
+            "public_url": "https://co.celerp.app", "disconnected": True}})
+        mod.load_cloud_config()
+        assert mod.settings.cloud_disconnected is True
+        assert mod.settings.gateway_token == "", "credential must not go live while disconnected"
+        assert mod.settings.celerp_public_url == ""
+        assert mod.settings.gateway_instance_id == "iid-9", "identity still loads"
+        # And the credential is still on disk for the reconnect path to re-apply.
+        assert mod.read_config()["cloud"]["token"] == "tok-keep"
+
+    def test_connected_config_loads_credential(self, tmp_path, monkeypatch):
+        # The mirror of the above: with no disconnect flag, the credential loads
+        # and the tunnel comes up as before.
+        mod, _ = _reload_config(tmp_path, monkeypatch)
+        mod.settings.gateway_token = ""
+        mod.settings.celerp_public_url = ""
+        mod.settings.cloud_disconnected = False
+        mod.write_config({"cloud": {
+            "token": "tok-live", "instance_id": "iid-9",
+            "public_url": "https://co.celerp.app"}})
+        mod.load_cloud_config()
+        assert mod.settings.gateway_token == "tok-live"
+        assert mod.settings.celerp_public_url == "https://co.celerp.app"
+        assert mod.settings.cloud_disconnected is False

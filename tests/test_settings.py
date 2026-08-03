@@ -107,6 +107,14 @@ class TestSettingsRedirect:
         assert r.status_code == 302
         assert "/settings/general?tab=users" in r.headers.get("location", "")
 
+    @pytest.mark.asyncio
+    async def test_settings_redirect_tab_connectors_falls_to_general(self, ui_client):
+        """GET /settings?tab=connectors falls back to /settings/general: the sales
+        connectors stub is gone, so the legacy tab key is no longer a known target."""
+        r = await ui_client.get("/settings?tab=connectors", cookies=_authed())
+        assert r.status_code == 302
+        assert "/settings/general" in r.headers.get("location", "")
+
 
 # ── General settings page ─────────────────────────────────────────────────────
 
@@ -461,3 +469,18 @@ class TestRestoreJourneyContinuation:
 
             r2 = await ui_client.get("/login")
             assert "Backup from Acme restored" not in r2.text  # one-shot, not perpetual
+
+
+@pytest.mark.asyncio
+async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):
+    """GET /settings/sales?tab=connectors renders the taxes tab: the coming-soon
+    connectors stub is deleted, so the unknown tab key falls back to the default."""
+    with (
+        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
+        patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
+        patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
+    ):
+        r = await ui_client.get("/settings/sales?tab=connectors", cookies=_authed())
+    assert r.status_code == 200
+    assert b"VAT" in r.content
+    assert b"Coming soon" not in r.content

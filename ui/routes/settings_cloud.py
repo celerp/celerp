@@ -72,8 +72,13 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     )
 
 
-def _value_prop_page(iid: str, lang: str = "en") -> FT:
-    """Full value-proposition landing page shown when not connected to cloud."""
+def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
+    """Full value-proposition landing page shown when not connected to cloud.
+
+    `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
+    so the connect section withholds its auto-connect (landing here must not
+    silently undo the disconnect) while the Connect button still reconnects in
+    one click."""
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -87,7 +92,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
         ),
         _plans_ad(iid, lang=lang),
         # Already subscribed / connect section
-        _connect_section(iid, lang=lang),
+        _connect_section(iid, lang=lang, disconnected=disconnected),
         cls="content-area",
     )
 
@@ -185,13 +190,14 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
     )
 
 
-def _connect_section(iid: str, lang: str = "en") -> FT:
+def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
     """The Celerp-account surface in its claim-led variant (this page's context
     is an existing/prospective subscriber). ONE component app-wide - see
     ui/routes/account.py. Keeps id="cloud-relay-tab" so the shipped
     cloud-activate/cloud-claim responses replace the same element."""
     from ui.routes.account import account_panel
-    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab")
+    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab",
+                         suppress_autoconnect=disconnected)
 
 
 def _parse_db_url(url: str) -> dict:
@@ -431,7 +437,50 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
 
+async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
+    """Fetch relay state from the API process (the gateway client lives there).
+
+    Returns (relay_status, public_url, tier, disconnected, token_bound); on an
+    unreachable API, degrades to the local client's status alone.
+    """
+    from celerp.gateway.client import get_client as _local_get_client
+    import ui.api_client as _api
+    from ui.api_client import APIError as _APIError
+    relay_status = "inactive"
+    public_url = ""
+    tier = ""
+    disconnected = False
+    token_bound = False
+    try:
+        rs = await _api.get_relay_status(token)
+        relay_status = rs.get("relay_status", "inactive")
+        public_url = rs.get("public_url", "")
+        tier = rs.get("tier") or ""
+        disconnected = bool(rs.get("cloud_disconnected"))
+        token_bound = bool(rs.get("gateway_token_set"))
+    except (_APIError, Exception):
+        lc = _local_get_client()
+        relay_status = lc.relay_status if lc else "inactive"
+    return relay_status, public_url, tier, disconnected, token_bound
+
+
 def setup_routes(app):
+
+    @app.get("/settings/cloud-relay-tab")
+    async def cloud_relay_tab_fragment(request: Request):
+        """HTMX fragment: re-render the relay tab with fresh state.
+
+        Polled by the connecting card so the connection outcome (account view
+        or the failure card) appears without a manual page reload.
+        """
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
+        relay_status, public_url, tier, _, token_bound = await _relay_state(token)
+        return _cloud_relay_tab(relay_status=relay_status, public_url=public_url,
+                                tier=tier, token_bound=token_bound)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -441,33 +490,26 @@ def setup_routes(app):
         if (r := await _check_permission(request, "manage_integrations")):
             return r
 
-        from celerp.gateway.client import get_client as _local_get_client
         import ui.api_client as _api
-        from ui.api_client import APIError as _APIError
         lang = get_lang(request)
+        relay_status, public_url, tier, disconnected, token_bound = await _relay_state(token)
+        # A free tier is signed in (holds a gateway_token) but never starts the WS
+        # client - it has no tunnel to serve - so relay_status stays "inactive".
+        # Treat a token-bound instance as connected so a signed-in free account
+        # gets the account/disconnect view plus the upgrade ad, not the landing page.
+        gw_ok = relay_status in ("active", "tos_required", "connecting", "error") or token_bound
 
-        # Fetch relay status from the API process (the gateway client lives there)
-        relay_status = "inactive"
-        public_url = ""
-        tier = ""
-        try:
-            rs = await _api.get_relay_status(token)
-            relay_status = rs.get("relay_status", "inactive")
-            public_url = rs.get("public_url", "")
-            tier = rs.get("tier") or ""
-        except (_APIError, Exception):
-            lc = _local_get_client()
-            relay_status = lc.relay_status if lc else "inactive"
-        gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
-
-        # If not connected, show value-prop landing
+        # If not connected, show value-prop landing. A sticky-disconnected install
+        # keeps its preserved credential, so the connect section withholds its
+        # auto-connect (a page visit must not silently undo the disconnect) while
+        # the Connect button still reconnects in one click.
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return await base_shell(
                 _section_breadcrumb("Web Access"),
                 page_header("Web Access"),
-                _value_prop_page(iid, lang=lang),
+                _value_prop_page(iid, lang=lang, disconnected=disconnected),
                 title="Web Access - Celerp",
                 nav_active="web-access",
                 lang=lang,
@@ -493,7 +535,7 @@ def setup_routes(app):
             # no public_url and no backup entitlement, so the summary card is omitted
             # entirely rather than showing scheduler/pending state for a plan that
             # never runs backups.
-            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier),
+            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
                      _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the

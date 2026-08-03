@@ -217,7 +217,7 @@ async def test_cloud_tier_multi_file_blocked(auth_client):
         )
     assert r.status_code == 403
     detail = r.json()["detail"]
-    assert "AI Plan" in detail
+    assert "Connect + AI" in detail
     assert "celerp.com" in detail
 
 
@@ -296,4 +296,4 @@ async def test_estimate_credits_cloud_multi_file_blocked(auth_client):
             headers=headers,
         )
     assert r.status_code == 403
-    assert "AI Plan" in r.json()["detail"]
+    assert "Connect + AI" in r.json()["detail"]

@@ -8,8 +8,6 @@ from contextlib import asynccontextmanager
 
 import httpx
 
-from ui.config import API_BASE
-
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +19,7 @@ class APIError(Exception):
 
 
 def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
+    from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         headers={"Authorization": f"Bearer {token}"},
@@ -31,6 +30,7 @@ def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
 
 def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
     """Unauthenticated client (no Authorization header)."""
+    from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         timeout=timeout,
@@ -46,6 +46,7 @@ async def _api_client(token: str, timeout: float = 10.0):
     handle APIError — no scattered per-function try/except for timeouts or
     connection failures.
     """
+    from ui.config import API_BASE
     try:
         async with _client(token, timeout=timeout) as c:
             yield c
@@ -58,6 +59,7 @@ async def _api_client(token: str, timeout: float = 10.0):
 @asynccontextmanager
 async def _anon_api_client(timeout: float = 10.0):
     """Unauthenticated client context manager with the same error mapping."""
+    from ui.config import API_BASE
     try:
         async with _anon_client(timeout=timeout) as c:
             yield c
@@ -70,6 +72,7 @@ async def _anon_api_client(timeout: float = 10.0):
 @asynccontextmanager
 async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
     """Authenticated client with X-Session-Token header for AI endpoints."""
+    from ui.config import API_BASE
     try:
         async with httpx.AsyncClient(
             base_url=API_BASE,
@@ -2260,6 +2263,7 @@ async def export_backup(token: str, backup_id: str | None = None):
     is generous; once bytes flow, each chunk just needs to arrive within it. We forward
     Content-Length so the browser shows a real download progress bar.
     """
+    from ui.config import API_BASE
     url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
     client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
     try:

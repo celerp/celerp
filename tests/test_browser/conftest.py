@@ -119,13 +119,10 @@ def ui_server(api_server):
     os.environ["API_URL"] = api_server
     os.environ["CELERP_API_URL"] = api_server
 
-    # Patch API_BASE in-place so all existing route module references pick up the
-    # correct test URL without a reload (reload would create a new APIError class,
-    # breaking "except APIError" in already-imported route modules).
+    # Patch API_BASE at its single source of truth; route modules import it
+    # function-locally, so every call picks up the test URL without a reload.
     import ui.config as ui_cfg
     ui_cfg.API_BASE = api_server
-    import ui.api_client as ui_ac
-    ui_ac.API_BASE = api_server
 
     from ui.app import app as ui_app
 

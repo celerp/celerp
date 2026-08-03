@@ -41,6 +41,12 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def tier_label(tier: str) -> str:
+    """Display name for a paid-tier key. Keys are wire/Stripe identifiers and
+    never change; this is the one client-side map from key to product name."""
+    return {"cloud": "Connect", "ai": "Connect + AI", "team": "Team"}.get(tier, tier.title())
+
+
 def get_lang(request) -> str:
     """Extract language from cookie, falling back to Accept-Language header, then 'en'."""
     if request is None:

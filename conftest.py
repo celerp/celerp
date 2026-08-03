@@ -436,6 +436,14 @@ def _reset_gateway_state():
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
+    # Gateway-lifecycle globals: a test that patches asyncio.create_task while the
+    # real ensure_running() runs leaves celerp.gateway._run_task a MagicMock (and
+    # can leave a stray client). A later test's gateway shutdown() would then await
+    # that MagicMock and raise. Reset both to the down baseline after every test.
+    import celerp.gateway as _gwpkg
+    from celerp.gateway import client as _gwc
+    _gwpkg._run_task = None
+    _gwc.set_client(None)
 
 
 # Process-global settings fields that the cloud-activation endpoints mutate
@@ -445,7 +453,7 @@ def _reset_gateway_state():
 _CLOUD_SETTINGS_FIELDS = (
     "gateway_token", "gateway_instance_id", "gateway_http_url",
     "celerp_public_url", "backup_encryption_key", "backup_enabled",
-    "cookie_secure",
+    "cookie_secure", "cloud_disconnected",
 )
 
 

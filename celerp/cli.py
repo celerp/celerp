@@ -255,6 +255,12 @@ def _config_to_env(cfg: dict) -> dict:
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
     if cfg["cloud"]["token"]:
         env["GATEWAY_TOKEN"] = cfg["cloud"]["token"]
+    # A headless service install (`init --no-start`, then a process manager runs
+    # `start`) reports its launch channel on activation, the same way the desktop
+    # launcher does; a plain local run reports none. setdefault never clobbers an
+    # explicit channel.
+    if cfg.get("server", {}).get("headless"):
+        env.setdefault("CELERP_MODE", "headless")
     # Module directories: a writable drop-in for imports FIRST (the importer
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
@@ -974,9 +980,9 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     click.echo(f"""
 ✓ Celerp initialized
   Config: {config_path}
-  API:    http://localhost:{api_port_val}
-  UI:     http://localhost:{ui_port_val}
-  Modules: none — choose an industry preset in the setup wizard
+  App:    http://localhost:{ui_port_val}  (open this link in your browser)
+  API:    internal service, port {api_port_val}
+  Modules: none - choose an industry preset in the setup wizard
 """)
 
     from celerp.config import settings as _settings
@@ -1000,31 +1006,46 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     _start(cfg)
 
 
-def _wait_ready(servers: dict, timeout: float = 180.0) -> None:
-    """Print '✓ ready → URL' for each server as its port starts accepting
-    connections. Returns early for a server whose process dies (the supervisor
+def _wait_ready(api: tuple, ui: tuple, timeout: float = 180.0) -> None:
+    """Announce readiness in dependency order: the API when its port accepts
+    connections, then one 'Celerp ready' line with the UI URL once BOTH ports
+    do. The UI port opens before the API has finished registering modules, so
+    a UI URL printed on its own would send users to a page of errors; and the
+    UI URL is the only one printed at all, because it is the only address a
+    user should visit. Returns early when either process dies (the supervisor
     loop reports the crash); after `timeout` prints a still-starting note
     rather than blocking forever on a very slow machine."""
     import socket
 
-    pending = dict(servers)
+    def _accepting(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return True
+        except OSError:
+            return False
+
+    api_proc, api_port = api
+    ui_proc, ui_port = ui
+    api_ready = ui_ready = False
     deadline = time.time() + timeout
-    while pending and time.time() < deadline:
-        for name, (proc, port) in list(pending.items()):
-            if proc.poll() is not None:
-                del pending[name]  # crashed — supervisor loop reports it
-                continue
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                    pass
-            except OSError:
-                continue
-            click.echo(f"  ✓ {name} ready → http://localhost:{port}")
-            del pending[name]
-        if pending:
+    while not (api_ready and ui_ready) and time.time() < deadline:
+        if api_proc.poll() is not None or ui_proc.poll() is not None:
+            return  # crashed; supervisor loop reports it
+        if not api_ready and _accepting(api_port):
+            api_ready = True
+            click.echo(f"  ✓ API ready (internal service, port {api_port})")
+        if api_ready and not ui_ready and _accepting(ui_port):
+            ui_ready = True
+            click.echo(
+                f"  ✓ Celerp ready → http://localhost:{ui_port}"
+                "  (open this link in your browser)"
+            )
+        if not (api_ready and ui_ready):
             time.sleep(0.3)
-    for name, (_proc, port) in pending.items():
-        click.echo(f"  … {name} is still starting on port {port} — hang tight.")
+    if not api_ready:
+        click.echo(f"  … the API is still starting on port {api_port}, hang tight.")
+    if not ui_ready:
+        click.echo(f"  … the UI is still starting on port {ui_port}, hang tight.")
 
 
 def _start(cfg: dict) -> None:
@@ -1077,10 +1098,10 @@ def _start(cfg: dict) -> None:
     api_proc = _spawn_api(env, api_port)
     ui_proc = _spawn_ui(env, ui_port)
 
-    # Announce each server only once it actually accepts connections — printing
-    # the URLs up front sent users to a dead localhost:8080 while the UI was
-    # still importing modules.
-    _wait_ready({"API": (api_proc, api_port), "UI ": (ui_proc, ui_port)})
+    # Readiness prints in dependency order (API first, then the single
+    # user-facing URL) so the link never points at a UI whose API is still
+    # importing modules.
+    _wait_ready((api_proc, api_port), (ui_proc, ui_port))
     click.echo("Press Ctrl+C to stop.\n")
 
     def _shutdown(sig, frame):

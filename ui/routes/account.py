@@ -32,7 +32,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import toast_header
 from ui.config import PRIVACY_POLICY_URL, get_role as _get_role
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
@@ -223,10 +223,15 @@ def _signup_body(lang: str, panel_id: str, google: bool,
     return parts
 
 
-def _claim_body(lang: str, panel_id: str) -> list:
+def _claim_body(lang: str, panel_id: str, suppress_autoconnect: bool = False) -> list:
     """The linking flow for an existing subscriber - the shipped auto-connect +
-    email-claim block, with the signup entry de-emphasized beneath it."""
-    return [
+    email-claim block, with the signup entry de-emphasized beneath it.
+
+    suppress_autoconnect drops the on-load auto-connect for a sticky-disconnected
+    install: the credential is preserved, so the Connect button reconnects in one
+    click, but landing on this page must NOT silently undo a deliberate disconnect.
+    The button stays; only its automatic firing is withheld."""
+    parts: list = [
         H4(t("page.already_subscribed", lang), cls="account-panel__title"),
         P(t("settings.if_you_already_subscribed_on_the_website_we_can_li", lang),
           cls="settings-hint", style="margin-bottom:12px;"),
@@ -243,14 +248,17 @@ def _claim_body(lang: str, panel_id: str) -> list:
                  style="margin-left:12px;display:none;"),
             style="margin-bottom:16px;",
         ),
-        Script("""
+    ]
+    if not suppress_autoconnect:
+        parts.append(Script("""
 (function(){
   if (sessionStorage.getItem('cloud_activate_tried')) return;
   sessionStorage.setItem('cloud_activate_tried', '1');
   var btn = document.getElementById('cloud-connect-btn');
   if (btn) htmx.trigger(btn, 'click');
 })();
-"""),
+"""))
+    parts += [
         # Email claim form (always visible)
         P(t("settings.or_enter_the_email_address_you_used_at_checkout", lang),
           cls="settings-hint"),
@@ -265,17 +273,23 @@ def _claim_body(lang: str, panel_id: str) -> list:
             style="display:flex;align-items:center;margin-top:8px;",
         ),
     ]
+    return parts
 
 
 def account_panel(lang: str, *, intent: str = "signup",
                   panel_id: str = "celerp-account-panel",
                   google: bool = False, error: str | None = None,
                   next_action: str | None = None,
-                  free_quota: int = 0) -> FT:
+                  free_quota: int = 0,
+                  suppress_autoconnect: bool = False) -> FT:
     """The one account surface. `panel_id` lets a host page keep its own swap
     target (the Settings Connect page uses cloud-relay-tab so the shipped
-    claim endpoints keep replacing the same element)."""
-    body = _claim_body(lang, panel_id) if intent == "claim" \
+    claim endpoints keep replacing the same element).
+
+    suppress_autoconnect withholds the claim panel's on-load auto-connect for a
+    sticky-disconnected install (see _claim_body)."""
+    body = _claim_body(lang, panel_id, suppress_autoconnect=suppress_autoconnect) \
+        if intent == "claim" \
         else _signup_body(lang, panel_id, google, next_action=next_action,
                           free_quota=free_quota)
     if error:
@@ -367,7 +381,7 @@ def _signed_in_panel(lang: str, panel_id: str, status: dict,
     elif tier == "free":
         parts.append(P(t("account.plan_free", lang), cls="settings-hint"))
     else:
-        parts.append(P(t("account.plan", lang, tier=tier), cls="settings-hint"))
+        parts.append(P(t("account.plan", lang, tier=tier_label(tier)), cls="settings-hint"))
     if panel_id == GATE_PANEL_ID:
         # The panel rides in the gate modal: signed-in is a terminal state, so
         # give it the way out (the embedded settings panels need none).

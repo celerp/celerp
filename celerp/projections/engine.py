@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -54,9 +55,7 @@ class ProjectionEngine:
         return {**state, **data}
 
     @staticmethod
-    async def apply_event(session, entry: LedgerEntry) -> None:
-        projection = await session.get(Projection, {"company_id": entry.company_id, "entity_id": entry.entity_id})
-        state = projection.state if projection else {}
+    def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:
         next_state = ProjectionEngine._apply(state, entry.event_type, entry.data)
         now = datetime.now(timezone.utc)
 
@@ -78,38 +77,63 @@ class ProjectionEngine:
             except Exception:
                 expires_at = None
 
+        return {
+            "state": next_state,
+            "version": entry.id or fallback_version,
+            "location_id": location_id,
+            "updated_at": now,
+            "is_on_memo": next_state.get("is_on_memo"),
+            "is_on_marketplace": next_state.get("is_on_marketplace"),
+            "is_sync_to_shopify": next_state.get("is_sync_to_shopify"),
+            "is_in_production": next_state.get("is_in_production"),
+            "is_expired": next_state.get("is_expired"),
+            "expires_at": expires_at,
+            "consignment_flag": next_state.get("consignment_flag"),
+        }
+
+    @staticmethod
+    async def _locked_projection(session, entry: LedgerEntry) -> Projection | None:
+        # FOR UPDATE serializes concurrent events on one entity: each applier
+        # bases its state on the previous committed write instead of a shared
+        # stale read, where whichever commit lands last would silently drop the
+        # other's fields even though the ledger holds both events. Callers often
+        # hold an unlocked copy of this row in the session's identity map from a
+        # validation read, and session.get would return that stale object without
+        # locking or re-reading; populate_existing overwrites it with the freshly
+        # locked row.
+        result = await session.execute(
+            select(Projection)
+            .where(Projection.company_id == entry.company_id, Projection.entity_id == entry.entity_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def apply_event(session, entry: LedgerEntry) -> None:
+        projection = await ProjectionEngine._locked_projection(session, entry)
         if projection is None:
-            session.add(
-                Projection(
-                    company_id=entry.company_id,
-                    entity_id=entry.entity_id,
-                    entity_type=entry.entity_type,
-                    state=next_state,
-                    version=entry.id or 0,
-                    location_id=location_id,
-                    created_at=now,
-                    updated_at=now,
-                    is_on_memo=next_state.get("is_on_memo"),
-                    is_on_marketplace=next_state.get("is_on_marketplace"),
-                    is_sync_to_shopify=next_state.get("is_sync_to_shopify"),
-                    is_in_production=next_state.get("is_in_production"),
-                    is_expired=next_state.get("is_expired"),
-                    expires_at=expires_at,
-                    consignment_flag=next_state.get("consignment_flag"),
-                )
-            )
-        else:
-            projection.state = next_state
-            projection.version = entry.id or projection.version
-            projection.location_id = location_id
-            projection.updated_at = now
-            projection.is_on_memo = next_state.get("is_on_memo")
-            projection.is_on_marketplace = next_state.get("is_on_marketplace")
-            projection.is_sync_to_shopify = next_state.get("is_sync_to_shopify")
-            projection.is_in_production = next_state.get("is_in_production")
-            projection.is_expired = next_state.get("is_expired")
-            projection.expires_at = expires_at
-            projection.consignment_flag = next_state.get("consignment_flag")
+            fields = ProjectionEngine._next_fields({}, entry, 0)
+            try:
+                # SAVEPOINT so losing a concurrent first-event insert race rolls
+                # back only this insert (same shape as the idempotency dedup in
+                # emit_event), then retries as an update on the winner's row.
+                async with session.begin_nested():
+                    session.add(
+                        Projection(
+                            company_id=entry.company_id,
+                            entity_id=entry.entity_id,
+                            entity_type=entry.entity_type,
+                            created_at=fields["updated_at"],
+                            **fields,
+                        )
+                    )
+                    await session.flush()
+                return
+            except IntegrityError:
+                projection = await ProjectionEngine._locked_projection(session, entry)
+        for column, value in ProjectionEngine._next_fields(projection.state, entry, projection.version).items():
+            setattr(projection, column, value)
 
     @staticmethod
     async def rebuild(session, company_id=None) -> None:
