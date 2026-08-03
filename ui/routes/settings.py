@@ -3872,21 +3872,41 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
-    is_connected = token_bound or relay_status not in ("inactive",) or gw is not None
-    if is_connected:
-        badge_cls = {
-            "active": "badge--active",
-            "connecting": "badge--warning",
-            "error": "badge--error",
-            "inactive": "badge--inactive",
-        }.get(relay_status, "badge--inactive")
+    disconnect_button = Div(
+        Button(t("btn.disconnect"),
+            cls="btn btn--sm btn--outline btn--danger",
+            hx_post="/settings/cloud-disconnect",
+            hx_target="#cloud-relay-tab",
+            hx_swap="outerHTML",
+            hx_confirm="Disconnect web access? You can reconnect anytime.",
+        ),
+        style="margin-top:12px;",
+    )
 
-        # Status explanation for non-active states
-        status_hint = {
-            "connecting": "Establishing connection...",
-            "error": "Connection failed. Try disconnecting and reconnecting.",
-            "inactive": "Initializing connection...",
-        }.get(relay_status, "")
+    if relay_status in ("connecting", "error"):
+        # The relay has not accepted this instance's credentials yet (or has
+        # refused them): show only the connection state. Account details and
+        # tier content render once authentication succeeds; a failed connection
+        # offers disconnect as the recovery path.
+        badge_cls = "badge--warning" if relay_status == "connecting" else "badge--error"
+        status_hint = ("Establishing connection..." if relay_status == "connecting"
+                       else "Connection failed. Try disconnecting and reconnecting.")
+        return Div(
+            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+            Table(Tr(Td(t("th.status"), cls="detail-label"), Td(
+                Span(relay_status.capitalize(), cls=f"badge {badge_cls}"),
+                Span(f" - {status_hint}", cls="settings-hint"),
+            )), cls="detail-table"),
+            disconnect_button if relay_status == "error" else "",
+            id="cloud-relay-tab",
+            cls="settings-card",
+        )
+
+    is_connected = token_bound or relay_status == "active"
+    if is_connected:
+        badge_cls = "badge--active" if relay_status == "active" else "badge--inactive"
+        # Status explanation for the signed-in-without-tunnel state
+        status_hint = "Initializing connection..." if relay_status == "inactive" else ""
 
         rows = [
             Tr(Td(t("th.status"), cls="detail-label"), Td(
@@ -3926,16 +3946,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(*rows, cls="detail-table"),
             free_tier_note,
-            Div(
-                Button(t("btn.disconnect"),
-                    cls="btn btn--sm btn--outline btn--danger",
-                    hx_post="/settings/cloud-disconnect",
-                    hx_target="#cloud-relay-tab",
-                    hx_swap="outerHTML",
-                    hx_confirm="Disconnect web access? You can reconnect anytime.",
-                ),
-                style="margin-top:12px;",
-            ),
+            disconnect_button,
             id="cloud-relay-tab",
             cls="settings-card",
         )

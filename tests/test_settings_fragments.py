@@ -335,3 +335,46 @@ def test_forgot_password_email_form_exists():
     html = to_xml(_forgot_password_form())
     assert 'action="/forgot-password"' in html
     assert "Send reset link" in html
+
+
+# ── Celerp Connect tab: account view only after authentication ───────────────
+
+def _relay_tab_html(relay_status, token_bound):
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    with patch("celerp.gateway.client.get_client", return_value=None):
+        return to_xml(_cloud_relay_tab(relay_status=relay_status, public_url="",
+                                       tier="free", token_bound=token_bound))
+
+
+def test_cloud_tab_connecting_hides_account_view():
+    """While the relay has not yet accepted the token, the tab shows only the
+    connection state - no tier benefits, no subscription link, no disconnect."""
+    html = _relay_tab_html("connecting", token_bound=True)
+    assert "Establishing connection" in html
+    assert "Link subscription" not in html
+    assert "cloud-disconnect" not in html
+
+
+def test_cloud_tab_error_shows_recovery_only():
+    """A failed connection shows the failure and the disconnect recovery path,
+    never the account view."""
+    html = _relay_tab_html("error", token_bound=True)
+    assert "Connection failed" in html
+    assert "cloud-disconnect" in html
+    assert "Link subscription" not in html
+
+
+def test_cloud_tab_signed_in_free_shows_account_view():
+    """A signed-in free instance (token held, no live tunnel) keeps the account
+    view: tier note, subscription link, disconnect."""
+    html = _relay_tab_html("inactive", token_bound=True)
+    assert "Link subscription" in html
+    assert "cloud-disconnect" in html
+
+
+def test_cloud_tab_active_shows_account_view():
+    """An authenticated connection renders the full account view."""
+    html = _relay_tab_html("active", token_bound=True)
+    assert "Link subscription" in html
+    assert "cloud-disconnect" in html
