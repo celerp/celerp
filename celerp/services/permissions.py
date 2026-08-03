@@ -40,9 +40,12 @@ ROLES: list[Role] = [
     for key, level in sorted(ROLE_LEVELS.items(), key=lambda kv: kv[1])
 ]
 
-# floor_role: viewer for the view keys, operator for every write-capable key.
-# The operator floor is what keeps viewers read-only now that the router-level
-# read-only baseline is gone: no override can set a write key below it.
+# floor_role: viewer for the view keys, operator for every write-capable key,
+# except manage_company_settings, whose floor is admin. That key now reaches the
+# module data purge, which drops tables, so no override may hand it to an operator.
+# The floor keeps viewers read-only now that the router-level read-only baseline is
+# gone, and clamps every override up to at least the floor: no override can set a
+# key below it.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
     Permission("view_documents", "View documents", "viewer", True, "viewer"),
@@ -70,7 +73,7 @@ PERMISSIONS: list[Permission] = [
     Permission("manage_accounting", "Manage accounting", "manager", True, "operator"),
     Permission("manage_module_settings", "Manage module settings", "manager", True, "operator"),
     Permission("manage_users", "Manage users", "admin", True, "operator"),
-    Permission("manage_company_settings", "Manage company settings", "admin", True, "operator"),
+    Permission("manage_company_settings", "Manage company settings", "admin", True, "admin"),
     Permission("manage_integrations", "Manage integrations", "admin", True, "operator"),
     # Fixed rows. manage_permissions gates the matrix save itself: owner-only so
     # no owner can revoke their own ability to edit permissions. Lifecycle stays
@@ -103,7 +106,7 @@ def permission_min_level(settings: dict | None, key: str) -> int:
         overrides = (settings or {}).get("role_permissions") or {}
         override_role = overrides.get(key)
         if override_role in ROLE_LEVELS:
-            return ROLE_LEVELS[override_role]
+            return max(ROLE_LEVELS[override_role], ROLE_LEVELS[perm.floor_role])
     return ROLE_LEVELS[perm.default_role]
 
 

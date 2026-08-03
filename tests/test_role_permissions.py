@@ -61,7 +61,7 @@ EXPECTED_CATALOGUE = {
     "manage_module_settings": ("manager", True, "operator"),
     # admin defaults
     "manage_users": ("admin", True, "operator"),
-    "manage_company_settings": ("admin", True, "operator"),
+    "manage_company_settings": ("admin", True, "admin"),
     "manage_integrations": ("admin", True, "operator"),
     # fixed rows: owner-only, never grantable
     "manage_permissions": ("owner", False, "owner"),
@@ -113,6 +113,26 @@ def test_permission_min_level_override():
     assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["operator"]
     settings = {"role_permissions": {"set_sales_doc_prices": "manager"}}
     assert permission_min_level(settings, "set_sales_doc_prices") == ROLE_LEVELS["manager"]
+
+
+def test_manage_company_settings_floor_is_admin():
+    """Purge and delete are destructive and share the manage_company_settings gate,
+    so its floor is admin: an owner can no longer lower the threshold below admin."""
+    from celerp.services.permissions import PERMISSIONS
+
+    by_key = {p.key: p for p in PERMISSIONS}
+    assert by_key["manage_company_settings"].floor_role == "admin"
+
+
+def test_permission_min_level_clamps_sub_floor_override():
+    """A grandfathered override below the floor is clamped up to the floor at read
+    time: a stored operator override for manage_company_settings resolves to admin,
+    so the raised floor is a real invariant on read and not only on save."""
+    from celerp.services.auth import ROLE_LEVELS
+    from celerp.services.permissions import permission_min_level
+
+    settings = {"role_permissions": {"manage_company_settings": "operator"}}
+    assert permission_min_level(settings, "manage_company_settings") == ROLE_LEVELS["admin"]
 
 
 def test_permission_min_level_stale_override_ignored():
