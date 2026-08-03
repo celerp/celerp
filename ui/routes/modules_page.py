@@ -25,6 +25,7 @@ and the page's poll-and-reload script recovers the browser.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from fasthtml.common import *
@@ -33,15 +34,17 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
-from ui.api_client import APIError
+from ui.api_client import APIError, refresh_access_token
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
-from ui.config import get_role as _get_role
+from ui.config import get_role as _get_role, REFRESH_COOKIE_NAME, set_session_cookies
 from ui.i18n import t, get_lang
 from ui.routes.account import GATE_UNREACHABLE, account_gate, gate_modal_response
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
@@ -1255,6 +1258,20 @@ def setup_routes(app):
         lang = get_lang(request)
         # Enabling and restarting a module - however it was installed - happen in
         # the Installed tab, so the restart banner always swaps that panel.
+        #
+        # Re-mint the session cookie from live settings before restarting, while
+        # the API is still up. The modules claim is baked into the token at login,
+        # so without this the post-respawn reload would carry a stale claim and
+        # the sidebar would keep showing the pre-change module set until a manual
+        # re-login. Fail open: a refresh error must not block the restart.
+        new = None
+        refresh_cookie = request.cookies.get(REFRESH_COOKIE_NAME)
+        if refresh_cookie:
+            try:
+                new = await refresh_access_token(refresh_cookie)
+            except Exception as exc:
+                logger.warning("module_restart cookie refresh failed: %s", exc)
+                new = None
         try:
             await api.restart_system(token)
         except APIError as e:
@@ -1264,7 +1281,10 @@ def setup_routes(app):
             except APIError:
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
-        return _restarting_panel(lang, panel_id="local-modules-panel")
+        resp = HTMLResponse(to_xml(_restarting_panel(lang, panel_id="local-modules-panel")))
+        if new:
+            set_session_cookies(resp, new[0], new[1], request)
+        return resp
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):

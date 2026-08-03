@@ -18026,3 +18026,47 @@ async def test_account_panel_names_connect_tier(ui_client):
     content = r.content.decode()
     assert "Plan: Connect" in content
     assert "Plan: cloud" not in content
+
+
+# ── Module restart refreshes the session cookie (ui/routes/modules_page.py) ────
+
+@pytest.mark.asyncio
+async def test_module_restart_refreshes_session_cookie(ui_client):
+    """POST /modules/restart re-mints the UI session cookie from live settings
+    before restarting, so the post-respawn reload carries a current modules
+    claim and the sidebar is correct without a manual re-login.
+
+    The refresh branch is gated on the refresh cookie being present, so the
+    request must carry celerp_refresh (a bare _authed() sets only celerp_token
+    and would skip the branch)."""
+    new_access = "new-access-with-maintenance"
+    new_refresh = "new-refresh-token"
+    cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
+         patch("ui.routes.modules_page.refresh_access_token",
+               new=AsyncMock(return_value=(new_access, new_refresh))):
+        r = await ui_client.post("/modules/restart", cookies=cookies)
+    assert r.status_code == 200
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "celerp_token=" in set_cookie
+    assert new_access in set_cookie
+    assert "celerp_refresh=" in set_cookie
+    assert new_refresh in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_module_restart_refresh_failure_still_restarts(ui_client):
+    """If the cookie refresh exchange fails, the restart still proceeds fail-open:
+    the restarting panel is returned, no session cookie is set, and no 500."""
+    from ui.api_client import APIError
+    cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
+         patch("ui.routes.modules_page.refresh_access_token",
+               new=AsyncMock(side_effect=APIError(500, "refresh boom"))):
+        r = await ui_client.post("/modules/restart", cookies=cookies)
+    assert r.status_code == 200
+    # Restart proceeded: the poll-and-reload panel is returned.
+    assert "window.location = '/modules'" in r.content.decode()
+    # No new session cookie was minted on the failure path.
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "celerp_token=" not in set_cookie
