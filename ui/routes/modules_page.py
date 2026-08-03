@@ -39,7 +39,9 @@ from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role, REFRESH_COOKIE_NAME, set_session_cookies
 from ui.i18n import t, get_lang
-from ui.routes.account import GATE_UNREACHABLE, account_gate, gate_modal_response
+from ui.routes.account import (
+    GATE_UNREACHABLE, _DISMISS_GATE_MODAL, account_gate, gate_modal_response,
+)
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -297,6 +299,20 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # appears once the module is off, so nothing that depends on it is live.
         action_parts = [toggle_btn]
         if not effectively_enabled and not m.get("is_default"):
+            # Purge sits beside Delete but only for a module that owns tables
+            # (declares a table_prefix). It is the one destructive action: it
+            # drops the module's data, so it fetches a preview dialog first
+            # rather than firing on a one-line confirm.
+            if m.get("table_prefix"):
+                action_parts.append(Button(t("modules.purge_data", lang),
+                    hx_get=f"/modules/{name}/purge-preview",
+                    hx_target="#local-modules-panel",
+                    hx_swap="outerHTML",
+                    hx_disabled_elt="this",
+                    title=t("modules.purge_module", lang),
+                    aria_label=t("modules.purge_module", lang),
+                    cls="btn btn--sm btn--danger module-purge-btn",
+                ))
             action_parts.append(Button("×",
                 hx_post=f"/modules/{name}/delete",
                 hx_target="#local-modules-panel",
@@ -938,6 +954,65 @@ def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResp
     return HTMLResponse(to_xml(fragment), headers=headers)
 
 
+def _close_gate_host() -> FT:
+    """An out-of-band swap that empties the shared modal host, tearing down the
+    purge dialog once its confirm resolves (the panel below re-renders in place).
+    """
+    return Div(id="account-gate-host", hx_swap_oob="true")
+
+
+def _purge_dialog(module_name: str, tables: list[dict], lang: str) -> FT:
+    """The purge-confirmation panel: the exact tables a purge would drop with
+    their live row counts, the irreversibility notice, an inline backup link,
+    and Cancel plus the one confirm control. Wrapped for delivery by
+    gate_modal_response, which supplies the Dialog, showModal, and Esc teardown.
+    The confirm posts no preview data; the server re-derives the drop list.
+    """
+    header = Div(
+        H3(t("modules.purge_title", lang), cls="modal-dialog__title"),
+        Button("✕", type="button", cls="modal-dialog__close",
+               aria_label=t("btn.close", lang), onclick=_DISMISS_GATE_MODAL),
+        cls="modal-dialog__header",
+    )
+    if tables:
+        # Table-name header centered (the .data-table default), row-count header
+        # right-aligned over its figures via cell--number; count cells match.
+        preview = Table(
+            Thead(Tr(
+                Th(t("modules.purge_col_table", lang)),
+                Th(t("modules.purge_col_rows", lang), cls="cell--number"),
+            )),
+            Tbody(*(Tr(
+                Td(tb.get("name", "")),
+                Td(f"{int(tb.get('rows') or 0):,}", cls="cell--number"),
+            ) for tb in tables)),
+            cls="data-table",
+        )
+        body_parts = [
+            P(t("modules.purge_intro", lang)),
+            preview,
+            P(t("modules.purge_irreversible", lang)),
+            Div(A(t("modules.purge_backup_link", lang), href="/backup/export",
+                  download=True, cls="btn btn--sm btn--ghost"),
+                cls="module-purge-backup"),
+        ]
+    else:
+        body_parts = [P(t("modules.purge_no_data", lang))]
+    actions = Div(
+        Button(t("btn.cancel", lang), type="button",
+               cls="btn btn--sm btn--secondary", onclick=_DISMISS_GATE_MODAL),
+        Button(t("modules.purge_data", lang), type="button",
+               hx_post=f"/modules/{module_name}/purge",
+               hx_target="#local-modules-panel",
+               hx_swap="outerHTML",
+               hx_disabled_elt="this",
+               cls="btn btn--sm btn--danger"),
+        cls="modal-dialog__actions",
+    )
+    return Div(header, Div(*body_parts, actions, cls="reset-modal__body"),
+               cls="module-purge-dialog")
+
+
 def _community_table(community: list[dict], installed: set[str], lang: str,
                      downloaded: dict[str, str] | None = None) -> FT:
     """Community listings, same table schema as the Installed Modules table."""
@@ -1126,6 +1201,52 @@ def setup_routes(app):
                 return _toast(_unavailable_panel(lang), flash_text)
         return _local_panel(modules, lang=lang, flash_text=flash_text,
                             flash_error=flash_text is not None)
+
+    @app.get("/modules/{module_name}/purge-preview")
+    async def module_purge_preview(request: Request, module_name: str):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        try:
+            preview = await api.purge_module_preview(token, module_name)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # A refusal or an oversized-count timeout: keep the row and say why.
+            flash_text = e.detail or t("modules.purge_failed", lang)
+            try:
+                modules = await api.get_modules(token)
+            except APIError:
+                return _toast(_unavailable_panel(lang), flash_text)
+            return _toast(_local_panel(modules, lang), flash_text)
+        return gate_modal_response(
+            _purge_dialog(module_name, preview.get("tables") or [], lang))
+
+    @app.post("/modules/{module_name}/purge")
+    async def module_purge(request: Request, module_name: str):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        try:
+            await api.purge_module_data(token, module_name)
+            modules = await api.get_modules(token)
+            flash_text, flash_error = t("modules.purge_success", lang, name=module_name), False
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # Refused (still enabled/running) or a rolled-back drop: keep every
+            # table and tell the user why, rather than silently doing nothing.
+            flash_text, flash_error = e.detail or t("modules.purge_failed", lang), True
+            try:
+                modules = await api.get_modules(token)
+            except APIError:
+                return _toast(_unavailable_panel(lang), flash_text)
+        # Re-render the panel in place and tear the dialog down together.
+        return (_local_panel(modules, lang=lang, flash_text=flash_text,
+                             flash_error=flash_error),
+                _close_gate_host())
 
     @app.post("/modules/import")
     async def module_import(request: Request):

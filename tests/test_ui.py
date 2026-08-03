@@ -18084,3 +18084,81 @@ async def test_module_restart_refresh_failure_still_restarts(ui_client):
     # No new session cookie was minted on the failure path.
     set_cookie = r.headers.get("set-cookie", "")
     assert "celerp_token=" not in set_cookie
+
+
+def _module_row(name: str, *, enabled: bool = False, running: bool = False,
+                is_default: bool = False, table_prefix: str | None = None) -> dict:
+    """A module dict shaped like list_modules output, for get_modules mocks."""
+    return {
+        "name": name,
+        "label": name,
+        "version": "1.0",
+        "description": "",
+        "author": "",
+        "depends_on": [],
+        "enabled": enabled,
+        "running": running,
+        "load_error": None,
+        "is_default": is_default,
+        "demoted": False,
+        "source": "sideloaded",
+        "installed_at": "2026-01-01T00:00:00+00:00",
+        "table_prefix": table_prefix,
+    }
+
+
+@pytest.mark.asyncio
+async def test_module_purge_button_fetches_preview_panel_with_table_row_counts(ui_client):
+    """The purge button's GET returns the preview dialog listing each of the
+    module's tables with its live row count, plus the confirm control."""
+    preview = {"tables": [
+        {"name": "acme_equipment", "rows": 3},
+        {"name": "acme_service_log", "rows": 128},
+    ]}
+    with patch("ui.api_client.purge_module_preview",
+               new=AsyncMock(return_value=preview)):
+        r = await ui_client.get("/modules/acme-maintenance/purge-preview",
+                                cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    html = r.content.decode()
+    # Every table name and its row count are shown.
+    assert "acme_equipment" in html
+    assert "acme_service_log" in html
+    assert "128" in html
+    # The confirm control posts to the purge route (server re-derives the list).
+    assert "/modules/acme-maintenance/purge" in html
+    # Delivered as the fetched modal dialog.
+    assert "account-gate-modal" in html
+
+
+@pytest.mark.asyncio
+async def test_module_purge_preview_empty_shows_no_stored_data_copy(ui_client):
+    """A module with no prefixed tables shows the no-stored-data copy and no
+    table rows, still inside the dialog."""
+    with patch("ui.api_client.purge_module_preview",
+               new=AsyncMock(return_value={"tables": []})):
+        r = await ui_client.get("/modules/acme-maintenance/purge-preview",
+                                cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    html = r.content.decode()
+    assert "This module has no stored data." in html
+    assert "account-gate-modal" in html
+
+
+@pytest.mark.asyncio
+async def test_module_purge_button_renders_only_for_disabled_modules_with_table_prefix(ui_client):
+    """The purge button appears only for a disabled, non-default module whose
+    manifest declares a table_prefix: not for one without a prefix, and not for
+    an enabled one even with a prefix."""
+    modules = [
+        _module_row("with-prefix", enabled=False, running=False, table_prefix="wp_"),
+        _module_row("no-prefix", enabled=False, running=False, table_prefix=None),
+        _module_row("enabled-prefix", enabled=True, running=True, table_prefix="ep_"),
+    ]
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
+        r = await ui_client.get("/modules", cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    html = r.content.decode()
+    assert "/modules/with-prefix/purge-preview" in html
+    assert "/modules/no-prefix/purge-preview" not in html
+    assert "/modules/enabled-prefix/purge-preview" not in html
