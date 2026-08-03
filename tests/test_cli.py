@@ -711,3 +711,21 @@ def test_config_to_env_prepends_writable_module_dir(valid_cfg, tmp_path, monkeyp
     env = _config_to_env(valid_cfg)
     assert env["MODULE_DIR"].split(",")[0] == str(tmp_path / "modules")
     assert (tmp_path / "modules").is_dir()
+
+
+def test_config_to_env_reports_headless_launch_channel(valid_cfg, monkeypatch):
+    """A headless service install (init --no-start, then a process manager runs
+    start) must report its launch channel on activation the same way the desktop
+    launcher does: _config_to_env sets CELERP_MODE=headless from the config's
+    server.headless flag, leaves a plain local run without a channel, and never
+    clobbers an explicitly set one."""
+    from celerp.cli import _config_to_env
+
+    monkeypatch.delenv("CELERP_MODE", raising=False)
+    assert "CELERP_MODE" not in _config_to_env(valid_cfg)
+
+    valid_cfg["server"]["headless"] = True
+    assert _config_to_env(valid_cfg)["CELERP_MODE"] == "headless"
+
+    monkeypatch.setenv("CELERP_MODE", "desktop")
+    assert _config_to_env(valid_cfg)["CELERP_MODE"] == "desktop"
