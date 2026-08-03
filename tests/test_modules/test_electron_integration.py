@@ -45,9 +45,6 @@ class TestElectronMainJS:
     def test_run_module_setup_function(self):
         assert "function runModuleSetup" in self._src
 
-    def test_module_alembic_locations_function(self):
-        assert "function _moduleAlembicLocations" in self._src or "_moduleAlembicLocations" in self._src
-
     def test_seed_called_in_boot_sequence(self):
         assert "seedDefaultModules()" in self._src
 
@@ -84,9 +81,6 @@ class TestElectronMainJS:
 
     def test_copy_dir_sync_function(self):
         assert "_copyDirSync" in self._src
-
-    def test_module_alembic_locations_in_migrations_env(self):
-        assert "ALEMBIC_VERSION_LOCATIONS" in self._src
 
     def test_default_modules_src_uses_dev_vs_packaged(self):
         """Dev uses relative path; packaged uses resourcesPath."""
@@ -150,12 +144,6 @@ class TestDefaultModulesStructure:
 
     def test_labels_has_service(self):
         assert (DEFAULT_MODULES_DIR / "celerp-labels" / "celerp_labels" / "service.py").exists()
-
-    def test_labels_has_migrations_dir(self):
-        assert (DEFAULT_MODULES_DIR / "celerp-labels" / "celerp_labels" / "migrations").is_dir()
-
-    def test_labels_migrations_has_init(self):
-        assert (DEFAULT_MODULES_DIR / "celerp-labels" / "celerp_labels" / "migrations" / "__init__.py").exists()
 
 
 # ── module_setup.py tests ─────────────────────────────────────────────────────

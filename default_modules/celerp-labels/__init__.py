@@ -6,7 +6,6 @@ This is the reference module for the Celerp module system. It demonstrates:
 - PLUGIN_MANIFEST structure
 - API + UI route registration
 - Slot contributions (nav, bulk_action, item_action, settings_tab)
-- DB migrations via Alembic
 - pip dependency declaration via requirements.txt
 
 Module authors: see https://celerp.com/docs/modules for the full guide.
@@ -53,11 +52,6 @@ PLUGIN_MANIFEST = {
             "order": 60,
         },
     },
-
-    # ── DB migrations ─────────────────────────────────────────────────────────
-    # Path to an Alembic migrations directory inside this package.
-    # The loader passes this to ALEMBIC_VERSION_LOCATIONS.
-    "migrations": "celerp_labels.migrations",
 
     # ── Python dependencies ───────────────────────────────────────────────────
     # Informational; actual install via requirements.txt in this directory.

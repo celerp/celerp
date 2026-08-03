@@ -107,10 +107,6 @@ class TestLabelsManifest:
         assert st["href"] == "/settings/labels"
         assert isinstance(st["order"], int)
 
-    def test_migrations_pointer(self):
-        mod = _import_labels_pkg()
-        assert mod.PLUGIN_MANIFEST["migrations"] == "celerp_labels.migrations"
-
     def test_requires_list(self):
         mod = _import_labels_pkg()
         reqs = mod.PLUGIN_MANIFEST["requires"]
@@ -280,29 +276,6 @@ class TestLabelsLoaderIntegration:
 
         loaded = load_all(str(tmp_path), set())  # empty enabled set
         assert len(loaded) == 0
-
-
-# ── Migration file tests ──────────────────────────────────────────────────────
-
-class TestLabelsMigration:
-    def test_migration_file_exists(self):
-        mig_dir = LABELS_DIR / "celerp_labels" / "migrations"
-        files = list(mig_dir.glob("*.py"))
-        non_init = [f for f in files if f.name != "__init__.py"]
-        assert len(non_init) >= 1, "Expected at least one migration file"
-
-    def test_migration_has_revision(self):
-        mig_dir = LABELS_DIR / "celerp_labels" / "migrations"
-        for f in mig_dir.glob("*.py"):
-            if f.name == "__init__.py":
-                continue
-            content = f.read_text()
-            assert "revision" in content
-            assert "upgrade" in content
-            assert "downgrade" in content
-            assert "label_templates" in content
-
-
 
 
 # ── UI routes tests ───────────────────────────────────────────────────────────
