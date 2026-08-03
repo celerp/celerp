@@ -4,7 +4,6 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
-import re
 import sys
 
 from fastapi import FastAPI, Request
@@ -13,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from celerp.db import engine
+from celerp.db import engine, mask_db_credentials
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
 load_backup_config()
@@ -167,7 +166,7 @@ async def lifespan(_app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
-        masked_url = re.sub(r"(://[^:]+:)[^@]+(@)", r"\1***\2", settings.database_url)
+        masked_url = mask_db_credentials(settings.database_url)
         print(
             f"\nFATAL: Cannot connect to database at {masked_url}\n"
             f"  → {type(exc).__name__}: {exc}\n\n"
@@ -191,7 +190,17 @@ async def lifespan(_app: FastAPI):
             _cfg = _read_config()
             _enabled = set(_cfg.get("modules", {}).get("enabled") or [])
         if _enabled:
+            # Apply each enabled module's runtime migrations before importing it,
+            # under the shared migration advisory lock. A third-party module whose
+            # migration fails is dropped from this boot and its error held to
+            # surface after load_all (which clears the load-error map on entry);
+            # a first-party failure re-raises. No-op on non-Postgres.
+            from celerp.modules.migrations_runner import run_migration_phase
+            from celerp.modules.loader import record_load_error
+            _enabled, _migration_errors = await run_migration_phase(engine, _enabled)
             _loaded_modules = load_all(_MODULE_DIR, _enabled)
+            for _mname, _merr in _migration_errors.items():
+                record_load_error(_mname, _merr)
             register_api_routes(_app, _loaded_modules)
             # Module models register on Base.metadata at import time.
             # Run create_all again so module tables are created (idempotent).
