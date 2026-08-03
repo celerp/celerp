@@ -743,7 +743,9 @@ async def get_doc_pdf(
         if share_row is not None and _share_active(share_row):
             import_url = _share_url(share_row.token)
 
-    pdf_bytes = generate_document_pdf(doc, company, import_url=import_url)
+    # reportlab layout is CPU-bound Python; a worker thread keeps a large
+    # document's render from stalling every concurrent request on the loop.
+    pdf_bytes = await asyncio.to_thread(generate_document_pdf, doc, company, import_url=import_url)
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or entity_id
     filename = f"{doc_ref}.pdf".replace("/", "-").replace(" ", "_")
     return _Resp(
