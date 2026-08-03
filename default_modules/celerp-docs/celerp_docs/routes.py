@@ -232,7 +232,7 @@ class BatchImportResult(BaseModel):
 
 
 class DocBatchImportRequest(BaseModel):
-    records: list[DocImportRecord]
+    records: list[DocImportRecord] = Field(..., max_length=500)
     upsert: bool = False
 
 

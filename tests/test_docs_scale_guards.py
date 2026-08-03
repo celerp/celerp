@@ -67,3 +67,57 @@ async def test_doc_pdf_renders_off_the_event_loop(client, session, monkeypatch):
     assert resp.status_code == 200
     assert resp.content == b"%PDF-1.4 fake"
     assert render_thread["ident"] != threading.get_ident()
+
+
+def _import_records(n: int) -> list[dict]:
+    return [
+        {
+            "entity_id": f"doc-bulk-{i}",
+            "event_type": "doc.created",
+            "data": {
+                "doc_type": "invoice",
+                "status": "draft",
+                "doc_number": f"BULK-{i}",
+                "date": "2026-08-03",
+                "contact_name": "Bulk Test",
+                "currency": "USD",
+                "total": 0,
+                "line_items": [],
+            },
+            "source": "test",
+            "idempotency_key": f"bulk-{i}",
+        }
+        for i in range(n)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_docs_batch_import_bounds_request_size(client, session):
+    """The docs batch importer accepts at most 500 records per request, the same
+    bound the items importer enforces; the import client already chunks at 500,
+    so no legitimate request exceeds it. 501 records is a validation error, not
+    an unbounded unit of work."""
+    _, headers = await _company_admin(session)
+    resp = await client.post(
+        "/docs/import/batch",
+        headers=headers,
+        json={"records": _import_records(501)},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_lists_batch_import_bounds_request_size(client, session):
+    """The lists batch importer shares the docs request model, so it carries the
+    same 500-record bound."""
+    _, headers = await _company_admin(session)
+    records = _import_records(501)
+    for r in records:
+        r["event_type"] = "list.created"
+        r["data"] = {"list_type": "packing", "status": "draft"}
+    resp = await client.post(
+        "/lists/import/batch",
+        headers=headers,
+        json={"records": records},
+    )
+    assert resp.status_code == 422
