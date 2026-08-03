@@ -2533,8 +2533,17 @@ class TestDocumentPolish:
             content = r.content.decode()
             assert "send-modal-d-1" not in content
             assert "next=doc-send" in content
+            # The failure now surfaces as a persistent lower-right toast that
+            # stays until dismissed, not an inline hint beside Send. It keeps the
+            # message and the deep link to reconnect in Settings.
             assert "Web access connection failed" in content
-            assert 'href="/settings/cloud"' in content
+            assert "celerpToast(" in content
+            assert "'error',true," in content
+            assert "/settings/cloud" in content
+            assert "Reconnect in Settings" in content
+            # The message is carried by the toast call, not rendered inline as
+            # element text beside Send (that inline hint is gone).
+            assert ">Web access connection failed" not in content
             assert 'hx-get="/docs/d:1/share"' not in content
         finally:
             documents._free_send_quota_cache.update(
@@ -2578,7 +2587,12 @@ class TestDocumentPolish:
         assert r.status_code == 200
         content = r.content.decode()
         assert "send-modal-list-1" not in content
+        # Same persistent lower-right toast fallback as the doc path, not an
+        # inline hint: message plus the reconnect deep link, no inline anchor.
         assert "Web access connection failed" in content
+        assert "celerpToast(" in content
+        assert "/settings/cloud" in content
+        assert ">Web access connection failed" not in content
 
     @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):

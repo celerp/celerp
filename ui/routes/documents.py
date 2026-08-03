@@ -5905,12 +5905,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        cls="btn btn--secondary"),
             )
         # A refused credential silently swapping the Send path would read as a
-        # bug; this one line says what happened and where to fix it (GDR 2d).
+        # bug; this persistent lower-right toast says what happened and where to
+        # fix it (GDR 2d), and stays open until the user dismisses it rather than
+        # sitting inline beside the Send action.
         if _send_ok and relay_error:
-            action_btns_left.append(
-                Span(t("doc.send_relay_error_notice"), " ",
-                     A(t("doc.send_relay_error_link"), href="/settings/cloud", cls="auth-link"),
-                     cls="form-hint"))
+            import json as _json
+            _notice_js = _json.dumps(t("doc.send_relay_error_notice"))
+            _link_js = _json.dumps(t("doc.send_relay_error_link"))
+            action_btns_left.append(Script(
+                "document.addEventListener('DOMContentLoaded',function(){"
+                "if(!window.celerpToast)return;"
+                f"celerpToast({_notice_js},'error',true,"
+                f"{{href:'/settings/cloud',label:{_link_js}}});"
+                "});"))
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:
