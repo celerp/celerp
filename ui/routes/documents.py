@@ -71,6 +71,15 @@ def _free_send_quota(token: str) -> int:
     return int(_free_send_quota_cache["value"])
 
 
+def _relay_rejected(rs: dict) -> bool:
+    """The relay refused this instance's credential - a terminal state, not a
+    transient drop - so every relay send or share is guaranteed to fail until
+    the user reconnects. Pages fall back to the signed-out email path with a
+    notice pointing at Settings; "connecting" and a lazily-down tunnel keep
+    the normal send path."""
+    return rs.get("relay_status") == "error"
+
+
 async def _company_letterhead(token: str) -> dict:
     """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
 
@@ -1981,6 +1990,7 @@ celerpUpdateBulkAlloc();
         # Relay binding drives Send/Share visibility (gateway_token_set), and the
         # quota line reads email usage from the same status call.
         _token_bound: bool = False
+        _relay_error: bool = False
         _share_active: bool = False
         _email_used: int = 0
         _email_quota: int = 0
@@ -1995,8 +2005,12 @@ celerpUpdateBulkAlloc();
             # instance mints a share.celerp.com envelope on demand. Only a
             # self-hosted instance with no relay token can never mint, so it
             # stays hidden. The offline case surfaces the online-only note, it
-            # does not hide the panel (GDR 2e).
-            _token_bound = bool(_relay_status.get("gateway_token_set"))
+            # does not hide the panel (GDR 2e). A credential the relay has
+            # refused (_relay_rejected) is the one carve-out: the token exists
+            # locally but cannot send, so the page treats it as unbound and
+            # says why.
+            _relay_error = _relay_rejected(_relay_status)
+            _token_bound = bool(_relay_status.get("gateway_token_set")) and not _relay_error
         except Exception:
             pass
         _payments_on: bool = False
@@ -2068,7 +2082,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _token_bound else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _token_bound else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -4149,12 +4163,14 @@ celerpUpdateBulkAlloc();
             _list_locations = []
         _list_share = False
         _list_share_active = False
+        _ls_error: bool = False
         _ls_used: int = 0
         _ls_quota: int = 0
         _ls_resets_on: str | None = None
         try:
             _ls_status = await api.get_relay_status(token)
-            _list_share = bool(_ls_status.get("public_url"))
+            _ls_error = _relay_rejected(_ls_status)
+            _list_share = bool(_ls_status.get("public_url")) and not _ls_error
             _ls_used = int(_ls_status.get("email_used") or 0)
             _ls_quota = int(_ls_status.get("email_quota") or 0)
             _ls_resets_on = _ls_status.get("email_resets_on")
@@ -4171,7 +4187,7 @@ celerpUpdateBulkAlloc();
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
-                        line_identifier_mode=_ident_mode),
+                        line_identifier_mode=_ident_mode, relay_error=_ls_error),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -5464,7 +5480,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_quota: int = 0, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_quota: int = 0, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5773,6 +5789,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # lazily down until a share is created, yet can send - the send flow brings
         # the tunnel up on demand. Gating on the live tunnel wrongly dropped such an
         # account into the "connect your account" offer below despite being signed in.
+        # A credential the relay has refused is different: share_enabled arrives
+        # False (routes strip it via _relay_rejected) and relay_error adds the
+        # notice below, so the page offers the signed-out email path instead of a
+        # modal whose submit cannot succeed.
         _send_ok = (status == _LF and not _list_sent) if is_list else (status not in NO_SEND_STATUSES)
         if share_enabled and _send_ok:
             contact_email = doc.get("contact_email") or ""
@@ -5884,6 +5904,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        hx_target="#account-gate-host", hx_swap="outerHTML",
                        cls="btn btn--secondary"),
             )
+        # A refused credential silently swapping the Send path would read as a
+        # bug; this one line says what happened and where to fix it (GDR 2d).
+        if _send_ok and relay_error:
+            action_btns_left.append(
+                Span(t("doc.send_relay_error_notice"), " ",
+                     A(t("doc.send_relay_error_link"), href="/settings/cloud", cls="auth-link"),
+                     cls="form-hint"))
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:

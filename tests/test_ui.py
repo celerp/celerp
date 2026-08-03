@@ -2511,6 +2511,76 @@ class TestDocumentPolish:
         assert b"next=doc-send" not in r.content
 
     @pytest.mark.asyncio
+    async def test_send_offers_email_path_when_relay_credential_rejected(self, ui_client):
+        """relay_status "error" is terminal - the relay refused this instance's
+        credential - so a relay send is guaranteed to fail. Unlike the lazy-tunnel
+        case above, the page must fall back to the signed-out email offer, hide
+        Share (minting would fail the same way), and say why with a pointer to
+        Settings. Gating on gateway_token_set alone kept showing the relay modal."""
+        import time
+        from ui.routes import documents
+        documents._free_send_quota_cache.update(
+            {"value": 3, "fetched_at": time.monotonic(), "pending": False})
+        try:
+            with (
+                patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+                patch("ui.api_client.get_relay_status", new=AsyncMock(
+                    return_value={"connected": False, "relay_status": "error",
+                                  "gateway_token_set": True, "public_url": ""})),
+            ):
+                r = await ui_client.get("/docs/d:1", cookies=_authed())
+            assert r.status_code == 200
+            content = r.content.decode()
+            assert "send-modal-d-1" not in content
+            assert "next=doc-send" in content
+            assert "Web access connection failed" in content
+            assert 'href="/settings/cloud"' in content
+            assert 'hx-get="/docs/d:1/share"' not in content
+        finally:
+            documents._free_send_quota_cache.update(
+                {"value": 0, "fetched_at": None, "pending": False})
+
+    @pytest.mark.asyncio
+    async def test_send_modal_kept_while_relay_connecting(self, ui_client):
+        """"connecting" is a transient state, not a rejection: the real Send modal
+        stays and no failure notice renders."""
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "relay_status": "connecting",
+                              "gateway_token_set": True, "public_url": ""})),
+            patch("ui.api_client.get_share_state", new=AsyncMock(return_value={"active": False})),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b"send-modal-d-1" in r.content
+        assert b"next=doc-send" not in r.content
+        assert b"Web access connection failed" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_list_send_hidden_when_relay_credential_rejected(self, ui_client):
+        """Lists gate their Send modal on public_url, which a paid instance keeps
+        in the error payload - so a rejected credential left the quotation Send
+        modal up too. Same fallback: modal gone, notice with the Settings pointer."""
+        quotation = {
+            "entity_id": "list:1", "list_type": "quotation", "status": "finalized",
+            "receiver_type": "contact", "receiver": "Acme", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_relay_status", new=AsyncMock(
+                return_value={"connected": False, "relay_status": "error",
+                              "gateway_token_set": True,
+                              "public_url": "https://x.celerp.com"})),
+        ):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        assert "send-modal-list-1" not in content
+        assert "Web access connection failed" in content
+
+    @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
         """The online-only note renders in both the send modal and the share panel."""
         note = b"Please note this URL will only work while your terminal is online."

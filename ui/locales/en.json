@@ -560,6 +560,8 @@
   "doc.send_appends_hint_offline": "The document amount is added automatically.",
   "doc.send_multiple_hint": "Separate multiple addresses with a comma (,)",
   "doc.send_quota_line": "({used}/{quota}) Resets {date}",
+  "doc.send_relay_error_link": "Reconnect in Settings",
+  "doc.send_relay_error_notice": "Web access connection failed.",
   "doc.sent": "Sent",
   "doc.share_expired_tip": "Link expired. Share again to reactivate it.",
   "doc.share_expires": "Auto-revoke on",
