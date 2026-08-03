@@ -622,6 +622,23 @@ async def test_stop_resets_loss_announced(client):
     assert client._loss_announced is False
 
 
+@pytest.mark.asyncio
+async def test_stop_resets_auth_rejection_state(client):
+    """Disconnecting clears the auth-rejection latch and strike count on both
+    shutdown paths, so a reconnect with fresh credentials starts clean."""
+    client._auth_failures = 2
+    client._auth_rejected = True
+    client.stop()
+    assert client._auth_failures == 0
+    assert client._auth_rejected is False
+
+    client._auth_failures = 2
+    client._auth_rejected = True
+    await client.close()
+    assert client._auth_failures == 0
+    assert client._auth_rejected is False
+
+
 # ── auth_failed handling ──────────────────────────────────────────────────────
 
 def _auth_failed_frame():

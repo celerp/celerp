@@ -187,6 +187,8 @@ class GatewayClient:
         """
         self._running = False
         self._loss_announced = False
+        self._auth_failures = 0
+        self._auth_rejected = False
         self._stop_event.set()
         self._reaper_stop.set()
         ws = self._ws
