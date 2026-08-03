@@ -169,6 +169,73 @@ def _check_min_version(manifest: dict) -> None:
         )
 
 
+def _installed_table_prefixes(exclude: str) -> dict[str, str]:
+    """Return {module_name: table_prefix} for every installed module that
+    declares one, across every MODULE_DIR entry, excluding ``exclude`` so a
+    reinstall of the same name never collides with its own prior copy. Manifests
+    are read via AST, never imported.
+    """
+    from celerp.modules.loader import read_manifest
+
+    out: dict[str, str] = {}
+    for entry in os.environ.get("MODULE_DIR", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        base = Path(entry)
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if child.name == exclude or not (child / "__init__.py").exists():
+                continue
+            other = read_manifest(child).get("table_prefix")
+            if isinstance(other, str) and other:
+                out[child.name] = other
+    return out
+
+
+def _validate_table_prefix(name: str, manifest: dict) -> None:
+    """When a module declares migrations it must carry a well-formed,
+    collision-free ``table_prefix``: the runtime migration runner scopes and (on
+    purge) drops tables by this prefix, so a prefix that captures a core table or
+    overlaps another module's would put foreign data on the drop list. Refuse the
+    install with a clear reason rather than defaulting a prefix, since a wrong
+    default silently mis-scopes purge.
+    """
+    if not manifest.get("migrations"):
+        return
+    prefix = manifest.get("table_prefix")
+    if not prefix or not isinstance(prefix, str):
+        raise ModuleImportError(
+            "This module declares migrations, so its PLUGIN_MANIFEST must set a "
+            '"table_prefix" naming the tables it owns (for example "acme_").'
+        )
+    if len(prefix) < 3:
+        raise ModuleImportError(
+            f'table_prefix "{prefix}" is too short; it must be at least 3 characters.'
+        )
+    if not prefix.endswith("_"):
+        raise ModuleImportError(
+            f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
+        )
+    from celerp.models.base import Base
+
+    for table_name in Base.metadata.tables:
+        if table_name.startswith(prefix):
+            raise ModuleImportError(
+                f'table_prefix "{prefix}" collides with the existing table '
+                f'"{table_name}". Choose a prefix that no core or installed '
+                "table begins with."
+            )
+    for other_name, other_prefix in _installed_table_prefixes(exclude=name).items():
+        if prefix.startswith(other_prefix) or other_prefix.startswith(prefix):
+            raise ModuleImportError(
+                f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '
+                f'already claimed by installed module "{other_name}". Prefixes '
+                "must not be prefixes of one another."
+            )
+
+
 def _module_dir() -> Path:
     raw = os.environ.get("MODULE_DIR", "")
     first = raw.split(",")[0].strip()
@@ -242,6 +309,7 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
+    _validate_table_prefix(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
     # the explicit reserved-name refusals above: this is the one place every
     # entrypoint (zip, folder) funnels through, so it is the actual source of
