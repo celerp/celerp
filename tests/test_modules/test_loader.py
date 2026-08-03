@@ -1317,8 +1317,8 @@ class TestRecordLoadError:
         from celerp.modules import loader
         loader.record_load_error(
             "db-mod",
-            "connect failed: postgresql+asyncpg://celerp:s3cret@db.internal:5432/celerp",
+            "connect failed: postgresql+asyncpg://celerp:s3cret@db.example.com:5432/celerp",
         )
         recorded = loader.load_errors()["db-mod"]
         assert "s3cret" not in recorded
-        assert "celerp:***@db.internal" in recorded
+        assert "celerp:***@db.example.com" in recorded
