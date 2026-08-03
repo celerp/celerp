@@ -28,6 +28,10 @@ log = logging.getLogger(__name__)
 
 _PING_INTERVAL = 30   # seconds
 _BACKOFF_MAX = 60     # seconds
+# Consecutive auth rejections before the client stops retrying: a rejected
+# credential never heals on its own, so beyond a small allowance for a
+# mid-deploy blip every further attempt is noise.
+_AUTH_FAILED_MAX = 3
 # Lazy free-tier teardown: check this often, and drop the tunnel only after this
 # many seconds with no live share AND no proxied request (the grace window debounces
 # a revoke-then-reshare so it does not flap connect/disconnect).
@@ -73,6 +77,10 @@ class GatewayClient:
         # One visible line per outage, not one per retry: set on the first
         # failed attempt, cleared by hello_ack so the next outage warns again.
         self._loss_announced = False
+        # Consecutive auth rejections; at _AUTH_FAILED_MAX the client goes
+        # terminal (_auth_rejected) and run() idles instead of reconnecting.
+        self._auth_failures = 0
+        self._auth_rejected = False
         self._required_tos_version: str = ""
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
         # (a dropped task = a lost proxy response or webhook sync).
@@ -129,7 +137,7 @@ class GatewayClient:
         try:
             backoff = 1
             while self._running:
-                if self._relay_status == "tos_required":
+                if self._relay_status == "tos_required" or self._auth_rejected:
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=1)
                         break  # stop() was called
@@ -140,7 +148,7 @@ class GatewayClient:
                     await self._connect_and_serve()
                     backoff = 1  # reset on clean disconnect
                 except Exception as exc:
-                    if self._loss_announced or not self._running:
+                    if self._loss_announced or not self._running or self._auth_rejected:
                         # A failure while stopping is shutdown, not a loss to announce.
                         log.debug("Gateway retry failed: %s. Next attempt in %ds.", exc, backoff)
                     else:
@@ -165,6 +173,8 @@ class GatewayClient:
         """Signal the run loop to stop. Call close() from async context for clean WS shutdown."""
         self._running = False
         self._loss_announced = False
+        self._auth_failures = 0
+        self._auth_rejected = False
         self._stop_event.set()
         self._reaper_stop.set()
 
@@ -309,6 +319,7 @@ class GatewayClient:
 
         if msg_type == "hello_ack":
             self._set_status("active")
+            self._auth_failures = 0  # an accepted handshake clears the strike count
             # Relay returns the canonical instance_id - store it for quota calls
             from celerp.gateway.state import set_session_token, set_instance_id
             canonical_id = payload.get("instance_id", "")
@@ -355,6 +366,19 @@ class GatewayClient:
                 self._set_status("tos_required")
                 self._required_tos_version = payload.get("required_version", "")
                 log.warning("Gateway: TOS acceptance required (version=%s)", self._required_tos_version)
+            elif code == "auth_failed":
+                self._auth_failures += 1
+                if self._auth_failures >= _AUTH_FAILED_MAX:
+                    self._auth_rejected = True
+                    self._set_status("error")
+                    log.error(
+                        "Relay rejected this installation's saved credentials %d times; "
+                        "not retrying. Disconnect and reconnect from Settings, Celerp Connect.",
+                        self._auth_failures,
+                    )
+                else:
+                    log.debug("Gateway auth rejected (attempt %d of %d).",
+                              self._auth_failures, _AUTH_FAILED_MAX)
             else:
                 log.error("Gateway error %s: %s", code, payload.get("message"))
 

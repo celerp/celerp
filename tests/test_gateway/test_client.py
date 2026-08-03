@@ -154,14 +154,14 @@ async def test_session_refresh_empty_token_ignored(client):
 
 @pytest.mark.asyncio
 async def test_error_message_logged(client, caplog):
-    """error message -> logged at ERROR level, no exception raised."""
+    """A generic error message -> logged at ERROR level, no exception raised."""
     import logging
     with caplog.at_level(logging.ERROR, logger="celerp.gateway.client"):
         await client._dispatch({
             "type": "error",
-            "payload": {"code": "AUTH_FAILED", "message": "Invalid token"},
+            "payload": {"code": "quota_exceeded", "message": "Monthly quota reached"},
         })
-    assert "AUTH_FAILED" in caplog.text
+    assert "quota_exceeded" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -620,3 +620,61 @@ async def test_stop_resets_loss_announced(client):
     client._loss_announced = True
     await client.close()
     assert client._loss_announced is False
+
+
+# ── auth_failed handling ──────────────────────────────────────────────────────
+
+def _auth_failed_frame():
+    return {"type": "error", "payload": {"code": "auth_failed", "message": "Invalid GATEWAY_TOKEN"}}
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_becomes_terminal_after_bounded_retries(client, caplog):
+    """Repeated auth_failed frames stop the client instead of retrying forever.
+
+    The first rejections are quiet retries (a mid-deploy blip should not kill the
+    connection); the third is terminal: status flips to error and exactly one
+    ERROR line is emitted, not one per attempt."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="celerp.gateway.client"):
+        await client._dispatch(_auth_failed_frame())
+        await client._dispatch(_auth_failed_frame())
+        assert client.relay_status != "error"
+        await client._dispatch(_auth_failed_frame())
+    assert client.relay_status == "error"
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_halts_reconnect_loop(client, monkeypatch):
+    """After the terminal rejection, run() idles without reconnecting."""
+    import asyncio
+
+    for _ in range(3):
+        await client._dispatch(_auth_failed_frame())
+    connect_calls = []
+
+    async def fake_connect():
+        connect_calls.append(1)
+
+    monkeypatch.setattr(client, "_connect_and_serve", fake_connect)
+    task = asyncio.create_task(client.run())
+    await asyncio.sleep(0.1)
+    client.stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert connect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_hello_ack_clears_auth_failure_strikes(client):
+    """A successful handshake resets the rejection count: two old strikes plus
+    two new ones must not trip the terminal state; only a fresh third does."""
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch({"type": "hello_ack", "payload": {}})
+    await client._dispatch(_auth_failed_frame())
+    await client._dispatch(_auth_failed_frame())
+    assert client.relay_status != "error"
+    await client._dispatch(_auth_failed_frame())
+    assert client.relay_status == "error"
