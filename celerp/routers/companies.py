@@ -1705,6 +1705,134 @@ async def delete_module(
     return {"ok": True, "name": module_name}
 
 
+async def _module_tables_with_row_counts(session: AsyncSession, prefix: str) -> list[dict]:
+    """Live tables carrying *prefix*, each with an exact row count.
+
+    The one place both the purge preview and the purge itself derive their table
+    set from, so the list an admin sees is the list that gets dropped, both taken
+    from the manifest prefix server-side. An empty prefix matches nothing.
+    """
+    from sqlalchemy import func, inspect as sa_inspect, select as sa_select, table as sa_table
+
+    if not prefix:
+        return []
+
+    def _names(sync_session) -> list[str]:
+        return sorted(
+            t for t in sa_inspect(sync_session.connection()).get_table_names()
+            if t.startswith(prefix))
+
+    names = await session.run_sync(_names)
+    tables: list[dict] = []
+    for name in names:
+        count = (await session.execute(
+            sa_select(func.count()).select_from(sa_table(name)))).scalar_one()
+        tables.append({"name": name, "rows": count})
+    return tables
+
+
+def _drop_module_tables(sync_session, names: list[str]) -> None:
+    """Drop *names* with quoted identifiers: one multi-table DROP on Postgres
+    (atomic, no CASCADE) and sequential single drops elsewhere (SQLite has no
+    multi-table DROP). A dependent object outside the set makes Postgres fail the
+    whole statement, which is the intended all-or-nothing behavior."""
+    from sqlalchemy import text
+
+    conn = sync_session.connection()
+    quote = conn.dialect.identifier_preparer.quote
+    quoted = [quote(n) for n in names]
+    if conn.dialect.name == "postgresql":
+        conn.execute(text("DROP TABLE " + ", ".join(quoted)))
+    else:
+        for q in quoted:
+            conn.execute(text("DROP TABLE " + q))
+
+
+def _is_fk_dependency_error(exc: Exception) -> bool:
+    """True when a DROP was refused because an object outside the drop set still
+    depends on a table in it (Postgres SQLSTATE 2BP01), so the caller can explain
+    the refusal in plain words instead of leaking SQL."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if code == "2BP01":
+        return True
+    return "depend" in str(exc).lower()
+
+
+@router.get("/me/modules/{module_name}/purge-preview", dependencies=[require_permission("manage_company_settings")])
+async def purge_module_preview(
+    module_name: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List the module's data tables with live row counts. Admin only.
+
+    Read-only. Resolves the package, reads its declared table_prefix, and returns
+    every live table carrying that prefix with an exact row count, so an admin can
+    see exactly what a purge would drop. A module declaring no table_prefix returns
+    an empty list.
+    """
+    from celerp.modules.loader import read_manifest, resolve_module_path
+
+    pkg_path = resolve_module_path(module_name)
+    if pkg_path is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
+    tables = await _module_tables_with_row_counts(session, prefix)
+    return {"tables": tables}
+
+
+@router.post("/me/modules/{module_name}/purge-data", dependencies=[require_permission("manage_company_settings")])
+async def purge_module_data(
+    module_name: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Drop every table carrying the module's declared prefix, in one transaction. Admin only.
+
+    Refused while the module is still enabled or running: its data must be quiet
+    before it is dropped, so the admin disables and restarts first, from the same
+    row. The drop list is re-derived from the manifest prefix server-side; no
+    client-sent preview is trusted. A module with no matching tables is a clean
+    no-op success. A table outside the module still depending on one of these
+    tables blocks the whole drop, which rolls back with a plain explanation.
+    Deleting the module folder is a separate action and does not touch these tables.
+    """
+    from celerp.modules.loader import is_running, read_manifest, resolve_module_path
+    from celerp.modules.registry import get_enabled
+
+    company = await session.get(Company, company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    pkg_path = resolve_module_path(module_name)
+    if pkg_path is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
+        raise HTTPException(
+            status_code=409,
+            detail="Disable this module and restart before purging its data.")
+
+    prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
+    tables = await _module_tables_with_row_counts(session, prefix)
+    names = [t["name"] for t in tables]
+    if not names:
+        return {"ok": True, "name": module_name, "dropped": []}
+
+    try:
+        async with session.begin_nested():
+            await session.run_sync(_drop_module_tables, names)
+        await session.commit()
+    except Exception as exc:
+        if _is_fk_dependency_error(exc):
+            raise HTTPException(
+                status_code=409,
+                detail=("Could not purge: a table outside this module still "
+                        "depends on one of its tables. Nothing was deleted."))
+        raise HTTPException(status_code=409, detail="Purge failed; nothing was removed.")
+    return {"ok": True, "name": module_name, "dropped": names}
+
+
 class _ImportPathBody(BaseModel):
     path: str
 
