@@ -208,6 +208,47 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     assert got["labor"][0]["kind"] == "fixed" and got["labor"][0]["amount"] == 40.0
 
 
+def test_same_component_can_be_added_twice(page, ui_server, api):
+    """A process recipe can use the same ingredient in more than one step (e.g. water
+    added in two stages of bread dough), so a BOM must allow an ingredient more than once:
+    the picker keeps offering an already-added ingredient, and each added line is
+    independent and its cost counts on its own."""
+    raw_id = api.post("/items", json={"sku": "DUP-WATER", "name": "Water", "quantity": 100,
+                                      "sell_by": "gram", "cost_total": 1000,
+                                      "inventory_type": "component"}).json()["id"]  # unit 10
+    fg = api.post("/items", json={"sku": "DUP-BREAD", "name": "Bread", "quantity": 0,
+                                  "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _open_tab(page, ui_server, fg)
+
+    # Step 1's water.
+    _ghost_pick(page, "DUP-WATER")
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
+    _set_cell(page, "recipe__components__0__quantity", "2")
+    page.wait_for_selector("#recipe-cost-card:has-text('20')", timeout=8000)
+
+    # The picker must still offer the same ingredient so it can be used in a second step.
+    box = page.locator(".recipe-add-row .combobox-input").first
+    box.click()
+    box.fill("DUP-WATER")
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    offered = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)"
+                           ":not(.combobox-option--pinned):not(.combobox-option--new):visible")
+    assert offered.count() >= 1, "an already-added ingredient is not offered again, so it cannot be used in a second step"
+
+    # Step 2's water: add the same ingredient a second time.
+    _ghost_pick(page, "DUP-WATER")
+    page.wait_for_selector('td[data-col="recipe__components__1__quantity"]', timeout=8000)
+    _set_cell(page, "recipe__components__1__quantity", "3")
+    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)  # 2x10 + 3x10, each line counts
+
+    got = api.get(f"/items/{fg}").json()["recipe"]
+    comps = got["components"]
+    assert len(comps) == 2, f"the same ingredient was not added twice: {comps!r}"
+    assert all(c["item_id"] == raw_id for c in comps), f"both lines should be the same ingredient: {comps!r}"
+    assert got["unit_cost"] == 50.0  # both lines' costs count independently
+
+
 def test_add_row_validation_flashes_empty_required_field(page, ui_server, api):
     """Clicking + Add with no operation/description flashes the field red (no silent failure)."""
     fg = api.post("/items", json={"sku": "AV-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
