@@ -639,11 +639,6 @@ def _stamped_revision(db_url: str) -> str | None:
         engine.dispose()
 
 
-# One fixed key, so every process that migrates this database queues on the same
-# lock. Value is arbitrary and only has to be stable across versions.
-_MIGRATION_LOCK_KEY = 4207320001
-
-
 def _migrate_to_head(db_url: str) -> None:
     """Apply pending migrations, the grants, then the develop→release reconcile.
 
@@ -661,6 +656,8 @@ def _migrate_to_head(db_url: str) -> None:
     cannot be mistaken for one that did not.
     """
     from sqlalchemy import create_engine, text
+
+    from celerp.db import _MIGRATION_LOCK_KEY
 
     engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
         isolation_level="AUTOCOMMIT"

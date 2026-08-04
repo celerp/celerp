@@ -228,6 +228,9 @@ async def test_cloud_activate_reconnect_flow(client):
     """Activate returns reconnect=True payload when relay signals reconnect."""
     token = await _register(client, "act-reconnect")
 
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = False  # a fresh page, not a sticky reconnect
+
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
@@ -728,11 +731,13 @@ async def test_cloud_disconnect_is_sticky(client):
 
 
 @pytest.mark.asyncio
-async def test_cloud_activate_reconnects_via_stored_token(client):
-    """A sticky-disconnected install reconnects from the preserved credential:
-    /settings/cloud-activate re-applies the stored token locally (no relay
-    /auth/activate round-trip, no re-entering email) and ends the disconnect."""
-    token = await _register(client, "reconnect-stored")
+async def test_cloud_activate_reconnect_resyncs_via_relay(client):
+    """A sticky-disconnected install reconnects by RE-ACTIVATING through the relay:
+    activate mints a fresh credential (keyed on the preserved instance_id, no email
+    to re-enter) and it is applied directly with no confirmation dialog. Applying the
+    fresh token - not the stored one - is what resyncs an install whose stored token
+    the relay had rotated away from."""
+    token = await _register(client, "reconnect-resync")
     gw = _mock_gw("active")
 
     from celerp.config import settings as _s
@@ -740,26 +745,76 @@ async def test_cloud_activate_reconnects_via_stored_token(client):
     _s.gateway_token = ""
     _s.backup_enabled = False  # keep the scheduler out of this unit test
 
-    written = {}
-    stored = {"cloud": {"token": "stored-tok", "public_url": "https://co.celerp.app"}}
+    applied = {}
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "gateway_token": "fresh-relay-tok",
+        "public_url": None,
+        "tos_version": None,
+        # An established install: activate flags reconnect, but a disconnected
+        # reconnect must still apply directly rather than bounce to the dialog.
+        "reconnect": True,
+    }
+    stored = {"cloud": {"token": "stale-stored-tok", "public_url": None}}
+
+    async def _fake_apply(tok, iid, public_url=None, tos_version=None):
+        applied["token"] = tok
+        _s.cloud_disconnected = False
+
     with (
-        patch("celerp.gateway.ensure_running"),
-        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.gateway.client.get_client", return_value=gw),
-        patch("celerp.config.write_config", side_effect=lambda cfg: written.update(cfg)),
-        patch("celerp.config.read_config", return_value=stored),
+        patch("celerp.routers.health._apply_gateway_token_api", new=_fake_apply),
     ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
         r = await client.post("/settings/cloud-activate", headers=_h(token))
 
     assert r.status_code == 200
     data = r.json()
-    # connected=True with the exact stored credential proves the local fast-path
-    # ran: a fall-through to /auth/activate (no relay mocked here) would have
-    # errored, and could never yield this token.
     assert data["connected"] is True
-    assert data["public_url"] == "https://co.celerp.app"
-    assert _s.gateway_token == "stored-tok"
+    # The FRESH activated token was applied, not the stale stored one: that is the resync.
+    assert applied["token"] == "fresh-relay-tok"
     assert _s.cloud_disconnected is False
+
+
+@pytest.mark.asyncio
+async def test_cloud_activate_relay_unreachable_reports_error_and_keeps_disconnect(client):
+    """When the relay cannot be reached, reconnect degrades honestly: it returns an
+    error and leaves the disconnect state untouched. It must NOT re-apply the stored
+    token or claim connected - re-arming a credential the relay may have rotated away
+    from is exactly the rejected state this flow exists to clear (HOLY determinism:
+    fall back to a neutral state, never fabricate success)."""
+    import httpx
+    token = await _register(client, "reconnect-unreachable")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = True
+    _s.gateway_token = ""
+    _s.backup_enabled = False
+
+    applied = {}
+    # A preserved token is on disk: the flow must still refuse to replay it offline.
+    stored = {"cloud": {"token": "stored-maybe-orphaned-tok", "public_url": "https://co.celerp.app"}}
+
+    async def _fake_apply(tok, iid, public_url=None, tos_version=None):
+        applied["token"] = tok  # must never run on the unreachable path
+        _s.cloud_disconnected = False
+
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.read_config", return_value=stored),
+        patch("celerp.routers.health._apply_gateway_token_api", new=_fake_apply),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            side_effect=httpx.ConnectError("refused"))
+        r = await client.post("/settings/cloud-activate", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data and data.get("connected") is not True
+    assert applied == {}  # no token applied - nothing fabricated
+    assert _s.cloud_disconnected is True  # disconnect state left honest
 
 
 @pytest.mark.asyncio
@@ -793,6 +848,74 @@ async def test_cloud_apply_token_clears_disconnect_flag(client):
     assert r.status_code == 200
     assert _s.cloud_disconnected is False
     assert "disconnected" not in written.get("cloud", {})
+
+
+@pytest.mark.asyncio
+async def test_cloud_apply_token_tears_down_rejected_client(client):
+    """Reconnecting while a relay-rejected client is still set must not leave the
+    dead client in place: the settings page reads its stale error otherwise. The
+    apply path closes the non-serving client and clears the singleton before any
+    rebuild - and on the free no-share path (no rebuild) this teardown is the whole
+    fix that returns the tunnel to a neutral state."""
+    token = await _register(client, "apply-teardown")
+    dead = MagicMock()
+    dead.is_serving = MagicMock(return_value=False)
+    dead.close = AsyncMock()
+    cleared = []
+
+    from celerp.config import settings as _s
+    _s.backup_enabled = False
+    _s.celerp_public_url = ""  # free instance: no rebuild on the no-share path
+
+    with (
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.client.get_client", return_value=dead),
+        patch("celerp.gateway.client.set_client", side_effect=lambda v: cleared.append(v)),
+        patch("celerp.config.write_config"),
+        patch("celerp.config.read_config", return_value={"cloud": {}}),
+    ):
+        r = await client.post(
+            "/settings/cloud-apply-token",
+            headers=_h(token),
+            json={"gateway_token": "fresh-tok"},
+        )
+
+    assert r.status_code == 200
+    dead.is_serving.assert_called_once_with("fresh-tok")
+    dead.close.assert_awaited_once()
+    assert None in cleared  # the stale singleton was cleared
+
+
+@pytest.mark.asyncio
+async def test_cloud_apply_token_keeps_serving_client(client):
+    """A reconnect that re-applies the token a healthy client already serves must
+    not close and rebuild it: that would drop a working tunnel for no reason."""
+    token = await _register(client, "apply-keep")
+    live = MagicMock()
+    live.is_serving = MagicMock(return_value=True)
+    live.close = AsyncMock()
+
+    from celerp.config import settings as _s
+    _s.backup_enabled = False
+    _s.celerp_public_url = ""
+
+    with (
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.config.write_config"),
+        patch("celerp.config.read_config", return_value={"cloud": {}}),
+    ):
+        r = await client.post(
+            "/settings/cloud-apply-token",
+            headers=_h(token),
+            json={"gateway_token": "same-tok"},
+        )
+
+    assert r.status_code == 200
+    live.close.assert_not_awaited()
 
 
 def test_legacy_relay_toggle_routes_absent():

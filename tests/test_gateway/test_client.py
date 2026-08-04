@@ -262,6 +262,35 @@ def test_relay_status_property(client):
     assert client.relay_status == "active"
 
 
+# ── is_serving ────────────────────────────────────────────────────────────────
+
+def test_is_serving_true_for_matching_token_when_healthy(client):
+    """A live client on the current token is serving it, so a reconnect that
+    persisted the same token must treat it as the tunnel and no-op."""
+    client._relay_status = "active"
+    assert client.is_serving("test-gateway-token") is True
+
+
+def test_is_serving_false_on_token_mismatch(client):
+    """A token that rotated out from under this client is not the one it serves."""
+    client._relay_status = "active"
+    assert client.is_serving("a-different-token") is False
+
+
+def test_is_serving_false_when_auth_rejected(client):
+    """A relay-rejected client idles dead even though its token still matches, so
+    callers must rebuild rather than trust the stale singleton."""
+    client._auth_rejected = True
+    assert client.is_serving("test-gateway-token") is False
+
+
+def test_is_serving_false_in_error_state(client):
+    """An error-latched client is not serving; the settings page must not read its
+    stale error as the live tunnel state."""
+    client._relay_status = "error"
+    assert client.is_serving("test-gateway-token") is False
+
+
 # ── _send ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

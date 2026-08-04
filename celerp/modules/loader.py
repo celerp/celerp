@@ -454,6 +454,17 @@ def load_errors() -> dict[str, str]:
     return dict(_load_errors)
 
 
+def record_load_error(name: str, msg: str) -> None:
+    """Record a load failure for a module the UI should surface, masking any
+    database credentials in the message first so a connection string never
+    reaches the modules page. Used by the startup migration phase to hold a
+    third-party module's failure across load_all (which clears the map on entry).
+    """
+    from celerp.db import mask_db_credentials
+
+    _load_errors[name] = mask_db_credentials(msg)
+
+
 def loaded_modules() -> list[dict]:
     """Return manifests of all successfully loaded modules."""
     return list(_loaded)
@@ -481,7 +492,7 @@ def is_running(pkg_name: str) -> bool:
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
     "name", "display_name", "label", "version", "description", "author",
-    "depends_on", "license", "min_celerp_version",
+    "depends_on", "license", "min_celerp_version", "table_prefix",
 })
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 
+from celerp.config import settings as _settings
+
 API_BASE = os.getenv("API_URL", os.getenv("CELERP_API_URL", "http://localhost:8000"))
 RELAY_URL = os.getenv("CELERP_RELAY_URL", "https://relay.celerp.com")
 PRIVACY_POLICY_URL = "https://relay.celerp.com/privacy"
@@ -29,6 +31,21 @@ def cookie_domain(request) -> str | None:
     if host in _LOCAL_HOSTS:
         return None
     return host
+
+
+def set_session_cookies(resp, access_token: str, refresh_token: str, request=None) -> None:
+    """Write the auth + refresh cookies onto a response. The one authoritative
+    session-cookie writer, reused by login, company switch, and the modules
+    restart flow."""
+    domain = cookie_domain(request) if request is not None else None
+    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=domain)
+    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=86400 * 30, secure=_settings.cookie_secure, domain=domain)
+
+
+def clear_session_cookies(resp) -> None:
+    """Delete the auth + refresh cookies from a response."""
+    resp.delete_cookie(COOKIE_NAME)
+    resp.delete_cookie(REFRESH_COOKIE_NAME)
 
 
 def get_claims(request) -> dict:

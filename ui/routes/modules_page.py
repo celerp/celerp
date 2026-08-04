@@ -25,6 +25,7 @@ and the page's poll-and-reload script recovers the browser.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from fasthtml.common import *
@@ -33,15 +34,19 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
-from ui.api_client import APIError
+from ui.api_client import APIError, refresh_access_token
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
-from ui.config import get_role as _get_role
+from ui.config import get_role as _get_role, REFRESH_COOKIE_NAME, set_session_cookies
 from ui.i18n import t, get_lang
-from ui.routes.account import GATE_UNREACHABLE, account_gate, gate_modal_response
+from ui.routes.account import (
+    GATE_UNREACHABLE, _DISMISS_GATE_MODAL, account_gate, gate_modal_response,
+)
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
@@ -187,6 +192,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 
     rows = []
+    load_error_toasts = []
     for m in modules:
         name = m["name"]
         label = m.get("label") or name
@@ -221,10 +227,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_parts.append(Span(status_filter, cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
         elif enabled and load_error:
-            # A broken module fails loudly, not silently.
+            # A broken module fails loudly, not silently: the row keeps the Failed
+            # badge and the reason is surfaced as a corner toast, so a long error
+            # (a migration traceback, say) never stretches the status column and
+            # breaks the table layout.
             status_filter = t("modules.badge_failed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
-            status_parts.append(Div(load_error, cls="text-muted small module-load-error"))
+            load_error_toasts.append((name, label, load_error))
         elif enabled:
             # Enabled but not yet loaded: surface the restart as a control, not
             # a passive label, so the change can be applied from the row itself.
@@ -294,11 +303,14 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # appears once the module is off, so nothing that depends on it is live.
         action_parts = [toggle_btn]
         if not effectively_enabled and not m.get("is_default"):
+            # The X opens the delete dialog rather than deleting on a one-line
+            # confirm. Deletion has two paths - keep the data or drop it too - and
+            # the dialog is where that choice and its warning live, so the
+            # destructive purge control never sits on the everyday row.
             action_parts.append(Button("×",
-                hx_post=f"/modules/{name}/delete",
+                hx_get=f"/modules/{name}/delete-options",
                 hx_target="#local-modules-panel",
                 hx_swap="outerHTML",
-                hx_confirm=t("modules.delete_confirm", lang, name=label),
                 hx_disabled_elt="this",
                 title=t("modules.delete_module", lang),
                 aria_label=t("modules.delete_module", lang),
@@ -445,6 +457,25 @@ def _local_panel(modules: list[dict], lang: str = "en",
     })();
     """)
 
+    # Module load failures ride the app-wide corner toast, not the table: the
+    # status cell keeps only its Failed badge, so a long reason cannot stretch the
+    # column. Deduped per page so a panel swap does not re-announce a standing
+    # failure; a full reload starts fresh and re-announces.
+    if load_error_toasts:
+        payload = [{"key": f"{n}|{e}", "msg": f"{lbl}: {e}"}
+                   for n, lbl, e in load_error_toasts]
+        errors_json = json.dumps(payload).replace("</", "<\\/")
+        load_error_js = Script(
+            "(function(){if(!window.celerpToast)return;"
+            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{};"
+            "var errs=" + errors_json + ";"
+            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown[x.key])return;"
+            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);});"
+            "})();"
+        )
+    else:
+        load_error_js = ""
+
     return Div(
         folder_row,
         banner,
@@ -452,6 +483,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         import_section,
         content,
         desktop_js,
+        load_error_js,
         id="local-modules-panel",
         cls="settings-card",
     )
@@ -935,6 +967,61 @@ def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResp
     return HTMLResponse(to_xml(fragment), headers=headers)
 
 
+def _close_gate_host() -> FT:
+    """An out-of-band swap that empties the shared modal host, tearing down the
+    purge dialog once its confirm resolves (the panel below re-renders in place).
+    """
+    return Div(id="account-gate-host", hx_swap_oob="true")
+
+
+def _delete_dialog(module_name: str, label: str, has_prefix: bool, lang: str) -> FT:
+    """The delete dialog: a module's two exit paths as one deliberate choice.
+
+    "Delete module" removes the package but keeps its tables, so a re-import later
+    reconnects the data. "Delete and purge data" also drops every table the module
+    owns and cannot be undone, so it carries its warning in its tooltip and shows
+    only when the module actually owns tables (declares a table_prefix). Both post
+    to the delete route; purge=1 selects the destructive path, whose table set the
+    server re-derives from the manifest prefix, never from client input. Wrapped for
+    delivery by gate_modal_response, which supplies the Dialog, showModal, and Esc
+    teardown.
+    """
+    header = Div(
+        H3(t("modules.delete_options_title", lang, name=label),
+           cls="modal-dialog__title"),
+        Button("✕", type="button", cls="modal-dialog__close",
+               aria_label=t("btn.close", lang), onclick=_DISMISS_GATE_MODAL),
+        cls="modal-dialog__header",
+    )
+    choices = [
+        Button(t("modules.delete_module", lang), type="button",
+               hx_post=f"/modules/{module_name}/delete",
+               hx_target="#local-modules-panel",
+               hx_swap="outerHTML",
+               hx_disabled_elt="this",
+               title=t("modules.delete_keep_hint", lang),
+               cls="btn btn--sm btn--secondary"),
+    ]
+    if has_prefix:
+        # The tooltip is the whole warning here (owner's call): the label already
+        # says "purge data", and the hint spells out that it is permanent.
+        choices.append(Button(t("modules.delete_purge", lang), type="button",
+               hx_post=f"/modules/{module_name}/delete?purge=1",
+               hx_target="#local-modules-panel",
+               hx_swap="outerHTML",
+               hx_disabled_elt="this",
+               title=t("modules.delete_purge_hint", lang),
+               cls="btn btn--sm btn--danger"))
+    actions = Div(
+        Button(t("btn.cancel", lang), type="button",
+               cls="btn btn--sm btn--secondary", onclick=_DISMISS_GATE_MODAL),
+        *choices,
+        cls="modal-dialog__actions",
+    )
+    return Div(header, Div(actions, cls="reset-modal__body"),
+               cls="module-delete-dialog")
+
+
 def _community_table(community: list[dict], installed: set[str], lang: str,
                      downloaded: dict[str, str] | None = None) -> FT:
     """Community listings, same table schema as the Installed Modules table."""
@@ -1100,29 +1187,65 @@ def setup_routes(app):
             return _unavailable_panel(lang)
         return _local_panel(modules, lang=lang)
 
+    @app.get("/modules/{module_name}/delete-options")
+    async def module_delete_options(request: Request, module_name: str):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        try:
+            modules = await api.get_modules(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return _toast(_unavailable_panel(lang), t("modules.delete_failed", lang))
+        module = next((m for m in modules if m.get("name") == module_name), None)
+        if module is None:
+            # Gone already (a concurrent delete): refresh the panel and say why,
+            # rather than opening a dialog over a row that no longer exists.
+            return _toast(_local_panel(modules, lang), t("modules.delete_failed", lang))
+        # Whether to offer the purge path is decided server-side from the manifest
+        # prefix, never a client hint: the same fact the purge itself derives its
+        # drop list from.
+        has_prefix = bool(module.get("table_prefix"))
+        label = module.get("label") or module_name
+        return gate_modal_response(
+            _delete_dialog(module_name, label, has_prefix, lang))
+
     @app.post("/modules/{module_name}/delete")
     async def module_delete(request: Request, module_name: str):
         token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
-        flash_text = None
+        purge = request.query_params.get("purge") == "1"
+        flash_text, flash_error = None, False
         try:
+            if purge:
+                # Drop the module's tables before its folder: the drop list is
+                # read from the manifest, which goes away with the folder. A purge
+                # that fails raises before delete runs, so the module and its data
+                # both stay, with the reason - never data gone but module kept.
+                await api.purge_module_data(token, module_name)
             await api.delete_module(token, module_name)
             modules = await api.get_modules(token)
+            if purge:
+                flash_text = t("modules.purge_success", lang, name=module_name)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            # Refused (still enabled/running, or default): keep the row and tell
-            # the user why, rather than silently doing nothing.
-            flash_text = e.detail or t("modules.delete_failed", lang)
+            # Refused (still enabled/running, or default), or a rolled-back purge:
+            # keep the row and its data and tell the user why.
+            flash_text, flash_error = e.detail or t("modules.delete_failed", lang), True
             try:
                 modules = await api.get_modules(token)
             except APIError:
                 # The refusal still reaches the user (toast); the panel retries.
                 return _toast(_unavailable_panel(lang), flash_text)
-        return _local_panel(modules, lang=lang, flash_text=flash_text,
-                            flash_error=flash_text is not None)
+        # Re-render the panel in place and tear the dialog down together.
+        return (_local_panel(modules, lang=lang, flash_text=flash_text,
+                             flash_error=flash_error),
+                _close_gate_host())
 
     @app.post("/modules/import")
     async def module_import(request: Request):
@@ -1255,6 +1378,20 @@ def setup_routes(app):
         lang = get_lang(request)
         # Enabling and restarting a module - however it was installed - happen in
         # the Installed tab, so the restart banner always swaps that panel.
+        #
+        # Re-mint the session cookie from live settings before restarting, while
+        # the API is still up. The modules claim is baked into the token at login,
+        # so without this the post-respawn reload would carry a stale claim and
+        # the sidebar would keep showing the pre-change module set until a manual
+        # re-login. Fail open: a refresh error must not block the restart.
+        new = None
+        refresh_cookie = request.cookies.get(REFRESH_COOKIE_NAME)
+        if refresh_cookie:
+            try:
+                new = await refresh_access_token(refresh_cookie)
+            except Exception as exc:
+                logger.warning("module_restart cookie refresh failed: %s", exc)
+                new = None
         try:
             await api.restart_system(token)
         except APIError as e:
@@ -1264,7 +1401,10 @@ def setup_routes(app):
             except APIError:
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
-        return _restarting_panel(lang, panel_id="local-modules-panel")
+        resp = HTMLResponse(to_xml(_restarting_panel(lang, panel_id="local-modules-panel")))
+        if new:
+            set_session_cookies(resp, new[0], new[1], request)
+        return resp
 
     @app.get("/modules/marketplace-panel")
     async def marketplace_panel(request: Request):

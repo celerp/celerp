@@ -333,7 +333,6 @@ function runMigrations(dbUrl) {
     PYTHONUTF8: "1",
     DATABASE_URL: dbUrl,
     PYTHONPATH: APP_DIR,
-    ALEMBIC_VERSION_LOCATIONS: _moduleAlembicLocations(),
   };
   execFileSync(pythonBin(), migrateArgs(dbUrl), {
     cwd: APP_DIR,
@@ -422,25 +421,6 @@ function runModuleSetup() {
     // Non-fatal: log and continue. Module will fail to load if deps are missing.
     console.warn("[modules] module_setup.py failed (non-fatal):", e.message);
   }
-}
-
-/** Build ALEMBIC_VERSION_LOCATIONS value from installed module migrations. */
-function _moduleAlembicLocations() {
-  const locations = ["celerp/alembic/versions"]; // core migrations location
-  if (!fs.existsSync(MODULE_DIR)) return locations.join(" ");
-
-  for (const modName of fs.readdirSync(MODULE_DIR)) {
-    const modPath = path.join(MODULE_DIR, modName);
-    if (!fs.statSync(modPath).isDirectory()) continue;
-    // Look for migrations/ subdir in any package inside the module
-    for (const subdir of fs.readdirSync(modPath)) {
-      const migrPath = path.join(modPath, subdir, "migrations");
-      if (fs.existsSync(migrPath) && fs.statSync(migrPath).isDirectory()) {
-        locations.push(migrPath);
-      }
-    }
-  }
-  return locations.join(" ");
 }
 
 function startApi(dbUrl, cfg) {

@@ -262,6 +262,16 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
     except Exception:
         pass
 
+    # A prior client whose credential the relay rejected idles in an error state and
+    # never rebuilds itself. The fresh token is persisted above; tear the dead client
+    # down so the settings page stops reading its stale error and any rebuild below
+    # starts clean. On the free no-share path (no rebuild) this alone returns the
+    # tunnel to a neutral inactive state.
+    existing = _gw.get_client()
+    if existing is not None and not existing.is_serving(token):
+        await existing.close()
+        _gw.set_client(None)
+
     # Route through ensure_running() - the single construction site - rather than
     # constructing GatewayClient inline; it applies the same lazy-tunnel gate as
     # boot and auto-activate (paid public_url, or a free instance with a live share).
@@ -282,31 +292,24 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
 
 @router.post("/settings/cloud-activate", dependencies=[Depends(get_current_user)])
 async def cloud_activate_api() -> dict:
-    """Call relay /auth/activate, apply token, start gateway client. Returns status."""
+    """Reconnect the relay tunnel. Re-activates through the relay to obtain a FRESH
+    credential - activate is keyed on the preserved instance_id, so there is no email
+    to re-enter, and it resyncs an install whose stored token the relay has rotated
+    away from (a stale token only ever gets rejected on reconnect). When the relay
+    cannot be reached the call reports the error and leaves the disconnect state
+    untouched: there is nothing to tunnel to offline, and re-applying the preserved
+    (possibly rotated-away) token would only re-arm the rejected state it fixes."""
     import httpx
-    from celerp.config import settings as _s, ensure_instance_id, read_config
+    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.gateway.state import activate_payload, relay_http_url as _rhu
 
     iid = ensure_instance_id()
+    relay_base = _rhu()
 
-    # Sticky-disconnect reconnect: the credential was preserved at disconnect, so
-    # bringing the tunnel back is a local operation - re-apply the stored token
-    # with no relay round-trip and no re-entering email. _apply_gateway_token_api
-    # clears the disconnect flag. A disconnected install with no stored token
-    # (never connected) falls through to the normal /auth/activate probe below.
-    if _s.cloud_disconnected:
-        cloud = read_config().get("cloud", {})
-        stored = cloud.get("token") or ""
-        if stored:
-            await _apply_gateway_token_api(
-                stored, iid,
-                public_url=cloud.get("public_url") or None,
-                tos_version=cloud.get("tos_version") or None,
-            )
-            gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
-            return {"connected": True, "relay_status": gw.relay_status if gw else "connecting",
-                    "public_url": cloud.get("public_url") or "", "instance_id": iid}
-
-    from celerp.gateway.state import activate_payload, relay_http_url as _rhu; relay_base = _rhu()
+    def _connected(public_url: str | None) -> dict:
+        gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+        return {"connected": True, "relay_status": gw.relay_status if gw else "connecting",
+                "public_url": public_url or "", "instance_id": iid}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
@@ -336,12 +339,16 @@ async def cloud_activate_api() -> dict:
     tos_version = data.get("tos_version")
     reconnect = data.get("reconnect", False)
 
-    if reconnect:
+    # An established install reconnecting from a fresh page (not disconnected) may be
+    # switching accounts, so the UI confirms before applying. A sticky-disconnected
+    # reconnect is the owner explicitly bringing THIS install back - there is no
+    # account switch to confirm, so the freshly activated token is applied directly,
+    # which is what resyncs a stored credential the relay had rotated away from.
+    if reconnect and not _s.cloud_disconnected:
         return {"reconnect": True, "gateway_token": token, "public_url": public_url, "tos_version": tos_version, "instance_id": iid}
 
     await _apply_gateway_token_api(token, iid, public_url=public_url, tos_version=tos_version)
-    gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
-    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or "", "instance_id": iid}
+    return _connected(public_url)
 
 
 @router.post("/settings/cloud-apply-token")
@@ -413,10 +420,11 @@ async def account_methods_api() -> dict:
     An activated install exchanges its gateway credential for a JWT and asks
     the relay for an owner-initiated start URL: that sign-in may CHANGE which
     account this computer is linked to, which the open door refuses. A
-    disconnected install re-obtains its credential from /auth/activate first,
-    so the switch also works after a Cloud disconnect. Fresh installs (nothing
-    linked, activate 404s) get the open-door URL - they have no link to
-    change. The UI fetches this at click time, so the URL is always fresh."""
+    disconnected install reads its preserved on-disk credential (a Cloud
+    disconnect clears only the in-memory token), so the switch also works after
+    a disconnect. Fresh installs (nothing linked, no stored token) get the
+    open-door URL - they have no link to change. The UI fetches this at click
+    time, so the URL is always fresh."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import relay_http_url as _rhu
@@ -435,16 +443,15 @@ async def account_methods_api() -> dict:
                     free_email_quota = int(data.get("free_email_quota") or 0)
             api_key = _s.gateway_token
             if google and not api_key:
-                # A Cloud disconnect clears only the local token; the relay-side
-                # link survives (cloud_disconnect above). Re-prove possession the
-                # same way the startup probe does: /auth/activate is keyed on the
-                # preserved instance_id and 404s when nothing is linked, which
-                # keeps fresh installs on the open door below.
-                from celerp.gateway.state import activate_payload
-                act = await c.post(f"{relay_base}/auth/activate",
-                                   json=activate_payload(iid))
-                if act.status_code == 200:
-                    api_key = str(act.json().get("gateway_token") or "")
+                # A Cloud disconnect clears only the in-memory token; the on-disk
+                # credential and the relay-side link both survive. Read the persisted
+                # token to prove possession rather than calling /auth/activate, which
+                # rotates the relay key on every call and would orphan the stored
+                # credential the next reconnect relies on. A fresh install has no
+                # stored token, so api_key stays empty and the open door below serves it.
+                from celerp.config import read_config
+                cfg = read_config() or {}
+                api_key = (cfg.get("cloud") or {}).get("token") or ""
             if google and api_key:
                 tok_r = await c.post(f"{relay_base}/auth/token",
                                      json={"api_key": api_key})

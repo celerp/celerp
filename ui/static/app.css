@@ -3005,6 +3005,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }
+.toast__action { color: inherit; font-weight: 600; text-decoration: underline; flex-shrink: 0; }
 .toast__close { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; opacity: 0.6; flex-shrink: 0; }
 .toast__close:hover { opacity: 1; }
 .table-pagination { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; justify-content: flex-end; }
@@ -3152,7 +3153,6 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .marketplace-card__links { display: flex; gap: 14px; margin: 8px 0; font-size: 12px; }
 .marketplace-community-warning { margin-top: 10px; padding: 12px 14px; border: 1px solid rgba(234,179,8,0.4); border-radius: var(--radius); background: rgba(234,179,8,0.08); }
 .module-license-upsell { margin-top: 6px; padding: 10px 12px; max-width: 360px; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
-.module-load-error { margin-top: 4px; }
 /* Modules tables carry multi-line cells (name + description + disclosures), so
    they need vertical breathing room the fixed-height app tables do not. Scoped
    to the two modules panels; the global .data-table rule is untouched. */

@@ -533,3 +533,52 @@ def test_importer_copy_ignore_uses_shared_digest_globs(module_dir, tmp_path):
     assert not (installed / "stale.pyc").exists()
     assert not (installed / ".git").exists()
     assert not (installed / ".github").exists()
+
+
+# ── migrations table_prefix validation ─────────────────────────────────────────
+
+def _migrations_manifest(name: str, *, prefix: str | None, migrations: bool = True) -> str:
+    lines = [
+        "PLUGIN_MANIFEST = {",
+        f'    "name": "{name}",',
+        '    "version": "1.0.0",',
+    ]
+    if migrations:
+        lines.append('    "migrations": "inner.migrations",')
+    if prefix is not None:
+        lines.append(f'    "table_prefix": "{prefix}",')
+    lines.append("}\n")
+    return "\n".join(lines)
+
+
+def test_missing_table_prefix_with_migrations_declared_refused(module_dir):
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=None)})
+    with pytest.raises(ModuleImportError, match="table_prefix"):
+        install_from_zip(data)
+
+
+def test_table_prefix_shorter_than_three_chars_refused(module_dir):
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix="a_")})
+    with pytest.raises(ModuleImportError, match="3 characters"):
+        install_from_zip(data)
+
+
+def test_table_prefix_not_ending_in_underscore_refused(module_dir):
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix="acme")})
+    with pytest.raises(ModuleImportError, match="underscore"):
+        install_from_zip(data)
+
+
+def test_table_prefix_colliding_with_core_table_refused(module_dir):
+    import celerp.models  # noqa: F401  ensure core tables are registered
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix="connector_")})
+    with pytest.raises(ModuleImportError, match="connector_configs"):
+        install_from_zip(data)
+
+
+def test_table_prefix_overlapping_installed_module_refused(module_dir):
+    install_from_zip(_zip_bytes(
+        {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")}))
+    data = _zip_bytes({"__init__.py": _migrations_manifest("second-mod", prefix="acme_sub_")})
+    with pytest.raises(ModuleImportError, match="acme_"):
+        install_from_zip(data)

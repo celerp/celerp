@@ -9,6 +9,7 @@ old name/location trust symbols.
 """
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -20,6 +21,29 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_PATH = REPO_ROOT / "default_modules" / "first_party.lock.json"
 GENERATOR = REPO_ROOT / "scripts" / "gen_first_party_lock.py"
+DEFAULT_MODULES_DIR = REPO_ROOT / "default_modules"
+
+
+_MISSING = object()
+
+
+def _migrations_target(init_py: Path):
+    """Return the PLUGIN_MANIFEST `migrations` value from a module __init__.py
+    without importing it, or _MISSING when the key is absent. Only the one key is
+    read, so a manifest carrying non-literal values elsewhere is still handled."""
+    tree = ast.parse(init_py.read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
+                   for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            return _MISSING
+        for key_node, val_node in zip(node.value.keys, node.value.values):
+            if isinstance(key_node, ast.Constant) and key_node.value == "migrations":
+                return ast.literal_eval(val_node)
+    return _MISSING
 
 
 def test_committed_lock_matches_regenerated_digests_from_git_tracked_tree():
@@ -58,6 +82,21 @@ def test_built_wheel_includes_first_party_lock(tmp_path):
         names = zf.namelist()
     assert any(n.endswith("default_modules/first_party.lock.json") for n in names), (
         f"lock missing from wheel; sample: {names[:20]}")
+
+
+def test_no_default_module_declares_migrations():
+    """No bundled default module declares an Alembic `migrations` target. Runtime
+    schema evolution is the core module-migration runner's job; a shipped default
+    carrying a dead `migrations` key is cruft the lock would silently bless."""
+    offenders = []
+    for pkg in sorted(DEFAULT_MODULES_DIR.iterdir()):
+        init_py = pkg / "__init__.py"
+        if not init_py.exists():
+            continue
+        target = _migrations_target(init_py)
+        if target is not _MISSING and target is not None:
+            offenders.append(f"{pkg.name}: {target!r}")
+    assert not offenders, "default modules declare migrations targets:\n" + "\n".join(offenders)
 
 
 def test_removed_trust_symbols_have_no_readers():

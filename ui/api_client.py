@@ -2079,6 +2079,15 @@ async def delete_module(token: str, module_name: str) -> dict:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
 
 
+async def purge_module_data(token: str, module_name: str) -> dict:
+    """POST /companies/me/modules/{name}/purge-data - drop the module's prefixed tables (admin only).
+
+    Carries no preview data: the server re-derives the drop list from the manifest
+    prefix, so displayed counts are never replayed as input."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
+
+
 async def import_module_zip(token: str, filename: str, data: bytes,
                             source: str = "sideloaded") -> dict:
     """POST /companies/me/modules/import - install a module from a .zip (admin only).

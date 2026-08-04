@@ -1305,3 +1305,20 @@ class TestResolveModulePath:
     def test_resolve_module_path_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MODULE_DIR", str(tmp_path))
         assert _fpt_loader.resolve_module_path("ghost") is None
+
+
+class TestRecordLoadError:
+    def test_record_load_error_sets_and_load_errors_reads_it(self):
+        from celerp.modules import loader
+        loader.record_load_error("broken-mod", "boom while loading")
+        assert loader.load_errors()["broken-mod"] == "boom while loading"
+
+    def test_record_load_error_masks_database_url_credentials(self):
+        from celerp.modules import loader
+        loader.record_load_error(
+            "db-mod",
+            "connect failed: postgresql+asyncpg://celerp:s3cret@db.example.com:5432/celerp",
+        )
+        recorded = loader.load_errors()["db-mod"]
+        assert "s3cret" not in recorded
+        assert "celerp:***@db.example.com" in recorded

@@ -239,6 +239,19 @@ class GatewayClient:
     def relay_status(self) -> str:
         return self._relay_status
 
+    def is_serving(self, token: str) -> bool:
+        """True when this client is the live tunnel for `token` and has not gone
+        dead. A client whose credential the relay rejected (_auth_rejected) or that
+        latched the error state idles in run() with no open socket, so a caller that
+        just persisted a token must tear it down and rebuild rather than trust the
+        set-client no-op. A token mismatch means the persisted credential rotated out
+        from under this client."""
+        return (
+            self._token == token
+            and not self._auth_rejected
+            and self._relay_status != "error"
+        )
+
     @property
     def required_tos_version(self) -> str:
         return self._required_tos_version

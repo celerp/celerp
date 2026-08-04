@@ -2533,8 +2533,17 @@ class TestDocumentPolish:
             content = r.content.decode()
             assert "send-modal-d-1" not in content
             assert "next=doc-send" in content
+            # The failure now surfaces as a persistent lower-right toast that
+            # stays until dismissed, not an inline hint beside Send. It keeps the
+            # message and the deep link to reconnect in Settings.
             assert "Web access connection failed" in content
-            assert 'href="/settings/cloud"' in content
+            assert "celerpToast(" in content
+            assert "'error',true," in content
+            assert "/settings/cloud" in content
+            assert "Reconnect in Settings" in content
+            # The message is carried by the toast call, not rendered inline as
+            # element text beside Send (that inline hint is gone).
+            assert ">Web access connection failed" not in content
             assert 'hx-get="/docs/d:1/share"' not in content
         finally:
             documents._free_send_quota_cache.update(
@@ -2578,7 +2587,12 @@ class TestDocumentPolish:
         assert r.status_code == 200
         content = r.content.decode()
         assert "send-modal-list-1" not in content
+        # Same persistent lower-right toast fallback as the doc path, not an
+        # inline hint: message plus the reconnect deep link, no inline anchor.
         assert "Web access connection failed" in content
+        assert "celerpToast(" in content
+        assert "/settings/cloud" in content
+        assert ">Web access connection failed" not in content
 
     @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
@@ -3834,16 +3848,21 @@ class TestSprint4DocActions:
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):
-        """Without a connected relay, doc detail has no dialog or modal
-        elements (Send/Share modals are relay-gated). Relay status is pinned
-        so the test is deterministic even with a live dev server running."""
+        """Without a connected relay, doc detail renders no inline popup
+        dialog: the Send and Share dialogs are relay-gated and open with
+        showModal(). The free-send offer is allowed in this state - it is the
+        no-relay signup path - so the invariant is checked against the popup
+        mechanism (a dialog element or a showModal call), not the bare substring
+        "modal", which also appears in the offer link's query param. Relay
+        status is pinned so the test is deterministic even with a live dev
+        server running."""
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        assert b"modal" not in content
+        assert b"showmodal" not in content
 
 
 class TestSprint4Payment:
@@ -8509,9 +8528,10 @@ class TestModulesUI:
              "source": "sideloaded", "installed_at": "2026-07-10T00:00:00+00:00"},
         ]
         body = await self._render_modules(ui_client, rows)
-        assert 'hx-post="/modules/disable-nd/delete"' in body
-        assert 'hx-post="/modules/disable-def/delete"' not in body
-        assert 'hx-post="/modules/enabled-nd/delete"' not in body
+        # The X opens the delete dialog; deletion itself posts from inside it.
+        assert 'hx-get="/modules/disable-nd/delete-options"' in body
+        assert 'hx-get="/modules/disable-def/delete-options"' not in body
+        assert 'hx-get="/modules/enabled-nd/delete-options"' not in body
 
     @pytest.mark.asyncio
     async def test_installed_table_has_sort_and_filter_markup(self, ui_client):
@@ -8614,7 +8634,9 @@ class TestModulesUI:
 
     @pytest.mark.asyncio
     async def test_modules_page_shows_load_error(self, ui_client):
-        """An enabled module that failed to load shows a failed badge + message."""
+        """An enabled module that failed to load keeps its failed badge, but the
+        reason rides the corner toast instead of stretching the status cell - so a
+        long error (a migration traceback) cannot break the table layout."""
         broken = [{**_MODULES_LIST[1], "enabled": True, "running": False,
                    "load_error": "Failed to import (RuntimeError: boom)"}]
         from contextlib import ExitStack
@@ -8624,8 +8646,10 @@ class TestModulesUI:
                 stack.enter_context(patch(k, new=v))
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
-        assert b"boom" in r.content
-        assert b"badge--danger" in r.content
+        assert b"badge--danger" in r.content                 # still fails loudly
+        assert b"module-load-error" not in r.content         # reason left the table
+        assert b"celerpToast(" in r.content                  # delivered as a corner toast
+        assert b"boom" in r.content                          # reason still surfaced
 
     @pytest.mark.asyncio
     async def test_status_badges_use_real_css_tokens(self, ui_client):
@@ -12942,9 +12966,11 @@ class TestDocumentsOverhaul:
             await task
 
     @pytest.mark.asyncio
-    async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
-        """Disconnected relay + sendable doc: the detail page offers sending
-        through a free Celerp account instead of hiding the send path."""
+    async def test_send_offer_button_shows_on_first_open_before_quota_fetched(self, ui_client):
+        """Disconnected relay + sendable doc, cache never fetched: the offer
+        shows on the FIRST document opened, not only after a reload primes the
+        quota cache. A never-fetched cache is unknown, not an advertised zero,
+        so hiding it would be the "reload to appear" bug."""
         self._reset_send_quota_cache()
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -12953,9 +12979,7 @@ class TestDocumentsOverhaul:
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
-                # first GET primes the quota cache in the background
-                await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
-                await self._settle_quota_refresh()
+                # single GET, no priming reload: cache is cold on this render
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" in content
@@ -18012,6 +18036,34 @@ async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
         _reset_free_send_quota_cache_full()
 
 
+@pytest.mark.asyncio
+async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch):
+    """Offer visibility separates "unknown" from "advertised zero". A cache that
+    was never fetched is unknown: show the offer (the first-open case) rather
+    than hide it. Once a fetch lands, a real zero hides it and a positive quota
+    shows it."""
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+
+    async def _methods(token):
+        return {"free_email_quota": 0}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        # Never fetched yet: unknown -> show.
+        assert documents._free_send_offer("tok") is True
+        await _drain_quota_task()
+        # Fetch landed with a real zero: advertised zero -> hide.
+        assert documents._free_send_quota_cache["fetched_at"] is not None
+        assert documents._free_send_offer("tok") is False
+        # A positive advertised quota -> show.
+        documents._free_send_quota_cache.update({"value": 4})
+        assert documents._free_send_offer("tok") is True
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
 # ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
 
 @pytest.mark.asyncio
@@ -18026,3 +18078,133 @@ async def test_account_panel_names_connect_tier(ui_client):
     content = r.content.decode()
     assert "Plan: Connect" in content
     assert "Plan: cloud" not in content
+
+
+# ── Module restart refreshes the session cookie (ui/routes/modules_page.py) ────
+
+@pytest.mark.asyncio
+async def test_module_restart_refreshes_session_cookie(ui_client):
+    """POST /modules/restart re-mints the UI session cookie from live settings
+    before restarting, so the post-respawn reload carries a current modules
+    claim and the sidebar is correct without a manual re-login.
+
+    The refresh branch is gated on the refresh cookie being present, so the
+    request must carry celerp_refresh (a bare _authed() sets only celerp_token
+    and would skip the branch)."""
+    new_access = "new-access-with-maintenance"
+    new_refresh = "new-refresh-token"
+    cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
+         patch("ui.routes.modules_page.refresh_access_token",
+               new=AsyncMock(return_value=(new_access, new_refresh))):
+        r = await ui_client.post("/modules/restart", cookies=cookies)
+    assert r.status_code == 200
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "celerp_token=" in set_cookie
+    assert new_access in set_cookie
+    assert "celerp_refresh=" in set_cookie
+    assert new_refresh in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_module_restart_refresh_failure_still_restarts(ui_client):
+    """If the cookie refresh exchange fails, the restart still proceeds fail-open:
+    the restarting panel is returned, no session cookie is set, and no 500."""
+    from ui.api_client import APIError
+    cookies = {**_authed(), "celerp_refresh": "stale-refresh-token"}
+    with patch("ui.api_client.restart_system", new=AsyncMock(return_value=None)), \
+         patch("ui.routes.modules_page.refresh_access_token",
+               new=AsyncMock(side_effect=APIError(500, "refresh boom"))):
+        r = await ui_client.post("/modules/restart", cookies=cookies)
+    assert r.status_code == 200
+    # Restart proceeded: the poll-and-reload panel is returned.
+    assert "window.location = '/modules'" in r.content.decode()
+    # No new session cookie was minted on the failure path.
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "celerp_token=" not in set_cookie
+
+
+def _module_row(name: str, *, enabled: bool = False, running: bool = False,
+                is_default: bool = False, table_prefix: str | None = None) -> dict:
+    """A module dict shaped like list_modules output, for get_modules mocks."""
+    return {
+        "name": name,
+        "label": name,
+        "version": "1.0",
+        "description": "",
+        "author": "",
+        "depends_on": [],
+        "enabled": enabled,
+        "running": running,
+        "load_error": None,
+        "is_default": is_default,
+        "demoted": False,
+        "source": "sideloaded",
+        "installed_at": "2026-01-01T00:00:00+00:00",
+        "table_prefix": table_prefix,
+    }
+
+
+@pytest.mark.asyncio
+async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
+    """The X's GET returns the delete dialog. A module that owns tables (declares
+    a table_prefix) offers both the keep-data delete and the destructive
+    delete-and-purge, delivered as the gate modal."""
+    modules = [_module_row("acme-maintenance", enabled=False, running=False,
+                           table_prefix="acme_")]
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
+        r = await ui_client.get("/modules/acme-maintenance/delete-options",
+                                cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    html = r.content.decode()
+    # Keep-data path: delete without purge.
+    assert 'hx-post="/modules/acme-maintenance/delete"' in html
+    # Destructive path: delete and purge the module's data.
+    assert 'hx-post="/modules/acme-maintenance/delete?purge=1"' in html
+    # Delivered as the fetched modal dialog.
+    assert "account-gate-modal" in html
+
+
+@pytest.mark.asyncio
+async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
+    """A module that owns no tables (no table_prefix) offers only the keep-data
+    delete: there is nothing to purge, so the destructive path is not shown."""
+    modules = [_module_row("noprefix", enabled=False, running=False,
+                           table_prefix=None)]
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
+        r = await ui_client.get("/modules/noprefix/delete-options",
+                                cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    html = r.content.decode()
+    assert 'hx-post="/modules/noprefix/delete"' in html
+    assert "purge=1" not in html
+    assert "account-gate-modal" in html
+
+
+@pytest.mark.asyncio
+async def test_module_delete_with_purge_drops_data_before_removing_module(ui_client):
+    """delete?purge=1 purges the module's data and then removes the module, in
+    that order: the purge reads the manifest, which is gone once the folder is
+    removed. A plain delete keeps the data, making no purge call."""
+    from contextlib import ExitStack
+    calls = []
+    mocks = {
+        "ui.api_client.get_modules": AsyncMock(return_value=[]),
+        "ui.api_client.purge_module_data":
+            AsyncMock(side_effect=lambda token, name: calls.append(("purge", name)) or {}),
+        "ui.api_client.delete_module":
+            AsyncMock(side_effect=lambda token, name: calls.append(("delete", name)) or {}),
+    }
+    with ExitStack() as stack:
+        for k, v in mocks.items():
+            stack.enter_context(patch(k, new=v))
+        r = await ui_client.post("/modules/acme-maintenance/delete?purge=1",
+                                 cookies=_authed(role="owner"))
+        assert r.status_code == 200
+        assert calls == [("purge", "acme-maintenance"), ("delete", "acme-maintenance")]
+        calls.clear()
+        r2 = await ui_client.post("/modules/acme-maintenance/delete",
+                                  cookies=_authed(role="owner"))
+        assert r2.status_code == 200
+        # Plain delete keeps the data: no purge.
+        assert calls == [("delete", "acme-maintenance")]

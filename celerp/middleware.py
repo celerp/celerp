@@ -182,12 +182,17 @@ def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
         role = claims.get("role", "")
         jti = claims.get("jti")
         snonce = claims.get("snonce", "")
+        email = claims.get("email", "")
+        modules = claims.get("modules")
         if not sub or not company_id or not jti:
             return None
         from celerp.services.auth import create_access_token
         # Reuse the existing snonce - the token was already validated by get_current_user,
         # so the nonce is correct.  No DB call needed here (sync function).
-        new_token, _token_jti = create_access_token(sub, company_id, role, jti=jti, snonce=snonce)
+        # Carry the decoded email and modules claims through the re-mint so the
+        # refreshed token keeps the caller's identity and the UI sidebar's module
+        # filter, instead of silently dropping them to "" and [].
+        new_token, _token_jti = create_access_token(sub, company_id, role, email, jti=jti, snonce=snonce, modules=modules)
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         new_expiry = _dt.now(_tz.utc) + _td(seconds=total_ttl)
         return new_token, jti, new_expiry

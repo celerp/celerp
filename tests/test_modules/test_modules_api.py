@@ -477,3 +477,197 @@ def test_module_descriptions_use_connect_naming():
                 if any(s in line for s in stale):
                     offenders.append(f"{init.parent.name}/__init__.py:{n}: {line.strip()}")
     assert offenders == []
+
+
+# ── module data purge (preview + drop) ────────────────────────────────────────
+
+_PKG_INIT_PREFIX = ('PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", '
+                    '"display_name": "{disp}", "table_prefix": "{prefix}"}}\n')
+
+
+def _write_pkg_prefix(dirpath: Path, name: str, prefix: str) -> Path:
+    """A module package whose manifest declares a table_prefix (no migrations)."""
+    pkg = dirpath / name
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        _PKG_INIT_PREFIX.format(name=name, disp=name.title(), prefix=prefix))
+    return pkg
+
+
+async def _create_tables(session, specs: list[tuple[str, int]]) -> None:
+    """Create each (table_name, row_count) table with that many rows, committed
+    into the test's transaction so an endpoint on the same session sees them."""
+    from sqlalchemy import text
+    for tname, rows in specs:
+        await session.execute(text(f'CREATE TABLE "{tname}" (id serial PRIMARY KEY, v text)'))
+        for i in range(rows):
+            await session.execute(text(f'INSERT INTO "{tname}" (v) VALUES (:v)'), {"v": f"r{i}"})
+    await session.commit()
+
+
+class TestModuleDataPurge:
+    @pytest.mark.asyncio
+    async def test_purge_data_drops_prefixed_tables_and_keeps_module_installed(
+            self, client, session, tmp_path):
+        from celerp.modules.importer import install_from_folder
+        from sqlalchemy import inspect as sa_inspect, text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        src = _write_pkg_prefix(tmp_path / "src", "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
+            await _create_tables(session, [("acme_widget", 3), ("acme_log", 1)])
+            # Enable then disable: disable must KEEP the data (J2 contract), so the
+            # tables and rows are still present at the point purge is allowed.
+            assert (await client.post(
+                "/companies/me/modules/acme-widgets/enable", headers=_h(token))).status_code == 200
+            assert (await client.post(
+                "/companies/me/modules/acme-widgets/disable", headers=_h(token))).status_code == 200
+            assert (await session.execute(
+                text('SELECT count(*) FROM "acme_widget"'))).scalar_one() == 3
+            assert (await session.execute(
+                text('SELECT count(*) FROM "acme_log"'))).scalar_one() == 1
+            # Purge drops the module's tables.
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+            assert r.status_code == 200, r.text
+            names = await session.run_sync(
+                lambda s: sa_inspect(s.connection()).get_table_names())
+            assert "acme_widget" not in names and "acme_log" not in names
+            # The module itself stays installed (folder untouched, still listed).
+            assert (module_dir / "acme-widgets").exists()
+            listing = await client.get("/companies/me/modules", headers=_h(token))
+        assert "acme-widgets" in [m["name"] for m in listing.json()]
+
+    @pytest.mark.asyncio
+    async def test_list_modules_surfaces_table_prefix_for_purge_button(
+            self, client, tmp_path):
+        """A disabled module declaring table_prefix must expose it in the listing;
+        the UI gates the Purge button on this field, so without it the button
+        never renders in production."""
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        m = next(x for x in r.json() if x["name"] == "acme-widgets")
+        assert m["enabled"] is False
+        assert m["table_prefix"] == "acme_"
+
+    @pytest.mark.asyncio
+    async def test_purge_data_refused_while_module_enabled(self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        await _create_tables(session, [("acme_widget", 2)])
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            assert (await client.post(
+                "/companies/me/modules/acme-widgets/enable", headers=_h(token))).status_code == 200
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        # Nothing dropped while still enabled.
+        assert (await session.execute(
+            text('SELECT count(*) FROM "acme_widget"'))).scalar_one() == 2
+
+    @pytest.mark.asyncio
+    async def test_purge_data_table_drop_failure_rolls_back_and_reports_error(
+            self, client, session, tmp_path):
+        from sqlalchemy import text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        # A module table plus an OUTSIDE table holding a foreign key into it: the
+        # no-CASCADE drop of the module table fails and the whole purge rolls back.
+        await session.execute(text('CREATE TABLE "acme_parent" (id integer PRIMARY KEY)'))
+        await session.execute(text('INSERT INTO "acme_parent" (id) VALUES (1)'))
+        await session.execute(text(
+            'CREATE TABLE "ext_child" (id integer PRIMARY KEY, '
+            'parent_id integer REFERENCES "acme_parent"(id))'))
+        await session.commit()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert "depends on" in detail and "Nothing was deleted" in detail
+        # Rolled back: the module table and its row survive untouched.
+        assert (await session.execute(
+            text('SELECT count(*) FROM "acme_parent"'))).scalar_one() == 1
+
+    @pytest.mark.asyncio
+    async def test_purge_data_with_no_prefixed_tables_is_noop_success(
+            self, client, session, tmp_path):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert r.json().get("ok") is True
+
+    @pytest.mark.asyncio
+    async def test_purge_data_refused_for_grandfathered_operator_override(
+            self, client, session, tmp_path):
+        from test_helpers import perm_setup
+        from celerp.models.company import Company
+        from sqlalchemy import select as sa_select
+        ctx = await perm_setup(client, session)
+        # Simulate the pre-change grandfathered state the raised floor now bars:
+        # write manage_company_settings -> operator straight into company.settings
+        # (the save API would refuse it after the raise), predating the clamp.
+        company = (await session.execute(sa_select(Company))).scalars().first()
+        settings = dict(company.settings or {})
+        rp = dict(settings.get("role_permissions") or {})
+        rp["manage_company_settings"] = "operator"
+        settings["role_permissions"] = rp
+        company.settings = settings
+        await session.commit()
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=ctx["operator_h"])
+        assert r.status_code == 403, r.text
+
+    @pytest.mark.asyncio
+    async def test_delete_keeps_module_tables_then_reimport_purge_drops_them(
+            self, client, session, tmp_path):
+        from celerp.modules.importer import install_from_folder
+        from sqlalchemy import inspect as sa_inspect, text
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        src = _write_pkg_prefix(tmp_path / "src", "acme-widgets", "acme_")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            install_from_folder(src)
+            assert (module_dir / "acme-widgets").exists()
+            await _create_tables(session, [("acme_widget", 4), ("acme_meta", 2)])
+            # Delete removes the code and frees the name, but KEEPS the data (J3).
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/delete", headers=_h(token))
+            assert r.status_code == 200, r.text
+            assert not (module_dir / "acme-widgets").exists()
+            assert (await session.execute(
+                text('SELECT count(*) FROM "acme_widget"'))).scalar_one() == 4
+            assert (await session.execute(
+                text('SELECT count(*) FROM "acme_meta"'))).scalar_one() == 2
+            # The name is free: the same folder re-imports (J5, the upgrade path).
+            info = install_from_folder(src)
+            assert info["name"] == "acme-widgets"
+            # Re-import then purge is the recovery path that drops the survivors (J6).
+            r = await client.post(
+                "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
+            assert r.status_code == 200, r.text
+            names = await session.run_sync(
+                lambda s: sa_inspect(s.connection()).get_table_names())
+        assert "acme_widget" not in names and "acme_meta" not in names

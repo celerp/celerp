@@ -65,12 +65,24 @@ _IDLE_LOGOUT_JS = ("""
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
-function celerpToast(message, type, persist) {
+function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
   var toast = document.createElement('div');
   toast.className = 'toast toast--' + (type || 'error');
-  toast.textContent = message;
+  var body = document.createElement('span');
+  body.className = 'toast__msg';
+  body.textContent = message;
+  toast.appendChild(body);
+  // Optional action link (e.g. "Reconnect in Settings" pointing at /settings/cloud):
+  // keeps a persistent error toast actionable instead of dead-ending the user.
+  if (action && action.href && action.label) {
+    var link = document.createElement('a');
+    link.className = 'toast__action';
+    link.href = action.href;
+    link.textContent = action.label;
+    toast.appendChild(link);
+  }
   var close = document.createElement('button');
   close.className = 'toast__close';
   close.textContent = '×';

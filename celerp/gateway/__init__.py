@@ -35,8 +35,26 @@ def ensure_running() -> None:
 
     if not settings.gateway_token:
         return
-    if _client.get_client() is not None:
+    if settings.cloud_disconnected:
+        # A sticky Cloud disconnect holds the tunnel down through every construction
+        # path - boot gate, auto-activate, the reaper's restart, the docs share seam -
+        # no matter how gateway_token got set. A GATEWAY_TOKEN env var populates
+        # settings at construction, before load_cloud_config, so that loader's
+        # disconnect suppression never sees the token; the guard has to live here at
+        # the single construction site too. Reconnect clears the flag before it reaches
+        # here, so a deliberate reconnect is unaffected.
         return
+    existing = _client.get_client()
+    if existing is not None:
+        if existing.is_serving(settings.gateway_token):
+            return
+        # A client the relay rejected (or one holding a token that has since rotated
+        # out) idles in run() with a dead socket and never revives itself, so the
+        # plain "already set" no-op would strand the tunnel on the stale credential.
+        # stop() breaks that idle loop and its run task exits on the next tick; drop
+        # the reference and rebuild below.
+        existing.stop()
+        _client.set_client(None)
     import uuid
 
     instance_id = settings.gateway_instance_id or str(uuid.uuid4())

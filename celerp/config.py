@@ -164,6 +164,14 @@ def load_cloud_config() -> None:
     disconnected = bool(cloud.get("disconnected"))
     if disconnected:
         settings.cloud_disconnected = True
+        # gateway_token and celerp_public_url are also env-bound (GATEWAY_TOKEN /
+        # CELERP_PUBLIC_URL), which pydantic reads at construction, before this runs.
+        # A sticky disconnect has to win over that env credential too, or the install
+        # boots token-bound and the settings UI shows it reconnected. Clear it here so
+        # the whole app - tunnel, share seam, and the UI's token-bound view - treats
+        # the install as disconnected until an explicit reconnect applies a fresh one.
+        settings.gateway_token = ""
+        settings.celerp_public_url = ""
     # A sticky disconnect keeps the credential in config for a one-click reconnect
     # but must NOT bring it live: leaving gateway_token/public_url unset holds the
     # tunnel down, share-minting off, and the startup probe skipped, so the

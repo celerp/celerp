@@ -2,11 +2,28 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import os
+import re
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from celerp.config import settings
+
+# Shared advisory-lock key that serialises schema migrations across every process
+# that might run them (the CLI upgrade command and the API startup phase). One
+# key, one source of truth, so two boots can never migrate the same database at
+# once.
+_MIGRATION_LOCK_KEY = 4207320001
+
+# Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
+# One authoritative masker for logs and surfaced errors so a connection string
+# never leaks a password.
+_DB_CREDENTIALS_RE = re.compile(r"(://[^:]+:)[^@]+(@)")
+
+
+def mask_db_credentials(text: str) -> str:
+    """Return text with any database URL password replaced by ``***``."""
+    return _DB_CREDENTIALS_RE.sub(r"\1***\2", text)
 
 # Pool budget: total_possible = (api_workers * (pool_size + max_overflow))
 #                              + (gui_workers * (gui_pool_size + gui_max_overflow))

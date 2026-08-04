@@ -312,10 +312,13 @@ async def test_account_methods_falls_back_when_start_url_fetch_fails():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_reactivates_when_disconnected_but_linked():
-    """A disconnected install whose instance is still linked on the relay
-    re-proves possession via /auth/activate, so the owner-initiated switch
-    works even after a Cloud disconnect (which clears the local token only)."""
+async def test_account_methods_uses_stored_token_without_rotating():
+    """A disconnected install whose instance is still linked reads its PRESERVED
+    on-disk token to prove possession for the owner-initiated switch. It must not
+    call /auth/activate: that rotates the relay key on every call and would orphan
+    the stored credential the next reconnect relies on."""
+    activate_calls = []
+
     def _get_router(url, **kw):
         resp = MagicMock()
         resp.status_code = 200
@@ -331,9 +334,10 @@ async def test_account_methods_reactivates_when_disconnected_but_linked():
         resp = MagicMock()
         resp.status_code = 200
         if url.endswith("/auth/activate"):
-            resp.json = MagicMock(return_value={"gateway_token": "fresh-key"})
+            activate_calls.append(url)
+            resp.json = MagicMock(return_value={"gateway_token": "rotated-key"})
         elif url.endswith("/auth/token"):
-            assert kw["json"] == {"api_key": "fresh-key"}
+            assert kw["json"] == {"api_key": "stored-key"}
             resp.json = MagicMock(return_value={"access_token": "jwt-abc"})
         return resp
 
@@ -342,11 +346,51 @@ async def test_account_methods_reactivates_when_disconnected_but_linked():
     client.post = AsyncMock(side_effect=_post_router)
     with (
         patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.read_config",
+              return_value={"cloud": {"token": "stored-key"}}),
         patch("celerp.config.ensure_instance_id", return_value="i-77"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
         data = await account_methods_api()
+    assert activate_calls == []  # no rotation, so the stored credential is not orphaned
     assert data["google_start_url"] == (
         "https://accounts.google.com/o/oauth2/v2/auth?state=signed")
+
+
+@pytest.mark.asyncio
+async def test_account_methods_fresh_install_stays_on_open_door():
+    """A fresh install (no in-memory token, no stored token) has no link to change,
+    so it neither rotates nor exchanges a credential: the open-door start URL is
+    served unchanged."""
+    posts = []
+
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={"google": True, "free_email_quota": 0})
+        return resp
+
+    async def _post_router(url, **kw):
+        posts.append(url)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json = MagicMock(return_value={})
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    client.post = AsyncMock(side_effect=_post_router)
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.read_config", return_value={"cloud": {}}),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+    assert posts == []  # no /auth/activate, no /auth/token
+    assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
