@@ -3848,16 +3848,21 @@ class TestSprint4DocActions:
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):
-        """Without a connected relay, doc detail has no dialog or modal
-        elements (Send/Share modals are relay-gated). Relay status is pinned
-        so the test is deterministic even with a live dev server running."""
+        """Without a connected relay, doc detail renders no inline popup
+        dialog: the Send and Share dialogs are relay-gated and open with
+        showModal(). The free-send offer is allowed in this state - it is the
+        no-relay signup path - so the invariant is checked against the popup
+        mechanism (a dialog element or a showModal call), not the bare substring
+        "modal", which also appears in the offer link's query param. Relay
+        status is pinned so the test is deterministic even with a live dev
+        server running."""
         _no_relay = AsyncMock(return_value={"connected": False, "public_url": ""})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        assert b"modal" not in content
+        assert b"showmodal" not in content
 
 
 class TestSprint4Payment:

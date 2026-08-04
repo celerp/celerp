@@ -116,7 +116,7 @@ def setup_routes(app):
                     f"You were signed out because a new session was started{ip_note}. "
                     "Celerp's native infrastructure only supports a single login at a time. "
                     "If you need multiple people to use the system at the same time, we provide an inexpensive "
-                    '<a href="https://celerp.com/relay" target="_blank" rel="noopener noreferrer">relay service</a> '
+                    '<a href="https://celerp.com/pricing" target="_blank" rel="noopener noreferrer">relay service</a> '
                     "which creates a tunnel to your system and securely allows multiple users to access it simultaneously."
                 ),
                 kind="warning",
