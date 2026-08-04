@@ -7382,7 +7382,7 @@ function _celerpCollectLines() {{
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
-        if (desc || sku || price) {{
+        if (desc || sku || price || entityId || barcode) {{
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
