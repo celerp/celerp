@@ -12961,9 +12961,11 @@ class TestDocumentsOverhaul:
             await task
 
     @pytest.mark.asyncio
-    async def test_send_offer_button_shows_when_relay_disconnected_and_quota_positive(self, ui_client):
-        """Disconnected relay + sendable doc: the detail page offers sending
-        through a free Celerp account instead of hiding the send path."""
+    async def test_send_offer_button_shows_on_first_open_before_quota_fetched(self, ui_client):
+        """Disconnected relay + sendable doc, cache never fetched: the offer
+        shows on the FIRST document opened, not only after a reload primes the
+        quota cache. A never-fetched cache is unknown, not an advertised zero,
+        so hiding it would be the "reload to appear" bug."""
         self._reset_send_quota_cache()
         try:
             doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
@@ -12972,9 +12974,7 @@ class TestDocumentsOverhaul:
             with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
                  patch("ui.api_client.get_relay_status", new=_no_relay), \
                  patch("ui.api_client.account_methods", new=_methods):
-                # first GET primes the quota cache in the background
-                await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
-                await self._settle_quota_refresh()
+                # single GET, no priming reload: cache is cold on this render
                 r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
             content = r.content.decode()
             assert "Send by email" in content
@@ -18027,6 +18027,34 @@ async def test_free_send_quota_fetches_on_fresh_boot(monkeypatch):
         await _drain_quota_task()
         assert len(calls) == 1
         assert documents._free_send_quota_cache["value"] == 5
+    finally:
+        _reset_free_send_quota_cache_full()
+
+
+@pytest.mark.asyncio
+async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch):
+    """Offer visibility separates "unknown" from "advertised zero". A cache that
+    was never fetched is unknown: show the offer (the first-open case) rather
+    than hide it. Once a fetch lands, a real zero hides it and a positive quota
+    shows it."""
+    from ui.routes import documents
+
+    _reset_free_send_quota_cache_full()
+
+    async def _methods(token):
+        return {"free_email_quota": 0}
+
+    monkeypatch.setattr("ui.api_client.account_methods", _methods)
+    try:
+        # Never fetched yet: unknown -> show.
+        assert documents._free_send_offer("tok") is True
+        await _drain_quota_task()
+        # Fetch landed with a real zero: advertised zero -> hide.
+        assert documents._free_send_quota_cache["fetched_at"] is not None
+        assert documents._free_send_offer("tok") is False
+        # A positive advertised quota -> show.
+        documents._free_send_quota_cache.update({"value": 4})
+        assert documents._free_send_offer("tok") is True
     finally:
         _reset_free_send_quota_cache_full()
 

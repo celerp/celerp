@@ -33,9 +33,11 @@ from celerp.output.doc_print import (
 )
 
 # Free-send quota advertised by the relay's public auth-methods endpoint.
-# Refreshed with a non-blocking background fetch at most once per TTL; until a
-# fetch lands (or when the relay was unreachable at fetch time) the quota reads
-# 0 and the send offer simply does not render, retrying at the next expiry.
+# Refreshed with a non-blocking background fetch at most once per TTL. The value
+# reads 0 until a fetch lands, or when the relay was unreachable at fetch time,
+# retrying at the next expiry. Offer visibility keys off _free_send_offer, which
+# treats a never-fetched cache as unknown (show) rather than zero (hide), so the
+# offer is not missing on the first document opened after startup.
 _FREE_SEND_QUOTA_TTL = 300.0
 _free_send_quota_cache: dict = {"value": 0, "fetched_at": None, "pending": False}
 
@@ -69,6 +71,22 @@ def _free_send_quota(token: str) -> int:
         _free_send_quota_cache["task"] = task
         task.add_done_callback(_done)
     return int(_free_send_quota_cache["value"])
+
+
+def _free_send_offer(token: str) -> bool:
+    """Whether to show the signed-out free-send offer on an unbound instance.
+
+    Shows when the relay advertises a free email quota. That quota is a
+    non-blocking cache (_free_send_quota); the first document opened after
+    startup has not fetched it yet, and hiding the offer on that unknown is the
+    "reload to appear" symptom. A never-fetched cache is unknown, not zero: show
+    the offer - it only opens a signup gate, so validating on the click rather
+    than hiding to prevent it is correct (GDR 2e) - and let the landed fetch
+    settle it. A fetch that returns a real zero then hides the offer."""
+    if _free_send_quota(token) > 0:  # triggers the background refresh
+        return True
+    # value 0 with no fetch yet is "unknown", not "advertised zero".
+    return _free_send_quota_cache["fetched_at"] is None
 
 
 def _relay_rejected(rs: dict) -> bool:
@@ -2082,7 +2100,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_quota=(0 if _token_bound else _free_send_quota(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -5480,7 +5498,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_quota: int = 0, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5892,7 +5910,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 "sessionStorage.removeItem('celerp_open_send');"
                 f"document.getElementById('{modal_id}').showModal();}}}})();"
             ))
-        elif _send_ok and free_send_quota > 0:
+        elif _send_ok and free_send_offer:
             # No relay bound: offer sending through a free Celerp account
             # instead of hiding the send path. The click opens the shared
             # account-gate modal; after verification the poll reloads this
