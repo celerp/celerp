@@ -1628,7 +1628,10 @@ function celerpPrintLabel(entityId, templateId) {
                     show_all = new_id == "__scope__all"
                     changed = False
                 else:
-                    changed = bool(new_id) and new_id not in {c.get("item_id") for c in recipe["components"]}
+                    # A process recipe can use the same ingredient in more than one step
+                    # (water added in two stages of dough), so the same component may appear
+                    # more than once; each line carries its own quantity and cost.
+                    changed = bool(new_id)
                     if changed:
                         recipe["components"].append({"item_id": new_id, "quantity": 1})
             elif action == "add_labor":
@@ -5919,8 +5922,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # The add-picker searches COMPONENTS only by default. Scope is controlled inside the
     # dropdown itself (the common footer-action pattern): a pinned "Search all items…"
     # option widens this picker only, and the last option creates a brand-new component.
-    selected_ids = {c.get("item_id") for c in components}
-    base_opts = [o for o in item_opts if o[0] not in selected_ids and (show_all or o[0] in component_ids)]
+    # Already-added components stay in the picker: a process recipe can use the same
+    # ingredient in more than one step, so an added item must remain addable again.
+    base_opts = [o for o in item_opts if show_all or o[0] in component_ids]
     scope_opt = ("__scope__components", "Show components only…") if show_all else ("__scope__all", "Search all items…")
     comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", "+ Add new component")]
 
