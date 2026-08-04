@@ -8523,9 +8523,10 @@ class TestModulesUI:
              "source": "sideloaded", "installed_at": "2026-07-10T00:00:00+00:00"},
         ]
         body = await self._render_modules(ui_client, rows)
-        assert 'hx-post="/modules/disable-nd/delete"' in body
-        assert 'hx-post="/modules/disable-def/delete"' not in body
-        assert 'hx-post="/modules/enabled-nd/delete"' not in body
+        # The X opens the delete dialog; deletion itself posts from inside it.
+        assert 'hx-get="/modules/disable-nd/delete-options"' in body
+        assert 'hx-get="/modules/disable-def/delete-options"' not in body
+        assert 'hx-get="/modules/enabled-nd/delete-options"' not in body
 
     @pytest.mark.asyncio
     async def test_installed_table_has_sort_and_filter_markup(self, ui_client):
@@ -18112,57 +18113,65 @@ def _module_row(name: str, *, enabled: bool = False, running: bool = False,
 
 
 @pytest.mark.asyncio
-async def test_module_purge_button_fetches_preview_panel_with_table_row_counts(ui_client):
-    """The purge button's GET returns the preview dialog listing each of the
-    module's tables with its live row count, plus the confirm control."""
-    preview = {"tables": [
-        {"name": "acme_equipment", "rows": 3},
-        {"name": "acme_service_log", "rows": 128},
-    ]}
-    with patch("ui.api_client.purge_module_preview",
-               new=AsyncMock(return_value=preview)):
-        r = await ui_client.get("/modules/acme-maintenance/purge-preview",
+async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
+    """The X's GET returns the delete dialog. A module that owns tables (declares
+    a table_prefix) offers both the keep-data delete and the destructive
+    delete-and-purge, delivered as the gate modal."""
+    modules = [_module_row("acme-maintenance", enabled=False, running=False,
+                           table_prefix="acme_")]
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
+        r = await ui_client.get("/modules/acme-maintenance/delete-options",
                                 cookies=_authed(role="owner"))
     assert r.status_code == 200
     html = r.content.decode()
-    # Every table name and its row count are shown.
-    assert "acme_equipment" in html
-    assert "acme_service_log" in html
-    assert "128" in html
-    # The confirm control posts to the purge route (server re-derives the list).
-    assert "/modules/acme-maintenance/purge" in html
+    # Keep-data path: delete without purge.
+    assert 'hx-post="/modules/acme-maintenance/delete"' in html
+    # Destructive path: delete and purge the module's data.
+    assert 'hx-post="/modules/acme-maintenance/delete?purge=1"' in html
     # Delivered as the fetched modal dialog.
     assert "account-gate-modal" in html
 
 
 @pytest.mark.asyncio
-async def test_module_purge_preview_empty_shows_no_stored_data_copy(ui_client):
-    """A module with no prefixed tables shows the no-stored-data copy and no
-    table rows, still inside the dialog."""
-    with patch("ui.api_client.purge_module_preview",
-               new=AsyncMock(return_value={"tables": []})):
-        r = await ui_client.get("/modules/acme-maintenance/purge-preview",
+async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
+    """A module that owns no tables (no table_prefix) offers only the keep-data
+    delete: there is nothing to purge, so the destructive path is not shown."""
+    modules = [_module_row("noprefix", enabled=False, running=False,
+                           table_prefix=None)]
+    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
+        r = await ui_client.get("/modules/noprefix/delete-options",
                                 cookies=_authed(role="owner"))
     assert r.status_code == 200
     html = r.content.decode()
-    assert "This module has no stored data." in html
+    assert 'hx-post="/modules/noprefix/delete"' in html
+    assert "purge=1" not in html
     assert "account-gate-modal" in html
 
 
 @pytest.mark.asyncio
-async def test_module_purge_button_renders_only_for_disabled_modules_with_table_prefix(ui_client):
-    """The purge button appears only for a disabled, non-default module whose
-    manifest declares a table_prefix: not for one without a prefix, and not for
-    an enabled one even with a prefix."""
-    modules = [
-        _module_row("with-prefix", enabled=False, running=False, table_prefix="wp_"),
-        _module_row("no-prefix", enabled=False, running=False, table_prefix=None),
-        _module_row("enabled-prefix", enabled=True, running=True, table_prefix="ep_"),
-    ]
-    with patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)):
-        r = await ui_client.get("/modules", cookies=_authed(role="owner"))
-    assert r.status_code == 200
-    html = r.content.decode()
-    assert "/modules/with-prefix/purge-preview" in html
-    assert "/modules/no-prefix/purge-preview" not in html
-    assert "/modules/enabled-prefix/purge-preview" not in html
+async def test_module_delete_with_purge_drops_data_before_removing_module(ui_client):
+    """delete?purge=1 purges the module's data and then removes the module, in
+    that order: the purge reads the manifest, which is gone once the folder is
+    removed. A plain delete keeps the data, making no purge call."""
+    from contextlib import ExitStack
+    calls = []
+    mocks = {
+        "ui.api_client.get_modules": AsyncMock(return_value=[]),
+        "ui.api_client.purge_module_data":
+            AsyncMock(side_effect=lambda token, name: calls.append(("purge", name)) or {}),
+        "ui.api_client.delete_module":
+            AsyncMock(side_effect=lambda token, name: calls.append(("delete", name)) or {}),
+    }
+    with ExitStack() as stack:
+        for k, v in mocks.items():
+            stack.enter_context(patch(k, new=v))
+        r = await ui_client.post("/modules/acme-maintenance/delete?purge=1",
+                                 cookies=_authed(role="owner"))
+        assert r.status_code == 200
+        assert calls == [("purge", "acme-maintenance"), ("delete", "acme-maintenance")]
+        calls.clear()
+        r2 = await ui_client.post("/modules/acme-maintenance/delete",
+                                  cookies=_authed(role="owner"))
+        assert r2.status_code == 200
+        # Plain delete keeps the data: no purge.
+        assert calls == [("delete", "acme-maintenance")]

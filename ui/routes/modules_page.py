@@ -303,25 +303,14 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # appears once the module is off, so nothing that depends on it is live.
         action_parts = [toggle_btn]
         if not effectively_enabled and not m.get("is_default"):
-            # Purge sits beside Delete but only for a module that owns tables
-            # (declares a table_prefix). It is the one destructive action: it
-            # drops the module's data, so it fetches a preview dialog first
-            # rather than firing on a one-line confirm.
-            if m.get("table_prefix"):
-                action_parts.append(Button(t("modules.purge_data", lang),
-                    hx_get=f"/modules/{name}/purge-preview",
-                    hx_target="#local-modules-panel",
-                    hx_swap="outerHTML",
-                    hx_disabled_elt="this",
-                    title=t("modules.purge_module", lang),
-                    aria_label=t("modules.purge_module", lang),
-                    cls="btn btn--sm btn--danger module-purge-btn",
-                ))
+            # The X opens the delete dialog rather than deleting on a one-line
+            # confirm. Deletion has two paths - keep the data or drop it too - and
+            # the dialog is where that choice and its warning live, so the
+            # destructive purge control never sits on the everyday row.
             action_parts.append(Button("×",
-                hx_post=f"/modules/{name}/delete",
+                hx_get=f"/modules/{name}/delete-options",
                 hx_target="#local-modules-panel",
                 hx_swap="outerHTML",
-                hx_confirm=t("modules.delete_confirm", lang, name=label),
                 hx_disabled_elt="this",
                 title=t("modules.delete_module", lang),
                 aria_label=t("modules.delete_module", lang),
@@ -985,56 +974,52 @@ def _close_gate_host() -> FT:
     return Div(id="account-gate-host", hx_swap_oob="true")
 
 
-def _purge_dialog(module_name: str, tables: list[dict], lang: str) -> FT:
-    """The purge-confirmation panel: the exact tables a purge would drop with
-    their live row counts, the irreversibility notice, an inline backup link,
-    and Cancel plus the one confirm control. Wrapped for delivery by
-    gate_modal_response, which supplies the Dialog, showModal, and Esc teardown.
-    The confirm posts no preview data; the server re-derives the drop list.
+def _delete_dialog(module_name: str, label: str, has_prefix: bool, lang: str) -> FT:
+    """The delete dialog: a module's two exit paths as one deliberate choice.
+
+    "Delete module" removes the package but keeps its tables, so a re-import later
+    reconnects the data. "Delete and purge data" also drops every table the module
+    owns and cannot be undone, so it carries its warning in its tooltip and shows
+    only when the module actually owns tables (declares a table_prefix). Both post
+    to the delete route; purge=1 selects the destructive path, whose table set the
+    server re-derives from the manifest prefix, never from client input. Wrapped for
+    delivery by gate_modal_response, which supplies the Dialog, showModal, and Esc
+    teardown.
     """
     header = Div(
-        H3(t("modules.purge_title", lang), cls="modal-dialog__title"),
+        H3(t("modules.delete_options_title", lang, name=label),
+           cls="modal-dialog__title"),
         Button("✕", type="button", cls="modal-dialog__close",
                aria_label=t("btn.close", lang), onclick=_DISMISS_GATE_MODAL),
         cls="modal-dialog__header",
     )
-    if tables:
-        # Table-name header centered (the .data-table default), row-count header
-        # right-aligned over its figures via cell--number; count cells match.
-        preview = Table(
-            Thead(Tr(
-                Th(t("modules.purge_col_table", lang)),
-                Th(t("modules.purge_col_rows", lang), cls="cell--number"),
-            )),
-            Tbody(*(Tr(
-                Td(tb.get("name", "")),
-                Td(f"{int(tb.get('rows') or 0):,}", cls="cell--number"),
-            ) for tb in tables)),
-            cls="data-table",
-        )
-        body_parts = [
-            P(t("modules.purge_intro", lang)),
-            preview,
-            P(t("modules.purge_irreversible", lang)),
-            Div(A(t("modules.purge_backup_link", lang), href="/backup/export",
-                  download=True, cls="btn btn--sm btn--ghost"),
-                cls="module-purge-backup"),
-        ]
-    else:
-        body_parts = [P(t("modules.purge_no_data", lang))]
-    actions = Div(
-        Button(t("btn.cancel", lang), type="button",
-               cls="btn btn--sm btn--secondary", onclick=_DISMISS_GATE_MODAL),
-        Button(t("modules.purge_data", lang), type="button",
-               hx_post=f"/modules/{module_name}/purge",
+    choices = [
+        Button(t("modules.delete_module", lang), type="button",
+               hx_post=f"/modules/{module_name}/delete",
                hx_target="#local-modules-panel",
                hx_swap="outerHTML",
                hx_disabled_elt="this",
-               cls="btn btn--sm btn--danger"),
+               title=t("modules.delete_keep_hint", lang),
+               cls="btn btn--sm btn--secondary"),
+    ]
+    if has_prefix:
+        # The tooltip is the whole warning here (owner's call): the label already
+        # says "purge data", and the hint spells out that it is permanent.
+        choices.append(Button(t("modules.delete_purge", lang), type="button",
+               hx_post=f"/modules/{module_name}/delete?purge=1",
+               hx_target="#local-modules-panel",
+               hx_swap="outerHTML",
+               hx_disabled_elt="this",
+               title=t("modules.delete_purge_hint", lang),
+               cls="btn btn--sm btn--danger"))
+    actions = Div(
+        Button(t("btn.cancel", lang), type="button",
+               cls="btn btn--sm btn--secondary", onclick=_DISMISS_GATE_MODAL),
+        *choices,
         cls="modal-dialog__actions",
     )
-    return Div(header, Div(*body_parts, actions, cls="reset-modal__body"),
-               cls="module-purge-dialog")
+    return Div(header, Div(actions, cls="reset-modal__body"),
+               cls="module-delete-dialog")
 
 
 def _community_table(community: list[dict], installed: set[str], lang: str,
@@ -1202,70 +1187,60 @@ def setup_routes(app):
             return _unavailable_panel(lang)
         return _local_panel(modules, lang=lang)
 
+    @app.get("/modules/{module_name}/delete-options")
+    async def module_delete_options(request: Request, module_name: str):
+        token, redirect = await _guard(request)
+        if redirect:
+            return redirect
+        lang = get_lang(request)
+        try:
+            modules = await api.get_modules(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return _toast(_unavailable_panel(lang), t("modules.delete_failed", lang))
+        module = next((m for m in modules if m.get("name") == module_name), None)
+        if module is None:
+            # Gone already (a concurrent delete): refresh the panel and say why,
+            # rather than opening a dialog over a row that no longer exists.
+            return _toast(_local_panel(modules, lang), t("modules.delete_failed", lang))
+        # Whether to offer the purge path is decided server-side from the manifest
+        # prefix, never a client hint: the same fact the purge itself derives its
+        # drop list from.
+        has_prefix = bool(module.get("table_prefix"))
+        label = module.get("label") or module_name
+        return gate_modal_response(
+            _delete_dialog(module_name, label, has_prefix, lang))
+
     @app.post("/modules/{module_name}/delete")
     async def module_delete(request: Request, module_name: str):
         token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
-        flash_text = None
+        purge = request.query_params.get("purge") == "1"
+        flash_text, flash_error = None, False
         try:
+            if purge:
+                # Drop the module's tables before its folder: the drop list is
+                # read from the manifest, which goes away with the folder. A purge
+                # that fails raises before delete runs, so the module and its data
+                # both stay, with the reason - never data gone but module kept.
+                await api.purge_module_data(token, module_name)
             await api.delete_module(token, module_name)
             modules = await api.get_modules(token)
+            if purge:
+                flash_text = t("modules.purge_success", lang, name=module_name)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            # Refused (still enabled/running, or default): keep the row and tell
-            # the user why, rather than silently doing nothing.
-            flash_text = e.detail or t("modules.delete_failed", lang)
+            # Refused (still enabled/running, or default), or a rolled-back purge:
+            # keep the row and its data and tell the user why.
+            flash_text, flash_error = e.detail or t("modules.delete_failed", lang), True
             try:
                 modules = await api.get_modules(token)
             except APIError:
                 # The refusal still reaches the user (toast); the panel retries.
-                return _toast(_unavailable_panel(lang), flash_text)
-        return _local_panel(modules, lang=lang, flash_text=flash_text,
-                            flash_error=flash_text is not None)
-
-    @app.get("/modules/{module_name}/purge-preview")
-    async def module_purge_preview(request: Request, module_name: str):
-        token, redirect = await _guard(request)
-        if redirect:
-            return redirect
-        lang = get_lang(request)
-        try:
-            preview = await api.purge_module_preview(token, module_name)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # A refusal or an oversized-count timeout: keep the row and say why.
-            flash_text = e.detail or t("modules.purge_failed", lang)
-            try:
-                modules = await api.get_modules(token)
-            except APIError:
-                return _toast(_unavailable_panel(lang), flash_text)
-            return _toast(_local_panel(modules, lang), flash_text)
-        return gate_modal_response(
-            _purge_dialog(module_name, preview.get("tables") or [], lang))
-
-    @app.post("/modules/{module_name}/purge")
-    async def module_purge(request: Request, module_name: str):
-        token, redirect = await _guard(request)
-        if redirect:
-            return redirect
-        lang = get_lang(request)
-        try:
-            await api.purge_module_data(token, module_name)
-            modules = await api.get_modules(token)
-            flash_text, flash_error = t("modules.purge_success", lang, name=module_name), False
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            # Refused (still enabled/running) or a rolled-back drop: keep every
-            # table and tell the user why, rather than silently doing nothing.
-            flash_text, flash_error = e.detail or t("modules.purge_failed", lang), True
-            try:
-                modules = await api.get_modules(token)
-            except APIError:
                 return _toast(_unavailable_panel(lang), flash_text)
         # Re-render the panel in place and tear the dialog down together.
         return (_local_panel(modules, lang=lang, flash_text=flash_text,

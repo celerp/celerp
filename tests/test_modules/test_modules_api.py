@@ -507,22 +507,6 @@ async def _create_tables(session, specs: list[tuple[str, int]]) -> None:
 
 class TestModuleDataPurge:
     @pytest.mark.asyncio
-    async def test_purge_preview_returns_tables_and_row_counts(self, client, session, tmp_path):
-        token = await _register(client)
-        module_dir = tmp_path / "modules"
-        module_dir.mkdir()
-        _write_pkg_prefix(module_dir, "acme-widgets", "acme_")
-        await _create_tables(session, [("acme_widget", 2), ("acme_gadget", 0)])
-        # A non-prefixed table must never appear in the drop preview.
-        await _create_tables(session, [("other_thing", 5)])
-        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
-            r = await client.get(
-                "/companies/me/modules/acme-widgets/purge-preview", headers=_h(token))
-        assert r.status_code == 200, r.text
-        rows = {t["name"]: t["rows"] for t in r.json()["tables"]}
-        assert rows == {"acme_widget": 2, "acme_gadget": 0}
-
-    @pytest.mark.asyncio
     async def test_purge_data_drops_prefixed_tables_and_keeps_module_installed(
             self, client, session, tmp_path):
         from celerp.modules.importer import install_from_folder

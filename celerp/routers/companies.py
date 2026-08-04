@@ -1712,9 +1712,9 @@ async def delete_module(
 async def _module_tables_with_row_counts(session: AsyncSession, prefix: str) -> list[dict]:
     """Live tables carrying *prefix*, each with an exact row count.
 
-    The one place both the purge preview and the purge itself derive their table
-    set from, so the list an admin sees is the list that gets dropped, both taken
-    from the manifest prefix server-side. An empty prefix matches nothing.
+    Where the purge derives its table set from, server-side from the manifest
+    prefix rather than any client input, so the tables that get dropped are
+    exactly the ones the prefix owns. An empty prefix matches nothing.
     """
     from sqlalchemy import func, inspect as sa_inspect, select as sa_select, table as sa_table
 
@@ -1761,29 +1761,6 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     if code == "2BP01":
         return True
     return "depend" in str(exc).lower()
-
-
-@router.get("/me/modules/{module_name}/purge-preview", dependencies=[require_permission("manage_company_settings")])
-async def purge_module_preview(
-    module_name: str,
-    company_id=Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """List the module's data tables with live row counts. Admin only.
-
-    Read-only. Resolves the package, reads its declared table_prefix, and returns
-    every live table carrying that prefix with an exact row count, so an admin can
-    see exactly what a purge would drop. A module declaring no table_prefix returns
-    an empty list.
-    """
-    from celerp.modules.loader import read_manifest, resolve_module_path
-
-    pkg_path = resolve_module_path(module_name)
-    if pkg_path is None:
-        raise HTTPException(status_code=404, detail="Module not found.")
-    prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
-    tables = await _module_tables_with_row_counts(session, prefix)
-    return {"tables": tables}
 
 
 @router.post("/me/modules/{module_name}/purge-data", dependencies=[require_permission("manage_company_settings")])

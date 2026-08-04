@@ -2079,15 +2079,6 @@ async def delete_module(token: str, module_name: str) -> dict:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
 
 
-async def purge_module_preview(token: str, module_name: str) -> dict:
-    """GET /companies/me/modules/{name}/purge-preview - the tables a purge would drop, with row counts (admin only).
-
-    An oversized table's exact count can exceed the proxy timeout, surfacing as
-    an APIError 504 the caller shows on the panel rather than a dropped request."""
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/companies/me/modules/{module_name}/purge-preview")).json()
-
-
 async def purge_module_data(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/purge-data - drop the module's prefixed tables (admin only).
 
