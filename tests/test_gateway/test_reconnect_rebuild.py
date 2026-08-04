@@ -50,6 +50,11 @@ def _reset():
     original_task = gateway._run_task
     original_token = settings.gateway_token
     original_iid = settings.gateway_instance_id
+    original_disconnected = settings.cloud_disconnected
+    # Start every case from a known-connected baseline so the tunnel construction
+    # path is exercised deterministically; a real config on the dev box may have left
+    # settings.cloud_disconnected True. The disconnect case sets it True itself.
+    settings.cloud_disconnected = False
     yield
     if gateway._run_task is not None and gateway._run_task is not original_task:
         gateway._run_task.cancel()
@@ -57,6 +62,7 @@ def _reset():
     client_mod.set_client(original_client)
     settings.gateway_token = original_token
     settings.gateway_instance_id = original_iid
+    settings.cloud_disconnected = original_disconnected
 
 
 @pytest.mark.asyncio
@@ -73,6 +79,27 @@ async def test_ensure_running_noop_when_client_serving_current_token(monkeypatch
 
     assert client_mod.get_client() is existing
     assert existing.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_stays_down_while_cloud_disconnected(monkeypatch):
+    """A sticky Cloud disconnect holds the tunnel down through every construction
+    path. gateway_token can be present with cloud_disconnected still True: a
+    GATEWAY_TOKEN env var populates settings at construction, before
+    load_cloud_config, so its disconnect suppression never sees that token. The boot
+    gate (paid public_url, or a free instance with a live share) and the share seam
+    both call ensure_running with that token set, so the guard belongs here at the
+    single construction site, not only in the config loader."""
+    monkeypatch.setattr(client_mod, "GatewayClient", _FakeClient)
+    settings.gateway_token = "tok-env"
+    settings.gateway_instance_id = "iid-1"
+    settings.cloud_disconnected = True
+    client_mod.set_client(None)
+
+    gateway.ensure_running()
+    await asyncio.sleep(0)  # a constructed client's run task would start here
+
+    assert client_mod.get_client() is None
 
 
 @pytest.mark.asyncio

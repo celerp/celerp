@@ -35,6 +35,15 @@ def ensure_running() -> None:
 
     if not settings.gateway_token:
         return
+    if settings.cloud_disconnected:
+        # A sticky Cloud disconnect holds the tunnel down through every construction
+        # path - boot gate, auto-activate, the reaper's restart, the docs share seam -
+        # no matter how gateway_token got set. A GATEWAY_TOKEN env var populates
+        # settings at construction, before load_cloud_config, so that loader's
+        # disconnect suppression never sees the token; the guard has to live here at
+        # the single construction site too. Reconnect clears the flag before it reaches
+        # here, so a deliberate reconnect is unaffected.
+        return
     existing = _client.get_client()
     if existing is not None:
         if existing.is_serving(settings.gateway_token):
