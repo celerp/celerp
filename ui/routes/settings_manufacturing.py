@@ -5,6 +5,10 @@
 Stored under company.settings["manufacturing"]:
 - hours_per_day: converts daily labor lines into the To-Make est-hours column (default 8).
 - require_issued_before_complete: block completing a run until its components are issued.
+- auto_create_work_orders: create a work order per manufacturable line when an order is finalized.
+- auto_complete_work_orders: also complete each auto-created work order on the spot (consume
+  components, produce finished goods, post the completion journal entry). Applies only when
+  auto_create_work_orders is on.
 
 Work centers (operational stations) are master data, configured here rather than as a top-level nav.
 """
@@ -12,7 +16,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -70,10 +74,9 @@ def setup_routes(app):
         hours = mfg.get("hours_per_day", _DEFAULT_HOURS_PER_DAY)
         require_issued = bool(mfg.get("require_issued_before_complete"))
         auto_create = bool(mfg.get("auto_create_work_orders"))
-        saved = request.query_params.get("saved") == "1"
+        auto_complete = bool(mfg.get("auto_complete_work_orders"))
 
         prefs = Form(
-            flash("Settings saved.", "success") if saved else "",
             H2("Production rules", cls="section-title"),
             P("How production runs behave for this company.", cls="settings-hint"),
             Div(
@@ -101,6 +104,19 @@ def setup_routes(app):
                 cls="form-group",
             ),
             Div(
+                Label(
+                    Input(type="checkbox", name="auto_complete_work_orders", value="1", checked=auto_complete),
+                    Span(" Auto-complete work orders on invoice posting"),
+                    _info("When on, an auto-created work order is also completed the moment the order is "
+                          "finalized - raw materials are consumed, finished goods are produced and the "
+                          "completion journal entry posts, with no manual step. Applies only when "
+                          "auto-create above is on. Best for make-to-order shops (e.g. restaurants) that "
+                          "cannot mark each run complete by hand. Leave off to complete runs manually."),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ),
+            Div(
                 Label(Span("Hours per day"),
                       _info("Used to convert a recipe's daily labour lines into the estimated-hours "
                             "column on the To-Make board. Default 8."),
@@ -109,8 +125,9 @@ def setup_routes(app):
                       min="1", step="any", cls="form-input input--narrow"),
                 cls="form-group",
             ),
-            Button("Save", type="submit", cls="btn btn--primary"),
-            method="post", action="/settings/manufacturing", cls="settings-card",
+            Div(id="mfg-save-status", cls="settings-save-status"),
+            hx_post="/settings/manufacturing", hx_trigger="change",
+            hx_target="#mfg-save-status", hx_swap="innerHTML", cls="settings-card",
         )
 
         return await base_shell(
@@ -136,12 +153,14 @@ def setup_routes(app):
             hours = _DEFAULT_HOURS_PER_DAY
         require_issued = str(form.get("require_issued_before_complete") or "") in ("1", "on", "true")
         auto_create = str(form.get("auto_create_work_orders") or "") in ("1", "on", "true")
+        auto_complete = str(form.get("auto_complete_work_orders") or "") in ("1", "on", "true")
         try:
             await api.update_mfg_settings(token, {
                 "hours_per_day": hours,
                 "require_issued_before_complete": require_issued,
                 "auto_create_work_orders": auto_create,
+                "auto_complete_work_orders": auto_complete,
             })
         except APIError:
-            pass
-        return RedirectResponse("/settings/manufacturing?saved=1", status_code=303)
+            return HTMLResponse(to_xml(flash("Could not save settings.", "error")))
+        return HTMLResponse(to_xml(flash("Settings saved.", "success")))

@@ -8,6 +8,7 @@ loader's register_api_routes calling setup_api_routes with the app directly).
 """
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,8 +26,9 @@ from celerp.events.schemas import (
     WorkflowSpec,
     workflow_step_minutes,
 )
-from celerp.models.company import Company, WorkCenter
+from celerp.models.company import Company, User, WorkCenter
 from celerp.models.projections import Projection
+from celerp.notifications import service as notif_svc
 from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
@@ -40,6 +42,8 @@ from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
 
 router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +707,10 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     settings = await _mfg_settings(session, company_id)
     if not settings.get("auto_create_work_orders"):
         return
+    auto_complete = bool(settings.get("auto_complete_work_orders"))
+    user = await session.get(User, user_id) if auto_complete else None
+    completed: list[str] = []
+    failed: list[str] = []
     states = await _all_item_states(session, company_id)
     # Idempotent across re-finalize: skip items already linked to an open work order for this order.
     existing = (await session.execute(
@@ -726,8 +734,41 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
         make_qty = max(0.0, qty - float((st or {}).get("quantity") or 0))
         if make_qty <= 0:
             continue
-        await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
         linked.add(item_id)
+        if auto_complete:
+            # Complete the planned run on the spot, inside a savepoint so a mid-completion failure
+            # (e.g. a raised event) rolls back only this line to a surviving planned run and neither
+            # aborts the loop nor escapes the hook into the finalize commit.
+            try:
+                async with session.begin_nested():
+                    await _complete_work_order_now(session, company_id, user, order_id, make_qty, states)
+                completed.append(order_id)
+            except Exception as exc:
+                failed.append(order_id)
+                log.warning("auto-complete failed for %s: %s", order_id, exc)
+
+    if auto_complete and (completed or failed):
+        # Disclose the automatic action (GDR 2d), itself savepoint-guarded so a failed notification
+        # flush/prune cannot abort the invoice commit.
+        try:
+            async with session.begin_nested():
+                if failed:
+                    await notif_svc.create(
+                        session, company_id, category="manufacturing",
+                        title="Work orders need completing",
+                        body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
+                              f"and are left planned: {', '.join(failed)}. Complete them manually."),
+                        priority="high", action_url="/manufacturing/production?status=planned")
+                else:
+                    await notif_svc.create(
+                        session, company_id, category="manufacturing",
+                        title="Work orders auto-completed",
+                        body=(f"{len(completed)} work order(s) were completed automatically on invoice "
+                              f"posting: {', '.join(completed)}."),
+                        priority="medium", action_url="/manufacturing/production")
+        except Exception as exc:
+            log.warning("auto-complete notification failed: %s", exc)
 
 
 @router.post("/to-make/requirements")
