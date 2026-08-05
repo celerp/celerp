@@ -484,3 +484,21 @@ async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):
     assert r.status_code == 200
     assert b"VAT" in r.content
     assert b"Coming soon" not in r.content
+
+
+@pytest.mark.asyncio
+async def test_settings_inline_save_persists_auto_complete(ui_client):
+    """Option A: POST /settings/manufacturing saves inline - a 200 with the saved indicator,
+    not a 303 reload - and passes auto_complete_work_orders through to the client."""
+    saved = AsyncMock(return_value={})
+    with patch("ui.api_client.update_mfg_settings", new=saved):
+        r = await ui_client.post(
+            "/settings/manufacturing",
+            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1", "hours_per_day": "8"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 200
+    assert "Settings saved." in r.text
+    saved.assert_awaited_once()
+    payload = saved.await_args.args[1]
+    assert payload["auto_complete_work_orders"] is True
