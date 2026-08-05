@@ -559,6 +559,14 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
     return {"items": items, "total": len(items)}
 
 
+def _assert_role_assignable(caller_role: str, target_role: str) -> None:
+    """A holder of manage_users may not assign a role above their own. The matrix can
+    grant manage_users down to any role, so this ceiling is what stops that from
+    becoming a self-promotion path."""
+    if ROLE_LEVELS[target_role] > ROLE_LEVELS[caller_role]:
+        raise HTTPException(status_code=403, detail="You cannot assign a role above your own.")
+
+
 @router.post("/me/users")
 async def create_user(
     payload: UserCreate,
@@ -571,11 +579,7 @@ async def create_user(
 
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
-    # A holder of manage_users may not mint a user above their own role: the
-    # matrix can grant manage_users down to any role, so the ceiling is what
-    # stops that from becoming a self-promotion path.
-    if ROLE_LEVELS[payload.role] > ROLE_LEVELS[caller_role]:
-        raise HTTPException(status_code=403, detail="You cannot assign a role above your own.")
+    _assert_role_assignable(caller_role, payload.role)
 
     # Check if user with this email already exists globally; if so, just link them.
     existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
@@ -643,8 +647,7 @@ async def patch_user(
         if payload.role not in ROLE_LEVELS:
             raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
         # Nor may they promote anyone above their own role.
-        if ROLE_LEVELS[payload.role] > ROLE_LEVELS[caller_role]:
-            raise HTTPException(status_code=403, detail="You cannot assign a role above your own.")
+        _assert_role_assignable(caller_role, payload.role)
         # Guard: cannot demote the last active owner
         old_level = ROLE_LEVELS.get(link.role, 0)
         new_level = ROLE_LEVELS.get(payload.role, 0)
