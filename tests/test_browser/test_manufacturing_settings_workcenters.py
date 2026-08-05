@@ -18,18 +18,32 @@ def test_manufacturing_settings_page(page, ui_server, api):
 
     page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("input[name=hours_per_day]", timeout=10000)
+
+    # Inline save: every field change posts the whole form, no Save button, no reload.
     page.fill("input[name=hours_per_day]", "10")
     page.check("input[name=require_issued_before_complete]")
-    page.click("button:has-text('Save')")
-    page.wait_for_selector("input[name=hours_per_day]", timeout=8000)
+    page.check("input[name=auto_create_work_orders]")
+    page.check("input[name=auto_complete_work_orders]")
+    page.wait_for_selector("#mfg-save-status .flash--success", timeout=8000)
 
-    # Persisted + reflected back in the form.
+    # No reload wiped the form: the values stay in place.
     assert page.locator("input[name=hours_per_day]").input_value() == "10"
     assert page.locator("input[name=require_issued_before_complete]").is_checked()
+    assert page.locator("input[name=auto_complete_work_orders]").is_checked()
     page.screenshot(path=str(SHOTS / "manufacturing-settings.png"), full_page=True)
 
-    mfg = api.get("/companies/me").json()["settings"]["manufacturing"]
-    assert mfg["hours_per_day"] == 10 and mfg["require_issued_before_complete"] is True
+    # Persisted server-side; the last change-triggered save settles the full form.
+    import time as _t
+    deadline = _t.time() + 8
+    mfg = {}
+    while _t.time() < deadline:
+        mfg = api.get("/companies/me").json()["settings"]["manufacturing"]
+        if mfg.get("auto_complete_work_orders") is True:
+            break
+    assert mfg["hours_per_day"] == 10
+    assert mfg["require_issued_before_complete"] is True
+    assert mfg["auto_create_work_orders"] is True
+    assert mfg["auto_complete_work_orders"] is True
 
 
 def test_work_centers_crud(page, ui_server, api):
