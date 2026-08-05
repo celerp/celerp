@@ -1887,7 +1887,8 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory"):
-            # Viewers are read-only: swap back a non-editable display cell.
+            # Without the edit permission, swap back a non-editable display cell
+            # (a role granted the write in the matrix keeps its input).
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),

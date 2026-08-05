@@ -1745,7 +1745,8 @@ def setup_routes(app):
         except APIError:
             _settings = {}
         if not role_has_permission(_settings, _get_role(request), "edit_contacts"):
-            # Viewers are read-only: return the display state instead of an input.
+            # Without the edit permission, return the display state instead of an
+            # input (a role granted the write in the matrix keeps its input).
             return await contact_field_display(request, contact_id, field)
         try:
             contact = await api.get_contact(token, contact_id)
