@@ -590,12 +590,21 @@ function _notifItemHtml(n) {
     + '</div>';
 }
 
+// A ready-to-install app update is worth one bell count so the user notices it
+// on the icon without opening the panel; the panel's update card carries the
+// version and the restart/upgrade action, so the count needs no list item.
+window._celerpUpdate = window._celerpUpdate || { ready: false, version: '' };
+window._lastNotifData = window._lastNotifData || { items: [], unread_count: 0 };
+
 function _renderNotifs(data) {
+  if (data) window._lastNotifData = data;
+  data = window._lastNotifData;
   var badge = document.getElementById('notif-badge');
   var list = document.getElementById('notif-list');
+  var count = (data.unread_count || 0) + (window._celerpUpdate.ready ? 1 : 0);
   if (badge) {
-    if (data.unread_count > 0) {
-      badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : count;
       badge.style.display = '';
     } else {
       badge.style.display = 'none';
@@ -609,6 +618,14 @@ function _renderNotifs(data) {
     }
   }
 }
+
+// Light the bell when an update finishes downloading (Electron) or is available
+// on PyPI (pip). Re-renders off the last fetched inbox so no network call is
+// needed; the count clears when the user relaunches into the new version.
+window.celerpSetUpdateReady = function(version) {
+  window._celerpUpdate = { ready: true, version: version || '' };
+  _renderNotifs(null);
+};
 
 window._loadNotifs = function() {
   return fetch('/notifications?unread_only=true')
@@ -826,6 +843,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setCheckBtn(false);
         if (restartBtn) restartBtn.style.display = '';
         appendLog('v' + v + ' downloaded. Click "Restart to Install" when ready.');
+        window.celerpSetUpdateReady(v);
       });
 
       // Errors are always visible — never silently swallowed.
@@ -877,6 +895,7 @@ document.addEventListener('DOMContentLoaded', function() {
               setState('Update available: v' + latest, false);
               var upgrade = card.querySelector('.update-card__upgrade-cmd');
               if (upgrade) upgrade.style.display = '';
+              window.celerpSetUpdateReady(latest);
             } else {
               setState('Up to date', false);
             }

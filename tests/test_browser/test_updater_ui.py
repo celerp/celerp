@@ -119,3 +119,48 @@ def test_update_card_check_btn_present(page, ui_server):
 
     btn = page.locator(".update-card__check-btn")
     assert btn.count() == 1, "Check for updates button not found"
+
+
+def test_bell_badge_counts_downloaded_update(page, ui_server):
+    """A downloaded update must light the bell badge, not just the panel card.
+
+    Without the fix the Electron update-downloaded handler updates the card text
+    and restart button but never the badge, so the icon shows nothing and users
+    never notice a waiting upgrade. Here we stub the Electron preload, capture the
+    update-downloaded callback, fire it as the main process would, and require the
+    bell badge to show a count.
+    """
+    # Define the preload stub before page scripts run so initUpdateCard takes the
+    # Electron path and registers against it. The stub stores the downloaded
+    # callback so the test can fire it deterministically (no real download).
+    page.add_init_script(
+        """
+        window.__fireUpdateDownloaded = null;
+        window.celerp = {
+          getVersion: () => Promise.resolve('2.0.0'),
+          onUpdateLog: () => {},
+          onUpdateAvailable: () => {},
+          onDownloadProgress: () => {},
+          onUpdateNotAvailable: () => {},
+          onUpdateDownloaded: (cb) => { window.__fireUpdateDownloaded = cb; },
+          onUpdateError: () => {},
+          checkForUpdates: () => Promise.resolve(),
+          installUpdate: () => {},
+        };
+        """
+    )
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+
+    # Init ran and captured the callback.
+    page.wait_for_function("() => typeof window.__fireUpdateDownloaded === 'function'")
+
+    badge = page.locator("#notif-badge")
+    assert not badge.is_visible(), "badge should be hidden before any update is ready"
+
+    # Fire the event exactly as the Electron main process does on download.
+    page.evaluate("() => window.__fireUpdateDownloaded({ version: '2.0.1' })")
+
+    assert badge.is_visible(), "bell badge did not appear when an update was downloaded"
+    assert badge.text_content() == "1", (
+        f"expected badge count 1 for a ready update, got {badge.text_content()!r}"
+    )
