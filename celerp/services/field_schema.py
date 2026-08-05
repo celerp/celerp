@@ -19,6 +19,11 @@ from celerp.services.pricing import is_cost_list_name, is_derived, price_key
 # "Mixed", stored and displayed verbatim — no separate lowercase sentinel vs capitalized label.
 MIXED_VALUE = "Mixed"
 
+# Item amount fields hand-edited on the item surface, gated by the
+# edit_inventory_amounts permission. One source of truth, mirroring the
+# COST_ITEM_KEYS precedent in celerp.services.cost_visibility.
+AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "gross_weight"})
+
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Wholesale"},

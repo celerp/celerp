@@ -22,6 +22,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
+from celerp.services.field_schema import AMOUNT_ITEM_KEYS
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -949,6 +950,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.location_id is not None:
         data["location_id"] = str(payload.location_id)
 
+    # Amount fields must be non-negative on create. ItemCreate is extra="allow", so
+    # weight/pieces/gross_weight are otherwise unvalidated. Creation is not gated by
+    # edit_inventory_amounts (a create defines the item, not a hand-edit); value only.
+    for _amt in AMOUNT_ITEM_KEYS & set(data):
+        _amt_val = data.get(_amt)
+        if _amt_val is not None and float(_amt_val) < 0:
+            raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
+
     # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
     if payload.category:
         try:
@@ -1027,6 +1036,11 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= COST_ITEM_KEYS
     if not role_has_permission(settings, role, "set_inventory_prices"):
         restricted |= COST_ITEM_KEYS
+    # Amount fields (quantity/weight/pieces/gross_weight) are gated by
+    # edit_inventory_amounts, mirroring the cost gate above.
+    restricted -= AMOUNT_ITEM_KEYS
+    if not role_has_permission(settings, role, "edit_inventory_amounts"):
+        restricted |= AMOUNT_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
     blocked = changed_keys & restricted
     if blocked:
@@ -1135,6 +1149,13 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         new_weight = (payload.fields_changed["weight"] or {}).get("new")
         if new_weight is not None and float(new_weight) < 0:
             raise HTTPException(status_code=422, detail="Weight cannot be negative")
+
+    # The other amount fields are non-negative too (weight handled above).
+    for _amt in ("quantity", "pieces", "gross_weight"):
+        if _amt in changed_keys:
+            _amt_new = (payload.fields_changed[_amt] or {}).get("new")
+            if _amt_new is not None and float(_amt_new) < 0:
+                raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
 
     # sell_by sync: when sell_by changes unit type, pull the companion field into quantity.
     # quantity always means "how many sell_by units" — so switching piece→carat should set
@@ -1433,7 +1454,7 @@ async def split_preview(
 
 
 @router.post("/{entity_id}/split")
-async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -1658,9 +1679,29 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             )
 
     # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
-    new_parent_qty = payload.mother_qty if payload.mother_qty is not None else round(parent_qty - total_child_qty, 10)
-    # Clamp sub-epsilon residuals from float subtraction to an exact zero.
-    if new_parent_qty < 0:
+    total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
+    derived_parent_qty = round(parent_qty - total_child_qty, 10)
+    derived_mother_weight = (
+        round(parent_weight - total_child_weight, weight_decimals) if parent_weight is not None else None
+    )
+    # A hand-set mother amount (a re-weigh) that diverges from the server-derived
+    # remainder is a gated amount edit (edit_inventory_amounts). The derived pass-through
+    # (the bulk preview posts the derived value) and the split itself stay on
+    # edit_inventory, so an operator can always split without the amount permission.
+    if payload.mother_qty is not None:
+        if payload.mother_qty < 0:
+            raise HTTPException(status_code=422, detail="Mother quantity cannot be negative")
+        if round(payload.mother_qty, 10) != derived_parent_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
+            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother quantity: requires the edit_inventory_amounts permission")
+    if payload.mother_weight is not None:
+        if payload.mother_weight < 0:
+            raise HTTPException(status_code=422, detail="Mother weight cannot be negative")
+        if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
+            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother weight: requires the edit_inventory_amounts permission")
+    new_parent_qty = payload.mother_qty if payload.mother_qty is not None else derived_parent_qty
+    # Clamp sub-epsilon residuals from float subtraction to an exact zero (derived branch
+    # only; a submitted negative override was rejected above, never silently zeroed).
+    if payload.mother_qty is None and new_parent_qty < 0:
         new_parent_qty = 0.0
     await emit_event(
         session,
@@ -1715,8 +1756,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         # User explicitly re-weighed the mother parcel — use that value directly.
         computed_mother_weight = round(payload.mother_weight, weight_decimals)
     elif parent_weight is not None:
-        total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
-        computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
+        computed_mother_weight = derived_mother_weight
 
     if computed_mother_weight is not None or computed_mother_pieces is not None or clear_mother_pieces:
         fields_changed: dict[str, dict] = {}
@@ -1759,6 +1799,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             metadata_={"reason": "consumed_by_split"},
         )
 
+    # Delta: weight expected to remain minus weight measured. Asserted only when a real
+    # measurement exists (full consumption, measured 0, or an operator re-weigh) and
+    # every child carries a weight; otherwise None (honest degradation, no false anomaly).
+    if new_parent_qty == 0:
+        measured_remaining: float | None = 0.0
+    elif payload.mother_weight is not None:
+        measured_remaining = round(payload.mother_weight, weight_decimals)
+    else:
+        measured_remaining = None
+    if parent_weight is not None and measured_remaining is not None and all(c.weight is not None for c in payload.children):
+        split_delta: float | None = round(parent_weight - total_child_weight - measured_remaining, weight_decimals)
+    else:
+        split_delta = None
+
     # Emit item.split for history
     entry = await emit_event(
         session,
@@ -1772,6 +1826,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "quantities": child_qty_list,
             "parent_sku": parent_sku or "",
             "children_detail": children_detail,
+            "delta": split_delta,
+            "weight_unit": parent_weight_unit,
         },
         actor_id=user.id,
         location_id=None,
@@ -2072,6 +2128,15 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     )
 
     # 5. Emit transform event
+    # Delta: processing/trim loss = mother weight in minus child weight out, recorded
+    # only when both weights exist (history-only, not gated by edit_inventory_amounts).
+    _t_parent_weight = _read_float(parent.state, "weight")
+    _t_weight_unit = parent.state.get("weight_unit") or "gram"
+    _t_weight_decimals = (_transform_unit_map.get(_t_weight_unit) or {}).get("decimals", 2)
+    transform_delta = (
+        round(_t_parent_weight - payload.child_weight, _t_weight_decimals)
+        if (_t_parent_weight is not None and payload.child_weight is not None) else None
+    )
     idempotency_key = payload.idempotency_key or str(uuid.uuid4())
     await emit_event(
         session,
@@ -2094,6 +2159,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             "pieces_after": 0 if _read_pieces(parent.state) is not None else None,
             "weight_before": _read_float(parent.state, "weight"),
             "weight_after": 0 if _read_float(parent.state, "weight") is not None else None,
+            "delta": transform_delta,
+            "weight_unit": _t_weight_unit,
         },
         actor_id=user.id,
         location_id=None,
@@ -2119,7 +2186,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 
 @router.post("/merge")
-async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
 
@@ -2282,6 +2349,15 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     _qty_dp = {u["name"]: u for u in await _get_company_units(session, company_id)}.get(_common_sell_by, {}).get("decimals")
     if _qty_dp is not None:
         resulting_qty = round(float(resulting_qty), _qty_dp)
+    # A hand-set resulting_quantity that diverges from the natural summed total is a
+    # gated amount edit (edit_inventory_amounts); a natural merge (no override, or an
+    # override equal to the total) stays on edit_inventory.
+    if payload.resulting_quantity is not None:
+        if payload.resulting_quantity < 0:
+            raise HTTPException(status_code=422, detail="Resulting quantity cannot be negative")
+        _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
+        if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
+            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the merged quantity: requires the edit_inventory_amounts permission")
     resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -2617,6 +2693,8 @@ async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("edit_inventory"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -2677,9 +2755,35 @@ async def batch_import_items(
             skipped += 1
             continue
 
+        # Amount fields must be non-negative: rec.data is untyped and emitted verbatim
+        # as item.created / item.patched with no schema or projection validation, so this
+        # is the only place a negative CSV amount is caught.
+        _neg_amt = None
+        for _k in AMOUNT_ITEM_KEYS & set(rec.data):
+            _v = rec.data.get(_k)
+            if _v in (None, ""):
+                continue
+            try:
+                if float(_v) < 0:
+                    _neg_amt = _k
+                    break
+            except (TypeError, ValueError):
+                pass
+        if _neg_amt is not None:
+            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_neg_amt} cannot be negative")
+            skipped += 1
+            continue
+
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
             if body.upsert:
+                # Hand-editing an existing item's amount via CSV upsert is a genuine
+                # hand-edit surface, gated by edit_inventory_amounts. A create (below)
+                # defines the item and stays on edit_inventory.
+                if (AMOUNT_ITEM_KEYS & set(rec.data)) and not role_has_permission(settings, role, "edit_inventory_amounts"):
+                    errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing amount fields requires the edit_inventory_amounts permission")
+                    skipped += 1
+                    continue
                 # Emit patch event with a upsert-specific idempotency key
                 upsert_idem = f"{scoped_key}:upsert"
                 upsert_existing = set(

@@ -54,6 +54,7 @@ PERMISSIONS: list[Permission] = [
     Permission("edit_documents", "Create & edit documents", "operator", True, "operator"),
     Permission("edit_contacts", "Create & edit contacts", "operator", True, "operator"),
     Permission("edit_inventory", "Create & edit inventory", "operator", True, "operator"),
+    Permission("edit_inventory_amounts", "Edit quantities & weights", "operator", True, "operator"),
     Permission("finalize_documents", "Finalize & void documents", "operator", True, "operator"),
     Permission("fulfill_documents", "Fulfill & receive documents", "operator", True, "operator"),
     Permission("record_payments", "Record payments", "operator", True, "operator"),

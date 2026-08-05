@@ -745,6 +745,7 @@ def paired_display_cell(
     primary_options: list[str] | None = None,
     secondary_options: list[str] | None = None,
     format_fn=None,
+    primary_editable: bool = True,
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
@@ -755,6 +756,9 @@ def paired_display_cell(
     format_fn: optional callable(value) -> str for formatting the primary value.
     When provided, it is used instead of str(). Callers supply unit-aware formatters
     (e.g. format_qty) without coupling this generic component to inventory logic.
+    primary_editable: when False the primary (amount) value renders as a plain,
+    non-clickable span - no dblclick trigger, no edit affordance - while the
+    secondary unit stays editable. Used to honor the edit_inventory_amounts gate.
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
@@ -763,7 +767,7 @@ def paired_display_cell(
     else:
         pri_disp = EMPTY
     sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
-    return Td(
+    pri_span = (
         Span(
             pri_disp,
             cls="paired-primary",
@@ -772,7 +776,12 @@ def paired_display_cell(
             hx_target="closest td",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-        ),
+        )
+        if primary_editable
+        else Span(pri_disp, cls="paired-primary paired-primary--readonly")
+    )
+    return Td(
+        pri_span,
         Span(" ", cls="paired-sep"),
         Span(
             sec_disp,

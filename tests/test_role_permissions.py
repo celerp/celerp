@@ -40,6 +40,7 @@ EXPECTED_CATALOGUE = {
     "edit_documents": ("operator", True, "operator"),
     "edit_contacts": ("operator", True, "operator"),
     "edit_inventory": ("operator", True, "operator"),
+    "edit_inventory_amounts": ("operator", True, "operator"),
     "finalize_documents": ("operator", True, "operator"),
     "fulfill_documents": ("operator", True, "operator"),
     "record_payments": ("operator", True, "operator"),
@@ -1133,6 +1134,298 @@ async def test_vendors_page_requires_view_contacts(ui):
 
 async def test_item_detail_requires_view_inventory(ui):
     await _assert_page_redirects_when_revoked(ui, "/inventory/item_1", "view_inventory")
+
+
+# ── Amount-edit permission (edit_inventory_amounts) ───────────────────────────
+
+# The four hand-editable amount fields the new key gates. Hardcoded (not imported
+# from celerp.services.field_schema) so the parametrize list resolves at collection
+# time even where that symbol does not yet exist.
+_AMOUNT_KEYS = ["quantity", "weight", "pieces", "gross_weight"]
+
+
+def test_edit_inventory_amounts_in_catalogue():
+    """The registry carries edit_inventory_amounts: operator default, grantable,
+    operator floor - a distinct key from edit_inventory."""
+    from celerp.services.permissions import PERMISSIONS
+
+    by_key = {p.key: p for p in PERMISSIONS}
+    assert "edit_inventory_amounts" in by_key
+    p = by_key["edit_inventory_amounts"]
+    assert p.default_role == "operator"
+    assert p.grantable is True
+    assert p.floor_role == "operator"
+    assert p.label
+    assert "edit_inventory" in by_key  # the amounts key does not replace the base key
+
+
+def _amount_patch(field: str) -> dict:
+    """An ItemPatch body that hand-edits one amount field."""
+    old_new = {"quantity": (5, 3), "weight": (None, 2), "pieces": (None, 5),
+               "gross_weight": (None, 2)}[field]
+    return {"fields_changed": {field: {"old": old_new[0], "new": old_new[1]}}}
+
+
+@pytest.mark.parametrize("field", _AMOUNT_KEYS)
+async def test_amount_edit_denied_without_permission(client, session, field):
+    """With edit_inventory_amounts raised above operator, an operator that still
+    holds edit_inventory is blocked from hand-editing any amount field; the 403
+    names the blocked field."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.patch(f"/items/{ctx['item_id']}", json=_amount_patch(field),
+                           headers=ctx["operator_h"])
+    assert r.status_code == 403, r.text
+    assert field in r.json()["detail"]
+
+
+async def test_amount_edit_allowed_with_permission(client, session):
+    """An operator holding edit_inventory_amounts (its operator default) hand-edits
+    an amount field successfully."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(f"/items/{ctx['item_id']}", json=_amount_patch("quantity"),
+                           headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+
+
+async def test_nonamount_edit_allowed_without_amount_permission(client, session):
+    """Editing a non-amount field (name) stays allowed for a role lacking
+    edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.patch(
+        f"/items/{ctx['item_id']}",
+        json={"fields_changed": {"name": {"old": "Perm Item", "new": "Renamed Item"}}},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+
+
+async def _mergeable_pair(client, headers, location_id):
+    """Create two same-category, same-unit items; return (id_a, id_b)."""
+    def _body(sku, qty):
+        return {"sku": sku, "name": sku, "quantity": qty, "category": "Raw",
+                "location_id": location_id, "sell_by": "piece"}
+    a = (await client.post("/items", json=_body("MRG-A", 5), headers=headers)).json()["id"]
+    b = (await client.post("/items", json=_body("MRG-B", 3), headers=headers)).json()["id"]
+    return a, b
+
+
+async def _splittable_item(client, headers, location_id, sku="SPL-1", weight=10.0):
+    """Create a splittable weight-bearing item; return its entity_id."""
+    r = await client.post(
+        "/items",
+        json={"sku": sku, "name": sku, "quantity": 10, "location_id": location_id,
+              "sell_by": "piece", "weight": weight, "allow_splitting": True},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def test_split_still_allowed_without_amount_permission(client, session):
+    """A plain split (no mother re-weigh override) is allowed for a role lacking
+    edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    item_id = await _splittable_item(client, ctx["admin_h"], ctx["location_id"])
+    r = await client.post(f"/items/{item_id}/split",
+                          json={"children": [{"sku": "SPL-1.1", "quantity": 3}]},
+                          headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+
+
+async def test_merge_still_allowed_without_amount_permission(client, session):
+    """A natural merge (no resulting_quantity override) is allowed for a role
+    lacking edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
+    r = await client.post("/items/merge",
+                          json={"source_entity_ids": [a, b], "target_sku_from": a},
+                          headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+
+
+async def test_merge_override_denied_without_amount_permission(client, session):
+    """A resulting_quantity that differs from the natural summed total is a hand
+    override of an amount, blocked for a role lacking edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
+    r = await client.post(
+        "/items/merge",
+        json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": 99.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 403, r.text
+    assert "quantity" in r.json()["detail"].lower()
+
+
+async def test_merge_negative_override_rejected(client, session):
+    """A negative resulting_quantity is rejected on value, independent of role."""
+    ctx = await perm_setup(client, session)
+    a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
+    r = await client.post(
+        "/items/merge",
+        json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": -5.0},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_adjust_still_allowed_without_amount_permission(client, session):
+    """adjust_item is gated by adjust_inventory, not by edit_inventory_amounts: a
+    role granted adjust_inventory but lacking the amount key can still adjust."""
+    ctx = await perm_setup(client, session)
+    # One settings write (shallow merge would clobber a second call): grant
+    # adjust_inventory down to operator AND raise edit_inventory_amounts above it.
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"role_permissions": {
+            "adjust_inventory": "operator", "edit_inventory_amounts": "manager"}}},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/items/{ctx['item_id']}/adjust", json={"new_qty": 3},
+                          headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+
+
+async def test_sell_by_change_allowed_without_amount_permission(client, session):
+    """Changing sell_by (which server-syncs quantity) is not a hand-edit of an
+    amount and stays allowed for a role lacking edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.patch(
+        f"/items/{ctx['item_id']}",
+        json={"fields_changed": {"sell_by": {"old": "piece", "new": "gram"}}},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_reweigh_denied_without_amount_permission(client, session):
+    """A split mother_weight override that differs from the server-derived remainder
+    is a hand re-weigh, blocked for a role lacking edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    item_id = await _splittable_item(client, ctx["admin_h"], ctx["location_id"])
+    # derived remainder = 10 - 3 = 7; override 6.0 differs.
+    r = await client.post(
+        f"/items/{item_id}/split",
+        json={"children": [{"sku": "SPL-1.1", "quantity": 3, "weight": 3.0}],
+              "mother_weight": 6.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 403, r.text
+    assert "weight" in r.json()["detail"].lower()
+
+
+async def test_split_derived_reweigh_allowed_without_amount_permission(client, session):
+    """A mother_weight override equal to the server-derived remainder is not a hand
+    re-weigh and stays allowed for a role lacking edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    item_id = await _splittable_item(client, ctx["admin_h"], ctx["location_id"])
+    # derived remainder = 10 - 3 = 7; override equals it.
+    r = await client.post(
+        f"/items/{item_id}/split",
+        json={"children": [{"sku": "SPL-1.1", "quantity": 3, "weight": 3.0}],
+              "mother_weight": 7.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_split_negative_reweigh_rejected(client, session):
+    """A negative mother_weight is rejected on value, independent of role."""
+    ctx = await perm_setup(client, session)
+    item_id = await _splittable_item(client, ctx["admin_h"], ctx["location_id"])
+    r = await client.post(
+        f"/items/{item_id}/split",
+        json={"children": [{"sku": "SPL-1.1", "quantity": 3, "weight": 3.0}],
+              "mother_weight": -5.0},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 422, r.text
+
+
+def _import_record(entity_id: str, data: dict, key: str, event_type: str = "item.created") -> dict:
+    return {"entity_id": entity_id, "event_type": event_type, "data": data,
+            "source": "csv", "idempotency_key": key}
+
+
+async def test_batch_import_amount_denied_without_permission(client, session):
+    """A batch upsert whose record data carries an amount key is skipped-with-error
+    for a role lacking edit_inventory_amounts; no amount is written."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    eid = "item:bi-amt"
+    # Seed via a create import (create carries quantity but is not amount-gated).
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-1", "name": "BI 1", "sell_by": "piece", "quantity": 5}, "bi-amt")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1
+
+    # Upsert the same key with an amount key (weight) present.
+    r = await client.post("/items/import/batch", json={"upsert": True, "records": [
+        _import_record(eid, {"sku": "BI-1", "sell_by": "piece", "weight": 5.0}, "bi-amt")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["updated"] == 0
+    assert result["errors"]
+    # The blocked amount never landed on the item.
+    item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
+    assert item.get("weight") in (None, "")
+
+
+async def test_batch_import_nonamount_allowed_without_permission(client, session):
+    """A batch upsert of a non-amount field (name) is applied for a role lacking
+    edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    eid = "item:bi-name"
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-2", "name": "BI 2", "sell_by": "piece", "quantity": 5}, "bi-name")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+
+    r = await client.post("/items/import/batch", json={"upsert": True, "records": [
+        _import_record(eid, {"sku": "BI-2", "sell_by": "piece", "name": "BI 2 Renamed"}, "bi-name")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    assert r.json()["updated"] == 1
+
+
+async def test_batch_import_negative_amount_rejected(client, session):
+    """A batch record carrying a negative amount is skipped-with-error even for a
+    role holding edit_inventory_amounts; the negative is never written."""
+    ctx = await perm_setup(client, session)
+    eid = "item:bi-neg"
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-3", "name": "BI 3", "sell_by": "piece",
+                             "quantity": 1, "weight": -5.0}, "bi-neg")
+    ]}, headers=ctx["admin_h"])
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["created"] == 0
+    assert result["errors"]
+
+
+@pytest.mark.parametrize("field", _AMOUNT_KEYS)
+async def test_create_negative_amount_rejected(client, session, field):
+    """Creating an item with a negative amount value is rejected 422 naming the
+    field, for every amount key."""
+    ctx = await perm_setup(client, session)
+    body = {"sku": f"NEG-{field}", "name": "Neg", "sell_by": "piece",
+            "location_id": ctx["location_id"], "quantity": 1}
+    body[field] = -5
+    r = await client.post("/items", json=body, headers=ctx["admin_h"])
+    assert r.status_code == 422, r.text
+    assert field in r.json()["detail"]
 
 
 def test_guard_family_removed():

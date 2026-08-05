@@ -515,6 +515,31 @@ class TestClickToEdit:
         assert r.status_code == 200
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["quantity", "weight", "pieces", "gross_weight"])
+    async def test_amount_field_cell_readonly_without_permission(self, ui_client, field):
+        """GET edit for an amount field, as a role lacking edit_inventory_amounts,
+        returns a non-editable display cell (no <input>), so no amount cell can enter
+        edit state without the permission."""
+        schema = [{"key": field, "label": field, "type": "number", "editable": True}]
+        item = {"entity_id": "gc:123", field: 5}
+        # Operator holds edit_inventory (default) but edit_inventory_amounts is
+        # raised to manager, so the amount cell must render read-only.
+        company = {"settings": {"role_permissions": {"edit_inventory_amounts": "manager"}}}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+        ):
+            r = await ui_client.get(
+                f"/api/items/gc:123/field/{field}/edit",
+                cookies=_authed(role="operator"),
+            )
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+
+    @pytest.mark.asyncio
     async def test_patch_item_field_returns_display_td(self, ui_client):
         """PATCH /api/items/{id}/field/{field} → saves, returns display <td> with new value."""
         updated = {**_ITEM, "name": "Sapphire"}
@@ -5848,6 +5873,26 @@ class TestBulkActionsPhase1to5:
         assert "mother-weight-display" in html, "mother-weight-display span must be present"
         # splitRecalcMotherWeight must appear only on child_weight (not bidirectional)
         assert html.count("splitRecalcMotherWeight(this)") == 1
+
+    @pytest.mark.asyncio
+    async def test_split_preview_has_hidden_delta_line(self, ui_client):
+        """The split preview renders a mother-level delta line (sp-delta) that starts
+        hidden and lives in the totals/footer, never as an extra column header."""
+        import re
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A9&qty=3",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # The delta element exists and starts collapsed until a nonzero delta lands.
+        m = re.search(r"<[^>]*sp-delta[^>]*>", html)
+        assert m is not None, "sp-delta element must be present"
+        assert "hidden" in m.group(0), "sp-delta line must start hidden"
+        # It is a totals/footer line, not a new column: it never appears in the header row.
+        head, _, _rest = html.partition("</thead>")
+        assert "sp-delta" not in head, "delta must not add a column header"
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
