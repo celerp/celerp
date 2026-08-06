@@ -40,41 +40,41 @@ ROLES: list[Role] = [
     for key, level in sorted(ROLE_LEVELS.items(), key=lambda kv: kv[1])
 ]
 
-# floor_role: viewer for the view keys, operator for every write-capable key,
-# except manage_company_settings, whose floor is admin. That key now reaches the
-# module data purge, which drops tables, so no override may hand it to an operator.
-# The floor keeps viewers read-only now that the router-level read-only baseline is
-# gone, and clamps every override up to at least the floor: no override can set a
-# key below it.
+# floor_role: the lowest role an owner may set as a key's minimum. Every grantable
+# key floors at viewer, so the owner-editable matrix can grant any read or write down
+# to viewer. The one exception is manage_company_settings, whose floor is admin: it
+# reaches the module data purge, which drops tables, so no override may hand it below
+# admin. The floor also clamps every stored override up to at least the floor on read,
+# so the invariant holds for grandfathered overrides, not only at save time.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
     Permission("view_documents", "View documents", "viewer", True, "viewer"),
     Permission("view_contacts", "View contacts", "viewer", True, "viewer"),
     Permission("view_inventory", "View inventory", "viewer", True, "viewer"),
-    Permission("edit_documents", "Create & edit documents", "operator", True, "operator"),
-    Permission("edit_contacts", "Create & edit contacts", "operator", True, "operator"),
-    Permission("edit_inventory", "Create & edit inventory", "operator", True, "operator"),
-    Permission("finalize_documents", "Finalize & void documents", "operator", True, "operator"),
-    Permission("fulfill_documents", "Fulfill & receive documents", "operator", True, "operator"),
-    Permission("record_payments", "Record payments", "operator", True, "operator"),
-    Permission("manage_labels", "Manage label templates", "operator", True, "operator"),
-    Permission("manage_manufacturing", "Manage manufacturing", "operator", True, "operator"),
-    Permission("use_ai_assistant", "Use AI assistant", "operator", True, "operator"),
-    Permission("run_backups", "Run backups", "operator", True, "operator"),
-    Permission("view_subscriptions", "View subscriptions", "operator", True, "operator"),
-    Permission("view_inventory_costs", "See inventory costs", "manager", True, "operator"),
-    Permission("set_inventory_prices", "Set inventory prices", "manager", True, "operator"),
-    Permission("set_sales_doc_prices", "Set sales document prices", "operator", True, "operator"),
-    Permission("delete_documents", "Delete documents", "manager", True, "operator"),
-    Permission("adjust_inventory", "Adjust stock & bulk operations", "manager", True, "operator"),
-    Permission("import_export_data", "Import / export data", "manager", True, "operator"),
-    Permission("view_payments", "View payments", "manager", True, "operator"),
-    Permission("view_financial_reports", "View financial reports", "manager", True, "operator"),
-    Permission("manage_accounting", "Manage accounting", "manager", True, "operator"),
-    Permission("manage_module_settings", "Manage module settings", "manager", True, "operator"),
-    Permission("manage_users", "Manage users", "admin", True, "operator"),
+    Permission("edit_documents", "Create & edit documents", "operator", True, "viewer"),
+    Permission("edit_contacts", "Create & edit contacts", "operator", True, "viewer"),
+    Permission("edit_inventory", "Create & edit inventory", "operator", True, "viewer"),
+    Permission("finalize_documents", "Finalize & void documents", "operator", True, "viewer"),
+    Permission("fulfill_documents", "Fulfill & receive documents", "operator", True, "viewer"),
+    Permission("record_payments", "Record payments", "operator", True, "viewer"),
+    Permission("manage_labels", "Manage label templates", "operator", True, "viewer"),
+    Permission("manage_manufacturing", "Manage manufacturing", "operator", True, "viewer"),
+    Permission("use_ai_assistant", "Use AI assistant", "operator", True, "viewer"),
+    Permission("run_backups", "Run backups", "operator", True, "viewer"),
+    Permission("view_subscriptions", "View subscriptions", "operator", True, "viewer"),
+    Permission("view_inventory_costs", "See inventory costs", "manager", True, "viewer"),
+    Permission("set_inventory_prices", "Set inventory prices", "manager", True, "viewer"),
+    Permission("set_sales_doc_prices", "Set sales document prices", "operator", True, "viewer"),
+    Permission("delete_documents", "Delete documents", "manager", True, "viewer"),
+    Permission("adjust_inventory", "Adjust stock & bulk operations", "manager", True, "viewer"),
+    Permission("import_export_data", "Import / export data", "manager", True, "viewer"),
+    Permission("view_payments", "View payments", "manager", True, "viewer"),
+    Permission("view_financial_reports", "View financial reports", "manager", True, "viewer"),
+    Permission("manage_accounting", "Manage accounting", "manager", True, "viewer"),
+    Permission("manage_module_settings", "Manage module settings", "manager", True, "viewer"),
+    Permission("manage_users", "Manage users", "admin", True, "viewer"),
     Permission("manage_company_settings", "Manage company settings", "admin", True, "admin"),
-    Permission("manage_integrations", "Manage integrations", "admin", True, "operator"),
+    Permission("manage_integrations", "Manage integrations", "admin", True, "viewer"),
     # Fixed rows. manage_permissions gates the matrix save itself: owner-only so
     # no owner can revoke their own ability to edit permissions. Lifecycle stays
     # with the account owner. Billing is enforced by the cloud account, not by

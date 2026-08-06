@@ -3134,7 +3134,7 @@ def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = 
         Summary(t("settings.role_permissions_reference"), cls="role-ref-summary"),
         Table(
             Thead(Tr(
-                Th(t("th.permission"), cls="text-left"),
+                Th(t("th.permission"), cls="text-center"),
                 *[Th(t(r.label_key), cls="text-center") for r in ROLES],
             )),
             Tbody(*[_role_matrix_row(p, settings, is_owner) for p in PERMISSIONS]),

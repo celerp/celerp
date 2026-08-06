@@ -1071,8 +1071,8 @@ class TestNavPermissions:
     def test_document_and_contact_nav_allows_viewer(self):
         """The matrix promises 'View documents & contacts' at viewer level, so the
         document/contact sections must be visible to viewers. Writing is still
-        blocked by the operator floor on the edit permissions - visibility is not
-        capability."""
+        blocked by the operator DEFAULT on the edit permissions unless an owner
+        grants it - visibility is not capability."""
         viewer_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
         inventory_viewer_keys = {"inventory", "inventory_sold", "inventory_archived"}
         for item in self._load_nav_items():

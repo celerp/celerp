@@ -17,6 +17,7 @@ from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
 from ui.i18n import t, get_lang
 from ui.routes.settings import _check_permission, _token
+from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
 
@@ -56,19 +57,6 @@ async def _register_woocommerce_webhooks(
             .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids) if ids else None)
         )
         await session.commit()
-
-
-def _is_safe_authorize_url(url: str) -> bool:
-    """A broker-supplied OAuth authorize URL is safe to open/inject only if it is https and
-    carries nothing that could break out of a <script> tag or href (angle brackets / control
-    chars) or use a non-web scheme (javascript:/data:)."""
-    from urllib.parse import urlparse
-    return (
-        bool(url)
-        and urlparse(url).scheme == "https"
-        and not any(c in url for c in "<>")
-        and not any(ord(c) < 0x20 for c in url)
-    )
 
 
 def _store_url_error(store_url: str, platform: str) -> str | None:
@@ -798,7 +786,7 @@ def setup_routes(app):
         if not url:
             return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
 
-        if not _is_safe_authorize_url(url):
+        if not is_safe_authorize_url(url):
             return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
 
         # Open the authorize URL in a new tab AND show an on-screen next step + fallback
