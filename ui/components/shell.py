@@ -1206,7 +1206,6 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
-                        Span("", cls="update-card__release"),
                         cls="update-card__info",
                     ),
                     Div(
@@ -1219,6 +1218,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         # Scrolling log (hidden until first log line)
                         Pre(cls="update-card__log", style="display:none;"),
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
+                        Span("", cls="update-card__release"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
                                style="display:none;"),
                         Div(

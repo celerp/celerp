@@ -165,6 +165,45 @@ def test_source_build_shows_no_update(page, ui_server):
     )
 
 
+def test_check_button_refreshes_latest_release(page, ui_server):
+    """Pressing Check for updates re-fetches and refreshes the latest-release line.
+
+    A developer who leaves the panel open and presses Check after a new release is
+    cut must see the line update, not a stale value from the initial load.
+    """
+    latest = {"v": "2.0.0"}
+    page.route(
+        "**/health",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"version": "0.0.0"}'
+        ),
+    )
+    page.route(
+        "**/pypi.org/pypi/celerp/json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"info": {"version": "%s"}}' % latest["v"],
+        ),
+    )
+
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+    page.wait_for_function(
+        "() => document.querySelector('.update-card__release')"
+        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.0.0'"
+    )
+
+    # A new release is cut; pressing Check must pick it up.
+    latest["v"] = "2.1.0"
+    page.locator(".update-card__check-btn").click()
+    page.wait_for_function(
+        "() => document.querySelector('.update-card__release')"
+        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.1.0'"
+    )
+
+
 def test_bell_badge_counts_downloaded_update(page, ui_server):
     """A downloaded update must light the bell badge, not just the panel card.
 
