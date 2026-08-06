@@ -27,6 +27,12 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
+        # Every company gets one default work center, which supplies the working-day
+        # length the To-Make board estimates against. on_company_created covers new
+        # companies; on_modules_ready covers a company that enables manufacturing
+        # after the backfill migration ran.
+        "on_company_created": {"handler": "celerp_manufacturing.routes:provision_default_work_center_hook"},
+        "on_modules_ready": {"handler": "celerp_manufacturing.routes:backfill_default_work_center_hook"},
         # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
         # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders
