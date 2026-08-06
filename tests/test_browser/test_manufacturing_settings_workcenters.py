@@ -20,11 +20,12 @@ def test_manufacturing_settings_page(page, ui_server, api):
     page.wait_for_selector("input[name=hours_per_day]", timeout=10000)
 
     # Inline save: every field change posts the whole form, no Save button, no reload.
+    # Success surfaces through the shared corner toast, not an inline banner.
     page.fill("input[name=hours_per_day]", "10")
     page.check("input[name=require_issued_before_complete]")
     page.check("input[name=auto_create_work_orders]")
     page.check("input[name=auto_complete_work_orders]")
-    page.wait_for_selector("#mfg-save-status .flash--success", timeout=8000)
+    page.wait_for_selector(".toast--success", timeout=8000)
 
     # No reload wiped the form: the values stay in place.
     assert page.locator("input[name=hours_per_day]").input_value() == "10"

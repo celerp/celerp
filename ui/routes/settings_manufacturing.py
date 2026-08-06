@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, flash
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.config import get_token as _token
 from ui.routes.manufacturing import _wc_table
 
@@ -115,7 +115,7 @@ def setup_routes(app):
                           "cannot mark each run complete by hand. Leave off to complete runs manually."),
                     cls="settings-toggle",
                 ),
-                cls="form-group", id="auto-complete-row",
+                cls="form-group settings-toggle-child", id="auto-complete-row",
                 **({"style": "display:none"} if not auto_create else {}),
             ),
             Div(
@@ -127,9 +127,8 @@ def setup_routes(app):
                       min="1", step="any", cls="form-input input--narrow"),
                 cls="form-group",
             ),
-            Div(id="mfg-save-status", cls="settings-save-status"),
             hx_post="/settings/manufacturing", hx_trigger="change",
-            hx_target="#mfg-save-status", hx_swap="innerHTML", cls="settings-card",
+            hx_swap="none", cls="settings-card",
         )
 
         return await base_shell(
@@ -164,5 +163,5 @@ def setup_routes(app):
                 "auto_complete_work_orders": auto_complete,
             })
         except APIError:
-            return HTMLResponse(to_xml(flash("Could not save settings.", "error")))
-        return HTMLResponse(to_xml(flash("Settings saved.", "success")))
+            return Response("", headers=toast_header("Could not save settings.", "error"))
+        return Response("", headers=toast_header("Settings saved."))

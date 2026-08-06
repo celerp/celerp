@@ -3045,6 +3045,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .input--medium { max-width: 260px; }
 .settings-toggle { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; }
 .settings-toggle input[type="checkbox"] { margin-top: 3px; flex: none; }
+.settings-toggle-child { margin-left: 1.75rem; }
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
   margin-left: 5px; border-radius: 50%; font-size: 10px; line-height: 1; color: var(--c-text2);
   border: 1px solid var(--c-border); cursor: help; position: relative; user-select: none; vertical-align: middle; flex: none; }
