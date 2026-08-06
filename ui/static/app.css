@@ -2539,6 +2539,10 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .update-card__state {
   color: var(--c-text2);
 }
+.update-card__release {
+  color: var(--c-text-muted, #888);
+  font-size: 0.78rem;
+}
 .update-card__releases-link {
   color: var(--c-primary);
   text-decoration: none;

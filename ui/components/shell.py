@@ -880,16 +880,32 @@ document.addEventListener('DOMContentLoaded', function() {
       if (restartBtn) restartBtn.style.display = 'none';
       if (progressBar) progressBar.style.display = 'none';
 
+      function fetchLatestRelease() {
+        return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
+          return pypi.info && pypi.info.version ? pypi.info.version : null;
+        });
+      }
+
       function runPyPICheck() {
         setCheckBtn(false);
         setState('Checking...', false);
+        var releaseEl = card.querySelector('.update-card__release');
+        if (releaseEl) releaseEl.textContent = '';
         fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
           var current = health.version || '';
           var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current.indexOf('0.0.0') === 0;
           if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
-          if (isDev) { setState('Running from source - no updates', false); resetToIdle(); return; }
-          return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
-            var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
+          if (isDev) {
+            setState('Running from source - no updates', false);
+            resetToIdle();
+            // A source build is not pip-upgradable, so it is never offered an
+            // update. Show the latest published release, best-effort, so the
+            // developer can see whether newer releases landed since their build.
+            return fetchLatestRelease().then(function(latest) {
+              if (releaseEl && latest) releaseEl.textContent = 'Latest release: v' + latest;
+            }).catch(function() {});
+          }
+          return fetchLatestRelease().then(function(latest) {
             if (!latest) { setState('Up to date', false); resetToIdle(); return; }
             if (latest !== current) {
               setState('Update available: v' + latest, false);
@@ -1190,6 +1206,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
+                        Span("", cls="update-card__release"),
                         cls="update-card__info",
                     ),
                     Div(

@@ -153,9 +153,15 @@ def test_source_build_shows_no_update(page, ui_server):
 
     version = page.locator(".update-card__version").text_content()
     state = page.locator(".update-card__state").text_content()
+    release = page.locator(".update-card__release").text_content()
     assert version == "Development build", f"expected dev-build label, got {version!r}"
     assert "Update available" not in (state or ""), (
         f"a source build must not be offered a PyPI update, got state {state!r}"
+    )
+    # The latest published release is shown for reference so the developer can see
+    # whether newer releases landed since their build - informational, not an offer.
+    assert release == "Latest release: v2.0.0", (
+        f"expected the latest release line, got {release!r}"
     )
 
 
