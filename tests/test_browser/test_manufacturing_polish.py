@@ -163,7 +163,7 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     """Capture screenshots of all the changed manufacturing UIs for visual review.
 
     Covers: sidebar nav (Manufacturing under Inventory), /settings/manufacturing (layout with
-    tooltips + narrow hours input), work centers section, /docs?type=production_order (info
+    tooltips + production rules), work centers section, /docs?type=production_order (info
     banner), /manufacturing To-Make board (units in qty columns), in_production tab.
     """
     MFG_SHOTS.mkdir(parents=True, exist_ok=True)

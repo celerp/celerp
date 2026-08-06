@@ -78,17 +78,22 @@ def test_auto_complete_hidden_until_auto_create(page, ui_server, fresh_company):
     assert auto_complete.is_hidden()
 
 
-def test_work_centers_crud(page, ui_server, api):
+def test_work_centers_crud(page, ui_server, fresh_company):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
+    api = fresh_company
 
     page.goto(f"{ui_server}/manufacturing/work-centers", wait_until="domcontentloaded")
     page.wait_for_selector("#wc-table", timeout=10000)
 
+    # A new company arrives with its default center already seeded.
+    assert [w["name"] for w in api.get("/manufacturing/work-centers").json()["items"]] == ["Default"]
+
     # Add a work center, then rename it via double-click edit.
     page.click("button:has-text('Add work center')")
     page.wait_for_selector("#wc-table:has-text('New work center')", timeout=8000)
-    page.locator("#wc-table .editable-cell").first.dblclick()
+    new_row = page.locator("#wc-table tbody tr", has_text="New work center").first
+    new_row.locator(".editable-cell").first.dblclick()
     inp = page.locator("#wc-table input[name=value]")
     inp.wait_for(state="visible", timeout=5000)
     inp.fill("Polishing Bench")
@@ -99,20 +104,26 @@ def test_work_centers_crud(page, ui_server, api):
     centers = api.get("/manufacturing/work-centers").json()["items"]
     assert any(w["name"] == "Polishing Bench" for w in centers)
 
-    # Delete it (auto-accept the hx_confirm dialog). It is the company's only
-    # center here, so clear the default flag first: the last center cannot be
-    # deleted while it is the default.
+    # Delete it (auto-accept the hx_confirm dialog). It is not the default, so it goes.
     page.on("dialog", lambda d: d.accept())
+    page.locator("#wc-table tbody tr", has_text="Polishing Bench").first.locator(
+        "button:has-text('Delete')").click()
+    page.wait_for_selector("#wc-table tbody tr:nth-child(2)", state="detached", timeout=8000)
+    assert [w["name"] for w in api.get("/manufacturing/work-centers").json()["items"]] == ["Default"]
+
+    # The last remaining center cannot be deleted, and the refusal says why, so
+    # the board always has a default center to read its working day from.
     page.locator("#wc-table button:has-text('Delete')").first.click()
-    page.wait_for_selector("#wc-table:has-text('No work centers yet')", timeout=8000)
-    assert api.get("/manufacturing/work-centers").json()["items"] == []
+    page.wait_for_selector(".toast--error", timeout=8000)
+    assert [w["name"] for w in api.get("/manufacturing/work-centers").json()["items"]] == ["Default"]
 
 
-def test_wc_table_shows_hours_and_default_columns(page, ui_server, api):
+def test_wc_table_shows_hours_and_default_columns(page, ui_server, fresh_company):
     """The work centers table carries a right-aligned Hours/day click-to-edit
     column and a Default column, and Set default moves the default."""
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
+    api = fresh_company
 
     api.post("/manufacturing/work-centers", json={"name": "Bench A", "hours_per_day": 7})
     api.post("/manufacturing/work-centers", json={"name": "Bench B"})
@@ -130,31 +141,34 @@ def test_wc_table_shows_hours_and_default_columns(page, ui_server, api):
 
     # The Hours/day value renders in a right-aligned click-to-edit cell.
     row_a = page.locator("#wc-table tbody tr", has_text="Bench A").first
-    hours_cell = row_a.locator("td.cell--right .editable-cell").first
+    hours_cell = row_a.locator("td.cell--right .editable-cell[hx-get*='/edit/hours_per_day']")
     assert hours_cell.inner_text().strip() == "7"
 
-    # Bench A is the default (first center created); Bench B offers Set default.
-    assert row_a.locator("button:has-text('Default')").first.is_disabled()
+    # Exactly one center carries the default marker, and Bench B can take it over.
+    assert page.locator("#wc-table button:has-text('✓ Default')").count() == 1
     row_b = page.locator("#wc-table tbody tr", has_text="Bench B").first
-    row_b.locator("button:has-text('Set default')").first.click()
-    page.wait_for_timeout(1500)
+    row_b.locator("button:has-text('Set default')").click()
+    page.wait_for_selector("#wc-table tbody tr:has-text('Bench B') button:has-text('✓ Default')",
+                           timeout=8000)
     page.screenshot(path=str(SHOTS / "work-centers-hours-default.png"), full_page=True)
 
     centers = {w["name"]: w for w in api.get("/manufacturing/work-centers").json()["items"]}
     assert centers["Bench B"]["is_default"] is True
     assert centers["Bench A"]["is_default"] is False
+    assert centers["Default"]["is_default"] is False
 
 
-def test_wc_hours_edit_esc_exits(page, ui_server, api):
+def test_wc_hours_edit_esc_exits(page, ui_server, fresh_company):
     """ESC exits the Hours/day inline editor without saving (GDR 2j)."""
     page.set_viewport_size({"width": 1440, "height": 1000})
+    api = fresh_company
     api.post("/manufacturing/work-centers", json={"name": "Esc Bench", "hours_per_day": 7})
 
     page.goto(f"{ui_server}/manufacturing/work-centers", wait_until="domcontentloaded")
     page.wait_for_selector("#wc-table", timeout=10000)
 
     row = page.locator("#wc-table tbody tr", has_text="Esc Bench").first
-    cell = row.locator("td.cell--right .editable-cell").first
+    cell = row.locator("td.cell--right .editable-cell[hx-get*='/edit/hours_per_day']")
     cell.dblclick()
     inp = page.locator("#wc-table input[name=value]")
     inp.wait_for(state="visible", timeout=5000)
@@ -164,6 +178,7 @@ def test_wc_hours_edit_esc_exits(page, ui_server, api):
     # The editor closes and the original value is back, unsaved.
     page.wait_for_selector("#wc-table input[name=value]", state="detached", timeout=5000)
     row = page.locator("#wc-table tbody tr", has_text="Esc Bench").first
-    assert row.locator("td.cell--right .editable-cell").first.inner_text().strip() == "7"
+    assert row.locator(
+        "td.cell--right .editable-cell[hx-get*='/edit/hours_per_day']").inner_text().strip() == "7"
     centers = {w["name"]: w for w in api.get("/manufacturing/work-centers").json()["items"]}
     assert centers["Esc Bench"]["hours_per_day"] == 7
