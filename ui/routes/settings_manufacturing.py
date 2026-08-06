@@ -93,7 +93,8 @@ def setup_routes(app):
             ),
             Div(
                 Label(
-                    Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create),
+                    Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create,
+                          onchange="document.getElementById('auto-complete-row').style.display = this.checked ? '' : 'none'"),
                     Span(" Auto-create work orders when an order is finalized"),
                     _info("When on, finalizing a customer order or stock order automatically creates a "
                           "work order for each manufacturable line - the production task pops up with no "
@@ -114,7 +115,8 @@ def setup_routes(app):
                           "cannot mark each run complete by hand. Leave off to complete runs manually."),
                     cls="settings-toggle",
                 ),
-                cls="form-group",
+                cls="form-group", id="auto-complete-row",
+                **({"style": "display:none"} if not auto_create else {}),
             ),
             Div(
                 Label(Span("Hours per day"),

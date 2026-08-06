@@ -46,6 +46,28 @@ def test_manufacturing_settings_page(page, ui_server, api):
     assert mfg["auto_complete_work_orders"] is True
 
 
+def test_auto_complete_hidden_until_auto_create(page, ui_server, fresh_company):
+    # Auto-complete on invoice posting only applies when auto-create is on, so the
+    # dependent toggle stays hidden until auto-create is checked. fresh_company
+    # isolates from the shared company's persisted auto_create state.
+    page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("input[name=auto_create_work_orders]", timeout=10000)
+
+    auto_create = page.locator("input[name=auto_create_work_orders]")
+    auto_complete = page.locator("input[name=auto_complete_work_orders]")
+
+    assert auto_create.is_checked() is False
+    assert auto_complete.is_hidden()
+
+    # Turning auto-create on reveals the dependent auto-complete option.
+    auto_create.check()
+    assert auto_complete.is_visible()
+
+    # Turning it back off hides the dependent option again.
+    auto_create.uncheck()
+    assert auto_complete.is_hidden()
+
+
 def test_work_centers_crud(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
