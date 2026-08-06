@@ -174,9 +174,9 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(MFG_SHOTS / "sidebar-manufacturing-nav.png"), full_page=True)
 
-    # 2. /settings/manufacturing with production rules card + narrow hours input + work centers.
+    # 2. /settings/manufacturing with the production rules card + work centers.
     page.goto(f"{ui_server}/settings/manufacturing", wait_until="domcontentloaded")
-    page.wait_for_selector("input[name=hours_per_day]", timeout=10000)
+    page.wait_for_selector("input[name=require_issued_before_complete]", timeout=10000)
     page.screenshot(path=str(MFG_SHOTS / "settings-manufacturing-layout.png"), full_page=True)
 
     # 3. /docs?type=production_order - should show the info banner.

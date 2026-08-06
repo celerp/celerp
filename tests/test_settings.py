@@ -494,7 +494,7 @@ async def test_settings_inline_save_persists_auto_complete(ui_client):
     with patch("ui.api_client.update_mfg_settings", new=saved):
         r = await ui_client.post(
             "/settings/manufacturing",
-            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1", "hours_per_day": "8"},
+            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1"},
             cookies=_authed(),
         )
     assert r.status_code == 200
