@@ -13,6 +13,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY
+from ui.components.cloud_gate import digest_upsell_modal
 
 # Human-readable labels for vertical tag groups in the category library
 _TAG_LABELS: dict[str, str] = {
@@ -162,7 +163,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
     )
 
 
-def _reorder_tab(company: dict, saved: bool = False) -> FT:
+def _reorder_tab(company: dict, saved: bool = False, upsell: bool = False) -> FT:
     """Reorder-alert preferences: enable the daily low-stock digest and opt into email."""
     _enabled = company.get("reorder_alerts_enabled")
     alerts_enabled = True if _enabled is None else bool(_enabled)
@@ -212,6 +213,7 @@ def _reorder_tab(company: dict, saved: bool = False) -> FT:
         ),
         P("Set a reorder point per item in its details, or in bulk from the inventory list. "
           "Items at or below their reorder point appear under Inventory - Low stock.", cls="settings-hint"),
+        digest_upsell_modal() if upsell else "",
     )
 
 
@@ -513,7 +515,11 @@ def setup_routes(app):
         elif tab == "units":
             content = _units_tab(units, from_import=from_import)
         elif tab == "reorder":
-            content = _reorder_tab(company, saved=request.query_params.get("saved") == "1")
+            content = _reorder_tab(
+                company,
+                saved=request.query_params.get("saved") == "1",
+                upsell=request.query_params.get("upsell") == "1",
+            )
         elif tab == "bulk-attach":
             content = _bulk_attach_tab()
         elif tab == "import-history":
@@ -548,6 +554,12 @@ def setup_routes(app):
         method = str(form.get("inventory_method") or "fifo").lower()
         if method not in ("fifo", "fefo", "lifo"):
             method = "fifo"
+        # Read the stored digest state before patching so an off->on flip can be
+        # detected below. A failed read is treated as already-on: never nag.
+        try:
+            prior_email = bool((await api.get_company(token)).get("reorder_alert_email"))
+        except APIError:
+            prior_email = True
         try:
             await api.patch_company(token, {
                 "reorder_alerts_enabled": enabled,
@@ -556,7 +568,19 @@ def setup_routes(app):
             })
         except APIError:
             pass
-        return RedirectResponse("/settings/inventory?tab=reorder&saved=1", status_code=303)
+        # A non-paid user turning the digest on for the first time gets a one-time
+        # nudge toward hands-off Connect delivery. Paid = a live relay tunnel on a
+        # paid tier (a free instance can be connected via a share). A status-read
+        # failure skips the nudge and never blocks the save that already happened.
+        try:
+            status = await api.get_relay_status(token)
+            paid = bool(status.get("connected")) and status.get("tier") not in (None, "", "free")
+        except APIError:
+            paid = True
+        dest = "/settings/inventory?tab=reorder&saved=1"
+        if email and not prior_email and not paid:
+            dest += "&upsell=1"
+        return RedirectResponse(dest, status_code=303)
 
     # ── Units CRUD ────────────────────────────────────────────────────
 

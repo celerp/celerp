@@ -62,6 +62,43 @@ def upgrade_banner(
     )
 
 
+def digest_upsell_modal(lang: str = "en") -> FT:
+    """Upsell nudge shown after a non-paid user turns the low-stock digest on.
+
+    The digest already sends through the local SMTP fallback, so this is a
+    nudge and not a gate: the setting is already saved when the modal opens.
+    It promotes hands-off Connect delivery and can be dismissed to stay on the
+    current plan (explicit Cancel plus native Esc). Reuses the shared subscribe
+    CTA from ``upgrade_banner`` and the account gate's modal shell and dismiss
+    pattern so the CTA copy and modal styling live in one place (DRY).
+    """
+    dismiss = ("var d=document.getElementById('digest-upsell-modal');"
+               "if(d){d.close();d.remove();}")
+    return Div(
+        Dialog(
+            upgrade_banner(
+                "Hands-off digest delivery",
+                "Connect delivers the daily low-stock digest for you, with no local "
+                "mail server to keep running.",
+                plan="cloud",
+                lang=lang,
+            ),
+            Div(
+                Button("Continue on your own plan", type="button", onclick=dismiss,
+                       cls="btn btn--sm btn--secondary"),
+                cls="account-panel__cancel",
+            ),
+            id="digest-upsell-modal",
+            cls="modal-dialog account-gate-modal",
+        ),
+        Script("(function(){"
+               "var d=document.getElementById('digest-upsell-modal');"
+               "d.addEventListener('cancel',function(){d.remove();});"
+               "d.showModal();})();"),
+        id="digest-upsell-host",
+    )
+
+
 def cloud_gate(
     is_connected: bool,
     feature: str,
