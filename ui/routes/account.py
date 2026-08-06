@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import quote, urlparse
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -31,9 +32,10 @@ from starlette.responses import HTMLResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import toast_header
-from ui.config import PRIVACY_POLICY_URL, get_role as _get_role
+from ui.config import PRIVACY_POLICY_URL, RELAY_URL, get_role as _get_role
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
+from ui.security import is_safe_authorize_url
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
@@ -327,9 +329,14 @@ async def account_gate(token: str, lang: str,
 
 
 def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
-                   next_action: str | None = None) -> FT:
+                   next_action: str | None = None,
+                   authorize_url: str | None = None) -> FT:
     """Bounded-poll waiting state while the browser round-trip is pending."""
     text_key = "account.waiting_google" if mode == "google" else "account.waiting_email"
+    # A packaged binary may fail to spawn the system browser; keep the Google
+    # authorize URL visible as a manual fallback, but only when it is safe to
+    # render as a link (a hostile broker payload never reaches an href).
+    safe_authorize = authorize_url if (authorize_url and is_safe_authorize_url(authorize_url)) else None
     parts = [
         H4(t("account.title", lang), cls="account-panel__title"),
         P(t(text_key, lang), cls="text-muted"),
@@ -342,10 +349,18 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
             style="display:flex;gap:8px;",
         ),
     ]
+    if safe_authorize:
+        parts.append(P(t("account.google_open_hint", lang,
+                         default="If a browser tab did not open automatically, open this link to finish signing in with Google:"),
+                       cls="text-muted"))
+        parts.append(A(t("account.google_open_link", lang, default="Open Google sign-in"),
+                       href=safe_authorize, target="_blank", rel="noopener",
+                       cls="btn btn--sm btn--outline"))
     if n < POLL_MAX:
+        link_q = f"&google_url={quote(safe_authorize, safe='')}" if safe_authorize else ""
         parts.append(Div(
             hx_get=_with_next(
-                f"/account/poll?panel={panel_id}&mode={mode}&n={n + 1}", next_action),
+                f"/account/poll?panel={panel_id}&mode={mode}&n={n + 1}{link_q}", next_action),
             hx_trigger="every 3s",
             **_panel_target(panel_id),
             id="account-poll"))
@@ -518,11 +533,12 @@ def setup_routes(app):
         except APIError:
             methods = {}
         url = methods.get("google_start_url", "")
-        if not methods.get("google") or not url:
+        if not methods.get("google") or not is_safe_authorize_url(url):
             return account_panel(lang, panel_id=panel_id, google=False,
                                  error=t("account.google_unavailable", lang),
                                  next_action=next_action)
-        panel = _waiting_panel(lang, panel_id, "google", next_action=next_action)
+        panel = _waiting_panel(lang, panel_id, "google", next_action=next_action,
+                               authorize_url=url)
         # Open the system browser (Google refuses embedded webviews; same
         # pattern as the marketplace checkout).
         panel.children = (*panel.children, Script(
@@ -540,6 +556,16 @@ def setup_routes(app):
             return Div(id=panel_id)
         mode = request.query_params.get("mode", "email")
         next_action = _next_from(request.query_params.get("next"))
+        # Carry the Google authorize URL across ticks, but re-validate it here so a
+        # crafted poll cannot inject a foreign or unsafe link: https-safe AND a host
+        # we trust (Google's own consent page or our configured relay).
+        authorize_url = None
+        if mode == "google":
+            google_url = request.query_params.get("google_url")
+            allowed_hosts = {"accounts.google.com", urlparse(RELAY_URL).hostname or ""}
+            if (google_url and is_safe_authorize_url(google_url)
+                    and urlparse(google_url).hostname in allowed_hosts):
+                authorize_url = google_url
         try:
             n = int(request.query_params.get("n", "0"))
         except ValueError:
@@ -600,4 +626,5 @@ def setup_routes(app):
                 panel.children = (*panel.children,
                                   *_resume_parts(next_action))
             return panel
-        return _waiting_panel(lang, panel_id, mode, n=n, next_action=next_action)
+        return _waiting_panel(lang, panel_id, mode, n=n, next_action=next_action,
+                              authorize_url=authorize_url)

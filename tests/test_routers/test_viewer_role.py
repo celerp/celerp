@@ -3,13 +3,13 @@
 """Viewer role contract (the default permission matrix in Settings > Users):
 
 - a viewer can VIEW documents, contacts, and inventory;
-- a viewer can EDIT nothing.
+- a viewer can EDIT nothing BY DEFAULT.
 
 Every write endpoint carries its own require_permission gate, and every write
-permission has an operator floor, so no owner override can grant a write
-capability to a viewer. These tests pin the default contract per module: one
-representative mutation 403s for a viewer (and still works for an operator),
-while the corresponding reads stay open.
+permission DEFAULTS to operator or higher, so a viewer has no write capability
+until an owner grants one down to viewer in the matrix. These tests pin the
+DEFAULT contract per module: one representative mutation 403s for a viewer (and
+still works for an operator), while the corresponding reads stay open.
 
 Reads are not all open, though, so the last test pins the reads that are gated:
 the financial reports default to manager, which makes them the case an

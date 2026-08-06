@@ -16769,6 +16769,74 @@ class TestCelerpAccountSurface:
         assert b"Continue with email" in r.content
 
     @pytest.mark.asyncio
+    async def test_account_google_shows_fallback_link(self, ui_client):
+        """The Google waiting panel carries a visible authorize link plus a hint, so
+        a packaged binary that never spawns the system browser still lets the user
+        finish sign-in by hand."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={
+                       "google": True,
+                       "google_start_url": "https://relay.celerp.com/auth/google/start?instance_id=i-1"})):
+            r = await ui_client.get("/account/google", cookies=_authed())
+        content = r.content
+        assert b"open this link to finish signing in with Google" in content
+        assert b'href="https://relay.celerp.com/auth/google/start?instance_id=i-1"' in content
+        assert b'rel="noopener"' in content
+
+    @pytest.mark.asyncio
+    async def test_account_google_poll_keeps_fallback_link(self, ui_client):
+        """While the poll is still waiting, the visible authorize link persists so the
+        user is not stranded between ticks."""
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})):
+            r = await ui_client.get(
+                "/account/poll?panel=celerp-account-panel&mode=google&n=1"
+                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1",
+                cookies=_authed())
+        content = r.content
+        assert b"open this link to finish signing in with Google" in content
+        assert b'href="https://relay.celerp.com/auth/google/start?instance_id=i-1"' in content
+
+    @pytest.mark.asyncio
+    async def test_account_google_poll_rejects_unsafe_or_foreign_url(self, ui_client):
+        """The poll only renders the link for a safe relay/Google url. A safe url shows
+        the link (red at merge-base); an unsafe scheme or a foreign host renders none."""
+        with patch("ui.api_client.account_status",
+                   new=AsyncMock(return_value={"email_verified": False})):
+            safe = await ui_client.get(
+                "/account/poll?panel=celerp-account-panel&mode=google&n=1"
+                "&google_url=https%3A%2F%2Frelay.celerp.com%2Fauth%2Fgoogle%2Fstart%3Finstance_id%3Di-1",
+                cookies=_authed())
+            unsafe = await ui_client.get(
+                "/account/poll?panel=celerp-account-panel&mode=google&n=1"
+                "&google_url=javascript%3Aalert(1)",
+                cookies=_authed())
+            foreign = await ui_client.get(
+                "/account/poll?panel=celerp-account-panel&mode=google&n=1"
+                "&google_url=https%3A%2F%2Fevil.example%2Fx",
+                cookies=_authed())
+        assert b"open this link to finish signing in with Google" in safe.content
+        assert b"open this link to finish signing in with Google" not in unsafe.content
+        assert b"open this link to finish signing in with Google" not in foreign.content
+        # No actionable authorize link to the foreign host (the canonical page URL
+        # may echo the encoded query string, but no decoded href is rendered).
+        assert b'href="https://evil.example' not in foreign.content
+        assert b'href="javascript:' not in unsafe.content
+
+    @pytest.mark.asyncio
+    async def test_account_google_unsafe_start_url_degrades(self, ui_client):
+        """An unsafe google_start_url never reaches the panel: the handler degrades to
+        the unavailable state and emits no Script carrying the raw url."""
+        with patch("ui.api_client.account_methods",
+                   new=AsyncMock(return_value={
+                       "google": True,
+                       "google_start_url": "https://evil.example/x</script>"})):
+            r = await ui_client.get("/account/google", cookies=_authed())
+        content = r.content
+        assert b"Continue with email" in content
+        assert b"evil.example" not in content
+
+    @pytest.mark.asyncio
     async def test_settings_cloud_page_uses_the_one_surface(self, ui_client):
         """The Settings Connect page's 'Already subscribed?' block IS the shared
         component (claim-led) - one surface app-wide, same swap target."""
@@ -18253,3 +18321,15 @@ async def test_module_delete_with_purge_drops_data_before_removing_module(ui_cli
         assert r2.status_code == 200
         # Plain delete keeps the data: no purge.
         assert calls == [("delete", "acme-maintenance")]
+
+
+def test_role_matrix_permission_header_centered():
+    """The permission-matrix Permission header is centered, not left-aligned: it sits
+    over role columns and reads as part of the table head (GDR HTML/CSS 4a)."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _role_permissions_matrix
+
+    html = to_xml(_role_permissions_matrix({}, True))
+    head = html.split("</thead>", 1)[0]
+    assert 'text-center">Permission' in head or '>Permission<' in head
+    assert 'text-left">Permission' not in head

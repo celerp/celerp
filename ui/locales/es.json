@@ -10,6 +10,8 @@
   "account.gate_community_benefit": "Los módulos de la comunidad son gratuitos. Inicie sesión con su cuenta gratuita de Celerp para descargarlos.",
   "account.gate_doc_send_benefit": "Envíe {n} documentos al mes a través de Celerp gratis. Sin configuración.",
   "account.google_unavailable": "El inicio de sesión con Google no está disponible ahora. Use el correo.",
+  "account.google_open_hint": "Si no se abrió una pestaña del navegador automáticamente, abra este enlace para completar el inicio de sesión con Google:",
+  "account.google_open_link": "Abrir inicio de sesión con Google",
   "account.hint": "Inicie sesión para descargar módulos de la comunidad gratis y comprar módulos verificados en el mercado de módulos.",
   "account.linked_elsewhere": "Su suscripción está vinculada a otro equipo. Puede vincular este en su lugar:",
   "account.method_email": "Enlace por correo",

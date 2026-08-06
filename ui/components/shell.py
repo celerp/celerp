@@ -590,12 +590,21 @@ function _notifItemHtml(n) {
     + '</div>';
 }
 
+// A ready-to-install app update is worth one bell count so the user notices it
+// on the icon without opening the panel; the panel's update card carries the
+// version and the restart/upgrade action, so the count needs no list item.
+window._celerpUpdate = window._celerpUpdate || { ready: false, version: '' };
+window._lastNotifData = window._lastNotifData || { items: [], unread_count: 0 };
+
 function _renderNotifs(data) {
+  if (data) window._lastNotifData = data;
+  data = window._lastNotifData;
   var badge = document.getElementById('notif-badge');
   var list = document.getElementById('notif-list');
+  var count = (data.unread_count || 0) + (window._celerpUpdate.ready ? 1 : 0);
   if (badge) {
-    if (data.unread_count > 0) {
-      badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : count;
       badge.style.display = '';
     } else {
       badge.style.display = 'none';
@@ -609,6 +618,14 @@ function _renderNotifs(data) {
     }
   }
 }
+
+// Light the bell when an update finishes downloading (Electron) or is available
+// on PyPI (pip). Re-renders off the last fetched inbox so no network call is
+// needed; the count clears when the user relaunches into the new version.
+window.celerpSetUpdateReady = function(version) {
+  window._celerpUpdate = { ready: true, version: version || '' };
+  _renderNotifs(null);
+};
 
 window._loadNotifs = function() {
   return fetch('/notifications?unread_only=true')
@@ -826,6 +843,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setCheckBtn(false);
         if (restartBtn) restartBtn.style.display = '';
         appendLog('v' + v + ' downloaded. Click "Restart to Install" when ready.');
+        window.celerpSetUpdateReady(v);
       });
 
       // Errors are always visible — never silently swallowed.
@@ -862,21 +880,38 @@ document.addEventListener('DOMContentLoaded', function() {
       if (restartBtn) restartBtn.style.display = 'none';
       if (progressBar) progressBar.style.display = 'none';
 
+      function fetchLatestRelease() {
+        return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
+          return pypi.info && pypi.info.version ? pypi.info.version : null;
+        });
+      }
+
       function runPyPICheck() {
         setCheckBtn(false);
         setState('Checking...', false);
+        var releaseEl = card.querySelector('.update-card__release');
+        if (releaseEl) releaseEl.textContent = '';
         fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
           var current = health.version || '';
-          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
+          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current.indexOf('0.0.0') === 0;
           if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
-          if (isDev) { setState('Running from source - no updates', false); resetToIdle(); return; }
-          return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
-            var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
+          if (isDev) {
+            setState('Running from source - no updates', false);
+            resetToIdle();
+            // A source build is not pip-upgradable, so it is never offered an
+            // update. Show the latest published release, best-effort, so the
+            // developer can see whether newer releases landed since their build.
+            return fetchLatestRelease().then(function(latest) {
+              if (releaseEl && latest) releaseEl.textContent = 'Latest release: v' + latest;
+            }).catch(function() {});
+          }
+          return fetchLatestRelease().then(function(latest) {
             if (!latest) { setState('Up to date', false); resetToIdle(); return; }
             if (latest !== current) {
               setState('Update available: v' + latest, false);
               var upgrade = card.querySelector('.update-card__upgrade-cmd');
               if (upgrade) upgrade.style.display = '';
+              window.celerpSetUpdateReady(latest);
             } else {
               setState('Up to date', false);
             }
@@ -1183,6 +1218,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         # Scrolling log (hidden until first log line)
                         Pre(cls="update-card__log", style="display:none;"),
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
+                        Span("", cls="update-card__release"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
                                style="display:none;"),
                         Div(

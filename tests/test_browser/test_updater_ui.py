@@ -119,3 +119,131 @@ def test_update_card_check_btn_present(page, ui_server):
 
     btn = page.locator(".update-card__check-btn")
     assert btn.count() == 1, "Check for updates button not found"
+
+
+def test_source_build_shows_no_update(page, ui_server):
+    """A source/editable install reports bare '0.0.0' and must read as a dev build.
+
+    Package metadata for a non-released checkout reports '0.0.0' (no '+dev' local
+    segment), so without the fix the PyPI path treats it as a real install, compares
+    against the latest release, and shows 'Update available: v2.0.0' on a machine that
+    cannot be updated with pip. The card must instead recognise it as a source build.
+    """
+    # Stub /health to the version a source checkout reports, and PyPI to a newer
+    # release, so a real update would be offered if the dev build were not detected.
+    page.route(
+        "**/health",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"version": "0.0.0"}'
+        ),
+    )
+    page.route(
+        "**/pypi.org/pypi/celerp/json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"info": {"version": "2.0.0"}}',
+        ),
+    )
+
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+    page.wait_for_timeout(1000)
+
+    version = page.locator(".update-card__version").text_content()
+    state = page.locator(".update-card__state").text_content()
+    release = page.locator(".update-card__release").text_content()
+    assert version == "Development build", f"expected dev-build label, got {version!r}"
+    assert "Update available" not in (state or ""), (
+        f"a source build must not be offered a PyPI update, got state {state!r}"
+    )
+    # The latest published release is shown for reference so the developer can see
+    # whether newer releases landed since their build - informational, not an offer.
+    assert release == "Latest release: v2.0.0", (
+        f"expected the latest release line, got {release!r}"
+    )
+
+
+def test_check_button_refreshes_latest_release(page, ui_server):
+    """Pressing Check for updates re-fetches and refreshes the latest-release line.
+
+    A developer who leaves the panel open and presses Check after a new release is
+    cut must see the line update, not a stale value from the initial load.
+    """
+    latest = {"v": "2.0.0"}
+    page.route(
+        "**/health",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"version": "0.0.0"}'
+        ),
+    )
+    page.route(
+        "**/pypi.org/pypi/celerp/json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"info": {"version": "%s"}}' % latest["v"],
+        ),
+    )
+
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+    page.wait_for_function(
+        "() => document.querySelector('.update-card__release')"
+        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.0.0'"
+    )
+
+    # A new release is cut; pressing Check must pick it up.
+    latest["v"] = "2.1.0"
+    page.locator(".update-card__check-btn").click()
+    page.wait_for_function(
+        "() => document.querySelector('.update-card__release')"
+        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.1.0'"
+    )
+
+
+def test_bell_badge_counts_downloaded_update(page, ui_server):
+    """A downloaded update must light the bell badge, not just the panel card.
+
+    Without the fix the Electron update-downloaded handler updates the card text
+    and restart button but never the badge, so the icon shows nothing and users
+    never notice a waiting upgrade. Here we stub the Electron preload, capture the
+    update-downloaded callback, fire it as the main process would, and require the
+    bell badge to show a count.
+    """
+    # Define the preload stub before page scripts run so initUpdateCard takes the
+    # Electron path and registers against it. The stub stores the downloaded
+    # callback so the test can fire it deterministically (no real download).
+    page.add_init_script(
+        """
+        window.__fireUpdateDownloaded = null;
+        window.celerp = {
+          getVersion: () => Promise.resolve('2.0.0'),
+          onUpdateLog: () => {},
+          onUpdateAvailable: () => {},
+          onDownloadProgress: () => {},
+          onUpdateNotAvailable: () => {},
+          onUpdateDownloaded: (cb) => { window.__fireUpdateDownloaded = cb; },
+          onUpdateError: () => {},
+          checkForUpdates: () => Promise.resolve(),
+          installUpdate: () => {},
+        };
+        """
+    )
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+
+    # Init ran and captured the callback.
+    page.wait_for_function("() => typeof window.__fireUpdateDownloaded === 'function'")
+
+    badge = page.locator("#notif-badge")
+    assert not badge.is_visible(), "badge should be hidden before any update is ready"
+
+    # Fire the event exactly as the Electron main process does on download.
+    page.evaluate("() => window.__fireUpdateDownloaded({ version: '2.0.1' })")
+
+    assert badge.is_visible(), "bell badge did not appear when an update was downloaded"
+    assert badge.text_content() == "1", (
+        f"expected badge count 1 for a ready update, got {badge.text_content()!r}"
+    )

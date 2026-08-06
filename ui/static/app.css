@@ -962,6 +962,7 @@ a:hover { text-decoration: underline; }
 
 /* detail-grid: two-column layout for item detail page */
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+.detail-grid--single { grid-template-columns: 1fr; }
 @media (max-width: 640px) { .detail-grid { grid-template-columns: 1fr; } }
 
 /* Tab bar */
@@ -2538,6 +2539,10 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 .update-card__state {
   color: var(--c-text2);
+}
+.update-card__release {
+  color: var(--c-text-muted, #888);
+  font-size: 0.78rem;
 }
 .update-card__releases-link {
   color: var(--c-primary);

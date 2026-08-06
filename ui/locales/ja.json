@@ -10,6 +10,8 @@
   "account.gate_community_benefit": "コミュニティモジュールは無料です。無料のCelerpアカウントでサインインしてダウンロードしてください。",
   "account.gate_doc_send_benefit": "Celerpを通じて毎月{n}件のドキュメントを無料で送信できます。設定は不要です。",
   "account.google_unavailable": "Googleサインインは現在利用できません。メールをご利用ください。",
+  "account.google_open_hint": "ブラウザのタブが自動的に開かなかった場合は、このリンクを開いてGoogleサインインを完了してください。",
+  "account.google_open_link": "Googleサインインを開く",
   "account.hint": "サインインすると、コミュニティモジュールを無料でダウンロードでき、モジュールマーケットプレイスで認証済みモジュールを購入できます。",
   "account.linked_elsewhere": "サブスクリプションは別のコンピューターに紐づいています。代わりにこのコンピューターを紐づけできます:",
   "account.method_email": "メールリンク",

@@ -10,6 +10,8 @@
   "account.gate_community_benefit": "Modul komunitas gratis. Masuk dengan akun Celerp gratis Anda untuk mengunduh.",
   "account.gate_doc_send_benefit": "Kirim {n} dokumen per bulan melalui Celerp secara gratis. Tanpa penyiapan.",
   "account.google_unavailable": "Masuk dengan Google tidak tersedia saat ini. Gunakan email.",
+  "account.google_open_hint": "Jika tab browser tidak terbuka otomatis, buka tautan ini untuk menyelesaikan masuk dengan Google:",
+  "account.google_open_link": "Buka masuk dengan Google",
   "account.hint": "Masuk untuk mengunduh modul komunitas secara gratis dan membeli modul terverifikasi dari pasar modul.",
   "account.linked_elsewhere": "Langganan Anda tertaut ke komputer lain. Anda dapat menautkan komputer ini sebagai gantinya:",
   "account.method_email": "Tautan email",

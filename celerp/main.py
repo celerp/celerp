@@ -255,6 +255,21 @@ async def lifespan(_app: FastAPI):
             "stale until rebuilt via doctor or /ledger/rebuild"
         )
 
+    # One-time backfill: stamp the status→document pairing on items sold, memo'd,
+    # or consigned in before that field shipped, so their inventory status links
+    # to its document. Marker-gated (runs once); non-fatal like the guard above.
+    try:
+        from celerp.db import SessionLocal as _BackfillSession
+        from celerp.services.status_doc_backfill import run_status_doc_backfill
+        async with _BackfillSession() as _bf_sess:
+            await run_status_doc_backfill(_bf_sess)
+            await _bf_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Status-doc backfill failed (non-fatal); pre-existing sold/memo items "
+            "may show their status without a document link until a later boot"
+        )
+
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)
     # keep the tunnel always-on; a free instance opens it at boot only when it already

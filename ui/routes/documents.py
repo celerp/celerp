@@ -2131,7 +2131,8 @@ celerpUpdateBulkAlloc();
             return P(t("error.unauthorized"), cls="cell-error")
         _settings = (await api.get_company(token)).get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "edit_documents"):
-            # Viewers are read-only: return the display state instead of an input.
+            # Without the edit permission, return the display state instead of an
+            # input (a role granted the write in the matrix keeps its input).
             return await doc_field_display(request, entity_id, field)
         try:
             doc = await api.get_doc(token, entity_id)
@@ -5525,8 +5526,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _can_pay = role_has_permission(_s, role, "record_payments")
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
     # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
-    # audit only gates the Counted cells open (pol["counted_editable"]). Viewers are read-only
-    # everywhere (the API enforces it; the UI must not offer controls that would 403).
+    # audit only gates the Counted cells open (pol["counted_editable"]). Without the edit
+    # permission there are no line controls (the API enforces it; the UI must not offer
+    # controls that would 403).
     is_editable = (is_draft or (pol["audit"] and status == _LF)) and _can_edit
 
     def _static_ident_cell_content(li: dict):

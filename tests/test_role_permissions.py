@@ -36,34 +36,34 @@ EXPECTED_CATALOGUE = {
     "view_documents": ("viewer", True, "viewer"),
     "view_contacts": ("viewer", True, "viewer"),
     "view_inventory": ("viewer", True, "viewer"),
-    # operator defaults (write-capable keys floor at operator)
-    "edit_documents": ("operator", True, "operator"),
-    "edit_contacts": ("operator", True, "operator"),
-    "edit_inventory": ("operator", True, "operator"),
-    "edit_inventory_amounts": ("operator", True, "operator"),
-    "finalize_documents": ("operator", True, "operator"),
-    "fulfill_documents": ("operator", True, "operator"),
-    "record_payments": ("operator", True, "operator"),
-    "set_sales_doc_prices": ("operator", True, "operator"),
-    "manage_labels": ("operator", True, "operator"),
-    "manage_manufacturing": ("operator", True, "operator"),
-    "use_ai_assistant": ("operator", True, "operator"),
-    "run_backups": ("operator", True, "operator"),
-    "view_subscriptions": ("operator", True, "operator"),
+    # operator defaults (write-capable keys; floor now viewer, owner may grant down to it)
+    "edit_documents": ("operator", True, "viewer"),
+    "edit_contacts": ("operator", True, "viewer"),
+    "edit_inventory": ("operator", True, "viewer"),
+    "edit_inventory_amounts": ("operator", True, "viewer"),
+    "finalize_documents": ("operator", True, "viewer"),
+    "fulfill_documents": ("operator", True, "viewer"),
+    "record_payments": ("operator", True, "viewer"),
+    "set_sales_doc_prices": ("operator", True, "viewer"),
+    "manage_labels": ("operator", True, "viewer"),
+    "manage_manufacturing": ("operator", True, "viewer"),
+    "use_ai_assistant": ("operator", True, "viewer"),
+    "run_backups": ("operator", True, "viewer"),
+    "view_subscriptions": ("operator", True, "viewer"),
     # manager defaults
-    "view_inventory_costs": ("manager", True, "operator"),
-    "set_inventory_prices": ("manager", True, "operator"),
-    "delete_documents": ("manager", True, "operator"),
-    "adjust_inventory": ("manager", True, "operator"),
-    "import_export_data": ("manager", True, "operator"),
-    "view_payments": ("manager", True, "operator"),
-    "view_financial_reports": ("manager", True, "operator"),
-    "manage_accounting": ("manager", True, "operator"),
-    "manage_module_settings": ("manager", True, "operator"),
+    "view_inventory_costs": ("manager", True, "viewer"),
+    "set_inventory_prices": ("manager", True, "viewer"),
+    "delete_documents": ("manager", True, "viewer"),
+    "adjust_inventory": ("manager", True, "viewer"),
+    "import_export_data": ("manager", True, "viewer"),
+    "view_payments": ("manager", True, "viewer"),
+    "view_financial_reports": ("manager", True, "viewer"),
+    "manage_accounting": ("manager", True, "viewer"),
+    "manage_module_settings": ("manager", True, "viewer"),
     # admin defaults
-    "manage_users": ("admin", True, "operator"),
+    "manage_users": ("admin", True, "viewer"),
     "manage_company_settings": ("admin", True, "admin"),
-    "manage_integrations": ("admin", True, "operator"),
+    "manage_integrations": ("admin", True, "viewer"),
     # fixed rows: owner-only, never grantable
     "manage_permissions": ("owner", False, "owner"),
     "manage_company_lifecycle": ("owner", False, "owner"),
@@ -519,7 +519,7 @@ _ROLE_PERM_URL = "/companies/me/role-permissions"
 async def test_patch_role_permissions_owner_only(client, session):
     """Editing permissions is owner-only: an admin is refused, the owner accepts."""
     ctx = await perm_setup(client, session)
-    admin_tok = await invite_user(client, session, ctx["admin_h"], "adm@perm.com", "admin")
+    admin_tok = await invite_user(client, session, ctx["admin_h"], "adm@perm.example", "admin")
     admin_h = {"Authorization": f"Bearer {admin_tok}"}
     body = {"perm_key": "set_inventory_prices", "role_key": "operator", "granted": True}
 
@@ -589,17 +589,26 @@ async def test_patch_role_permissions_malformed_boolean_422(client, session):
     assert r.status_code == 422, r.text
 
 
-async def test_patch_role_permissions_below_floor_422(client, session):
-    """Granting set_sales_doc_prices to viewer sits below its operator floor: 422
-    naming the floor, never an accidental sub-floor grant."""
+async def test_viewer_granted_write_can_act(client, session):
+    """The owner may grant a write to viewer, and that viewer can then act: grant
+    edit_inventory to viewer (200), and a viewer POST /items succeeds. Only the
+    destructive-key floor is retained, so no write key rejects a viewer grant."""
     ctx = await perm_setup(client, session)
     r = await client.patch(
         _ROLE_PERM_URL,
-        json={"perm_key": "set_sales_doc_prices", "role_key": "viewer", "granted": True},
+        json={"perm_key": "edit_inventory", "role_key": "viewer", "granted": True},
         headers=ctx["admin_h"],
     )
-    assert r.status_code == 422, r.text
-    assert "operator" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
+    r2 = await client.post(
+        "/items",
+        json={"sku": "VW-1", "name": "Viewer Item", "quantity": 1,
+              "location_id": ctx["location_id"], "sell_by": "piece"},
+        headers=viewer_h,
+    )
+    assert r2.status_code == 200, r2.text
 
 
 # ── Matrix render + per-toggle UI route (J3) ──────────────────────────────────
@@ -786,18 +795,23 @@ async def test_cost_basis_kpi_follows_permission(ui):
 
 # ── Default parity, override flips, and write floors (2.8) ─────────────────────
 
-async def test_write_floor_rejects_viewer_grant(client, session):
-    """Granting set_inventory_prices to viewer sits below its operator floor: the
-    matrix save returns 422 naming the floor, the replacement for the deleted
-    router-level read-only baseline."""
+async def test_owner_can_grant_write_to_viewer(client, session):
+    """The owner may lower a write key to viewer: the matrix save returns 200 and
+    the resolver now admits a viewer. Viewers stay read-only by default; the owner
+    is free to grant any grantable key down to viewer."""
+    from celerp.services.auth import ROLE_LEVELS
+    from celerp.services.permissions import permission_min_level
+
     ctx = await perm_setup(client, session)
     r = await client.patch(
         _ROLE_PERM_URL,
         json={"perm_key": "set_inventory_prices", "role_key": "viewer", "granted": True},
         headers=ctx["admin_h"],
     )
-    assert r.status_code == 422, r.text
-    assert "operator" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+
+    settings = {"role_permissions": {"set_inventory_prices": "viewer"}}
+    assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["viewer"]
 
 
 async def test_default_parity_matrix(client, session):
@@ -807,8 +821,8 @@ async def test_default_parity_matrix(client, session):
     is proven exhaustively by test_defaults_match_current_behavior; this pins the
     HTTP behavior at every tier boundary."""
     ctx = await perm_setup(client, session)
-    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
-    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.com', 'viewer')}"}
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
 
     def _item(sku):
         return {"sku": sku, "name": "Par", "quantity": 1,
@@ -945,7 +959,7 @@ async def test_owner_column_fixed(ui):
 async def test_deactivate_owner_only(client, session):
     """Company deactivation is owner-only: an admin is refused, the owner succeeds."""
     ctx = await perm_setup(client, session)
-    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
     assert (await client.delete("/companies/me", headers=admin_h)).status_code == 403
     assert (await client.delete("/companies/me", headers=ctx["admin_h"])).status_code == 200
 
@@ -953,7 +967,7 @@ async def test_deactivate_owner_only(client, session):
 async def test_reactivate_and_reseed_owner_only(client, session):
     """Reactivation and demo reseed are owner-only like deactivation."""
     ctx = await perm_setup(client, session)
-    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.com', 'admin')}"}
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
 
     # Reseed on the active company: the gate refuses the admin, the owner succeeds.
     assert (await client.post("/companies/me/demo/reseed", headers=admin_h)).status_code == 403
@@ -987,7 +1001,7 @@ async def test_ai_routes_require_permission(client, session):
     from celerp.session_gate import require_session_token
 
     ctx = await perm_setup(client, session)
-    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.com', 'viewer')}"}
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
     app.dependency_overrides[require_session_token] = lambda: None
     try:
         assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
@@ -1146,7 +1160,7 @@ _AMOUNT_KEYS = ["quantity", "weight", "pieces", "gross_weight"]
 
 def test_edit_inventory_amounts_in_catalogue():
     """The registry carries edit_inventory_amounts: operator default, grantable,
-    operator floor - a distinct key from edit_inventory."""
+    viewer floor - a distinct key from edit_inventory."""
     from celerp.services.permissions import PERMISSIONS
 
     by_key = {p.key: p for p in PERMISSIONS}
@@ -1154,7 +1168,7 @@ def test_edit_inventory_amounts_in_catalogue():
     p = by_key["edit_inventory_amounts"]
     assert p.default_role == "operator"
     assert p.grantable is True
-    assert p.floor_role == "operator"
+    assert p.floor_role == "viewer"
     assert p.label
     assert "edit_inventory" in by_key  # the amounts key does not replace the base key
 
@@ -1443,3 +1457,86 @@ def test_guard_family_removed():
         cwd=repo_root, capture_output=True, text=True,
     )
     assert r.returncode == 1, f"guard-family stragglers found:\n{r.stdout}"
+
+
+# ── User-management caller-role ceiling (Fix 1: relaxing the manage_users floor
+#    must not become an owner-escalation path) ──────────────────────────────────
+
+async def test_manage_users_holder_cannot_promote_above_own_role(client, session):
+    """An admin holds manage_users by default; it must not let them mint or promote
+    a user to a role above their own. Creating an owner and patching a user up to
+    owner both return 403, closing the escalation the floor relaxation would widen."""
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
+
+    r = await client.post(
+        "/companies/me/users",
+        json={"email": "newowner@perm.example", "name": "NO", "role": "owner", "password": "pw123"},
+        headers=admin_h,
+    )
+    assert r.status_code == 403, r.text
+
+    await invite_user(client, session, ctx["admin_h"], "victim@perm.example", "operator")
+    users = (await client.get("/companies/me/users", headers=ctx["admin_h"])).json()["items"]
+    victim_id = next(u["id"] for u in users if u["email"] == "victim@perm.example")
+    r2 = await client.patch(
+        f"/companies/me/users/{victim_id}",
+        json={"role": "owner"},
+        headers=admin_h,
+    )
+    assert r2.status_code == 403, r2.text
+
+
+async def test_manage_users_holder_cannot_modify_higher_user(client, session):
+    """An admin cannot modify a user whose current role is above their own: patching
+    the owner (deactivating them) returns 403, never a silent success."""
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
+    users = (await client.get("/companies/me/users", headers=ctx["admin_h"])).json()["items"]
+    owner_id = next(u["id"] for u in users if u["role"] == "owner")
+    r = await client.patch(
+        f"/companies/me/users/{owner_id}",
+        json={"is_active": False},
+        headers=admin_h,
+    )
+    assert r.status_code == 403, r.text
+
+
+async def test_viewer_granted_manage_users_bounded_to_viewer(client, session):
+    """Once the owner grants manage_users to viewer, that viewer can add users at or
+    below their own level but not above: creating a viewer is 200, creating an
+    operator is 403 (the caller-role ceiling), so the grant is safe."""
+    ctx = await perm_setup(client, session)
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": "manage_users", "role_key": "viewer", "granted": True},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text
+
+    viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
+    ok = await client.post(
+        "/companies/me/users",
+        json={"email": "v2@perm.example", "name": "V2", "role": "viewer", "password": "pw123"},
+        headers=viewer_h,
+    )
+    assert ok.status_code == 200, ok.text
+    denied = await client.post(
+        "/companies/me/users",
+        json={"email": "op2@perm.example", "name": "OP2", "role": "operator", "password": "pw123"},
+        headers=viewer_h,
+    )
+    assert denied.status_code == 403, denied.text
+
+
+async def test_owner_can_still_create_owner(client, session):
+    """The ceiling must not over-tighten: an owner (top level) can still create an
+    owner. Green at merge-base too; it guards against a ceiling that wrongly blocks
+    owners themselves."""
+    ctx = await perm_setup(client, session)
+    r = await client.post(
+        "/companies/me/users",
+        json={"email": "co-owner@perm.example", "name": "CoOwner", "role": "owner", "password": "pw123"},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text

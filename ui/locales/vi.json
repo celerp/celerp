@@ -10,6 +10,8 @@
   "account.gate_community_benefit": "Mô-đun cộng đồng miễn phí. Đăng nhập bằng tài khoản Celerp miễn phí của bạn để tải xuống.",
   "account.gate_doc_send_benefit": "Gửi {n} tài liệu mỗi tháng qua Celerp miễn phí. Không cần thiết lập.",
   "account.google_unavailable": "Hiện không dùng được đăng nhập Google. Hãy dùng email.",
+  "account.google_open_hint": "Nếu trình duyệt không tự mở tab, hãy mở liên kết này để hoàn tất đăng nhập với Google:",
+  "account.google_open_link": "Mở đăng nhập Google",
   "account.hint": "Đăng nhập để tải mô-đun cộng đồng miễn phí và mua mô-đun đã xác minh từ chợ mô-đun.",
   "account.linked_elsewhere": "Gói đăng ký của bạn đang liên kết với máy tính khác. Bạn có thể liên kết máy này thay thế:",
   "account.method_email": "Liên kết email",
