@@ -1586,6 +1586,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .your-cats-action { width: 90px; text-align: right !important; }
 .cat-add-form { display: flex; align-items: center; gap: 6px; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
+.cell--left { text-align: left; }
 .cell--center { text-align: center; }
 .th--center { text-align: center; }
 /* Production Queue filter row: clear separation from the description/tabs above it. */
