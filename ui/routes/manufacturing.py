@@ -716,6 +716,12 @@ def setup_routes(app):
         loc_names = {l.get("id"): l.get("name") for l in locations}
         return _wc_table(centers, loc_names)
 
+    async def _wc_error_response(token: str, message: str) -> HTMLResponse:
+        # A refused work-center action re-renders the table and says why through
+        # the corner toast, rather than leaving the row silently reverted.
+        return HTMLResponse(to_xml(await _wc_table_response(token)),
+                            headers=toast_header(message, "error"))
+
     @app.get("/manufacturing/work-centers")
     async def work_centers_page(request: Request):
         # Work centers are now configured in Manufacturing Settings; keep the old URL working.
@@ -799,6 +805,11 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
+            # A refused edit (a name that collides, a value the API rejects, or a
+            # caller without manage rights) must say why rather than silently
+            # reverting the cell with no explanation.
+            return await _wc_error_response(
+                token, str(e.detail) or "Could not save this work center.")
         return await _wc_table_response(token)
 
     @app.patch("/manufacturing/work-centers/{wc_id}/is_default")
@@ -807,24 +818,20 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        error = ""
         try:
             await api.set_default_work_center(token, wc_id)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            error = str(e.detail) or "Could not set the default work center."
-        table = await _wc_table_response(token)
-        if error:
-            return HTMLResponse(to_xml(table), headers=toast_header(error, "error"))
-        return table
+            return await _wc_error_response(
+                token, str(e.detail) or "Could not set the default work center.")
+        return await _wc_table_response(token)
 
     @app.post("/manufacturing/work-centers/{wc_id}/delete")
     async def work_center_delete(request: Request, wc_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        error = ""
         try:
             await api.delete_work_center(token, wc_id)
         except APIError as e:
@@ -832,8 +839,6 @@ def setup_routes(app):
                 return P(t("error.unauthorized"), cls="cell-error")
             # A refused delete (the last center, or the default one) must say why
             # rather than leaving the row sitting there with no explanation.
-            error = str(e.detail) or "Could not delete this work center."
-        table = await _wc_table_response(token)
-        if error:
-            return HTMLResponse(to_xml(table), headers=toast_header(error, "error"))
-        return table
+            return await _wc_error_response(
+                token, str(e.detail) or "Could not delete this work center.")
+        return await _wc_table_response(token)

@@ -159,6 +159,32 @@ def test_wc_table_shows_hours_and_default_columns(page, ui_server, fresh_company
     assert centers["Default"]["is_default"] is False
 
 
+def test_wc_save_surfaces_refusal_toast(page, ui_server, fresh_company):
+    """A refused inline edit surfaces the reason through the corner toast rather
+    than silently reverting the cell (GDR 2e). A duplicate rename is the reachable
+    refusal: the API rejects it 409 and the save route must not swallow it."""
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    api = fresh_company
+    api.post("/manufacturing/work-centers", json={"name": "Bench One"})
+    api.post("/manufacturing/work-centers", json={"name": "Bench Two"})
+
+    page.goto(f"{ui_server}/manufacturing/work-centers", wait_until="domcontentloaded")
+    page.wait_for_selector("#wc-table", timeout=10000)
+
+    # Rename Bench Two to the name Bench One already holds: the API 409s.
+    row = page.locator("#wc-table tbody tr", has_text="Bench Two").first
+    row.locator(".editable-cell").first.dblclick()
+    inp = page.locator("#wc-table input[name=value]")
+    inp.wait_for(state="visible", timeout=5000)
+    inp.fill("Bench One")
+    inp.dispatch_event("blur")
+
+    page.wait_for_selector(".toast--error", timeout=8000)
+    # The rename did not take: both original names still stand.
+    names = sorted(w["name"] for w in api.get("/manufacturing/work-centers").json()["items"])
+    assert names == ["Bench One", "Bench Two", "Default"]
+
+
 def test_wc_hours_edit_esc_exits(page, ui_server, fresh_company):
     """ESC exits the Hours/day inline editor without saving (GDR 2j)."""
     page.set_viewport_size({"width": 1440, "height": 1000})

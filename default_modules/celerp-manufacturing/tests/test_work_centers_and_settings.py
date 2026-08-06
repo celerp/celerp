@@ -368,6 +368,7 @@ def test_hours_per_day_setting_removed() -> None:
         # or write the old company setting.
         if "_hours_per_day" in text and "_default_hours_per_day" not in text:
             offenders.append(f"{f.name}: still defines/uses _hours_per_day helper")
-        for pat in ("_mfg_settings(", "settings.get(\"hours_per_day\")", "\"hours_per_day\": hours"):
-            pass
+        for pat in ('settings.get("hours_per_day")', '"hours_per_day": hours'):
+            if pat in text:
+                offenders.append(f"{f.name}: still reads/writes the old hours_per_day setting ({pat})")
     assert offenders == [], offenders
