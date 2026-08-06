@@ -35,11 +35,17 @@ _NOTICE_BODY = (
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # 1. New columns + the one-default-per-company invariant.
-    conn.execute(sa.text("ALTER TABLE work_centers ADD COLUMN hours_per_day DOUBLE PRECISION"))
-    conn.execute(sa.text("ALTER TABLE work_centers ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT false"))
+    # 1. New columns + the one-default-per-company invariant. The develop-to-release
+    #    reconcile replays this revision's upgrade() against a database whose schema
+    #    was built by create_all (celerp/migrations/_data_reconcile.py:95), so every
+    #    statement here has to converge on a second run rather than raise.
+    conn.execute(sa.text("ALTER TABLE work_centers ADD COLUMN IF NOT EXISTS hours_per_day DOUBLE PRECISION"))
     conn.execute(sa.text(
-        "CREATE UNIQUE INDEX uq_work_center_one_default ON work_centers (company_id) WHERE is_default"
+        "ALTER TABLE work_centers ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false"
+    ))
+    conn.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_work_center_one_default "
+        "ON work_centers (company_id) WHERE is_default"
     ))
 
     # 2. One dedicated Default center per manufacturing-active company, carrying
@@ -62,17 +68,22 @@ def upgrade() -> None:
 
     # 3. One company-wide notice per company that just received a Default center
     #    (user_id NULL = company-wide). Guarded so a re-run never doubles it.
-    conn.execute(sa.text("""
-        INSERT INTO notifications
-            (id, company_id, user_id, category, title, body, action_url, priority, read, created_at)
-        SELECT gen_random_uuid(), w.company_id, NULL, 'manufacturing', :title, :body,
-               '/settings/manufacturing', 'high', false, NOW()
-        FROM work_centers w
-        WHERE w.is_default
-          AND w.name = 'Default'
-          AND NOT EXISTS (SELECT 1 FROM notifications n
-                          WHERE n.company_id = w.company_id AND n.title = :title)
-    """), {"title": _NOTICE_TITLE, "body": _NOTICE_BODY})
+    #    The notifications table is created when the application boots, not by the
+    #    migration chain, so on a database migrated before its first boot it is
+    #    absent. Such a database has never run the app and therefore holds no
+    #    company whose value could have moved, so there is nothing to notify.
+    if conn.execute(sa.text("SELECT to_regclass('public.notifications')")).scalar() is not None:
+        conn.execute(sa.text("""
+            INSERT INTO notifications
+                (id, company_id, user_id, category, title, body, action_url, priority, read, created_at)
+            SELECT gen_random_uuid(), w.company_id, NULL, 'manufacturing', :title, :body,
+                   '/settings/manufacturing', 'high', false, NOW()
+            FROM work_centers w
+            WHERE w.is_default
+              AND w.name = 'Default'
+              AND NOT EXISTS (SELECT 1 FROM notifications n
+                              WHERE n.company_id = w.company_id AND n.title = :title)
+        """), {"title": _NOTICE_TITLE, "body": _NOTICE_BODY})
 
     # 4. Strip the now-migrated key (jsonb #- needs the cast, then back to json).
     conn.execute(sa.text(
