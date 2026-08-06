@@ -36,7 +36,7 @@ from celerp.services.permissions import require_permission
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
 # Default hours-per-day for converting daily labor lines into the est-hours column.
-# Overridable per company in Manufacturing settings (settings.manufacturing.hours_per_day).
+# Set per work center; the company's default center supplies the value.
 DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
@@ -572,7 +572,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
 
     # Non-splittable outputs restock as discrete lots under the product, so on-hand must include them.
     lot_qty = _lot_qty_by_parent(states)
-    hours_per_day = _hours_per_day(await _mfg_settings(session, company_id))
+    hours_per_day = await _default_hours_per_day(session, company_id)
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
@@ -1042,23 +1042,68 @@ async def _mfg_settings(session: AsyncSession, company_id) -> dict:
     return (company.settings or {}).get("manufacturing", {}) if company else {}
 
 
-def _hours_per_day(settings: dict) -> float:
-    try:
-        return float(settings.get("hours_per_day") or DEFAULT_HOURS_PER_DAY)
-    except (TypeError, ValueError):
-        return DEFAULT_HOURS_PER_DAY
-
-
 # ---------------------------------------------------------------------------
 # Work Centers (relational master data, like Location) - registered before the
 # catch-all GET /{order_id} so /work-centers is not swallowed by it.
 # ---------------------------------------------------------------------------
+
+DEFAULT_WORK_CENTER_NAME = "Default"
+
+
+async def _default_hours_per_day(session: AsyncSession, company_id) -> float:
+    """Working-day length from the company's default work center.
+
+    Falls back to DEFAULT_HOURS_PER_DAY when the company has no default center
+    or its value is unset/zero, so the board degrades to a neutral estimate
+    rather than failing.
+    """
+    value = (await session.execute(
+        select(WorkCenter.hours_per_day).where(
+            WorkCenter.company_id == company_id, WorkCenter.is_default.is_(True),
+        )
+    )).scalars().first()
+    return float(value or DEFAULT_HOURS_PER_DAY)
+
+
+async def seed_default_work_center(session: AsyncSession, company_id) -> None:
+    """Give a company its default work center, once.
+
+    Shared by the on_company_created and on_modules_ready hooks and idempotent:
+    a company that already has a default center (from either hook or the
+    migration backfill) is left alone. The caller commits.
+    """
+    existing = (await session.execute(
+        select(WorkCenter.id).where(
+            WorkCenter.company_id == company_id, WorkCenter.is_default.is_(True),
+        )
+    )).scalars().first()
+    if existing is not None:
+        return
+    session.add(WorkCenter(
+        company_id=company_id, name=DEFAULT_WORK_CENTER_NAME,
+        hours_per_day=DEFAULT_HOURS_PER_DAY, is_default=True,
+    ))
+
+
+async def provision_default_work_center_hook(*, session: AsyncSession, company_id) -> None:
+    """on_company_created: seed the new company's default work center."""
+    await seed_default_work_center(session, company_id)
+
+
+async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
+    """on_modules_ready: cover companies that enabled manufacturing after the
+    migration ran, so they get a default center too."""
+    company_ids = (await session.execute(select(Company.id))).scalars().all()
+    for company_id in company_ids:
+        await seed_default_work_center(session, company_id)
+
 
 class WorkCenterCreate(BaseModel):
     name: str
     wip_location_id: str | None = None
     labor_rate: float | None = None
     capacity: float | None = None
+    hours_per_day: float | None = None
 
 
 class WorkCenterPatch(BaseModel):
@@ -1066,6 +1111,8 @@ class WorkCenterPatch(BaseModel):
     wip_location_id: str | None = None
     labor_rate: float | None = None
     capacity: float | None = None
+    hours_per_day: float | None = None
+    is_default: bool | None = None
 
 
 def _wc_dict(wc: WorkCenter) -> dict:
@@ -1073,7 +1120,44 @@ def _wc_dict(wc: WorkCenter) -> dict:
         "id": str(wc.id), "name": wc.name,
         "wip_location_id": str(wc.wip_location_id) if wc.wip_location_id else None,
         "labor_rate": wc.labor_rate, "capacity": wc.capacity,
+        "hours_per_day": wc.hours_per_day, "is_default": bool(wc.is_default),
     }
+
+
+def _clean_hours(value) -> float | None:
+    """A working day is a positive number of hours. Zero, negative and unparsable
+    values store as unset so the board falls back to DEFAULT_HOURS_PER_DAY rather
+    than estimating against a nonsense day length."""
+    if value is None:
+        return None
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        return None
+    return hours if hours > 0 else None
+
+
+def _wc_conflict(exc: IntegrityError, name: str) -> HTTPException:
+    """Tell the two work-center uniqueness violations apart, so the message names
+    the actual problem rather than always blaming the name."""
+    if "uq_work_center_one_default" in str(exc.orig):
+        return HTTPException(status_code=409, detail="Another work center is already the default")
+    return HTTPException(status_code=409, detail=f"A work center named '{name}' already exists")
+
+
+async def _unset_other_defaults(session: AsyncSession, company_id, keep_id) -> None:
+    """Clear the company's previous default so exactly one survives. Runs in the
+    same transaction as the set, with the partial unique index as the backstop."""
+    rows = (await session.execute(
+        select(WorkCenter).where(
+            WorkCenter.company_id == company_id,
+            WorkCenter.is_default.is_(True),
+            WorkCenter.id != keep_id,
+        )
+    )).scalars().all()
+    for row in rows:
+        row.is_default = False
+    await session.flush()
 
 
 def _parse_loc(value: str | None):
@@ -1105,16 +1189,22 @@ async def create_work_center(
 ) -> dict:
     if not payload.name.strip():
         raise HTTPException(status_code=422, detail="Work center name is required")
+    # A company's first center becomes its default, so the board always has a
+    # working-day length to read once any center exists.
+    has_any = (await session.execute(
+        select(WorkCenter.id).where(WorkCenter.company_id == company_id).limit(1)
+    )).scalars().first()
     wc = WorkCenter(
         company_id=company_id, name=payload.name.strip(), wip_location_id=_parse_loc(payload.wip_location_id),
         labor_rate=payload.labor_rate, capacity=payload.capacity,
+        hours_per_day=_clean_hours(payload.hours_per_day), is_default=has_any is None,
     )
     session.add(wc)
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=f"A work center named '{payload.name.strip()}' already exists")
+        raise _wc_conflict(exc, payload.name.strip())
     return {"id": str(wc.id)}
 
 
@@ -1140,11 +1230,41 @@ async def patch_work_center(
         wc.labor_rate = fields["labor_rate"]
     if "capacity" in fields:
         wc.capacity = fields["capacity"]
+    if "hours_per_day" in fields:
+        wc.hours_per_day = _clean_hours(fields["hours_per_day"])
+    if fields.get("is_default"):
+        await _unset_other_defaults(session, company_id, wc.id)
+        wc.is_default = True
+    # Read the name before committing: a rollback expires the instance, and
+    # reloading it to build the error message would be IO in the error path.
+    name = (wc.name or "").strip()
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="A work center with that name already exists")
+        raise _wc_conflict(exc, name)
+    return {"ok": True}
+
+
+@router.patch("/work-centers/{wc_id}/is_default")
+async def set_default_work_center(
+    wc_id: str,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_manufacturing"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Make this the company's default work center, clearing the previous one."""
+    wc = await session.get(WorkCenter, _parse_loc(wc_id))
+    if wc is None or wc.company_id != company_id:
+        raise HTTPException(status_code=404, detail="Work center not found")
+    await _unset_other_defaults(session, company_id, wc.id)
+    wc.is_default = True
+    name = wc.name or ""
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise _wc_conflict(exc, name)
     return {"ok": True}
 
 
@@ -1158,6 +1278,19 @@ async def delete_work_center(
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
     if wc is None or wc.company_id != company_id:
         raise HTTPException(status_code=404, detail="Work center not found")
+    others = (await session.execute(
+        select(WorkCenter.id).where(
+            WorkCenter.company_id == company_id, WorkCenter.id != wc.id,
+        ).limit(1)
+    )).scalars().first()
+    if others is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This is your only work center. Add another before deleting this one.")
+    if wc.is_default:
+        raise HTTPException(
+            status_code=409,
+            detail="This is the default work center. Set another center as default before deleting it.")
     await session.delete(wc)
     await session.commit()
     return {"ok": True}

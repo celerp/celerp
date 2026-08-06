@@ -3,7 +3,6 @@
 """Settings - Manufacturing: company-wide production preferences + work centers.
 
 Stored under company.settings["manufacturing"]:
-- hours_per_day: converts daily labor lines into the To-Make est-hours column (default 8).
 - require_issued_before_complete: block completing a run until its components are issued.
 - auto_create_work_orders: create a work order per manufacturable line when an order is finalized.
 - auto_complete_work_orders: also complete each auto-created work order on the spot (consume
@@ -23,8 +22,6 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.config import get_token as _token
 from ui.routes.manufacturing import _wc_table
-
-_DEFAULT_HOURS_PER_DAY = 8.0
 
 
 def _mfg_settings(company: dict) -> dict:
@@ -71,7 +68,6 @@ def setup_routes(app):
         except APIError:
             company = {}
         mfg = _mfg_settings(company)
-        hours = mfg.get("hours_per_day", _DEFAULT_HOURS_PER_DAY)
         require_issued = bool(mfg.get("require_issued_before_complete"))
         auto_create = bool(mfg.get("auto_create_work_orders"))
         auto_complete = bool(mfg.get("auto_complete_work_orders"))
@@ -119,12 +115,8 @@ def setup_routes(app):
                 **({"style": "display:none"} if not auto_create else {}),
             ),
             Div(
-                Label(Span("Hours per day"),
-                      _info("Used to convert a recipe's daily labour lines into the estimated-hours "
-                            "column on the To-Make board. Default 8."),
-                      For="hours_per_day", cls="form-label"),
-                Input(type="number", id="hours_per_day", name="hours_per_day", value=f"{float(hours):g}",
-                      min="1", step="any", cls="form-input input--narrow"),
+                P("Hours per day is now set per work center; see the Hours/day column "
+                  "under Work centers.", cls="form-hint"),
                 cls="form-group",
             ),
             hx_post="/settings/manufacturing", hx_trigger="change",
@@ -146,18 +138,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        try:
-            hours = float(str(form.get("hours_per_day") or _DEFAULT_HOURS_PER_DAY))
-        except ValueError:
-            hours = _DEFAULT_HOURS_PER_DAY
-        if hours <= 0:
-            hours = _DEFAULT_HOURS_PER_DAY
         require_issued = str(form.get("require_issued_before_complete") or "") in ("1", "on", "true")
         auto_create = str(form.get("auto_create_work_orders") or "") in ("1", "on", "true")
         auto_complete = str(form.get("auto_complete_work_orders") or "") in ("1", "on", "true")
         try:
             await api.update_mfg_settings(token, {
-                "hours_per_day": hours,
                 "require_issued_before_complete": require_issued,
                 "auto_create_work_orders": auto_create,
                 "auto_complete_work_orders": auto_complete,

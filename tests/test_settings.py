@@ -489,17 +489,18 @@ async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):
 
 @pytest.mark.asyncio
 async def test_settings_inline_save_persists_auto_complete(ui_client):
-    """Option A: POST /settings/manufacturing saves inline - a 200 with the saved indicator,
-    not a 303 reload - and passes auto_complete_work_orders through to the client."""
+    """Option A: POST /settings/manufacturing saves inline - a 200 whose corner-toast
+    trigger confirms the save, not a 303 reload - and passes auto_complete_work_orders
+    through to the client."""
     saved = AsyncMock(return_value={})
     with patch("ui.api_client.update_mfg_settings", new=saved):
         r = await ui_client.post(
             "/settings/manufacturing",
-            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1", "hours_per_day": "8"},
+            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1"},
             cookies=_authed(),
         )
     assert r.status_code == 200
-    assert "Settings saved." in r.text
+    assert "Settings saved." in r.headers.get("HX-Trigger", "")
     saved.assert_awaited_once()
     payload = saved.await_args.args[1]
     assert payload["auto_complete_work_orders"] is True
