@@ -131,9 +131,10 @@ def test_wc_table_shows_hours_and_default_columns(page, ui_server, fresh_company
     page.goto(f"{ui_server}/manufacturing/work-centers", wait_until="domcontentloaded")
     page.wait_for_selector("#wc-table", timeout=10000)
 
-    headers = page.locator("#wc-table thead th").all_inner_texts()
-    assert any("Hours/day" in h for h in headers), headers
-    assert any("Default" in h for h in headers), headers
+    # inner_text reflects the header's CSS uppercase transform, so compare uppercased.
+    headers = [h.upper() for h in page.locator("#wc-table thead th").all_inner_texts()]
+    assert any("HOURS/DAY" in h for h in headers), headers
+    assert any("DEFAULT" in h for h in headers), headers
 
     # Numeric headers sit right-aligned over their figures (HTML/CSS 4a).
     hours_header = page.locator("#wc-table thead th", has_text="Hours/day").first
