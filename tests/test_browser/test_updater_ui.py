@@ -121,6 +121,44 @@ def test_update_card_check_btn_present(page, ui_server):
     assert btn.count() == 1, "Check for updates button not found"
 
 
+def test_source_build_shows_no_update(page, ui_server):
+    """A source/editable install reports bare '0.0.0' and must read as a dev build.
+
+    Package metadata for a non-released checkout reports '0.0.0' (no '+dev' local
+    segment), so without the fix the PyPI path treats it as a real install, compares
+    against the latest release, and shows 'Update available: v2.0.0' on a machine that
+    cannot be updated with pip. The card must instead recognise it as a source build.
+    """
+    # Stub /health to the version a source checkout reports, and PyPI to a newer
+    # release, so a real update would be offered if the dev build were not detected.
+    page.route(
+        "**/health",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"version": "0.0.0"}'
+        ),
+    )
+    page.route(
+        "**/pypi.org/pypi/celerp/json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"info": {"version": "2.0.0"}}',
+        ),
+    )
+
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+    page.wait_for_timeout(1000)
+
+    version = page.locator(".update-card__version").text_content()
+    state = page.locator(".update-card__state").text_content()
+    assert version == "Development build", f"expected dev-build label, got {version!r}"
+    assert "Update available" not in (state or ""), (
+        f"a source build must not be offered a PyPI update, got state {state!r}"
+    )
+
+
 def test_bell_badge_counts_downloaded_update(page, ui_server):
     """A downloaded update must light the bell badge, not just the panel card.
 

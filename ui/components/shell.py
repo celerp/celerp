@@ -885,7 +885,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setState('Checking...', false);
         fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
           var current = health.version || '';
-          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
+          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current.indexOf('0.0.0') === 0;
           if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
           if (isDev) { setState('Running from source - no updates', false); resetToIdle(); return; }
           return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
