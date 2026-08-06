@@ -282,28 +282,35 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
 
 # ── Work Centers (operational stations, master data like Locations) ──────────
 
-def _wc_cell(wc_id: str, field: str, value, *, center: bool = False) -> FT:
+def _wc_cell(wc_id: str, field: str, value, *, align: str = "left") -> FT:
     disp = value if value not in (None, "") else EMPTY
     return Td(
         Div(disp, cls="editable-cell",
             hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?current={'' if value is None else value}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick", title="Double-click to edit"),
-        cls="cell--center" if center else "",
+        cls=f"cell--{align}",
     )
+
+
+def _num(value) -> str | None:
+    return f"{float(value):g}" if value not in (None, "") else None
 
 
 def _wc_row(wc: dict, loc_names: dict) -> FT:
     wid = wc["id"]
-    rate = wc.get("labor_rate")
-    rate_disp = f"{float(rate):g}" if rate not in (None, "") else None
-    cap = wc.get("capacity")
-    cap_disp = f"{float(cap):g}" if cap not in (None, "") else None
     wip = loc_names.get(wc.get("wip_location_id")) if wc.get("wip_location_id") else None
+    is_default = bool(wc.get("is_default"))
     return Tr(
         _wc_cell(wid, "name", wc.get("name")),
-        _wc_cell(wid, "wip_location_id", wip, center=True),
-        _wc_cell(wid, "labor_rate", rate_disp, center=True),
-        _wc_cell(wid, "capacity", cap_disp, center=True),
+        _wc_cell(wid, "wip_location_id", wip, align="left"),
+        _wc_cell(wid, "labor_rate", _num(wc.get("labor_rate")), align="right"),
+        _wc_cell(wid, "capacity", _num(wc.get("capacity")), align="right"),
+        _wc_cell(wid, "hours_per_day", _num(wc.get("hours_per_day")), align="right"),
+        Td(Button("✓ Default" if is_default else "Set default", type="button",
+                  cls=f"btn btn--xs {'btn--primary' if is_default else 'btn--secondary'}",
+                  hx_patch=f"/manufacturing/work-centers/{wid}/is_default",
+                  hx_target="#wc-table", hx_swap="outerHTML", disabled=is_default),
+           cls="cell--center"),
         Td(Button(t("btn.delete"), type="button", cls="btn btn--xs btn--secondary",
                   hx_post=f"/manufacturing/work-centers/{wid}/delete", hx_target="#wc-table",
                   hx_swap="outerHTML", hx_confirm="Delete this work center?"), cls="cell--actions"),
@@ -314,10 +321,11 @@ def _wc_row(wc: dict, loc_names: dict) -> FT:
 def _wc_table(centers: list[dict], loc_names: dict) -> FT:
     rows = [_wc_row(w, loc_names) for w in centers]
     return Table(
-        Thead(Tr(Th("Name"), Th("WIP location", cls="cell--center"),
-                 Th("Labor rate / hr", cls="cell--center"), Th("Capacity", cls="cell--center"),
+        Thead(Tr(Th("Name"), Th("WIP location"),
+                 Th("Labor rate / hr", cls="cell--right"), Th("Capacity", cls="cell--right"),
+                 Th("Hours/day", cls="cell--right"), Th("Default", cls="cell--center"),
                  Th("", cls="cell--actions"))),
-        Tbody(*rows) if rows else Tbody(Tr(Td("No work centers yet.", colspan="5", cls="empty-row"))),
+        Tbody(*rows) if rows else Tbody(Tr(Td("No work centers yet.", colspan="7", cls="empty-row"))),
         cls="data-table", id="wc-table",
     )
 
@@ -732,7 +740,20 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         current = request.query_params.get("current", "")
         post = f"/manufacturing/work-centers/{wc_id}/save/{field}"
-        common = {"hx_post": post, "hx_target": "#wc-table", "hx_swap": "outerHTML", "hx_trigger": "blur, keyup[key=='Enter']"}
+        # ESC leaves the field without saving: the cell goes straight back to the
+        # value it was showing. The esc flag suppresses the blur save that would
+        # otherwise fire as the editor loses focus.
+        esc_js = ("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
+                  "this.dataset.esc='1';"
+                  "this.closest('.editable-cell').textContent=this.dataset.escRestore;}")
+        editor = {
+            "onkeydown": esc_js,
+            "data_esc_restore": current if current not in ("", EMPTY) else EMPTY,
+        }
+        common = {
+            "hx_post": post, "hx_target": "#wc-table", "hx_swap": "outerHTML",
+            "hx_trigger": "blur[!this.dataset.esc], keyup[key=='Enter']", **editor,
+        }
         if field == "wip_location_id":
             locations = []
             try:
@@ -745,8 +766,9 @@ def setup_routes(app):
                 *[Option(l.get("name"), value=l.get("id"), selected=(l.get("name") == current)) for l in locations],
                 name="value", cls="cell-input cell-input--select",
                 hx_post=post, hx_target="#wc-table", hx_swap="outerHTML", hx_trigger="change",
+                **editor,
             )
-        if field in ("labor_rate", "capacity"):
+        if field in ("labor_rate", "capacity", "hours_per_day"):
             return Input(type="number", step="any", min="0", name="value",
                          value="" if current == EMPTY else current, cls="cell-input cell-input--xs", **common)
         return Input(type="text", name="value", value="" if current == EMPTY else current,
@@ -759,10 +781,14 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         raw = str(form.get("value", "")).strip()
-        if field in ("labor_rate", "capacity"):
+        if field in ("labor_rate", "capacity", "hours_per_day"):
             try:
                 value = float(raw) if raw else None
             except ValueError:
+                value = None
+            # A working day of zero or less is not a day: store it unset so the
+            # board falls back to its default rather than estimating on nonsense.
+            if field == "hours_per_day" and value is not None and value <= 0:
                 value = None
         else:
             value = raw or None
@@ -775,13 +801,39 @@ def setup_routes(app):
                 return P(t("error.unauthorized"), cls="cell-error")
         return await _wc_table_response(token)
 
+    @app.patch("/manufacturing/work-centers/{wc_id}/is_default")
+    async def work_center_set_default(request: Request, wc_id: str):
+        """Make this center the company's default; the previous one is cleared."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        error = ""
+        try:
+            await api.set_default_work_center(token, wc_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            error = str(e.detail) or "Could not set the default work center."
+        table = await _wc_table_response(token)
+        if error:
+            return HTMLResponse(to_xml(table), headers=toast_header(error, "error"))
+        return table
+
     @app.post("/manufacturing/work-centers/{wc_id}/delete")
     async def work_center_delete(request: Request, wc_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        error = ""
         try:
             await api.delete_work_center(token, wc_id)
-        except APIError:
-            pass
-        return await _wc_table_response(token)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            # A refused delete (the last center, or the default one) must say why
+            # rather than leaving the row sitting there with no explanation.
+            error = str(e.detail) or "Could not delete this work center."
+        table = await _wc_table_response(token)
+        if error:
+            return HTMLResponse(to_xml(table), headers=toast_header(error, "error"))
+        return table
