@@ -182,12 +182,12 @@ def _reorder_tab(company: dict, saved: bool = False) -> FT:
                 Label("Default method", For="inventory_method", cls="form-label"),
                 Select(
                     *[Option(lbl, value=val, selected=(val == _method)) for val, lbl in _method_opts],
-                    name="inventory_method", id="inventory_method", cls="form-input input--narrow",
+                    name="inventory_method", id="inventory_method", cls="form-input input--medium",
                 ),
                 cls="form-group",
             ),
             P("LIFO is permitted under US GAAP but not under IFRS - use FIFO or FEFO for IFRS reporting.",
-              cls="form-hint"),
+              cls="settings-hint"),
             H3("Reorder alerts", cls="settings-section-title mt-lg"),
             P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
               cls="settings-hint"),
@@ -207,11 +207,11 @@ def _reorder_tab(company: dict, saved: bool = False) -> FT:
                 ),
                 cls="form-group",
             ),
-            Button("Save", type="submit", cls="btn btn--primary"),
+            Div(Button("Save", type="submit", cls="btn btn--primary"), cls="form-actions"),
             method="post", action="/settings/inventory/reorder", cls="settings-card",
         ),
         P("Set a reorder point per item in its details, or in bulk from the inventory list. "
-          "Items at or below their reorder point appear under Inventory - Low stock.", cls="form-hint"),
+          "Items at or below their reorder point appear under Inventory - Low stock.", cls="settings-hint"),
     )
 
 

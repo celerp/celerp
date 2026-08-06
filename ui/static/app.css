@@ -3042,6 +3042,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 /* --- Manufacturing settings: info tooltip, narrow input, toggle --- */
 .settings-card-header { margin-bottom: 12px; }
 .input--narrow { max-width: 120px; }
+.input--medium { max-width: 260px; }
 .settings-toggle { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; }
 .settings-toggle input[type="checkbox"] { margin-top: 3px; flex: none; }
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
