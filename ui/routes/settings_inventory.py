@@ -188,7 +188,7 @@ def _reorder_tab(company: dict, saved: bool = False) -> FT:
             ),
             P("LIFO is permitted under US GAAP but not under IFRS - use FIFO or FEFO for IFRS reporting.",
               cls="form-hint"),
-            H3("Reorder alerts", cls="settings-section-title", style="margin-top:1.25rem;"),
+            H3("Reorder alerts", cls="settings-section-title mt-lg"),
             P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
               cls="settings-hint"),
             Div(
