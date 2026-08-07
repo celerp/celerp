@@ -611,6 +611,49 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
     return role_has_permission(settings, _get_role(request), "import_export_data")
 
 
+def _duplicate_payload(source: dict, new_sku: str) -> dict:
+    """Build a create payload from an existing item, carrying every field except
+    id, status, location_name, created_at, updated_at (status is reset by the create
+    path). Core columns and any *_price stay top-level; everything else goes into
+    attributes. Shared by the single-item and bulk duplicate paths."""
+    _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
+    _CORE = {"sku", "name", "quantity", "category", "location_id",
+             "description", "unit", "sell_by", "tax_codes"}
+    payload: dict = {"sku": new_sku}
+    attrs: dict = {}
+    for k, v in source.items():
+        if k in _SKIP or k == "sku" or v is None:
+            continue
+        if k in _CORE or k.endswith("_price"):
+            payload[k] = v
+        else:
+            attrs[k] = v
+    if attrs:
+        payload["attributes"] = attrs
+    return payload
+
+
+async def _gen_copy_sku(token: str, orig: str, reserved: set[str] | None = None) -> str:
+    """Generate a unique copy SKU for a source SKU: {orig}-copy, -copy2, -copy3 ...
+    skipping any SKU that already exists (scanned via api.list_items) and any already
+    in `reserved` (copies generated earlier in the same batch). When `reserved` is
+    given, the chosen SKU is added to it so the next call in the batch skips it."""
+    candidate = f"{orig}-copy"
+    try:
+        resp = await api.list_items(token, {"q": orig, "limit": 100, "status": "all"})
+        existing_skus = {str(it.get("sku", "")) for it in (resp.get("items", []) if isinstance(resp, dict) else resp)}
+    except Exception:
+        existing_skus = set()
+    taken = existing_skus | (reserved or set())
+    n = 2
+    while candidate in taken:
+        candidate = f"{orig}-copy{n}"
+        n += 1
+    if reserved is not None:
+        reserved.add(candidate)
+    return candidate
+
+
 def setup_routes(app):
 
     @app.get("/inventory")
@@ -2701,16 +2744,17 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
-    def _bulk_destructive_success(message: str, redirect_qs: str = "") -> Response:
-        """Return a bulk-action success response that clears the client-side selection.
+    def _bulk_destructive_success(message: str, redirect_qs: str = "", cls: str = "flash--success") -> Response:
+        """Return a bulk-action result response that clears the client-side selection.
 
         Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
-        and the toolbar before the table reloads.  Used for all destructive bulk actions
-        (merge, delete, archive, expire) where source items leave the visible table.
+        and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
+        archive, expire, duplicate) that reload the table; `cls` selects the flash
+        variant (success, or warning for a partial-success count).
         """
         from starlette.responses import HTMLResponse
         content = Div(
-            P(message, cls="flash flash--success"),
+            P(message, cls=f"flash {cls}"),
             id="bulk-action-result",
             hx_trigger="load delay:1s",
             hx_get=f"/inventory/content{redirect_qs}",
@@ -2819,6 +2863,41 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         expired = result.get("expired", len(entity_ids))
         return _bulk_destructive_success(f"{expired} item(s) expired.")
+
+    # ── Bulk duplicate (create a copy of each selected item) ─────────────
+
+    @app.post("/api/items/bulk/duplicate")
+    async def bulk_item_duplicate(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        # Dedupe as well as filter: each id creates a new persistent entity, so a
+        # repeated id in a crafted POST must not multiply copies of one item.
+        entity_ids = list(dict.fromkeys(v.strip() for v in form.getlist("selected") if v.strip()))
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        if not role_has_permission(settings, _get_role(request), "edit_inventory"):
+            return Div(P(t("error.unauthorized"), cls="flash flash--error"), id="bulk-action-result")
+        reserved: set[str] = set()
+        ok = 0
+        failed = 0
+        for eid in entity_ids:
+            try:
+                source = await api.get_item(token, eid)
+                new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""), reserved=reserved)
+                await api.create_item(token, _duplicate_payload(source, new_sku))
+                ok += 1
+            except APIError:
+                failed += 1
+        if ok == 0:
+            return Div(P(f"Failed to duplicate {failed} item(s).", cls="flash flash--error"), id="bulk-action-result")
+        msg = f"{ok} item(s) duplicated, {failed} failed." if failed else f"{ok} item(s) duplicated."
+        return _bulk_destructive_success(msg, cls="flash--warning" if failed else "flash--success")
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
 
@@ -4005,35 +4084,8 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         if not new_sku:
-            orig = str(source.get("sku", "") or "")
-            # Auto-generate: {sku}-copy, -copy2, -copy3 ...
-            candidate = f"{orig}-copy"
-            try:
-                resp = await api.list_items(token, {"q": orig, "limit": 100, "status": "all"})
-                existing_skus = {str(it.get("sku", "")) for it in (resp.get("items", []) if isinstance(resp, dict) else resp)}
-            except Exception:
-                existing_skus = set()
-            n = 2
-            while candidate in existing_skus:
-                candidate = f"{orig}-copy{n}"
-                n += 1
-            new_sku = candidate
-
-        # Build create payload from source — carry all fields except id, status, location_name
-        _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
-        _CORE = {"sku", "name", "quantity", "category", "location_id",
-                 "description", "unit", "sell_by", "tax_codes"}
-        payload: dict = {"sku": new_sku}
-        attrs: dict = {}
-        for k, v in source.items():
-            if k in _SKIP or k == "sku" or v is None:
-                continue
-            if k in _CORE or k.endswith("_price"):
-                payload[k] = v
-            else:
-                attrs[k] = v
-        if attrs:
-            payload["attributes"] = attrs
+            new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""))
+        payload = _duplicate_payload(source, new_sku)
         try:
             result = await api.create_item(token, payload)
         except APIError as e:
@@ -4241,6 +4293,8 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     action_options.extend(module_action_opts)
     action_options.append(Option(t("inv.archive"), value="archive"))
     action_options.append(Option(t("inv.expire"), value="expire"))
+    if role_has_permission(settings or {}, role, "edit_inventory"):
+        action_options.append(Option(t("inv.duplicate"), value="duplicate"))
     # Restore and Delete only shown when viewing archived/expired items
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):

@@ -685,6 +685,7 @@
   "inv.custom_columns_in_your_csv_will_be_imported_as_ite": "Custom columns in your CSV will be imported as item attributes. ",
   "inv.customize_fields": "Customize Fields",
   "inv.document_type": "Document type...",
+  "inv.duplicate": "Duplicate",
   "inv.edit_the_global_fields_shown_for_all_items_regardl": "Edit the global fields shown for all items (regardless of category).",
   "inv.enter_at_least_one_split_quantity": "Enter at least one split quantity.",
   "inv.enter_commaseparated_quantities_eg_321": "Enter comma-separated quantities (e.g. 3,2,1).",

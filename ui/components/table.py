@@ -1656,6 +1656,10 @@ function bulkActionChanged(action){
     if(!confirm('Delete selected items? This cannot be undone.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
   }
+  if(action==='duplicate'){
+    if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
+    _bulkImmediate('/api/items/bulk/duplicate',null,null);return;
+  }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
   // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
   // The option value and template id must be derived the same way to stay in sync.

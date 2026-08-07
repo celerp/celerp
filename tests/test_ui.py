@@ -5623,6 +5623,175 @@ class TestInventoryBulkActions:
         assert b"delete failed" in r.content
 
 
+class TestBulkDuplicate:
+    """Bulk Duplicate action: create a copy of each selected item from the inventory list."""
+
+    @staticmethod
+    def _page_patches():
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for target, val in (
+            ("get_item_schema", _SCHEMA),
+            ("get_all_category_schemas", {}),
+            ("get_company_category_schemas", {}),
+            ("get_column_prefs", {}),
+            ("get_valuation", {"item_count": 0, "category_counts": {}}),
+            ("get_company", {}),
+            ("get_locations", {"items": [], "total": 0}),
+            ("list_items", {"items": [], "total": 0}),
+            ("list_import_batches", {"batches": []}),
+            ("get_units", []),
+            ("get_price_lists", []),
+        ):
+            stack.enter_context(patch(f"ui.api_client.{target}", new=AsyncMock(return_value=val)))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_option_gated_on_edit_permission(self, ui_client):
+        """Duplicate option is offered to an edit_inventory role and withheld from one without it."""
+        with self._page_patches():
+            owner = await ui_client.get("/inventory", cookies=_authed())
+        assert owner.status_code == 200
+        assert b'value="duplicate"' in owner.content
+        with self._page_patches():
+            viewer = await ui_client.get("/inventory", cookies=_authed(role="viewer"))
+        assert viewer.status_code == 200
+        assert b'value="duplicate"' not in viewer.content
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_creates_a_copy_per_selected_item(self, ui_client):
+        create = AsyncMock(return_value={"id": "item:new", "event_id": "e1"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=create),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"2 item(s) duplicated" in r.content
+        assert create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_generates_distinct_skus_within_batch(self, ui_client):
+        """Two selected items sharing one source SKU receive distinct generated copy SKUs."""
+        skus = []
+        async def _cap(token, data):
+            skus.append(data.get("sku"))
+            return {"id": "item:copy", "event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC"})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=_cap),
+        ):
+            await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert sorted(skus) == ["ABC-copy", "ABC-copy2"]
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_reports_partial_failure(self, ui_client):
+        from ui.api_client import APIError
+        create = AsyncMock(side_effect=[{"id": "item:ok", "event_id": "e1"}, APIError(500, "create failed")])
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=create),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"1 item(s) duplicated, 1 failed" in r.content
+        assert b"flash--warning" in r.content
+        assert create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_all_fail_error_flash(self, ui_client):
+        from ui.api_client import APIError
+        create = AsyncMock(side_effect=APIError(500, "create failed"))
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=create),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+        assert b"Failed to duplicate" in r.content
+        assert b"duplicated." not in r.content
+        assert create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_rejects_empty_selection(self, ui_client):
+        create = AsyncMock(return_value={"id": "item:new"})
+        with patch("ui.api_client.create_item", new=create):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"No items selected" in r.content
+        assert create.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_dedupes_repeated_ids(self, ui_client):
+        """The same id repeated in the POST creates exactly one copy, not one per repeat."""
+        create = AsyncMock(return_value={"id": "item:new", "event_id": "e1"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=create),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123&selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"1 item(s) duplicated" in r.content
+        assert create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_denied_without_edit_permission(self, ui_client):
+        create = AsyncMock(return_value={"id": "item:new"})
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.create_item", new=create),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/duplicate",
+                content=b"selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(role="viewer"),
+            )
+        assert r.status_code == 200
+        assert b"Unauthorized" in r.content
+        assert create.call_count == 0
+
+    def test_bulkActionChanged_handles_duplicate(self):
+        """The bulk toolbar JS routes the duplicate option to the bulk-duplicate endpoint."""
+        src = pathlib.Path(__file__).resolve().parents[1].joinpath("ui", "components", "table.py").read_text()
+        assert "action==='duplicate'" in src
+        assert "/api/items/bulk/duplicate" in src
+
+
 class TestBulkActionsPhase1to5:
     """Phases 1-5: persistent selection, context-sensitive toolbar, merge/split/expire/archive."""
 
