@@ -102,10 +102,13 @@ def test_data_migration_atomic(wc_db):
 
     run_migration_ops(wc_db, _SCHEMA_MIGRATION)  # columns land, own txn
 
-    # Force the notice INSERT to fail mid data-migration (drop the local table;
-    # the public.notifications guard still sees the global one and proceeds).
+    # Force the notice INSERT to fail mid data-migration: a CHECK the
+    # company-wide manufacturing notice violates. The regclass guard still
+    # passes (the table exists) and the seed has already run in this same data
+    # transaction when the notice statement raises.
     with wc_db.begin() as conn:
-        conn.execute(sa.text("DROP TABLE notifications"))
+        conn.execute(sa.text(
+            "ALTER TABLE notifications ADD CONSTRAINT no_mfg_notice CHECK (category <> 'manufacturing')"))
 
     with pytest.raises(Exception):
         run_migration_ops(wc_db, _DATA_MIGRATION)
