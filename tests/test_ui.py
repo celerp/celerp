@@ -18404,3 +18404,31 @@ async def test_transform_preview_warns_on_dependency_fetch_error(ui_client):
         r = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
     assert r.status_code == 200
     assert b"flash--warning" in r.content
+
+
+@pytest.mark.asyncio
+async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
+    """The handler tells an absent cost from a literal zero. When the form carries no
+    child_cost_total (a cost-restricted role's preview never renders the input), it
+    sends None so the server preserves the parent cost; a permitted role's literal 0
+    is a real value and is sent as 0.0. The old handler defaulted absence to 0, which
+    zeroed the child cost, so the absent-cost assertion is red at merge-base."""
+    transform = AsyncMock(return_value={"child_sku": "C-1", "parent_sku": "P-1"})
+    base = {
+        "entity_id": "item:1",
+        "child_sku": "C-1",
+        "child_category": "Processed",
+        "child_sell_by": "piece",
+        "child_qty": "5",
+    }
+    with patch("ui.api_client.transform_item", new=transform):
+        r_absent = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+        absent_payload = transform.await_args.args[2]
+        r_zero = await ui_client.post(
+            "/api/items/bulk/transform", data={**base, "child_cost_total": "0"}, cookies=_authed()
+        )
+        zero_payload = transform.await_args.args[2]
+    assert r_absent.status_code == 200
+    assert absent_payload["child_cost_total"] is None
+    assert r_zero.status_code == 200
+    assert zero_payload["child_cost_total"] == 0.0

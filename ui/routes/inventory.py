@@ -33,6 +33,11 @@ from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
 
+
+def _sp_static_td(val, num: bool = False) -> FT:
+    """Static (non-editable) split-preview table cell; num right-aligns per HTML/CSS rule 4a."""
+    return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
+
 # Shared live-delta helper, injected on all three split surfaces: the item-detail manual
 # split card (three-line reconciliation trio) and the bulk-split / transform preview badges.
 # One definition, one term everywhere. Parcel weight comes from data-parent-weight (or
@@ -3054,9 +3059,6 @@ function celerpPrintLabel(entityId, templateId) {
         if show_pieces:
             headers.append(Th("Pieces", cls="sp-th sp-th--num"))
 
-        def _static_td(val: str, num: bool = False) -> FT:
-            return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
-
         def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
             if oninput:
@@ -3109,7 +3111,7 @@ function celerpPrintLabel(entityId, templateId) {
 
         mother_row = _parcel_row(
             "Mother",
-            _static_td(preview["parent_sku"]),
+            _sp_static_td(preview["parent_sku"]),
             Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
                      step=str(10 ** -decimals if decimals > 0 else 1), min="0",
                      cls="form-input form-input--xs sp-input mother-qty-input",
@@ -3365,9 +3367,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
 
-        def _static_td(val, num: bool = False):
-            return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
-
         unit_select = Select(
             *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
             name="child_sell_by",
@@ -3385,15 +3384,15 @@ function celerpPrintLabel(entityId, templateId) {
         parent_name = item.get("name") or ""
         mother_cells = [
             Td("Mother", cls="sp-row-label"),
-            _static_td(item.get("sku", "")),
-            _static_td(parent_name),
-            _static_td(parent_category),
-            _static_td(f"{fmt(parent_qty)} {parent_sell_by}", num=True),
-            _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--", num=True),
-            _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
+            _sp_static_td(item.get("sku", "")),
+            _sp_static_td(parent_name),
+            _sp_static_td(parent_category),
+            _sp_static_td(f"{fmt(parent_qty)} {parent_sell_by}", num=True),
+            _sp_static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--", num=True),
+            _sp_static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
         ]
         if can_see_cost:
-            mother_cells.append(_static_td(fmt(parent_cost_total), num=True))
+            mother_cells.append(_sp_static_td(fmt(parent_cost_total), num=True))
 
         child_qty_input = Td(
             Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
@@ -3504,9 +3503,11 @@ function celerpPrintLabel(entityId, templateId) {
         if not entity_id:
             return Div(P("No item selected.", cls="flash flash--warning"), id="bulk-action-result")
 
+        cost_raw = form.get("child_cost_total")
+        cost_present = cost_raw is not None and str(cost_raw).strip() != ""
         try:
             child_qty = float(str(form.get("child_qty", "0")).strip())
-            child_cost_total = float(str(form.get("child_cost_total", "0")).strip())
+            child_cost_total = float(str(cost_raw).strip()) if cost_present else None
         except ValueError:
             return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
 
