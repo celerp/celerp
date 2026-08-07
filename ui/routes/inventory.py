@@ -3304,6 +3304,13 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--warning"))
+        try:
+            company = await api.get_company(token)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+        # The endpoint is the trust boundary; cost is only shown to a role that holds
+        # view_inventory_costs. On any settings error the guard above fails closed.
+        can_see_cost = role_has_permission(company.get("settings") or {}, _get_role(request), "view_inventory_costs")
 
         parent_qty = float(item.get("quantity") or 0)
         parent_sell_by = item.get("sell_by") or "piece"
@@ -3312,7 +3319,10 @@ function celerpPrintLabel(entityId, templateId) {
         parent_pieces = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
         parent_cost_total = float(item.get("cost_total") or 0) or round(float(item.get("cost_price") or 0) * parent_qty, 2)
 
-        units = await api.get_units(token)
+        try:
+            units = await api.get_units(token)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
         unit_map = {u["name"]: u for u in units}
         unit_names = [u["name"] for u in units]
         weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
@@ -3325,7 +3335,10 @@ function celerpPrintLabel(entityId, templateId) {
         else:
             parent_weight = item.get("weight")
 
-        categories = await api.list_item_categories(token)
+        try:
+            categories = await api.list_item_categories(token)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
 
         child_sku = await _next_transform_sku(token, item.get("sku", ""))
 
@@ -3357,8 +3370,9 @@ function celerpPrintLabel(entityId, templateId) {
             _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
             _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
             _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--"),
-            _static_td(fmt(parent_cost_total)),
         ]
+        if can_see_cost:
+            mother_cells.append(_static_td(fmt(parent_cost_total)))
 
         child_qty_input = Td(
             Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
@@ -3388,19 +3402,24 @@ function celerpPrintLabel(entityId, templateId) {
             child_qty_input,
             child_weight_td,
             child_pieces_td,
-            Td(
-                Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
-                      cls="form-input form-input--xs sp-input",
-                      oninput="transformCostManualEdit(this)"),
-                cls="sp-td",
-            ),
         ]
+        if can_see_cost:
+            child_cells.append(
+                Td(
+                    Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
+                          cls="form-input form-input--xs sp-input",
+                          oninput="transformCostManualEdit(this)"),
+                    cls="sp-td",
+                )
+            )
 
         headers = [
             Th(""), Th("SKU", cls="sp-th"), Th("Name", cls="sp-th"), Th("Category", cls="sp-th"),
             Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
-            Th("Pieces", cls="sp-th"), Th("Cost Total", cls="sp-th"),
+            Th("Pieces", cls="sp-th"),
         ]
+        if can_see_cost:
+            headers.append(Th("Cost Total", cls="sp-th"))
 
         form_attrs = {
             "data-parent-cost-total": str(parent_cost_total),

@@ -18333,3 +18333,73 @@ def test_role_matrix_permission_header_centered():
     head = html.split("</thead>", 1)[0]
     assert 'text-center">Permission' in head or '>Permission<' in head
     assert 'text-left">Permission' not in head
+
+
+# ── Transform preview: cost gating + fail-closed dependency guards ─────────────
+
+_TRP_ITEM = {
+    "entity_id": "gc:1", "sku": "P-1", "name": "Parent", "quantity": 10,
+    "sell_by": "piece", "category": "Raw", "cost_price": 100, "cost_total": 1000,
+}
+_TRP_UNITS = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+_TRP_URL = "/api/items/bulk/transform-preview?entity_id=gc:1"
+
+
+def _trp_patches(*, company, get_units=None, list_cats=None):
+    """Common api mocks for the transform-preview tests; caller overrides per case."""
+    return (
+        patch("ui.api_client.get_item", new=AsyncMock(return_value=_TRP_ITEM)),
+        patch("ui.api_client.get_units", new=(get_units or AsyncMock(return_value=_TRP_UNITS))),
+        patch("ui.api_client.list_item_categories", new=(list_cats or AsyncMock(return_value=["Raw", "Processed"]))),
+        patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_transform_preview_hides_cost_without_permission(ui_client):
+    """A role without view_inventory_costs sees no Cost Total column or child cost
+    input; a permitted role still sees both."""
+    company = {"settings": {}}  # default: view_inventory_costs requires manager
+    p = _trp_patches(company=company)
+    with p[0], p[1], p[2], p[3], p[4]:
+        r_op = await ui_client.get(_TRP_URL, cookies=_authed(role="operator"))
+        r_owner = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+    assert r_op.status_code == 200
+    assert b"Cost Total" not in r_op.content
+    assert b"child_cost_total" not in r_op.content
+    assert r_owner.status_code == 200
+    assert b"Cost Total" in r_owner.content
+    assert b"child_cost_total" in r_owner.content
+
+
+@pytest.mark.asyncio
+async def test_transform_preview_cost_hidden_on_company_fetch_error(ui_client):
+    """When the company/settings fetch errors, the preview fails closed: no cost is
+    shown even to a normally-permitted role."""
+    from ui.api_client import APIError
+    company_err = AsyncMock(side_effect=APIError(500, "company unavailable"))
+    with (
+        patch("ui.api_client.get_item", new=AsyncMock(return_value=_TRP_ITEM)),
+        patch("ui.api_client.get_units", new=AsyncMock(return_value=_TRP_UNITS)),
+        patch("ui.api_client.list_item_categories", new=AsyncMock(return_value=["Raw"])),
+        patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.get_company", new=company_err),
+    ):
+        r = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    assert b"Cost Total" not in r.content
+    assert b"child_cost_total" not in r.content
+
+
+@pytest.mark.asyncio
+async def test_transform_preview_warns_on_dependency_fetch_error(ui_client):
+    """When a preview dependency (units or categories) errors, the fragment returns a
+    graceful warning, not an unhandled 500."""
+    from ui.api_client import APIError
+    company = {"settings": {}}
+    p = _trp_patches(company=company, get_units=AsyncMock(side_effect=APIError(503, "units down")))
+    with p[0], p[1], p[2], p[3], p[4]:
+        r = await ui_client.get(_TRP_URL, cookies=_authed(role="owner"))
+    assert r.status_code == 200
+    assert b"flash--warning" in r.content
