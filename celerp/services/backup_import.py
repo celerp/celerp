@@ -298,10 +298,19 @@ async def _reconcile_schema() -> str | None:
     from celerp.config import settings
 
     def _sync() -> None:
-        from celerp.cli import _apply_migrations, _post_migration_grants, _reconcile_after_migrate
-        _apply_migrations(settings.database_url)
-        _post_migration_grants(settings.database_url)
-        _reconcile_after_migrate(settings.database_url)
+        from celerp.cli import (
+            _apply_migrations,
+            _migration_lock,
+            _post_migration_grants,
+            _reconcile_after_migrate,
+        )
+        # Serialize under the shared migration advisory lock, the same one
+        # `celerp migrate`/`celerp start` hold, so a restore reconcile cannot
+        # run concurrently with a service migration or a second restore.
+        with _migration_lock(settings.database_url):
+            _apply_migrations(settings.database_url)
+            _post_migration_grants(settings.database_url)
+            _reconcile_after_migrate(settings.database_url)
 
     try:
         await asyncio.get_event_loop().run_in_executor(None, _sync)

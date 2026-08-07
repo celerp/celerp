@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -639,21 +640,19 @@ def _stamped_revision(db_url: str) -> str | None:
         engine.dispose()
 
 
-def _migrate_to_head(db_url: str) -> None:
-    """Apply pending migrations, the grants, then the develop→release reconcile.
+@contextmanager
+def _migration_lock(db_url: str):
+    """Hold the shared Postgres migration advisory lock for the wrapped block.
 
-    Shared by `celerp migrate` and `celerp start` so the steps and their order
-    exist once. The start path cannot drift from the explicit command.
+    Single source of the lock protocol (acquire, guaranteed release, engine
+    disposal), so every path that migrates a database serializes the same way
+    and cannot drift. Reused by `_migrate_to_head` and the restore reconcile.
 
-    Held under a Postgres advisory lock, because a service restart overlapping a
-    manual start would otherwise have both processes migrating the same database:
-    the loser re-applies DDL that already exists and is stamped past it by the
+    The lock exists because a service restart overlapping a manual start would
+    otherwise have both processes migrating the same database: the loser
+    re-applies DDL that already exists and is stamped past it by the
     duplicate-object handler, which reaches the right answer for the wrong
     reason. The second holder waits here and then finds nothing pending.
-
-    Reports the stamp it moved, and says nothing when it moved nothing, so a
-    routine start is as quiet as it was and a start that changed the schema
-    cannot be mistaken for one that did not.
     """
     from sqlalchemy import create_engine, text
 
@@ -662,25 +661,40 @@ def _migrate_to_head(db_url: str) -> None:
     engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
         isolation_level="AUTOCOMMIT"
     )
-    before = after = None
     try:
         with engine.connect() as lock_conn:
             lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
             try:
-                before = _stamped_revision(db_url)
-                _run_migrations(db_url)
-                _post_migration_grants(db_url)
-                _reconcile_after_migrate(db_url)
-                # Read inside the lock: outside it, a process queued behind this
-                # one could move the stamp further and this would report a
-                # transition that never happened here.
-                after = _stamped_revision(db_url)
+                yield
             finally:
                 lock_conn.execute(
                     text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
                 )
     finally:
         engine.dispose()
+
+
+def _migrate_to_head(db_url: str) -> None:
+    """Apply pending migrations, the grants, then the develop→release reconcile.
+
+    Shared by `celerp migrate` and `celerp start` so the steps and their order
+    exist once. The start path cannot drift from the explicit command. Held
+    under the shared migration advisory lock (`_migration_lock`).
+
+    Reports the stamp it moved, and says nothing when it moved nothing, so a
+    routine start is as quiet as it was and a start that changed the schema
+    cannot be mistaken for one that did not.
+    """
+    before = after = None
+    with _migration_lock(db_url):
+        before = _stamped_revision(db_url)
+        _run_migrations(db_url)
+        _post_migration_grants(db_url)
+        _reconcile_after_migrate(db_url)
+        # Read inside the lock: outside it, a process queued behind this one
+        # could move the stamp further and this would report a transition that
+        # never happened here.
+        after = _stamped_revision(db_url)
     if after != before:
         click.echo(f"  ✓ Database migrated: {before or 'base'} -> {after}")
 
@@ -693,6 +707,13 @@ def _reconcile_after_migrate(db_url: str) -> None:
     are idempotent, so a redundant run would be a no-op anyway. The projection
     rebuild (the other half of the version-change reconcile) runs in the API
     lifespan, where module projection handlers are loaded.
+
+    Each backfill replays in its own transaction; the version marker is written
+    in a SEPARATE final transaction, and only when every backfill succeeded, so
+    a backfill that fails is retried on the next start instead of being marked
+    done for this version's lifetime. The marker write no longer shares a
+    transaction with the replay, so its own failure cannot roll back committed
+    backfills.
     """
     import sqlalchemy as _sa
 
@@ -710,8 +731,16 @@ def _reconcile_after_migrate(db_url: str) -> None:
         with engine.begin() as conn:
             if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
                 return  # already reconciled for this version
-            replayed = replay_data_backfills(conn)
-            set_meta(conn, BACKFILL_VERSION_KEY, __version__)
+        replayed, failures = replay_data_backfills(engine)
+        if failures:
+            click.echo(
+                f"  ! {len(failures)} data-backfill migration(s) failed to reconcile for "
+                f"{__version__}; leaving the version marker unset so they retry next start: "
+                f"{', '.join(failures)}"
+            )
+        else:
+            with engine.begin() as conn:
+                set_meta(conn, BACKFILL_VERSION_KEY, __version__)
         if replayed:
             click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s) for {__version__}")
     finally:

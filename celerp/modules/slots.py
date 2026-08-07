@@ -60,7 +60,9 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
 
     Each contribution must have a "handler" key pointing to a dotted path
     "module.path:function_name". The function is called with **kwargs.
-    Failures are logged and swallowed (non-fatal).
+    A failing hook never blocks its siblings or boot: it is logged at ERROR
+    (with traceback) and swallowed, so a recurrence surfaces as an alert
+    instead of vanishing.
     """
     import importlib
     import logging
@@ -77,7 +79,7 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
             func = getattr(mod, func_name)
             await func(**kwargs)
         except Exception as exc:
-            _log.warning(
+            _log.exception(
                 "Lifecycle hook %s from %s failed: %s",
                 slot, contrib.get("_module", "?"), exc,
             )

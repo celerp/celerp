@@ -20,13 +20,16 @@ against — so no SQL is duplicated and nothing is monkeypatched.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from celerp.migrations._auto_stamp import extract_signatures
 
 if TYPE_CHECKING:
-    from sqlalchemy.engine import Connection
+    from sqlalchemy.engine import Connection, Engine
+
+_log = logging.getLogger(__name__)
 
 # ── Instance metadata marker ────────────────────────────────────────────────
 # A tiny key/value table recording which celerp version last applied each
@@ -92,22 +95,37 @@ def data_backfill_scripts():
     return out
 
 
-def replay_data_backfills(connection: "Connection") -> list[str]:
-    """Re-run every data-backfill migration's `upgrade()` against `connection`.
+def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
+    """Re-run every data-backfill migration's `upgrade()`, each in its OWN
+    transaction, against `engine`.
 
-    `connection` is a sync SQLAlchemy Connection; the caller owns the
-    transaction. Returns the revision ids replayed, in apply order.
+    A per-backfill top-level transaction (not a savepoint inside one outer
+    transaction) is what makes the replay durable: each backfill that succeeds
+    commits on its own, so a later backfill failure, or a failed marker write
+    afterwards, cannot silently undo work that already converged. One failing
+    backfill is logged loudly and skipped; the rest still run.
+
+    Returns `(replayed, failures)`: the revision ids that applied cleanly and
+    the ids that raised, both in apply order.
     """
     from alembic.operations import Operations
     from alembic.runtime.migration import MigrationContext
 
     scripts = data_backfill_scripts()
-    ctx = MigrationContext.configure(connection)
     replayed: list[str] = []
-    # Operations.context binds the global `alembic.op` proxy these migrations
-    # import, so their `op.get_bind()` returns this connection.
-    with Operations.context(ctx):
-        for sc in scripts:
-            sc.module.upgrade()
+    failures: list[str] = []
+    for sc in scripts:
+        try:
+            with engine.begin() as conn:
+                ctx = MigrationContext.configure(conn)
+                # Operations.context binds the global `alembic.op` proxy these
+                # migrations import, so their `op.get_bind()` returns this
+                # connection; the with-block commits on clean exit, rolls back
+                # on any exception.
+                with Operations.context(ctx):
+                    sc.module.upgrade()
             replayed.append(sc.revision)
-    return replayed
+        except Exception:
+            _log.exception("data backfill %s failed to replay; skipping it", sc.revision)
+            failures.append(sc.revision)
+    return replayed, failures
