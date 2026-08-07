@@ -269,7 +269,7 @@ class TransformBody(BaseModel):
     child_weight: float | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    child_cost_total: float  # final cost (may be user-overridden)
+    child_cost_total: float | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
     idempotency_key: str | None = None
 
 
@@ -1999,7 +1999,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
 
 @router.post("/{entity_id}/transform")
-async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -2029,6 +2029,14 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent_price_keys = {k for k in parent.state if k.endswith("_price") and k != "cost_price"}
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (
         float(parent.state.get("cost_price") or 0) * parent_qty
+    )
+    # Cost is gated by view_inventory_costs (the endpoint is the trust boundary, not the
+    # hidden UI field): only a permitted caller who actually submitted a cost may override
+    # it. Everyone else - restricted role, or no cost sent - preserves the parent's cost.
+    effective_cost = (
+        payload.child_cost_total
+        if (role_has_permission(settings, role, "view_inventory_costs") and payload.child_cost_total is not None)
+        else parent_cost_total
     )
     parent_location_id = parent.state.get("location_id")
 
@@ -2104,7 +2112,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": payload.child_cost_total},
+        data={"price_type": "cost_total", "new_price": effective_cost},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -2149,7 +2157,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             "child_sku": payload.child_sku,
             "child_category": payload.child_category,
             "parent_cost_total": parent_cost_total,
-            "child_cost_total": payload.child_cost_total,
+            "child_cost_total": effective_cost,
             "parent_sku": parent.state.get("sku") or "",
             "child_origin_event_id": transform_origin.id,
             # Mother is consumed by the transform (archived) → after-values are 0.

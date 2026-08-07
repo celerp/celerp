@@ -8,6 +8,8 @@ import uuid
 
 import pytest
 
+from test_helpers import invite_user
+
 
 async def _token(client) -> str:
     r = await client.post(
@@ -372,3 +374,45 @@ async def test_transform_child_barcode_distinct_from_parent(client):
     child_barcode = child.get("barcode")
     assert child_barcode is not None, "Child must have a barcode"
     assert child_barcode != parent_barcode, f"Child barcode must differ from parent; both={child_barcode!r}"
+
+
+@pytest.mark.asyncio
+async def test_transform_preserves_parent_cost_when_restricted(client, session):
+    # A user without view_inventory_costs (operator has edit_inventory but not the
+    # cost permission) transforms without submitting a cost - the child must inherit
+    # the parent's cost, never be zeroed or rejected for the missing field.
+    admin_h = {"Authorization": f"Bearer {await _token(client)}"}
+    op_tok = await invite_user(client, session, admin_h, "operator@example.com", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+    # parent: qty=1, cost_price=100 => parent_cost_total=100
+    parent_id = await _seed_item(client, admin_h, qty=1.0, cost_price=100.0)
+
+    payload = _transform_payload(child_quantity=1.0)
+    payload.pop("child_cost_total")  # restricted UI hides cost, so the field is absent
+    r = await client.post(f"/items/{parent_id}/transform", json=payload, headers=op_h)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["child_id"]
+    # Read as admin (the operator cannot see cost); parent cost preserved on the child.
+    child = (await client.get(f"/items/{child_id}", headers=admin_h)).json()
+    assert float(child["cost_price"]) == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_transform_ignores_crafted_cost_from_restricted(client, session):
+    # A restricted user who crafts a cost directly into the request body must not be
+    # able to set it: the endpoint ignores the submitted value and preserves parent cost.
+    admin_h = {"Authorization": f"Bearer {await _token(client)}"}
+    op_tok = await invite_user(client, session, admin_h, "operator@example.com", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+    parent_id = await _seed_item(client, admin_h, qty=1.0, cost_price=100.0)
+
+    r = await client.post(
+        f"/items/{parent_id}/transform",
+        json=_transform_payload(child_quantity=1.0, child_cost_total=999999.0),
+        headers=op_h,
+    )
+    assert r.status_code == 200, r.text
+    child_id = r.json()["child_id"]
+    child = (await client.get(f"/items/{child_id}", headers=admin_h)).json()
+    assert float(child["cost_price"]) == pytest.approx(100.0)
+    assert float(child["cost_price"]) != pytest.approx(999999.0)
