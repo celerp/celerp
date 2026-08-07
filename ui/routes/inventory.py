@@ -33,57 +33,56 @@ from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
 
-# Shared live-delta helper, injected on both the split surfaces (bulk preview totals and
-# the item-detail manual split card). One definition, one term everywhere.
+# Shared live-delta helper, injected on all three split surfaces: the item-detail manual
+# split card (three-line reconciliation trio) and the bulk-split / transform preview badges.
+# One definition, one term everywhere. Parcel weight comes from data-parent-weight (or
+# data-parent-qty when the parcel is weight-sold, data-sell-by-weight="1"); the outgoing
+# split weight is the running sum of the inputs marked data-delta-weight; delta = parcel -
+# split weight. The card gates the trio at the "--" empty marker (GDR 2k) until the first
+# split qty is entered (data-delta-gated); the previews open with prefilled child weights
+# and show a value immediately.
 _SPLIT_DELTA_JS = """
 function _updateSplitDelta(form) {
-  // Live delta = parent weight - sum(outgoing child weights). Shown ONLY on a full
-  // weighed break-up: every outgoing piece carries a weight AND the parcel is fully
-  // consumed (mother remainder 0). A routine partial draw leaves a derived remainder
-  // (no measurement) and a mother re-weigh surfaces in history, so neither shows here.
-  var line = form.querySelector('.sp-delta');
-  if (!line) return;
-  var parentWeight = parseFloat(form.dataset.parentWeight);
-  var parentQty = parseFloat(form.dataset.parentQty);
+  var deltaEl = form.querySelector('.sp-delta-val');
+  if (!deltaEl) return;
+  var splitEl = form.querySelector('.sp-split-weight-val');
   var wDec = parseInt(form.dataset.weightDecimals || '2', 10);
-  var uDec = parseInt(form.dataset.unitDecimals || '0', 10);
-  var qtyTol = Math.pow(10, -uDec) / 2;
-  // Bulk preview names the outgoing weight child_weight; the manual split card uses split_weight.
-  var wEls = form.querySelectorAll('[name="child_weight"], [name="split_weight"]');
-  var sumW = 0, everyWeighed = wEls.length > 0;
-  wEls.forEach(function(el) {
-    var raw = (el.value !== undefined ? el.value : el.textContent);
-    if (raw === null || raw === undefined || String(raw).trim() === '') { everyWeighed = false; return; }
-    var v = parseFloat(raw);
-    if (isNaN(v)) { everyWeighed = false; return; }
-    sumW += v;
-  });
-  // Whole parcel consumed? bulk preview exposes the mother qty directly; the manual
-  // card sums the split-off quantities against the parent.
-  var consumed = false;
-  var motherQtyEl = form.querySelector('.mother-qty-input');
-  if (motherQtyEl) {
-    consumed = Math.abs(parseFloat(motherQtyEl.value) || 0) < qtyTol;
-  } else if (!isNaN(parentQty)) {
-    var sumQ = 0;
-    form.querySelectorAll('[name="split_qty"], [name="child_qty"]').forEach(function(el) {
-      sumQ += (parseFloat(el.value) || 0);
-    });
-    consumed = Math.abs(parentQty - sumQ) < qtyTol;
+  // Parcel weight: data-parent-weight, falling back to data-parent-qty for a weight-sold
+  // parcel where quantity IS the weight (data-sell-by-weight="1").
+  var parentWeight = parseFloat(form.dataset.parentWeight);
+  if (isNaN(parentWeight) && form.dataset.sellByWeight === '1') {
+    parentWeight = parseFloat(form.dataset.parentQty);
   }
-  var show = false;
-  if (everyWeighed && consumed && !isNaN(parentWeight)) {
-    var delta = parentWeight - sumW;  // own unclamped subtraction, never Math.max
-    var rounded = parseFloat(delta.toFixed(wDec));
-    if (rounded !== 0) {
-      var valEl = line.querySelector('.sp-delta-val');
-      if (valEl) valEl.textContent = rounded.toFixed(wDec);
-      line.classList.toggle('cell--negative', rounded < 0);
-      show = true;
+  function setDelta(txt, negative) {
+    deltaEl.textContent = txt;
+    var badge = deltaEl.closest('.sp-delta');
+    if (badge) badge.classList.toggle('cell--negative', !!negative);
+  }
+  // Card-only empty state: hold the trio at "--" until the first split qty is typed.
+  if (form.dataset.deltaGated === '1') {
+    var started = false;
+    form.querySelectorAll('[name="split_qty"]').forEach(function(el) {
+      var raw = (el.value !== undefined ? el.value : el.textContent);
+      if (raw !== null && raw !== undefined && String(raw).trim() !== '') started = true;
+    });
+    if (!started) {
+      if (splitEl) splitEl.textContent = '--';
+      setDelta('--', false);
+      return;
     }
   }
-  if (show) { line.removeAttribute('hidden'); }
-  else { line.setAttribute('hidden', ''); }
+  // The template marks whichever input carries the outgoing weight with data-delta-weight;
+  // one marker means one behavior across all three surfaces, no field-name knowledge in JS.
+  var sumW = 0;
+  form.querySelectorAll('[data-delta-weight]').forEach(function(el) {
+    var raw = (el.value !== undefined ? el.value : el.textContent);
+    var v = parseFloat(raw);
+    if (!isNaN(v)) sumW += v;
+  });
+  if (splitEl) splitEl.textContent = sumW.toFixed(wDec);
+  if (isNaN(parentWeight)) { setDelta('--', false); return; }
+  var rounded = parseFloat((parentWeight - sumW).toFixed(wDec));  // own unclamped subtraction, never Math.max
+  setDelta(rounded.toFixed(wDec), rounded < 0);
 }
 """
 
@@ -356,6 +355,7 @@ function transformUnitChanged(select) {
     if (weightInput) { weightInput.disabled = false; weightInput.classList.remove('tr-locked'); }
     if (piecesInput) { piecesInput.disabled = false; piecesInput.classList.remove('tr-locked'); }
   }
+  _updateSplitDelta(form);
 }
 function transformQtyChanged(input) {
   var form = input.closest('form');
@@ -3047,16 +3047,17 @@ function celerpPrintLabel(entityId, templateId) {
             show_pieces = has_pieces
 
         weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
-        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th")]
+        # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); SKU stays text.
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th sp-th--num")]
         if show_weight:
-            headers.append(Th(weight_col_header, cls="sp-th"))
+            headers.append(Th(weight_col_header, cls="sp-th sp-th--num"))
         if show_pieces:
-            headers.append(Th("Pieces", cls="sp-th"))
+            headers.append(Th("Pieces", cls="sp-th sp-th--num"))
 
-        def _static_td(val: str) -> FT:
-            return Td(val, cls="sp-td")
+        def _static_td(val: str, num: bool = False) -> FT:
+            return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
 
-        def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None) -> FT:
+        def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
             if oninput:
                 kwargs["oninput"] = oninput
@@ -3066,7 +3067,9 @@ function celerpPrintLabel(entityId, templateId) {
                 kwargs["max"] = max
             if min is not None:
                 kwargs["min"] = min
-            return Td(Input(**kwargs), cls="sp-td")
+            if dw:
+                kwargs["data_delta_weight"] = "1"
+            return Td(Input(**kwargs), cls="sp-td sp-td--num" if num else "sp-td")
 
         _child_weight_oninput = "splitRecalcMotherWeight(this)"
         _child_weight_onblur = "splitClampWeight(this)"
@@ -3082,12 +3085,13 @@ function celerpPrintLabel(entityId, templateId) {
                 # When sell_by IS weight, qty = weight so child weight is derived from QTY (static).
                 child_weight_editable = is_child and weight_name and sell_by_type != "weight"
                 if child_weight_editable:
-                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur))
+                    # This editable weight IS the outgoing weight for the delta sum (marker).
+                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur, num=True, dw=True))
                 elif is_child:
-                    cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td"))
+                    cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td sp-td--num"))
                 else:
                     # Mother: static display (grey italic), updated by JS
-                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val"), cls="sp-td"))
+                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val"), cls="sp-td sp-td--num"))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 # Child pieces is editable only when sell_by is NOT a pieces unit.
@@ -3095,12 +3099,12 @@ function celerpPrintLabel(entityId, templateId) {
                 child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
                 if child_pieces_editable:
                     pieces_max = str(int(parent_pieces_val or 1) - 1)
-                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
+                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max, num=True))
                 elif is_child:
-                    cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td"))
+                    cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
                 else:
                     # Mother pieces: static display (grey italic), updated by JS
-                    cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td"))
+                    cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
             return Tr(*cells)
 
         mother_row = _parcel_row(
@@ -3109,13 +3113,16 @@ function celerpPrintLabel(entityId, templateId) {
             Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
                      step=str(10 ** -decimals if decimals > 0 else 1), min="0",
                      cls="form-input form-input--xs sp-input mother-qty-input",
-                     onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td"),
+                     onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td sp-td--num"),
             preview.get("parent_weight"),
             parent_pieces_val,
             weight_name=None,
             pieces_name=None,
             is_child=False,
         )
+        # When sell_by is weight, child_qty IS the outgoing weight (no separate weight field),
+        # so it carries the delta marker; oninput keeps the badge live as it is typed.
+        _child_qty_dw = {"data_delta_weight": "1", "oninput": "_updateSplitDelta(this.form)"} if sell_by_type == "weight" else {}
         child_row = _parcel_row(
             "Child",
             Td(Input(type="text", name="child_sku", value=preview["child_sku"],
@@ -3125,7 +3132,7 @@ function celerpPrintLabel(entityId, templateId) {
                      step=str(10 ** -decimals if decimals > 0 else 1), min="0",
                      max=fmt.format(preview["parent_qty"] - (10 ** -decimals if decimals > 0 else 1)),
                      cls="form-input form-input--xs sp-input",
-                     onchange="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
+                     onchange="bulkSplitChildQtyChanged(this)", **_child_qty_dw), cls="sp-td sp-td--num"),
             None,
             0,
             # When sell_by is weight, child weight = qty (static, no editable field submitted).
@@ -3147,6 +3154,10 @@ function celerpPrintLabel(entityId, templateId) {
             form_data["data_parent_weight"] = str(preview["parent_weight"])
         if show_pieces:
             form_data["data_parent_pieces"] = str(int(parent_pieces_val))
+        if sell_by_type == "weight":
+            # Weight-sold: quantity IS the weight, so the delta reads parent weight from
+            # data-parent-qty (data-parent-weight is absent for these parcels).
+            form_data["data_sell_by_weight"] = "1"
 
         # Totals footer: mother qty (initial) + child qty (0) for QTY column;
         # weight/pieces use parent totals since child starts at 0.
@@ -3166,19 +3177,12 @@ function celerpPrintLabel(entityId, templateId) {
                 cls="sp-td sp-total-val sp-total-pieces",
             ))
 
-        # Conditional live delta: one summary line under the totals, hidden until the JS
-        # detects a full weighed break-up with a non-zero delta. No extra header cell.
+        # Live delta badge next to Confirm: parcel weight - sum(outgoing child weights). The
+        # outgoing weight input carries the data-delta-weight marker (child_qty when
+        # weight-sold, editable child_weight when pieces-sold); the JS reads the parcel weight
+        # from data-parent-qty/data-parent-weight. Units with no weight carry no delta.
         delta_unit = f" {weight_display}" if weight_display else ""
-        delta_row = Tr(
-            Td(
-                Span(f"{t('inv.split_delta')}: ", cls="sp-delta-label"),
-                Span("", cls="sp-delta-val"),
-                Span(delta_unit, cls="sp-delta-unit"),
-                colspan=str(len(tfoot_cells)), cls="sp-td sp-delta-cell",
-                title=t("inv.split_delta_tooltip"),
-            ),
-            cls="sp-delta", hidden=True,
-        )
+        _show_delta_badge = (sell_by_type == "weight") or show_weight
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
@@ -3192,10 +3196,27 @@ function celerpPrintLabel(entityId, templateId) {
             Table(
                 Thead(Tr(*headers)),
                 Tbody(mother_row, child_row),
-                Tfoot(Tr(*tfoot_cells, cls="sp-totals-row"), delta_row),
+                Tfoot(Tr(*tfoot_cells, cls="sp-totals-row")),
                 cls="split-preview-table",
             ),
-            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            Div(
+                Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+                *(
+                    [Span(
+                        Span("Δ ", cls="sp-delta-label"),
+                        Span("", cls="sp-delta-val"),
+                        Span(delta_unit, cls="sp-delta-unit"),
+                        cls="sp-delta sp-delta-badge",
+                        title=t("inv.split_delta_tooltip"),
+                    )]
+                    if _show_delta_badge else []
+                ),
+                cls="sp-confirm-row",
+            ),
+            *(
+                [Script("_updateSplitDelta(document.getElementById('bulk-split-preview-form'));")]
+                if _show_delta_badge else []
+            ),
             hx_post="/api/items/bulk/split",
             hx_target="#bulk-action-result",
             hx_swap="outerHTML",
@@ -3344,8 +3365,8 @@ function celerpPrintLabel(entityId, templateId) {
 
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
 
-        def _static_td(val):
-            return Td(val, cls="sp-td")
+        def _static_td(val, num: bool = False):
+            return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
 
         unit_select = Select(
             *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
@@ -3367,31 +3388,34 @@ function celerpPrintLabel(entityId, templateId) {
             _static_td(item.get("sku", "")),
             _static_td(parent_name),
             _static_td(parent_category),
-            _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
-            _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
-            _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--"),
+            _static_td(f"{fmt(parent_qty)} {parent_sell_by}", num=True),
+            _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--", num=True),
+            _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
         ]
         if can_see_cost:
-            mother_cells.append(_static_td(fmt(parent_cost_total)))
+            mother_cells.append(_static_td(fmt(parent_cost_total), num=True))
 
         child_qty_input = Td(
             Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
                   cls="form-input form-input--xs sp-input",
                   onchange="transformQtyChanged(this)"),
             unit_select,
-            cls="sp-td",
+            cls="sp-td sp-td--num",
         )
+        # child_weight IS the outgoing weight for the transform yield delta (marker).
         child_weight_td = Td(
             Input(type="number", name="child_weight",
                   value=fmt(parent_weight) if parent_weight is not None else "",
-                  step="any", cls="form-input form-input--xs sp-input"),
-            cls="sp-td tr-weight-td",
+                  step="any", cls="form-input form-input--xs sp-input",
+                  data_delta_weight="1",
+                  oninput="_updateSplitDelta(this.form)"),
+            cls="sp-td sp-td--num tr-weight-td",
         )
         child_pieces_td = Td(
             Input(type="number", name="child_pieces",
                   value=str(int(parent_pieces)) if parent_pieces is not None else "",
                   step="1", cls="form-input form-input--xs sp-input"),
-            cls="sp-td tr-pieces-td",
+            cls="sp-td sp-td--num tr-pieces-td",
         )
 
         child_cells = [
@@ -3409,23 +3433,34 @@ function celerpPrintLabel(entityId, templateId) {
                     Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
                           cls="form-input form-input--xs sp-input",
                           oninput="transformCostManualEdit(this)"),
-                    cls="sp-td",
+                    cls="sp-td sp-td--num",
                 )
             )
 
+        # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); text stays left.
         headers = [
             Th(""), Th("SKU", cls="sp-th"), Th("Name", cls="sp-th"), Th("Category", cls="sp-th"),
-            Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
-            Th("Pieces", cls="sp-th"),
+            Th("Qty + Unit", cls="sp-th sp-th--num"), Th("Weight", cls="sp-th sp-th--num"),
+            Th("Pieces", cls="sp-th sp-th--num"),
         ]
         if can_see_cost:
-            headers.append(Th("Cost Total", cls="sp-th"))
+            headers.append(Th("Cost Total", cls="sp-th sp-th--num"))
+
+        # Live delta badge next to Confirm: processing yield = mother weight - child weight.
+        # A pieces-sold parent with no weight carries no reconciliation and shows no badge.
+        _tr_delta = parent_weight is not None
+        _tr_delta_unit = f" {parent_weight_unit}" if parent_weight_unit else ""
 
         form_attrs = {
             "data-parent-cost-total": str(parent_cost_total),
             "data-weight-units": ",".join(weight_unit_names),
             "data-parent-qty": str(parent_qty),
         }
+        if _tr_delta:
+            # parent_weight is always numeric when the badge shows, so the delta reads it
+            # straight from data-parent-weight (no data-sell-by-weight fallback needed here).
+            form_attrs["data-parent-weight"] = str(parent_weight)
+            form_attrs["data-weight-decimals"] = "2"
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
@@ -3434,7 +3469,24 @@ function celerpPrintLabel(entityId, templateId) {
                 Tbody(Tr(*mother_cells), Tr(*child_cells)),
                 cls="split-preview-table",
             ),
-            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            Div(
+                Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+                *(
+                    [Span(
+                        Span("Δ ", cls="sp-delta-label"),
+                        Span("", cls="sp-delta-val"),
+                        Span(_tr_delta_unit, cls="sp-delta-unit"),
+                        cls="sp-delta sp-delta-badge",
+                        title=t("inv.split_delta_tooltip"),
+                    )]
+                    if _tr_delta else []
+                ),
+                cls="sp-confirm-row",
+            ),
+            *(
+                [Script("_updateSplitDelta(document.getElementById('bulk-transform-preview-form'));")]
+                if _tr_delta else []
+            ),
             hx_post="/api/items/bulk/transform",
             hx_target="#bulk-action-result",
             hx_swap="outerHTML",
@@ -7043,7 +7095,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         # Determine complement field: pieces sell_by → optional weight; weight sell_by → optional pieces
         from celerp.services.units import DEFAULT_UNITS
         _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
-        # Live-delta data: parcel weight/qty and unit decimals for the shared JS helper.
+        # Live-delta data for the shared JS helper.
         _sd_parent_weight = item.get("weight")
         _sd_wt_cfg = _default_umap.get(item.get("weight_unit") or "gram") or {}
         _sd_wt_decimals = _sd_wt_cfg.get("decimals", 2)
@@ -7051,6 +7103,27 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         _sd_wt_label = re.sub(r"\s*\([^)]*\)\s*$", "", str(_sd_wt_cfg.get("label") or item.get("weight_unit") or "")).strip()
         _is_weight = is_weight_unit(sell_by, _default_umap)
         _is_pieces = is_pieces_unit(sell_by, _default_umap)
+        # Split reconciliation trio (original parcel weight / split weight / delta). For a
+        # weight-sold parcel the quantity IS the weight (item.weight is empty), so the outgoing
+        # weight is the split_qty and the parcel weight comes from quantity; for a pieces-sold
+        # parcel the outgoing weight is the optional split_weight complement and the parcel
+        # weight is item.weight. Mirrors the transform preview derivation. Units that are
+        # neither weight nor pieces carry no weight reconciliation and show no trio.
+        if _is_weight:
+            _sd_has_reconcile = True
+            _sd_delta_decimals = _sd_unit_decimals
+            _sd_parcel_weight = current_qty
+            _sd_delta_unit = re.sub(r"\s*\([^)]*\)\s*$", "", str((_default_umap.get(sell_by) or {}).get("label") or sell_by)).strip()
+        elif _is_pieces:
+            _sd_has_reconcile = True
+            _sd_delta_decimals = _sd_wt_decimals
+            _sd_parcel_weight = float(_sd_parent_weight or 0)
+            _sd_delta_unit = _sd_wt_label
+        else:
+            _sd_has_reconcile = False
+            _sd_delta_decimals = None
+            _sd_parcel_weight = None
+            _sd_delta_unit = None
         if _is_weight:
             _comp_name   = "split_pieces"
             _comp_ph     = "Pieces (optional)"
@@ -7071,17 +7144,24 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         _batch_qty_title   = t("inv.tooltip.batch_qty").replace("{unit}", sell_by_label)
         _batch_count_title = t("inv.tooltip.batch_count")
 
+        # For a pieces-sold parcel the outgoing weight is the optional split_weight complement,
+        # so it carries the delta marker; for a weight-sold parcel the complement is split_pieces
+        # (not a weight) and the split_qty itself is the weight (marked below).
+        _comp_dw = {"data_delta_weight": "1"} if _comp_name == "split_weight" else {}
+        _comp_dw_js = ' data-delta-weight="1"' if _comp_name == "split_weight" else ""
+        _qty_dw = {"data_delta_weight": "1"} if _is_weight else {}
+        _qty_dw_js = ' data-delta-weight="1"' if _is_weight else ""
         # Complement input for manual rows (rendered inline via FastHTML and duplicated by JS)
         _comp_inputs = ([Input(type="number", name=_comp_name,
                                placeholder=_comp_ph, title=_comp_title,
                                step=_comp_step, min="0",
                                oninput="_updateSplitDelta(this.form)",
-                               cls="form-input form-input--sm split-complement")]
+                               cls="form-input form-input--sm split-complement", **_comp_dw)]
                         if _comp_name else [])
         # JS fragment for complement field in dynamically added rows
         _comp_js = (
             f'+ \'<input type="number" name="{_comp_name}" placeholder="{_comp_ph}"'
-            f' title="{_comp_title}" step="{_comp_step}" min="0" oninput="_updateSplitDelta(this.form)"'
+            f' title="{_comp_title}" step="{_comp_step}" min="0" oninput="_updateSplitDelta(this.form)"{_comp_dw_js}'
             f' class="form-input form-input--sm split-complement">\''
         ) if _comp_name else ""
 
@@ -7100,7 +7180,8 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                                   title=_qty_title,
                                   step="any", min="0.001",
                                   oninput="_updateSplitDelta(this.form)",
-                                  cls="form-input form-input--sm split-qty-main", required=True),
+                                  cls="form-input form-input--sm split-qty-main", required=True,
+                                  **_qty_dw),
                             *_comp_inputs,
                             cls="split-qty-row",
                         ),
@@ -7110,14 +7191,34 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                            onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
                     cls="action-card-row split-line",
                 ),
-                # Conditional live delta: one summary line, hidden until the JS detects a
-                # full weighed break-up with a non-zero delta.
-                Div(
-                    Span(f"{t('inv.split_delta')}: ", cls="sp-delta-label"),
-                    Span("", cls="sp-delta-val"),
-                    Span(f" {_sd_wt_label}" if _sd_wt_label else "", cls="sp-delta-unit"),
-                    cls="sp-delta action-card-row", hidden=True,
-                    title=t("inv.split_delta_tooltip"),
+                # Live split reconciliation trio: original parcel weight (always known up
+                # front), the running split weight, and the delta between them. Split weight
+                # and Delta hold the "--" empty marker until the first split qty is entered,
+                # then go live (including 0.00). Delta = original parcel weight - split weight.
+                *(
+                    [Div(
+                        Div(
+                            Span(f"{t('inv.original_parcel_weight')}: ", cls="sp-delta-label"),
+                            Span(f"{_sd_parcel_weight:.{_sd_delta_decimals}f}", cls="sp-parcel-val"),
+                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
+                            cls="action-card-row sp-reconcile-line",
+                        ),
+                        Div(
+                            Span(f"{t('inv.split_weight')}: ", cls="sp-delta-label"),
+                            Span("--", cls="sp-split-weight-val"),
+                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
+                            cls="action-card-row sp-reconcile-line",
+                        ),
+                        Div(
+                            Span(f"{t('inv.split_delta')}: ", cls="sp-delta-label"),
+                            Span("--", cls="sp-delta-val"),
+                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
+                            cls="action-card-row sp-delta sp-reconcile-line",
+                            title=t("inv.split_delta_tooltip"),
+                        ),
+                        cls="sp-reconcile",
+                    )]
+                    if _sd_has_reconcile else []
                 ),
                 # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),
@@ -7155,7 +7256,7 @@ function addSplitRow(btn) {{
   var container = document.getElementById('split-qty-rows');
   var row = document.createElement('div');
   row.className = 'split-qty-row';
-  row.innerHTML = '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" oninput="_updateSplitDelta(this.form)" class="form-input form-input--sm split-qty-main" required>'
+  row.innerHTML = '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" oninput="_updateSplitDelta(this.form)"{_qty_dw_js} class="form-input form-input--sm split-qty-main" required>'
     {_comp_js}
     + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
@@ -7192,10 +7293,14 @@ function batchSplitSubmit_{safe_id}(form) {{
                 hx_post=f"/api/items/{entity_id}/split-inline",
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",
-                data_parent_weight=("" if _sd_parent_weight is None else str(_sd_parent_weight)),
-                data_parent_qty=str(current_qty),
-                data_weight_decimals=str(_sd_wt_decimals),
-                data_unit_decimals=str(_sd_unit_decimals),
+                **({
+                    "data_weight_decimals": str(_sd_delta_decimals),
+                    "data_delta_gated": "1",
+                    **({"data_sell_by_weight": "1",
+                        "data_parent_qty": f"{_sd_parcel_weight:.{_sd_delta_decimals}f}"}
+                       if _is_weight else
+                       {"data_parent_weight": f"{_sd_parcel_weight:.{_sd_delta_decimals}f}"}),
+                } if _sd_has_reconcile else {}),
             ),
             cls="action-card",
         )

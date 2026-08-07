@@ -1917,14 +1917,26 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .split-preview-table tbody td { padding: 4px 8px; vertical-align: middle; }
 .sp-row-label { font-size: 0.75rem; font-weight: 600; color: var(--c-text2); white-space: nowrap; padding-right: 4px !important; }
 .sp-td { text-align: left; white-space: nowrap; }
+/* Numeric/currency columns right-align header over figures (HTML/CSS rule 4a/4c). */
+.split-preview-table .sp-th--num { text-align: right; }
+.split-preview-table .sp-td--num { text-align: right; }
+.split-preview-table .sp-td--num .sp-input { text-align: right; }
 .sp-totals-row td { border-top: 1px solid var(--c-text2); padding: 3px 8px 2px; font-size: 0.75rem; font-weight: 600; color: var(--c-text2); }
 .sp-total-label { font-size: 0.7rem; color: var(--c-text2); }
-.sp-total-val { text-align: left; }
+.sp-total-val { text-align: right; }
 .sp-static-val { color: var(--c-text2); font-style: italic; }
 .sp-sku { font-family: monospace; font-size: 0.82rem; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
 .sp-input { width: 72px !important; padding: 2px 5px !important; font-size: 0.82rem !important; height: auto !important; text-align: left; }
 .sp-confirm-btn { margin-top: 8px; }
+/* Split reconciliation trio (item-detail card) and live delta badge (previews). */
+.sp-reconcile { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.sp-reconcile-line { font-size: 0.78rem; color: var(--c-text2); }
+.sp-reconcile-line .sp-delta-label { font-weight: 600; }
+.sp-parcel-val, .sp-split-weight-val, .sp-delta-val { font-variant-numeric: tabular-nums; }
+.sp-confirm-row { display: flex; align-items: center; gap: 10px; }
+.sp-delta-badge { font-size: 0.8rem; color: var(--c-text2); display: inline-flex; align-items: center; gap: 2px; align-self: center; }
+.sp-delta-badge .sp-delta-label { font-weight: 600; }
 .tr-locked { color: var(--c-text2) !important; font-style: italic; background: var(--c-bg2, #f5f5f5) !important; }
 
 /* ── Contact detail: two-column layout ────────────────────────────────── */

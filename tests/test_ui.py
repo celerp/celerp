@@ -5875,9 +5875,9 @@ class TestBulkActionsPhase1to5:
         assert html.count("splitRecalcMotherWeight(this)") == 1
 
     @pytest.mark.asyncio
-    async def test_split_preview_has_hidden_delta_line(self, ui_client):
-        """The split preview renders a mother-level delta line (sp-delta) that starts
-        hidden and lives in the totals/footer, never as an extra column header."""
+    async def test_split_preview_has_delta_badge_beside_confirm(self, ui_client):
+        """The split preview renders a live delta badge (sp-delta) beside Confirm,
+        always visible (never hidden) and never as an extra column header."""
         import re
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
@@ -5886,11 +5886,12 @@ class TestBulkActionsPhase1to5:
             )
         assert r.status_code == 200
         html = r.text
-        # The delta element exists and starts collapsed until a nonzero delta lands.
-        m = re.search(r"<[^>]*sp-delta[^>]*>", html)
-        assert m is not None, "sp-delta element must be present"
-        assert "hidden" in m.group(0), "sp-delta line must start hidden"
-        # It is a totals/footer line, not a new column: it never appears in the header row.
+        # The delta badge exists beside Confirm and carries a live value span.
+        m = re.search(r"<[^>]*sp-delta-badge[^>]*>", html)
+        assert m is not None, "sp-delta badge must be present beside Confirm"
+        assert "hidden" not in m.group(0), "delta badge is always visible, not hidden"
+        assert "sp-delta-val" in html, "delta badge must carry a live value span"
+        # It is a badge in the confirm row, not a new column: never in the header row.
         head, _, _rest = html.partition("</thead>")
         assert "sp-delta" not in head, "delta must not add a column header"
 

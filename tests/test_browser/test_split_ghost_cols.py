@@ -309,3 +309,162 @@ def test_piece_sync_03_no_pieces_column_without_weight(page, ui_server, api):
 
     _save_screenshot(page, "piece-sync-03-qty-only")
 
+
+# ---------------------------------------------------------------------------
+# SPLIT-DELTA: item-detail split card reconciliation trio + preview badge
+# ---------------------------------------------------------------------------
+
+def _open_item_detail_split(page, ui_server, item_id: str) -> None:
+    """Open an item's detail page and wait for the manual split card."""
+    page.goto(f"{ui_server}/inventory/{item_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "item detail page")
+    page.wait_for_selector('input[name="split_qty"]', timeout=5000)
+
+
+def _trio_text(page, cls: str) -> str:
+    return page.locator(f".{cls}").first.inner_text().strip()
+
+
+def test_split_delta_weight_sold_live(page, ui_server, api):
+    """J1: on a weight-sold item, entering split_qty makes the Delta numeric.
+
+    Parcel weight is the quantity (item.weight is empty for weight-sold), the
+    outgoing weight is split_qty, so Delta = quantity - split_qty.
+    """
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-WEIGHT-001",
+        "name": "Split Delta Weight Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+
+    # Original parcel weight is known up front and is a number (from quantity).
+    parcel = _trio_text(page, "sp-parcel-val")
+    assert float(parcel) == pytest.approx(100.0), f"parcel weight should be 100, got '{parcel}'"
+
+    qty = page.locator('input[name="split_qty"]').first
+    qty.fill("30")
+    qty.dispatch_event("input")
+    page.wait_for_timeout(200)
+
+    split_w = _trio_text(page, "sp-split-weight-val")
+    delta = _trio_text(page, "sp-delta-val")
+    assert split_w != "--" and float(split_w) == pytest.approx(30.0), f"split weight should be 30, got '{split_w}'"
+    assert delta != "--" and float(delta) == pytest.approx(70.0), f"delta should be 70 (100-30), got '{delta}'"
+
+    _save_screenshot(page, "split-delta-weight-sold")
+
+
+def test_split_delta_pieces_sold_live(page, ui_server, api):
+    """J2: on a pieces-sold weighed item, entering split_qty un-gates the trio to
+    numbers, and entering the split weight updates Split weight + Delta.
+
+    Parcel weight is item.weight; the outgoing weight is the split_weight
+    complement, so Delta = item.weight - split_weight.
+    """
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-PIECE-001",
+        "name": "Split Delta Piece Item",
+        "sell_by": "piece",
+        "quantity": 10.0,
+        "weight": 5.0,
+        "weight_unit": "gram",
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+
+    parcel = _trio_text(page, "sp-parcel-val")
+    assert float(parcel) == pytest.approx(5.0), f"parcel weight should be 5, got '{parcel}'"
+
+    # Entering only split_qty un-gates: split weight defaults to 0, Delta = full parcel.
+    qty = page.locator('input[name="split_qty"]').first
+    qty.fill("2")
+    qty.dispatch_event("input")
+    page.wait_for_timeout(200)
+    split_w = _trio_text(page, "sp-split-weight-val")
+    delta = _trio_text(page, "sp-delta-val")
+    assert split_w != "--" and float(split_w) == pytest.approx(0.0), f"split weight should be 0, got '{split_w}'"
+    assert delta != "--" and float(delta) == pytest.approx(5.0), f"delta should be 5 (5-0), got '{delta}'"
+
+    # Entering the outgoing weight updates both numbers.
+    wt = page.locator('input[name="split_weight"]').first
+    wt.fill("1.5")
+    wt.dispatch_event("input")
+    page.wait_for_timeout(200)
+    split_w = _trio_text(page, "sp-split-weight-val")
+    delta = _trio_text(page, "sp-delta-val")
+    assert float(split_w) == pytest.approx(1.5), f"split weight should be 1.5, got '{split_w}'"
+    assert float(delta) == pytest.approx(3.5), f"delta should be 3.5 (5-1.5), got '{delta}'"
+
+    _save_screenshot(page, "split-delta-pieces-sold")
+
+
+def test_split_delta_empty_marker_before_input(page, ui_server, api):
+    """J1/P4.5: Split weight and Delta show the '--' empty marker before any
+    split qty is entered; Original Parcel Weight still shows a number."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-EMPTY-001",
+        "name": "Split Delta Empty Marker Item",
+        "sell_by": "gram",
+        "quantity": 42.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+
+    assert _trio_text(page, "sp-parcel-val") not in {"--", ""}, "parcel weight must render a number"
+    assert _trio_text(page, "sp-split-weight-val") == "--", "split weight must show '--' before input"
+    assert _trio_text(page, "sp-delta-val") == "--", "delta must show '--' before input"
+
+    _save_screenshot(page, "split-delta-empty-marker")
+
+
+def test_preview_delta_badge(page, ui_server, api):
+    """J3/J4: a Δ badge with a live numeric value renders next to Confirm on both
+    the bulk-split preview and the transform preview."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-BADGE-001",
+        "name": "Split Delta Badge Item",
+        "sell_by": "gram",
+        "quantity": 80.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    # Bulk-split preview badge.
+    _open_split_panel(page, ui_server, item["id"])
+    badge = page.locator("#bulk-split-preview form .sp-delta-badge .sp-delta-val")
+    assert badge.count() > 0, "bulk-split preview must render a delta badge beside Confirm"
+    page.wait_for_timeout(200)
+    val = badge.first.inner_text().strip()
+    assert val not in {"--", ""} and float(val) == pytest.approx(80.0), (
+        f"bulk-split delta badge should show 80 (parcel - 0), got '{val}'"
+    )
+
+    # Transform preview badge.
+    _find_and_check_item(page, ui_server, item["id"])
+    action_select = page.locator("#bulk-action-select")
+    options = action_select.evaluate("el => Array.from(el.options).map(o => o.text)")
+    if "Transform" not in options:
+        pytest.skip("Transform action not available in this build")
+    action_select.select_option(label="Transform")
+    page.wait_for_selector("#bulk-transform-preview-form", timeout=5000)
+    _assert_no_crash(page, "transform preview open")
+    tbadge = page.locator("#bulk-transform-preview-form .sp-delta-badge .sp-delta-val")
+    assert tbadge.count() > 0, "transform preview must render a delta badge beside Confirm"
+    page.wait_for_timeout(200)
+    tval = tbadge.first.inner_text().strip()
+    # Child weight prefills to parent weight, so the initial yield delta is 0.
+    assert tval not in {"--", ""} and float(tval) == pytest.approx(0.0), (
+        f"transform delta badge should show 0 (mother - child, prefilled equal), got '{tval}'"
+    )
+
+    _save_screenshot(page, "preview-delta-badge")
+
