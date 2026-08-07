@@ -489,3 +489,97 @@ class TestCliStampsBehindOnDevSchema:
             f"revisions behind head {head}. The dev schema should be "
             f"near head, not far behind."
         )
+
+
+# ── work-center default split: schema migration is now verifiable ────────────
+
+
+@contextlib.contextmanager
+def _inspector_missing_wc_default_columns():
+    """Full model schema, then drop is_default/hours_per_day and the partial
+    index from work_centers - a restore-of-old-backup DB whose stamp claims
+    head but whose schema predates the work-center default columns."""
+    import uuid
+
+    from sqlalchemy import create_engine, inspect, text
+
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401  register all models on Base.metadata
+
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"stampmiss_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(text("DROP INDEX IF EXISTS uq_work_center_one_default"))
+            conn.execute(text("ALTER TABLE work_centers DROP COLUMN IF EXISTS is_default"))
+            conn.execute(text("ALTER TABLE work_centers DROP COLUMN IF EXISTS hours_per_day"))
+        yield inspect(engine)
+    finally:
+        engine.dispose()
+        admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
+
+
+def _real_sigs_by_rev():
+    from celerp.alembic_config import build_alembic_config as _build
+    versions_dir = Path(_build().get_main_option("script_location")) / "versions"
+    out = {}
+    for mig in versions_dir.glob("*.py"):
+        if mig.name == "__init__.py":
+            continue
+        sigs = extract_signatures(mig)
+        if sigs:
+            out[sigs[0].rev] = sigs
+    return out
+
+
+def test_schema_migration_detected():
+    """The rewritten e7c9a1b3d5f2 carries verifiable DDL: two add_column
+    signatures (hours_per_day, is_default) and one create_index
+    (uq_work_center_one_default), so find_safe_stamp can verify real column
+    presence instead of trusting the stamp."""
+    from alembic.script import ScriptDirectory
+
+    from celerp.alembic_config import build_alembic_config
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    sc = script.get_revision("e7c9a1b3d5f2")
+    sigs = extract_signatures(Path(sc.path))
+
+    added_cols = {(s.table, s.column) for s in sigs if s.kind == "add_column"}
+    indexes = {(s.table, s.extra) for s in sigs if s.kind == "create_index"}
+    assert ("work_centers", "hours_per_day") in added_cols
+    assert ("work_centers", "is_default") in added_cols
+    assert ("work_centers", "uq_work_center_one_default") in indexes
+    assert len(sigs) == 3
+
+
+def test_stamped_but_columns_absent_stamped_behind():
+    """On a DB stamped at head but missing the work-center default columns,
+    the walker verifies e7c9a1b3d5f2's signatures, finds them absent, and
+    returns a revision below it so `alembic upgrade` re-adds the columns."""
+    from alembic.script import ScriptDirectory
+
+    from celerp.alembic_config import build_alembic_config
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    revs = list(script.walk_revisions())  # newest → oldest
+    sigs_by_rev = _real_sigs_by_rev()
+
+    with _inspector_missing_wc_default_columns() as inspector:
+        stamp = find_safe_stamp(revs, sigs_by_rev, inspector)
+
+    assert stamp != script.get_current_head()
+    e7c9 = script.get_revision("e7c9a1b3d5f2")
+    below = {r.revision for r in script.iterate_revisions(e7c9.down_revision, "base")}
+    assert stamp in below

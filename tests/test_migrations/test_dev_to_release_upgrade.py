@@ -20,6 +20,9 @@ to exist stays visible; the rest prove the reconcile closes the gap.
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import types
 import uuid
 
 import pytest
@@ -89,8 +92,9 @@ def _payment_date(sync_url: str) -> str | None:
 def _reconcile(sync_url: str) -> list[str]:
     eng = create_engine(sync_url)
     try:
-        with eng.begin() as conn:
-            return replay_data_backfills(conn)
+        replayed, failures = replay_data_backfills(eng)
+        assert not failures, f"unexpected backfill failures: {failures}"
+        return replayed
     finally:
         eng.dispose()
 
@@ -252,3 +256,102 @@ def test_reconcile_after_migrate_gated_by_version(fresh_db):
     _reconcile_after_migrate(async_url)
 
     assert _payment_date(sync_url) is None
+
+
+# ── Hardening: signature-bearing schema excluded, poison isolation, restore lock ──
+
+
+def test_schema_migration_excluded_from_replay():
+    """The rewritten `e7c9a1b3d5f2` carries verifiable DDL signatures, so the
+    reconcile's backfill set now EXCLUDES it (only the signature-less child data
+    migration replays), while its `f8a9b0c1d2e3` child IS included."""
+    from celerp.migrations._data_reconcile import data_backfill_scripts
+
+    revs = {sc.revision for sc in data_backfill_scripts()}
+    assert "e7c9a1b3d5f2" not in revs
+    assert "f8a9b0c1d2e3" in revs
+
+
+class _FakeScript:
+    """Minimal stand-in for an alembic Script: a revision id and a module whose
+    upgrade() the replay invokes under an Operations context."""
+
+    def __init__(self, revision: str, upgrade_fn):
+        self.revision = revision
+        self.module = types.SimpleNamespace(upgrade=upgrade_fn)
+
+
+def _poison_upgrade():
+    from alembic import op
+
+    op.execute("CREATE TABLE IF NOT EXISTS poison_probe (n integer)")
+    op.execute("INSERT INTO poison_probe (n) VALUES (99)")
+    raise RuntimeError("poison backfill blew up")
+
+
+def _good_upgrade():
+    from alembic import op
+
+    op.execute("CREATE TABLE IF NOT EXISTS poison_probe (n integer)")
+    op.execute("INSERT INTO poison_probe (n) VALUES (42)")
+
+
+def test_poison_backfill_isolated_and_durable(fresh_db, monkeypatch, caplog):
+    """Two backfills where the FIRST raises: its own transaction rolls back (no
+    row 99), the SECOND still commits durably (row 42), the failure is logged at
+    ERROR, and the version marker is NOT advanced so the next boot retries."""
+    async_url, sync_url = fresh_db
+
+    import celerp.migrations._data_reconcile as dr
+
+    monkeypatch.setattr(
+        dr,
+        "data_backfill_scripts",
+        lambda: [_FakeScript("poison", _poison_upgrade), _FakeScript("good", _good_upgrade)],
+    )
+
+    with caplog.at_level(logging.ERROR, logger="celerp.migrations._data_reconcile"):
+        _reconcile_after_migrate(async_url)  # must not raise
+
+    eng = create_engine(sync_url)
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(text("SELECT n FROM poison_probe ORDER BY n")).fetchall()
+    finally:
+        eng.dispose()
+
+    assert [r[0] for r in rows] == [42]  # good durable, poison rolled back
+    assert _marker(sync_url) is None  # failure -> marker unset -> retried next boot
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_restore_reconcile_takes_migration_lock(monkeypatch):
+    """The HTTP/CLI restore reconcile (`_reconcile_schema`) runs its migration
+    steps inside the shared `_migration_lock`, so it serializes with a concurrent
+    boot migrate or a second restore."""
+    from celerp import cli
+    from celerp.services import backup_import
+
+    events: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def _fake_lock(db_url):
+        events.append(("lock-enter", db_url))
+        try:
+            yield
+        finally:
+            events.append(("lock-exit", db_url))
+
+    monkeypatch.setattr(cli, "_migration_lock", _fake_lock, raising=False)
+    monkeypatch.setattr(cli, "_apply_migrations", lambda url: events.append(("apply", url)))
+    monkeypatch.setattr(cli, "_post_migration_grants", lambda url: events.append(("grants", url)))
+    monkeypatch.setattr(cli, "_reconcile_after_migrate", lambda url: events.append(("reconcile", url)))
+
+    result = await backup_import._reconcile_schema()
+
+    assert result is None  # success path
+    kinds = [e[0] for e in events]
+    assert "lock-enter" in kinds, "restore reconcile did not take the migration lock"
+    # the migration steps ran INSIDE the lock (enter before apply, exit after)
+    assert kinds.index("lock-enter") < kinds.index("apply") < kinds.index("lock-exit")
