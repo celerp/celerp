@@ -21,7 +21,7 @@ from celerp.services.reorder import (
     is_below_reorder,
     is_reorder_alert,
     reorder_point_of,
-    run_reorder_scan,
+    run_all_alerts,
     suggest_reorder,
 )
 
@@ -141,51 +141,51 @@ async def test_alert_transition_idempotency_and_rearm(session):
     await ProjectionEngine.rebuild(session)
 
     # First run: exactly one digest listing the below item; latch records it.
-    notif = await run_reorder_scan(session, co)
+    notif = await run_all_alerts(session, co)
     assert notif is not None
     assert notif.category == "inventory"
-    assert notif.action_url == "/inventory?filter=low_stock"
-    assert notif.title.startswith("1 item")
-    assert "Low" in notif.body and "High" not in notif.body
+    assert notif.action_url == "/dashboard"
+    assert notif.title.startswith("1 alert")
+    assert "Low stock" in notif.body and "Low" in notif.body and "High" not in notif.body
     assert await _notif_count(session, co.id) == 1
 
     # Second run, no change: no new notification (idempotent).
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 1
 
     # Rise back above the reorder point -> no alert, latch cleared (re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 10})
     await ProjectionEngine.rebuild(session)
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 1
     assert co.settings.get("reorder_alerted_ids") == []
 
     # Drop below again -> alerts again (proves re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 1})
     await ProjectionEngine.rebuild(session)
-    notif2 = await run_reorder_scan(session, co)
+    notif2 = await run_all_alerts(session, co)
     assert notif2 is not None
     assert await _notif_count(session, co.id) == 2
 
 
 @pytest.mark.asyncio
-async def test_alert_priority_high_at_or_below_zero(session):
+async def test_alert_digest_is_high_priority(session):
     co = await _company(session, "ZeroCo")
     await _emit(session, co.id, "item:z", "item.created", {"sku": "Z", "name": "Z", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    notif = await run_reorder_scan(session, co)
+    notif = await run_all_alerts(session, co)
     assert notif is not None and notif.priority == "high"
 
 
 @pytest.mark.asyncio
-async def test_alert_disabled_setting_is_noop(session):
+async def test_low_stock_disabled_setting_is_noop(session):
     co = await _company(session, "OffCo")
     co.settings = {"reorder_alerts_enabled": False}
     session.add(co)
     await session.flush()
     await _emit(session, co.id, "item:o", "item.created", {"sku": "O", "name": "O", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 0
 
 

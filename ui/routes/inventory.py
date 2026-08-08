@@ -3934,7 +3934,7 @@ function celerpPrintLabel(entityId, templateId) {
                             it = {}
                         items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
                     groups = group_by_supplier(items)
-                    created: list[tuple[str, str]] = []
+                    created: list[tuple[str, str, str]] = []
                     for sup, ids in groups.items():
                         line_items = await _reorder_lines_from_inventory(token, ids)
                         payload = {"doc_type": "purchase_order", "status": "draft",
@@ -3942,14 +3942,17 @@ function celerpPrintLabel(entityId, templateId) {
                         if sup:
                             payload["contact_id"] = sup
                         result = await api.create_doc(token, payload)
-                        created.append((sup, result.get("entity_id") or result.get("id", "")))
+                        did = result.get("entity_id") or result.get("id", "")
+                        ref = result.get("ref_id") or result.get("doc_number") or did.split(":")[-1][:8]
+                        created.append((sup, did, ref))
                     if len(created) == 1:
                         return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{created[0][1]}"})
-                    # More than one supplier: show what was created (no silent multi-create).
+                    # More than one supplier: show each draft created (no silent multi-create),
+                    # labelled by supplier and draft reference to match the document listing.
                     return Div(
                         P(t("inv.pos_created", n=len(created)), cls="flash flash--success"),
-                        *[P(A(("Unassigned" if not sup else "Supplier") + f": {did}",
-                              href=f"/docs/{did}", cls="link")) for sup, did in created],
+                        *[P(A(f"{sup or t('inv.no_supplier')}: {ref}",
+                              href=f"/docs/{did}", cls="link")) for sup, did, ref in created],
                         id="bulk-action-result",
                     )
         except APIError as e:

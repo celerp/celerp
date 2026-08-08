@@ -11838,6 +11838,45 @@ class TestSendToPurchaseOrder:
         assert r.status_code == 200
         assert b"PO-001" in r.content
 
+    @pytest.mark.asyncio
+    async def test_send_to_multi_supplier_creates_one_po_per_supplier(self, ui_client):
+        """A selection spanning suppliers becomes one draft PO per supplier: the
+        response lists every draft (no silent multi-create) labelled by supplier and
+        draft reference, the supplier group carries its contact_id, and the
+        unassigned group is labelled 'No supplier' with no contact."""
+        acme = {**self._PO_ITEM, "entity_id": "item:po1", "preferred_supplier": "c:acme"}
+        loose = {**self._PO_ITEM, "entity_id": "item:po2", "sku": "GADGET", "name": "Gadget"}
+        loose.pop("preferred_supplier", None)
+        by_id = {"item:po1": acme, "item:po2": loose}
+
+        async def _get_item(_token, eid):
+            return by_id[eid]
+
+        mock_create = AsyncMock(side_effect=[
+            {"entity_id": "doc:PO-A", "ref_id": "PO-A"},
+            {"entity_id": "doc:PO-B", "ref_id": "PO-B"},
+        ])
+        with (
+            patch("ui.api_client.get_item", new=_get_item),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&selected=item%3Apo2"
+                        b"&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert mock_create.call_count == 2                    # one PO per supplier group
+        assert b"Created 2 draft purchase orders" in r.content
+        assert b"PO-A" in r.content and b"PO-B" in r.content  # each draft surfaced by ref
+        assert b"No supplier" in r.content                    # unassigned group labelled
+        payloads = [c.args[1] for c in mock_create.call_args_list]
+        assert payloads[0]["contact_id"] == "c:acme"          # supplier group -> contact set
+        assert "contact_id" not in payloads[1]                # unassigned -> no contact
+
 
 async def _api_headers(client) -> dict:
     r = await client.post(
