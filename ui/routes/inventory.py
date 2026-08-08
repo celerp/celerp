@@ -38,28 +38,23 @@ def _sp_static_td(val, num: bool = False) -> FT:
     """Static (non-editable) split-preview table cell; num right-aligns per HTML/CSS rule 4a."""
     return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
 
-# Shared live-delta helper, injected on all three split surfaces: the item-detail manual
-# split card (three-line reconciliation trio), the bulk-split preview badge, and the
-# transform preview badge. One definition, one term for the sum-and-subtract math; delta =
-# parcel weight - sum of the elements marked data-delta-weight. Which elements carry that
-# marker is what diverges by surface, and that divergence is deliberate and temporary
-# (owner directed the item-detail card to be reviewed separately; transform delta is
-# intentionally trim-loss, parent_in - child_out, not net gain/loss):
-#   - bulk-split preview: marks BOTH the mother's post-split weight/qty element and the
-#     child's outgoing weight/qty element, so delta = original - (mother_post + child) = the
-#     net gain/loss of the split, non-zero only when the mother is edited independently or
-#     the child exceeds the mother.
-#   - item-detail card and transform preview: mark only the outgoing child element (their
-#     existing, unchanged behavior).
+# Shared live-delta helper, injected on the split surfaces that show a net gain/loss badge:
+# the split preview table (used by both the bulk-split preview and the item-detail split
+# card) and the transform preview badge. One definition, one term for the sum-and-subtract
+# math: delta = parcel weight - sum of the elements marked data-delta-weight. Which elements
+# carry that marker is a template decision per surface:
+#   - split preview table: marks BOTH the mother's post-split element and each child's
+#     outgoing element, so delta = original - (mother_post + children) = the net gain/loss,
+#     non-zero only when the mother is edited independently or the children exceed it.
+#   - transform preview: marks only the outgoing child element (trim-loss, parent_in -
+#     child_out, not net gain/loss).
 # Parcel weight comes from data-parent-weight (or data-parent-qty when the parcel is
-# weight-sold, data-sell-by-weight="1"). The card gates the trio at the "--" empty marker
-# (GDR 2k) until the first split qty is entered (data-delta-gated); the previews open with
-# prefilled child weights and show a value immediately.
+# weight-sold, data-sell-by-weight="1"). The previews open with prefilled child weights and
+# show a value immediately.
 _SPLIT_DELTA_JS = """
 function _updateSplitDelta(form) {
   var deltaEl = form.querySelector('.sp-delta-val');
   if (!deltaEl) return;
-  var splitEl = form.querySelector('.sp-split-weight-val');
   var wDec = parseInt(form.dataset.weightDecimals || '2', 10);
   // Parcel weight: data-parent-weight, falling back to data-parent-qty for a weight-sold
   // parcel where quantity IS the weight (data-sell-by-weight="1").
@@ -72,30 +67,16 @@ function _updateSplitDelta(form) {
     var badge = deltaEl.closest('.sp-delta');
     if (badge) badge.classList.toggle('cell--negative', !!negative);
   }
-  // Card-only empty state: hold the trio at "--" until the first split qty is typed.
-  if (form.dataset.deltaGated === '1') {
-    var started = false;
-    form.querySelectorAll('[name="split_qty"]').forEach(function(el) {
-      var raw = (el.value !== undefined ? el.value : el.textContent);
-      if (raw !== null && raw !== undefined && String(raw).trim() !== '') started = true;
-    });
-    if (!started) {
-      if (splitEl) splitEl.textContent = '--';
-      setDelta('--', false);
-      return;
-    }
-  }
   // The template marks whichever elements carry the surface's split-weight terms with
   // data-delta-weight; this function only sums the marker, never a field name, so which
-  // elements are marked (child only, or mother-post-split plus child) is a template decision
-  // per surface, not a branch here.
+  // elements are marked (child only, or mother-post-split plus children) is a template
+  // decision per surface, not a branch here.
   var sumW = 0;
   form.querySelectorAll('[data-delta-weight]').forEach(function(el) {
     var raw = (el.value !== undefined ? el.value : el.textContent);
     var v = parseFloat(raw);
     if (!isNaN(v)) sumW += v;
   });
-  if (splitEl) splitEl.textContent = sumW.toFixed(wDec);
   if (isNaN(parentWeight)) { setDelta('--', false); return; }
   var rounded = parseFloat((parentWeight - sumW).toFixed(wDec));  // own unclamped subtraction, never Math.max
   setDelta(rounded.toFixed(wDec), rounded < 0);
@@ -1760,6 +1741,12 @@ def setup_routes(app):
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp = [], {}, [], [], {}, {}, [], {}
+        # Split preview for the item-detail split card; own try/except so a non-splittable item
+        # (or any preview error) degrades to the disabled card rather than blanking the page.
+        try:
+            split_preview = await api.split_preview(token, entity_id)
+        except APIError:
+            split_preview = None
         # The base price list name (used by the pricing tab's derivation note) rides on the
         # company payload; the settings tab manages it through its dedicated endpoint.
         base_price_list = (company.get("settings") or {}).get("base_price_list") or DEFAULT_PRICE_LIST_NAME
@@ -1811,8 +1798,9 @@ def setup_routes(app):
                     cls="header-actions",
                 ),
             ),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview),
             Script(_SPLIT_DELTA_JS),
+            Script(_BULK_SPLIT_JS),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -3341,12 +3329,12 @@ function celerpPrintLabel(entityId, templateId) {
                 return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
             eid = entity_ids[0]
 
-        split_qty_raw = str(form.get("child_qty", "") or form.get("split_qty", "")).strip()
+        child_qty_raw = str(form.get("child_qty", "")).strip()
         try:
-            split_qty = float(split_qty_raw)
+            child_qty = float(child_qty_raw)
         except (ValueError, TypeError):
             return Div(P(t("inv.invalid_split_quantity"), cls="flash flash--warning"), id="bulk-action-result")
-        if split_qty <= 0:
+        if child_qty <= 0:
             return Div(P(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--warning"), id="bulk-action-result")
 
         try:
@@ -3355,7 +3343,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
         current_qty = float(item.get("quantity", 0) or 0)
-        if split_qty >= current_qty:
+        if child_qty >= current_qty:
             return Div(P(f"Split quantity must be less than current quantity ({current_qty}).", cls="flash flash--warning"), id="bulk-action-result")
 
         orig_sku = str(item.get("sku", "") or "")
@@ -3366,20 +3354,13 @@ function celerpPrintLabel(entityId, templateId) {
         child_sku = child_sku_input or orig_sku   # display value for the message / filter below
 
         # Optional weight/pieces overrides from preview form
-        def _opt_float(key: str) -> float | None:
-            raw = str(form.get(key, "")).strip()
-            try:
-                return float(raw) if raw else None
-            except ValueError:
-                return None
-
-        child_weight = _opt_float("child_weight")
-        child_pieces = _opt_float("child_pieces")
+        child_weight = _opt_float_field(form, "child_weight")
+        child_pieces = _opt_float_field(form, "child_pieces")
         # mother_qty/mother_weight: present when user manually edited the mother parcel in the preview.
         # Pass through to API so the server uses the user's value directly rather than computing
         # parent_qty - child_qty (which would ignore the user's explicit override).
-        mother_qty_override = _opt_float("mother_qty")
-        mother_weight_override = _opt_float("mother_weight")
+        mother_qty_override = _opt_float_field(form, "mother_qty")
+        mother_weight_override = _opt_float_field(form, "mother_weight")
 
         if child_pieces is not None:
             parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
@@ -3387,7 +3368,7 @@ function celerpPrintLabel(entityId, templateId) {
             if parent_pieces_val is not None and child_pieces >= parent_pieces_val:
                 return Div(P(f"Child pieces ({int(child_pieces)}) must be less than parent pieces ({int(parent_pieces_val)}).", cls="flash flash--warning"), id="bulk-action-result")
 
-        child: dict = {"quantity": split_qty}
+        child: dict = {"quantity": child_qty}
         if child_sku_input:
             child["sku"] = child_sku_input
         if child_weight is not None:
@@ -3407,10 +3388,10 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
         from urllib.parse import quote
-        remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - split_qty)
+        remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - child_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
-            f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",
+            f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({child_qty}).",
             f"?skus={exact_skus}&status=all",
         )
 
@@ -4101,7 +4082,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
-        qty_raws = [v.strip() for v in form.getlist("split_qty") if v.strip()]
+        qty_raws = [v.strip() for v in form.getlist("child_qty") if v.strip()]
         if not qty_raws:
             return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
         children_qtys: list[float] = []
@@ -4122,8 +4103,8 @@ function celerpPrintLabel(entityId, templateId) {
         from celerp.services.units import DEFAULT_UNITS
         _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
         # Optional complement fields (one value per row; may be empty)
-        comp_weights  = form.getlist("split_weight")
-        comp_pieces_l = form.getlist("split_pieces")
+        comp_weights  = form.getlist("child_weight")
+        comp_pieces_l = form.getlist("child_pieces")
         # Split children keep the parent SKU (same product; a distinct lot by barcode /
         # entity_id) — omit the SKU and let split_item resolve it to the parent's.
         children: list[dict] = []
@@ -4145,8 +4126,17 @@ function celerpPrintLabel(entityId, templateId) {
                     except (ValueError, TypeError):
                         pass
             children.append(child)
+        # mother_qty/mother_weight: present when the user edited the mother parcel directly.
+        # Forward so the server uses the explicit value rather than deriving parent - children.
+        split_payload: dict = {"children": children}
+        mother_qty_override = _opt_float_field(form, "mother_qty")
+        mother_weight_override = _opt_float_field(form, "mother_weight")
+        if mother_qty_override is not None:
+            split_payload["mother_qty"] = mother_qty_override
+        if mother_weight_override is not None:
+            split_payload["mother_weight"] = mother_weight_override
         try:
-            await api.split_item(token, entity_id, {"children": children})
+            await api.split_item(token, entity_id, split_payload)
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         return _split_redirect(orig_sku, [])   # children share the parent SKU
@@ -6574,6 +6564,7 @@ def _item_detail_tabs(
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
     base_price_list: str = "",
+    split_preview: dict | None = None,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
@@ -6636,7 +6627,7 @@ def _item_detail_tabs(
         )
     # Files + item operations belong with the item's core details — keep them off the
     # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
-    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item)) if active_tab == "details" else ()
+    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
@@ -7173,7 +7164,7 @@ def _resolve_visible_cols(
 # T3: Advanced operations panel (non-inline-editable actions only)
 # ---------------------------------------------------------------------------
 
-def _advanced_panel(entity_id: str, item: dict) -> FT:
+def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
     current_qty = float(item.get("quantity", 0) or 0)
 
@@ -7190,40 +7181,15 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
     sell_by = item.get("sell_by") or "piece"
-    if allow_splitting:
+    # Splittable only when the server preview resolved and the parcel can be carved.
+    can_split = bool(allow_splitting and split_preview and not split_preview.get("cannot_split"))
+    if can_split:
         sell_by_label = sell_by.capitalize()
-        # Determine complement field: pieces sell_by → optional weight; weight sell_by → optional pieces
+        # Batch Split reuses the unit classification for its optional complement field.
         from celerp.services.units import DEFAULT_UNITS
         _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
-        # Live-delta data for the shared JS helper.
-        _sd_parent_weight = item.get("weight")
-        _sd_wt_cfg = _default_umap.get(item.get("weight_unit") or "gram") or {}
-        _sd_wt_decimals = _sd_wt_cfg.get("decimals", 2)
-        _sd_unit_decimals = (_default_umap.get(sell_by) or {}).get("decimals", 0)
-        _sd_wt_label = re.sub(r"\s*\([^)]*\)\s*$", "", str(_sd_wt_cfg.get("label") or item.get("weight_unit") or "")).strip()
         _is_weight = is_weight_unit(sell_by, _default_umap)
         _is_pieces = is_pieces_unit(sell_by, _default_umap)
-        # Split reconciliation trio (original parcel weight / split weight / delta). For a
-        # weight-sold parcel the quantity IS the weight (item.weight is empty), so the outgoing
-        # weight is the split_qty and the parcel weight comes from quantity; for a pieces-sold
-        # parcel the outgoing weight is the optional split_weight complement and the parcel
-        # weight is item.weight. Mirrors the transform preview derivation. Units that are
-        # neither weight nor pieces carry no weight reconciliation and show no trio.
-        if _is_weight:
-            _sd_has_reconcile = True
-            _sd_delta_decimals = _sd_unit_decimals
-            _sd_parcel_weight = current_qty
-            _sd_delta_unit = re.sub(r"\s*\([^)]*\)\s*$", "", str((_default_umap.get(sell_by) or {}).get("label") or sell_by)).strip()
-        elif _is_pieces:
-            _sd_has_reconcile = True
-            _sd_delta_decimals = _sd_wt_decimals
-            _sd_parcel_weight = float(_sd_parent_weight or 0)
-            _sd_delta_unit = _sd_wt_label
-        else:
-            _sd_has_reconcile = False
-            _sd_delta_decimals = None
-            _sd_parcel_weight = None
-            _sd_delta_unit = None
         if _is_weight:
             _comp_name   = "split_pieces"
             _comp_ph     = "Pieces (optional)"
@@ -7240,90 +7206,23 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
             _comp_title  = None
             _comp_step   = None
 
-        _qty_title         = t("inv.tooltip.split_qty").replace("{unit}", sell_by_label)
         _batch_qty_title   = t("inv.tooltip.batch_qty").replace("{unit}", sell_by_label)
         _batch_count_title = t("inv.tooltip.batch_count")
 
-        # For a pieces-sold parcel the outgoing weight is the optional split_weight complement,
-        # so it carries the delta marker; for a weight-sold parcel the complement is split_pieces
-        # (not a weight) and the split_qty itself is the weight (marked below).
-        _comp_dw = {"data_delta_weight": "1"} if _comp_name == "split_weight" else {}
-        _comp_dw_js = ' data-delta-weight="1"' if _comp_name == "split_weight" else ""
-        _qty_dw = {"data_delta_weight": "1"} if _is_weight else {}
-        _qty_dw_js = ' data-delta-weight="1"' if _is_weight else ""
-        # Complement input for manual rows (rendered inline via FastHTML and duplicated by JS)
-        _comp_inputs = ([Input(type="number", name=_comp_name,
-                               placeholder=_comp_ph, title=_comp_title,
-                               step=_comp_step, min="0",
-                               oninput="_updateSplitDelta(this.form)",
-                               cls="form-input form-input--sm split-complement", **_comp_dw)]
-                        if _comp_name else [])
-        # JS fragment for complement field in dynamically added rows
-        _comp_js = (
-            f'+ \'<input type="number" name="{_comp_name}" placeholder="{_comp_ph}"'
-            f' title="{_comp_title}" step="{_comp_step}" min="0" oninput="_updateSplitDelta(this.form)"{_comp_dw_js}'
-            f' class="form-input form-input--sm split-complement">\''
-        ) if _comp_name else ""
-
-        # Combined Split + Batch Split card (single card, divider between sections)
+        # Combined card: shared split table (Mother + N children) above, Batch Split below.
         split_card = Div(
+            _split_table_form(
+                split_preview,
+                action=f"/api/items/{entity_id}/split-inline",
+                target="#item-action-error",
+                form_id=f"split-form-{safe_id}",
+                allow_add_child=True,
+                child_sku_editable=False,
+            ),
+            Hr(cls="action-card-divider"),
+            # Batch Split submits via JS; onsubmit guard blocks accidental Enter submission.
             Form(
-                Strong(t("inv.u2702_split"), cls="action-card-title"),
-                # ── Manual split: [+] [input(s)] [Go] on one line ──
-                Div(
-                    Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                           onclick="addSplitRow(this)", title="Add another split"),
-                    Div(
-                        Div(
-                            Input(type="number", name="split_qty",
-                                  placeholder=f"{sell_by_label} to split off",
-                                  title=_qty_title,
-                                  step="any", min="0.001",
-                                  oninput="_updateSplitDelta(this.form)",
-                                  cls="form-input form-input--sm split-qty-main", required=True,
-                                  **_qty_dw),
-                            *_comp_inputs,
-                            cls="split-qty-row",
-                        ),
-                        id="split-qty-rows",
-                    ),
-                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
-                           onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
-                    cls="action-card-row split-line",
-                ),
-                # Live split reconciliation trio: original parcel weight (always known up
-                # front), the running split weight, and the delta between them. Split weight
-                # and Delta hold the "--" empty marker until the first split qty is entered,
-                # then go live (including 0.00). Delta = original parcel weight - split weight.
-                *(
-                    [Div(
-                        Div(
-                            Span(f"{t('inv.original_parcel_weight')}: ", cls="sp-delta-label"),
-                            Span(f"{_sd_parcel_weight:.{_sd_delta_decimals}f}", cls="sp-parcel-val"),
-                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
-                            cls="action-card-row sp-reconcile-line",
-                        ),
-                        Div(
-                            Span(f"{t('inv.split_weight')}: ", cls="sp-delta-label"),
-                            Span("--", cls="sp-split-weight-val"),
-                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
-                            cls="action-card-row sp-reconcile-line",
-                        ),
-                        Div(
-                            Span(f"{t('inv.split_delta')}: ", cls="sp-delta-label"),
-                            Span("--", cls="sp-delta-val"),
-                            Span(f" {_sd_delta_unit}" if _sd_delta_unit else "", cls="sp-delta-unit"),
-                            cls="action-card-row sp-delta sp-reconcile-line",
-                            title=t("inv.split_delta_tooltip"),
-                        ),
-                        cls="sp-reconcile",
-                    )]
-                    if _sd_has_reconcile else []
-                ),
-                # ── Divider + Batch Split heading ──
-                Hr(cls="action-card-divider"),
                 Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
-                # ── Batch split row ──
                 Div(
                     Input(type="number", name="batch_qty",
                           placeholder=f"{sell_by_label} per child",
@@ -7337,7 +7236,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                              cls="form-input form-input--sm split-complement",
                              oninput=f"batchSplitPreview_{safe_id}(this.form)")]
                       if _comp_name else []),
-                    Span("\u00d7", cls="batch-split-sep"),
+                    Span("×", cls="batch-split-sep"),
                     Input(type="number", name="batch_count",
                           placeholder="Count",
                           title=_batch_count_title,
@@ -7352,16 +7251,6 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                 ),
                 Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
                 Script(f"""
-function addSplitRow(btn) {{
-  var container = document.getElementById('split-qty-rows');
-  var row = document.createElement('div');
-  row.className = 'split-qty-row';
-  row.innerHTML = '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" oninput="_updateSplitDelta(this.form)"{_qty_dw_js} class="form-input form-input--sm split-qty-main" required>'
-    {_comp_js}
-    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
-  container.appendChild(row);
-  row.querySelector('input').focus();
-}}
 function batchSplitPreview_{safe_id}(form) {{
   var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
   var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
@@ -7372,8 +7261,8 @@ function batchSplitPreview_{safe_id}(form) {{
   if (!qty || !count) {{ el.innerHTML = ''; return; }}
   var total = qty * count;
   var over  = total > avail;
-  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
-    + ' = ' + total.toFixed(2) + '\u00a0' + unit
+  el.innerHTML = count + ' × ' + qty + ' ' + unit
+    + ' = ' + total.toFixed(2) + ' ' + unit
     + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
 }}
 function batchSplitSubmit_{safe_id}(form) {{
@@ -7390,17 +7279,7 @@ function batchSplitSubmit_{safe_id}(form) {{
     {{ target: '#item-action-error', swap: 'outerHTML', values: vals }});
 }}
 """),
-                hx_post=f"/api/items/{entity_id}/split-inline",
-                hx_target="#item-action-error",
-                hx_swap="outerHTML",
-                **({
-                    "data_weight_decimals": str(_sd_delta_decimals),
-                    "data_delta_gated": "1",
-                    **({"data_sell_by_weight": "1",
-                        "data_parent_qty": f"{_sd_parcel_weight:.{_sd_delta_decimals}f}"}
-                       if _is_weight else
-                       {"data_parent_weight": f"{_sd_parcel_weight:.{_sd_delta_decimals}f}"}),
-                } if _sd_has_reconcile else {}),
+                onsubmit="return false;",
             ),
             cls="action-card",
         )
@@ -7410,8 +7289,6 @@ function batchSplitSubmit_{safe_id}(form) {{
             P(t("inv.splitting_disabled_hint"), cls="action-card-hint"),
             cls="action-card action-card--disabled",
         )
-
-    batch_split_card = ""  # merged into split_card above
 
     duplicate_card = Div(
         Form(
@@ -7524,7 +7401,6 @@ function batchSplitSubmit_{safe_id}(form) {{
         Span("", id="item-action-error"),
         Div(
             split_card,
-            batch_split_card,
             duplicate_card,
             *lifecycle_cards,
             rtv_card,
