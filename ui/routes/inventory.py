@@ -46,7 +46,7 @@ def _sp_static_td(val, num: bool = False) -> FT:
 #   - split preview table: marks BOTH the mother's post-split element and each child's
 #     outgoing element, so delta = original - (mother_post + children) = the net gain/loss,
 #     non-zero only when the mother is edited independently or the children exceed it.
-#   - transform preview: marks only the outgoing child element (trim-loss, parent_in -
+#   - transform preview: marks the child's outgoing element alone (trim-loss, parent_in -
 #     child_out, not net gain/loss).
 # Parcel weight comes from data-parent-weight (or data-parent-qty when the parcel is
 # weight-sold, data-sell-by-weight="1"). The previews open with prefilled child weights and
