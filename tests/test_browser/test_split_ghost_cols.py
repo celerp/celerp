@@ -13,6 +13,8 @@ from __future__ import annotations
 import pathlib
 import pytest
 
+from .inline_edit import set_cell
+
 pytestmark = pytest.mark.browser
 
 
@@ -627,3 +629,144 @@ def test_split_numeric_headers_right_aligned(page, ui_server, api):
 
     _save_screenshot(page, "split-numeric-headers-right-aligned")
 
+
+
+# ---------------------------------------------------------------------------
+# Add-child UX: row distribution, control placement, gutter indent, live toggle
+# ---------------------------------------------------------------------------
+
+def _splittable_gram_item(api, sku: str) -> str:
+    r = api.post("/items", json={
+        "sku": sku,
+        "name": "Split Card Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    return r.json()["id"]
+
+
+def _tbody_shape(page):
+    """Direct-child row count, nested-table count, and per-row cell counts of the
+    item-detail split table's tbody."""
+    return page.evaluate("""() => {
+        const tbody = document.querySelector('.action-card .split-preview-table > tbody');
+        const rows = Array.from(tbody.children).filter(el => el.tagName === 'TR');
+        return {
+            rows: rows.length,
+            nestedTables: tbody.querySelectorAll('table').length,
+            cellCounts: rows.map(tr => tr.querySelectorAll(':scope > td').length),
+        };
+    }""")
+
+
+def test_add_child_distributes_across_columns(page, ui_server, api):
+    """Fix 2: clicking + appends a real <tr> whose cells distribute across the same columns
+    as the mother row, with no nested <table> collapsing them into the first column."""
+    item_id = _splittable_gram_item(api, "SPLIT-DISTRIBUTE-001")
+    _open_item_detail_split(page, ui_server, item_id)
+
+    before = _tbody_shape(page)
+    mother_cells = before["cellCounts"][0]
+
+    page.locator(".action-card .split-add-child-btn").first.click()
+    page.wait_for_timeout(200)
+
+    after = _tbody_shape(page)
+    assert after["nestedTables"] == 0, (
+        f"tbody must contain no nested <table>, found {after['nestedTables']}"
+    )
+    assert after["rows"] == before["rows"] + 1, (
+        f"a new <tr> row must be appended (was {before['rows']}, now {after['rows']})"
+    )
+    new_row_cells = after["cellCounts"][-1]
+    assert new_row_cells == mother_cells, (
+        f"the added child row must have {mother_cells} cells like the mother, got {new_row_cells}"
+    )
+
+    _save_screenshot(page, "add-child-distributes")
+
+
+def test_add_remove_controls_positioned(page, ui_server, api):
+    """Fix 3 + Fix 4: the + control sits in the first child's leading label cell, and an added
+    child's remove control sits in its trailing (last) cell, not the label cell."""
+    item_id = _splittable_gram_item(api, "SPLIT-CONTROLS-001")
+    _open_item_detail_split(page, ui_server, item_id)
+
+    leading = page.evaluate("""() => {
+        const tbody = document.querySelector('.action-card .split-preview-table > tbody');
+        const rows = Array.from(tbody.children).filter(el => el.tagName === 'TR');
+        const firstChild = rows[1];
+        const firstCell = firstChild.querySelector(':scope > td');
+        return !!firstCell.querySelector('.split-add-child-btn');
+    }""")
+    assert leading, "the + control must render in the first child's leading label cell"
+
+    page.locator(".action-card .split-add-child-btn").first.click()
+    page.wait_for_timeout(200)
+
+    placement = page.evaluate("""() => {
+        const tbody = document.querySelector('.action-card .split-preview-table > tbody');
+        const rows = Array.from(tbody.children).filter(el => el.tagName === 'TR');
+        const added = rows[rows.length - 1];
+        const cells = added.querySelectorAll(':scope > td');
+        const lastCell = cells[cells.length - 1];
+        const firstCell = cells[0];
+        return {
+            inLast: !!lastCell.querySelector('.split-remove-child-btn'),
+            inFirst: !!firstCell.querySelector('.split-remove-child-btn'),
+        };
+    }""")
+    assert placement["inLast"], "the remove control must sit in the trailing (last) cell"
+    assert not placement["inFirst"], "the remove control must not sit in the label cell"
+
+    _save_screenshot(page, "add-remove-controls-positioned")
+
+
+def test_split_table_indented_with_add_child(page, ui_server, api):
+    """Fix 3: on the item-detail card the split table is indented so the gutter + renders
+    outside its left edge (positive computed margin-left)."""
+    item_id = _splittable_gram_item(api, "SPLIT-INDENT-001")
+    _open_item_detail_split(page, ui_server, item_id)
+
+    margin_left = page.evaluate("""() => {
+        const t = document.querySelector('.action-card .split-preview-table');
+        return parseFloat(window.getComputedStyle(t).marginLeft) || 0;
+    }""")
+    assert margin_left > 0, (
+        f".action-card .split-preview-table must have a positive margin-left, got {margin_left}"
+    )
+
+    _save_screenshot(page, "split-table-indented")
+
+
+def test_toggle_allow_splitting_shows_card_no_reload(page, ui_server, api):
+    """Fix 1: toggling allow_splitting true on the item-detail page refreshes the Split card to
+    show the split table in place, with no page navigation."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-TOGGLE-001",
+        "name": "Split Toggle Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"allow_splitting": {"old": True, "new": False}},
+    })
+    assert rp.status_code in {200, 201}, f"disable splitting failed: {rp.text}"
+
+    page.goto(f"{ui_server}/inventory/{item['id']}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "item detail page (splitting disabled)")
+    page.wait_for_selector(".action-card--disabled", timeout=5000)
+    assert page.locator(".action-card .split-preview-table").count() == 0, (
+        "the disabled item must not show the split table before the toggle"
+    )
+
+    url_before = page.url
+    set_cell(page, "allow_splitting", "true", scope=".detail-card", kind="select")
+
+    page.wait_for_selector(".action-card .split-preview-table", timeout=5000)
+    assert page.url == url_before, "the card must refresh in place with no navigation"
+
+    _save_screenshot(page, "toggle-allow-splitting-no-reload")

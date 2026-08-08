@@ -4902,6 +4902,110 @@ class TestItemActionRouteCompleteness:
         assert b"Invalid" in r.content
 
 
+class TestSplitCardLiveRefresh:
+    """Fix 1 + Fix 5: the item-detail Split card refreshes in place when allow_splitting is
+    toggled (OOB reload of the actions card), and the shared split-table numeric inputs carry
+    per-column width classes."""
+
+    _SPLITTABLE_ITEM = {
+        "entity_id": "gc:123", "name": "Ruby", "status": "available",
+        "sell_by": "gram", "quantity": 10.0, "allow_splitting": True,
+    }
+    _SPLIT_SCHEMA = [
+        {"key": "name", "label": "Name", "type": "text", "editable": True},
+        {"key": "allow_splitting", "label": "Allow splitting", "type": "bool", "editable": True},
+    ]
+
+    def test_advanced_panel_has_stable_id(self):
+        """The actions card carries id=item-advanced-panel so the field-save OOB swap has a
+        stable target."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _advanced_panel
+        html = to_xml(_advanced_panel("gc:123", self._SPLITTABLE_ITEM, _SPLIT_PREVIEW_WEIGHT))
+        assert 'id="item-advanced-panel"' in html
+
+    @pytest.mark.asyncio
+    async def test_advanced_panel_endpoint_renders_card(self, ui_client):
+        """GET /api/items/{id}/advanced-panel returns the actions card fragment; for a
+        splittable item it contains the split table."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLITTABLE_ITEM)),
+            patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)),
+        ):
+            r = await ui_client.get("/api/items/gc:123/advanced-panel", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert "item-advanced-panel" in html
+        assert "split-preview-table" in html
+
+    @pytest.mark.asyncio
+    async def test_allow_splitting_save_reloads_card(self, ui_client):
+        """Saving allow_splitting on a detail URL returns the toggled cell plus an OOB div that
+        reloads the actions card via /api/items/{id}/advanced-panel."""
+        updated = {**self._SPLITTABLE_ITEM, "allow_splitting": True}
+        with (
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=updated)),
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SPLIT_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=updated)),
+        ):
+            r = await ui_client.patch(
+                "/api/items/gc:123/field/allow_splitting",
+                data={"value": "true"},
+                headers={"HX-Current-URL": "http://x/inventory/item:gc:123"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'id="item-advanced-panel"' in html
+        assert "/api/items/gc:123/advanced-panel" in html
+        assert 'hx-swap-oob="true"' in html
+
+    @pytest.mark.asyncio
+    async def test_advanced_panel_endpoint_get_item_failure(self, ui_client):
+        """When api.get_item raises, the endpoint returns 500 carrying the error detail."""
+        from ui.api_client import APIError
+        with patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "no such item"))):
+            r = await ui_client.get("/api/items/gc:404/advanced-panel", cookies=_authed())
+        assert r.status_code == 500
+        assert "no such item" in r.text
+
+    @pytest.mark.asyncio
+    async def test_advanced_panel_endpoint_split_preview_failure(self, ui_client):
+        """When api.split_preview raises for an otherwise-splittable item, the endpoint degrades
+        to the disabled hint (no split table)."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLITTABLE_ITEM)),
+            patch("ui.api_client.split_preview", new=AsyncMock(side_effect=APIError(400, "cannot preview"))),
+        ):
+            r = await ui_client.get("/api/items/gc:123/advanced-panel", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert "action-card--disabled" in html
+        assert "split-preview-table" not in html
+
+    def test_split_inputs_have_per_column_width_classes(self):
+        """Fix 5: the shared renderer emits distinct width classes on the QTY, weight, and
+        pieces numeric inputs so each column is sized to its content."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _split_table_form
+        preview = {
+            "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+            "child_sku": "GEM-001.1",
+            "sell_by": "unit", "sell_by_label": "u", "sell_by_type": "other",
+            "unit_decimals": 0, "weight_decimals": 2,
+            "has_weight": True, "has_pieces": True,
+            "parent_weight": 5.0, "parent_pieces": 40,
+        }
+        html = to_xml(_split_table_form(
+            preview, action="/x", target="#t", form_id="split-form-x",
+            allow_add_child=True, child_sku_editable=True,
+        ))
+        assert "sp-input--qty" in html
+        assert "sp-input--weight" in html
+        assert "sp-input--pieces" in html
+
+
 class TestBatchSplit:
     """Tests for POST /api/items/{entity_id}/batch-split (detail-page batch split card)."""
 
