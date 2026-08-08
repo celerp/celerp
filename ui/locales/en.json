@@ -628,6 +628,7 @@
   "field.tooltip.location_name": "The warehouse or storage location this item is assigned to.",
   "field.tooltip.pick_method": "Which physical lot to draw down first when selling: FIFO (oldest received), FEFO (soonest to expire), or LIFO (newest). 'Default' uses the company setting. LIFO is US-GAAP only (not permitted under IFRS).",
   "field.tooltip.pieces": "Number of individual pieces in this stock entry. Separate from sell quantity.",
+  "field.tooltip.preferred_supplier": "Default supplier for this item. Free text; used to group a reorder selection into one draft purchase order per supplier.",
   "field.tooltip.purchase_conversion_factor": "How many of your sell units are in one purchase unit. E.g. if you buy by the box of 12, enter 12.",
   "field.tooltip.purchase_name": "The name your supplier uses for this item. Appears on purchase orders.",
   "field.tooltip.purchase_sku": "Your supplier's SKU or part number for this item. Used on purchase orders.",
