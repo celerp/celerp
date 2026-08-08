@@ -178,6 +178,17 @@ async def test_alert_digest_is_high_priority(session):
 
 
 @pytest.mark.asyncio
+async def test_below_reorder_but_in_stock_is_medium_priority(session):
+    # Below the reorder point but still on hand (qty > 0): a heads-up, not out of
+    # stock, so the digest is "medium" and raises no desktop push.
+    co = await _company(session, "SoftCo")
+    await _emit(session, co.id, "item:s", "item.created", {"sku": "S", "name": "S", "quantity": 2, "reorder_point": 5})
+    await ProjectionEngine.rebuild(session)
+    notif = await run_all_alerts(session, co)
+    assert notif is not None and notif.priority == "medium"
+
+
+@pytest.mark.asyncio
 async def test_low_stock_disabled_setting_is_noop(session):
     co = await _company(session, "OffCo")
     co.settings = {"reorder_alerts_enabled": False}
@@ -253,17 +264,3 @@ async def test_combined_digest_is_one_notification(session):
     assert n is not None
     assert await _notif_count(session, co.id) == 1  # ONE combined digest
     assert "Low stock" in n.body and "Expiring soon" in n.body and "Overdue invoices" in n.body
-
-
-@pytest.mark.asyncio
-async def test_disabled_check_is_skipped(session):
-    from datetime import date, timedelta
-    from celerp.services.reorder import run_all_alerts
-    co = await _company(session, "DisCo")
-    co.settings = {"expiring_alerts_enabled": False}
-    session.add(co)
-    await session.flush()
-    soon = (date.today() + timedelta(days=5)).isoformat()
-    await _emit(session, co.id, "item:e", "item.created", {"sku": "E", "name": "Exp", "quantity": 5, "expires_at": soon})
-    await ProjectionEngine.rebuild(session)
-    assert await run_all_alerts(session, co) is None  # only expiring would fire; it's off

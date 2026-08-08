@@ -9,9 +9,10 @@ becomes threshold-aware the moment a user sets one.
 
 The alert loop is a daily scheduled scan (mirrors connectors/daily_scheduler.py),
 not an event-driven trigger: it debounces naturally and needs no listener
-infrastructure. It runs every enabled check in the ``_CHECKS`` registry and emits
-one combined digest per company per day. Each check notifies once per dip via its
-own per-company latch in ``Company.settings`` (e.g. ``reorder_alerted_ids``).
+infrastructure. It runs each check in the ``_CHECKS`` registry (low stock honours
+its company on/off setting; expiring and overdue always run) and emits one combined
+digest per company per day. Each check notifies once per dip via its own per-company
+latch in ``Company.settings`` (e.g. ``reorder_alerted_ids``).
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ _SAFETY = 0                  # extra safety buffer on the suggested reorder_poin
 _CHECK_INTERVAL_SECONDS = 3600      # loop wakes hourly
 _MIN_HOURS_BETWEEN_SCANS = 23       # at most one digest per company per day
 _SCAN_HOUR_UTC = 8                  # run the scan when the UTC hour matches
+_EXPIRING_WINDOW_DAYS = 30          # expiring-lot look-ahead window
 
 # Outbound event types and where each stores its quantity in the ledger `data`.
 _OUTBOUND_QTY_KEYS = {
@@ -166,8 +168,7 @@ async def _detect_expiring(session: AsyncSession, company) -> list[dict]:
     """In-stock items whose ``expires_at`` falls within the company's window."""
     from datetime import date
 
-    days = int((company.settings or {}).get("expiring_alert_days", 30) or 30)
-    cutoff = date.today() + timedelta(days=days)
+    cutoff = date.today() + timedelta(days=_EXPIRING_WINDOW_DAYS)
     rows = await _projections(session, company, "item")
     out: list[dict] = []
     for r in rows:
@@ -223,21 +224,28 @@ def _ovd_line(it: dict) -> str:
     return f"{it['name']} - due {it['due_date']}, {it['currency']} {it['balance']:g} outstanding"
 
 
+def _low_urgent(items: list[dict]) -> bool:
+    """A digest is desktop-push urgent only when an item is actually out of stock
+    (on-hand at or below zero) - the pre-existing low-stock severity rule."""
+    return any(it["quantity"] <= 0 for it in items)
+
+
 @dataclass(frozen=True)
 class _AlertCheck:
-    enabled_setting: str
+    enabled_setting: str | None   # company on/off flag, or None for an always-on check
     latch_key: str
     label: str
     detect: object
     line: object
+    urgent: object = None         # optional items -> bool; None == never desktop-urgent
 
 
 # The registry - the one place a proactive check is declared. Adding a check is a
 # row here + its detect function; the scan loop, latch, and digest need no change.
 _CHECKS: tuple[_AlertCheck, ...] = (
-    _AlertCheck("reorder_alerts_enabled", "reorder_alerted_ids", "Low stock", _detect_low_stock, _low_line),
-    _AlertCheck("expiring_alerts_enabled", "expiring_alerted_ids", "Expiring soon", _detect_expiring, _exp_line),
-    _AlertCheck("overdue_alerts_enabled", "overdue_alerted_ids", "Overdue invoices", _detect_overdue, _ovd_line),
+    _AlertCheck("reorder_alerts_enabled", "reorder_alerted_ids", "Low stock", _detect_low_stock, _low_line, _low_urgent),
+    _AlertCheck(None, "expiring_alerted_ids", "Expiring soon", _detect_expiring, _exp_line),
+    _AlertCheck(None, "overdue_alerted_ids", "Overdue invoices", _detect_overdue, _ovd_line),
 )
 
 
@@ -256,8 +264,9 @@ async def run_all_alerts(session: AsyncSession, company) -> object | None:
 
     settings = dict(company.settings or {})
     sections: list[tuple[str, list[dict], object]] = []
+    urgent = False
     for check in _CHECKS:
-        if not settings.get(check.enabled_setting, True):
+        if check.enabled_setting and not settings.get(check.enabled_setting, True):
             continue
         current = await check.detect(session, company)
         current_ids = {it["entity_id"] for it in current}
@@ -266,6 +275,8 @@ async def run_all_alerts(session: AsyncSession, company) -> object | None:
         settings[check.latch_key] = sorted(current_ids)
         if newly:
             sections.append((check.label, newly, check.line))
+            if check.urgent and check.urgent(newly):
+                urgent = True
 
     settings["reorder_last_scan_at"] = datetime.now(timezone.utc).isoformat()
     company.settings = settings
@@ -281,7 +292,7 @@ async def run_all_alerts(session: AsyncSession, company) -> object | None:
                        for label, newly, line in sections)
     notif = await notif_service.create(
         session, company.id, "inventory", title, body,
-        action_url="/dashboard", priority="high",
+        action_url="/dashboard", priority="high" if urgent else "medium",
     )
     if settings.get("reorder_alert_email"):
         await _send_combined_email(session, company, title, sections)
