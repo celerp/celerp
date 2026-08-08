@@ -3939,8 +3939,11 @@ function celerpPrintLabel(entityId, templateId) {
                         line_items = await _reorder_lines_from_inventory(token, ids)
                         payload = {"doc_type": "purchase_order", "status": "draft",
                                    "purchase_kind": "inventory", "line_items": line_items}
+                        # preferred_supplier is a free-text name, so record it as the
+                        # draft's contact name (shown on the PO); it is not a contact
+                        # reference, so contact_id is left for the user to link.
                         if sup:
-                            payload["contact_id"] = sup
+                            payload["contact_name"] = sup
                         result = await api.create_doc(token, payload)
                         did = result.get("entity_id") or result.get("id", "")
                         ref = result.get("ref_id") or result.get("doc_number") or did.split(":")[-1][:8]

@@ -11842,9 +11842,9 @@ class TestSendToPurchaseOrder:
     async def test_send_to_multi_supplier_creates_one_po_per_supplier(self, ui_client):
         """A selection spanning suppliers becomes one draft PO per supplier: the
         response lists every draft (no silent multi-create) labelled by supplier and
-        draft reference, the supplier group carries its contact_id, and the
+        draft reference, the supplier group records its supplier name, and the
         unassigned group is labelled 'No supplier' with no contact."""
-        acme = {**self._PO_ITEM, "entity_id": "item:po1", "preferred_supplier": "c:acme"}
+        acme = {**self._PO_ITEM, "entity_id": "item:po1", "preferred_supplier": "Acme Supplies"}
         loose = {**self._PO_ITEM, "entity_id": "item:po2", "sku": "GADGET", "name": "Gadget"}
         loose.pop("preferred_supplier", None)
         by_id = {"item:po1": acme, "item:po2": loose}
@@ -11872,10 +11872,12 @@ class TestSendToPurchaseOrder:
         assert mock_create.call_count == 2                    # one PO per supplier group
         assert b"Created 2 draft purchase orders" in r.content
         assert b"PO-A" in r.content and b"PO-B" in r.content  # each draft surfaced by ref
+        assert b"Acme Supplies" in r.content                  # supplier group labelled
         assert b"No supplier" in r.content                    # unassigned group labelled
         payloads = [c.args[1] for c in mock_create.call_args_list]
-        assert payloads[0]["contact_id"] == "c:acme"          # supplier group -> contact set
-        assert "contact_id" not in payloads[1]                # unassigned -> no contact
+        assert payloads[0]["contact_name"] == "Acme Supplies"  # supplier name recorded on the draft
+        assert "contact_id" not in payloads[0]                 # free text is not a contact reference
+        assert "contact_name" not in payloads[1]               # unassigned -> no supplier name
 
 
 async def _api_headers(client) -> dict:
