@@ -110,34 +110,41 @@ function _setMotherQty(form, val, decimals) {
   var inp = form.querySelector('.mother-qty-input');
   if (inp) inp.value = val.toFixed(decimals);
 }
+function _sumInputs(form, sel) {
+  // Sum the numeric value/textContent of every element matching sel (N children).
+  var total = 0;
+  form.querySelectorAll(sel).forEach(function(el) {
+    var raw = (el.value !== undefined ? el.value : el.textContent);
+    var v = parseFloat(raw);
+    if (!isNaN(v)) total += v;
+  });
+  return total;
+}
 function _updateSplitTotals(form) {
-  // Sum QTY, Weight, Pieces across mother + child rows and update tfoot cells.
+  // Sum QTY, Weight, Pieces across mother + all child rows and update tfoot cells.
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
   // QTY total
   var qtyTotal = form.querySelector('.sp-total-qty');
   if (qtyTotal) {
-    var motherQty = parseFloat(form.querySelector('.mother-qty-input') ? form.querySelector('.mother-qty-input').value : '0') || 0;
-    var childQtyEl = form.querySelector('[name="child_qty"]');
-    var childQty = childQtyEl ? (parseFloat(childQtyEl.value) || 0) : 0;
-    qtyTotal.textContent = (motherQty + childQty).toFixed(decimals);
+    var motherQtyEl = form.querySelector('.mother-qty-input');
+    var motherQty = motherQtyEl ? (parseFloat(motherQtyEl.value) || 0) : 0;
+    qtyTotal.textContent = (motherQty + _sumInputs(form, '[name="child_qty"]')).toFixed(decimals);
   }
-  // Weight total
+  // Weight total: each child row carries either an editable input or a static display.
   var weightTotal = form.querySelector('.sp-total-weight');
   if (weightTotal) {
     var mwEl = form.querySelector('.mother-weight-display');
-    var cwEl = form.querySelector('[name="child_weight"]') || form.querySelector('.child-weight-display');
     var mw = mwEl ? (parseFloat(mwEl.textContent) || 0) : 0;
-    var cw = cwEl ? (parseFloat(cwEl.value !== undefined ? cwEl.value : cwEl.textContent) || 0) : 0;
+    var cw = _sumInputs(form, '[name="child_weight"]') + _sumInputs(form, '.child-weight-display');
     weightTotal.textContent = (mw + cw).toFixed(weightDecimals);
   }
   // Pieces total
   var piecesTotal = form.querySelector('.sp-total-pieces');
   if (piecesTotal) {
     var mpEl = form.querySelector('.mother-pieces-display');
-    var cpEl = form.querySelector('[name="child_pieces"]') || form.querySelector('.child-pieces-display');
     var mp = mpEl ? (parseInt(mpEl.textContent) || 0) : 0;
-    var cp = cpEl ? (parseInt(cpEl.value !== undefined ? cpEl.value : cpEl.textContent) || 0) : 0;
+    var cp = _sumInputs(form, '[name="child_pieces"]') + _sumInputs(form, '.child-pieces-display');
     piecesTotal.textContent = String(mp + cp);
   }
   // Sync hidden inputs so form submission carries mother weight for server override.
@@ -148,71 +155,89 @@ function _updateSplitTotals(form) {
   }
   _updateSplitDelta(form);
 }
-function splitRecalcMotherWeight(input) {
-  var form = input.closest('form');
+function splitRecalc(form) {
+  // Shared recompute after a child changes, is added, or is removed: derive the mother
+  // from parentQty minus the sum of all children (unless the mother is user-owned), keep
+  // the mother weight/pieces displays in step, then refresh totals and delta.
   if (!form) return;
-  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
-  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
-  var childVal = parseFloat(input.value) || 0;
-  var mw = form.querySelector('.mother-weight-display');
-  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
-  // For weight-unit items weight and qty are the same — also update mother qty input.
-  if (form.dataset.sellByType === 'weight') {
-    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
-    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
-    _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
+  if (form.dataset.motherEdited !== 'true') {
+    var parentQty = parseFloat(form.dataset.parentQty || '0');
+    var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var motherQty = Math.max(0, parentQty - _sumInputs(form, '[name="child_qty"]'));
+    _setMotherQty(form, motherQty, decimals);
+    var sellByType = form.dataset.sellByType;
+    if (sellByType === 'weight') {
+      var mwEl = form.querySelector('.mother-weight-display');
+      if (mwEl) mwEl.textContent = motherQty.toFixed(weightDecimals);
+    } else if (sellByType === 'pieces') {
+      var mpEl = form.querySelector('.mother-pieces-display');
+      if (mpEl) mpEl.textContent = String(Math.round(motherQty));
+    } else {
+      var parentWeight = parseFloat(form.dataset.parentWeight);
+      if (!isNaN(parentWeight)) {
+        var mwd = form.querySelector('.mother-weight-display');
+        if (mwd) mwd.textContent = Math.max(0, parentWeight - _sumInputs(form, '[name="child_weight"]')).toFixed(weightDecimals);
+      }
+      var parentPieces = parseFloat(form.dataset.parentPieces);
+      if (!isNaN(parentPieces)) {
+        var mpd = form.querySelector('.mother-pieces-display');
+        if (mpd) mpd.textContent = String(Math.round(Math.max(0, parentPieces - _sumInputs(form, '[name="child_pieces"]'))));
+      }
+    }
   }
   _updateSplitTotals(form);
 }
+function splitAddChild(btn) {
+  // Clone the server-rendered <template> child row, append it, recompute, focus its qty.
+  var form = btn.closest('form');
+  if (!form) return;
+  var tpl = form.querySelector('.split-child-template');
+  var tbody = form.querySelector('.split-preview-table tbody');
+  if (!tpl || !tbody) return;
+  tbody.appendChild(tpl.content.cloneNode(true));
+  splitRecalc(form);
+  var rows = tbody.querySelectorAll('tr');
+  var last = rows[rows.length - 1];
+  var inp = last ? last.querySelector('[name="child_qty"]') : null;
+  if (inp) inp.focus();
+}
+function splitRecalcMotherWeight(input) {
+  // oninput on an editable child weight: recompute via the shared helper. Never write
+  // input.value here, which would destroy a decimal being typed.
+  var form = input.closest('form');
+  if (!form) return;
+  splitRecalc(form);
+}
 function splitClampWeight(input) {
+  // onblur clamp for an editable child weight; a single child is upper-bounded at the parent
+  // weight, over-split across N children is left for the server to reject (GDR 2e).
   var form = input.closest('form');
   if (!form) return;
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var childVal = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
   input.value = childVal.toFixed(decimals);
-  var mw = form.querySelector('.mother-weight-display');
-  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
-  // For weight-unit items weight and qty are the same — sync qty inputs.
-  if (form.dataset.sellByType === 'weight') {
-    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
-    var qtyInput = form.querySelector('[name="child_qty"]');
-    if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
-    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
-    _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
-  }
-  _updateSplitTotals(form);
+  splitRecalc(form);
 }
 function splitRecalcMotherPieces(input) {
+  // oninput on an editable child pieces count: recompute via the shared helper. Never write
+  // input.value here.
   var form = input.closest('form');
   if (!form) return;
-  if (form.dataset.sellBy === 'piece') { bulkSplitChildPiecesChanged(input); return; }
-  var parentPieces = parseFloat(form.dataset.parentPieces || '0');
-  var childP = parseFloat(input.value) || 0;
-  var mp = form.querySelector('.mother-pieces-display');
-  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
-  _updateSplitTotals(form);
+  splitRecalc(form);
 }
 function splitClampPieces(input) {
+  // onblur clamp for an editable child pieces count.
   var form = input.closest('form');
   if (!form) return;
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
   var motherEdited = form.dataset.motherEdited === 'true';
-  // After mother QTY manually set, no upper-bound clamp.
   var childP = motherEdited
     ? Math.max(0, Math.round(parseFloat(input.value) || 0))
-    : Math.min(Math.max(0, parseFloat(input.value) || 0), Math.max(0, parentPieces - 1));
-  input.value = String(Math.round(childP));
-  var mp = form.querySelector('.mother-pieces-display');
-  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
-  if (form.dataset.sellBy === 'piece') {
-    var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
-    var qtyInput = form.querySelector('[name="child_qty"]');
-    if (qtyInput) qtyInput.value = childP.toFixed(decimals);
-    var parentQty = parseFloat(form.dataset.parentQty || parentPieces);
-    _setMotherQty(form, Math.max(0, parentQty - childP), decimals);
-  }
-  _updateSplitTotals(form);
+    : Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.max(0, parentPieces - 1));
+  input.value = String(childP);
+  splitRecalc(form);
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -232,13 +257,13 @@ function bulkSplitMotherQtyChanged(input) {
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var motherQty = Math.max(epsilon, parseFloat(input.value) || epsilon);
   input.value = motherQty.toFixed(decimals);
-  // For weight-unit items qty IS weight — keep mother-weight-display in sync.
+  // For weight-unit items qty IS weight: keep mother-weight-display in sync.
   if (form.dataset.sellByType === 'weight') {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
   }
-  // For piece-unit items qty IS pieces — keep mother-pieces-display in sync.
+  // For piece-unit items qty IS pieces: keep mother-pieces-display in sync.
   if (form.dataset.sellByType === 'pieces') {
     var mp = form.querySelector('.mother-pieces-display');
     if (mp) mp.textContent = String(Math.round(motherQty));
@@ -252,63 +277,44 @@ function bulkSplitChildQtyChanged(input) {
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var motherEdited = form.dataset.motherEdited === 'true';
-  var childQty, motherQty;
-  if (motherEdited) {
-    // Mother is user-owned: no clamp, no mother recalc.
-    childQty = Math.max(0, parseFloat(input.value) || 0);
-  } else {
-    // System value is the budget — clamp child, derive mother from parentQty.
-    childQty = Math.min(Math.max(0, parseFloat(input.value) || 0), parentQty - epsilon);
-    motherQty = parentQty - childQty;
-    _setMotherQty(form, motherQty, decimals);
-  }
+  // Clamp a single child at the parent budget unless the mother is user-owned; the mother is
+  // derived from the sum of ALL children in splitRecalc.
+  var childQty = motherEdited
+    ? Math.max(0, parseFloat(input.value) || 0)
+    : Math.min(Math.max(0, parseFloat(input.value) || 0), parentQty - epsilon);
   input.value = childQty.toFixed(decimals);
-  // For piece-unit items qty and pieces are the same — keep them in sync.
-  if (form.dataset.sellByType === 'pieces') {
-    var piecesInput = form.querySelector('[name="child_pieces"]');
+  var row = input.closest('tr');
+  // For piece-unit items qty and pieces are the same: mirror this row's pieces cell.
+  if (form.dataset.sellByType === 'pieces' && row) {
+    var piecesInput = row.querySelector('[name="child_pieces"]');
     if (piecesInput) { piecesInput.value = Math.round(childQty); }
-    var childPiecesDisplay = form.querySelector('.child-pieces-display');
+    var childPiecesDisplay = row.querySelector('.child-pieces-display');
     if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
-    if (!motherEdited) {
-      var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
-      var mp = form.querySelector('.mother-pieces-display');
-      if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
-    }
   }
-  // For weight-unit items qty IS the weight — mirror to static child weight display.
-  if (form.dataset.sellByType === 'weight') {
+  // For weight-unit items qty IS the weight: mirror this row's weight cell.
+  if (form.dataset.sellByType === 'weight' && row) {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
-    var weightInput = form.querySelector('[name="child_weight"]');
+    var weightInput = row.querySelector('[name="child_weight"]');
     if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
-    var childWeightDisplay = form.querySelector('.child-weight-display');
+    var childWeightDisplay = row.querySelector('.child-weight-display');
     if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
-    if (!motherEdited) {
-      var mw = form.querySelector('.mother-weight-display');
-      if (mw) mw.textContent = (parentQty - childQty).toFixed(weightDecimals);
-    }
   }
-  _updateSplitTotals(form);
+  splitRecalc(form);
 }
 function bulkSplitChildPiecesChanged(input) {
   var form = input.closest('form');
   if (!form || form.dataset.sellBy !== 'piece') return;
-  var parentQty = parseFloat(form.dataset.parentQty || '0');
-  var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var motherEdited = form.dataset.motherEdited === 'true';
-  var childPieces;
-  if (motherEdited) {
-    childPieces = Math.max(0, Math.round(parseFloat(input.value) || 0));
-  } else {
-    childPieces = Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.round(parentPieces) - 1);
-    _setMotherQty(form, Math.max(0, parentQty - childPieces), decimals);
-    var mp = form.querySelector('.mother-pieces-display');
-    if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childPieces)));
-  }
+  var parentPieces = parseFloat(form.dataset.parentPieces || form.dataset.parentQty || '0');
+  var childPieces = motherEdited
+    ? Math.max(0, Math.round(parseFloat(input.value) || 0))
+    : Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.round(parentPieces) - 1);
   input.value = String(childPieces);
-  var qtyInput = form.querySelector('[name="child_qty"]');
+  var row = input.closest('tr');
+  var qtyInput = row ? row.querySelector('[name="child_qty"]') : null;
   if (qtyInput) { qtyInput.value = childPieces.toFixed(decimals); }
-  _updateSplitTotals(form);
+  splitRecalc(form);
 }
 function bulkSplitChildWeightChanged(input) {
   var form = input.closest('form');
@@ -318,19 +324,14 @@ function bulkSplitChildWeightChanged(input) {
   var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var decimals = parseInt(form.dataset.unitDecimals || weightDecimals, 10);
   var motherEdited = form.dataset.motherEdited === 'true';
-  var childWeight;
-  if (motherEdited) {
-    childWeight = Math.max(0, parseFloat(input.value) || 0);
-  } else {
-    childWeight = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
-    _setMotherQty(form, Math.max(0, parentWeight - childWeight), decimals);
-    var mw = form.querySelector('.mother-weight-display');
-    if (mw) mw.textContent = Math.max(0, parentWeight - childWeight).toFixed(weightDecimals);
-  }
+  var childWeight = motherEdited
+    ? Math.max(0, parseFloat(input.value) || 0)
+    : Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
   input.value = childWeight.toFixed(weightDecimals);
-  var qtyInput = form.querySelector('[name="child_qty"]');
+  var row = input.closest('tr');
+  var qtyInput = row ? row.querySelector('[name="child_qty"]') : null;
   if (qtyInput) { qtyInput.value = childWeight.toFixed(decimals); }
-  _updateSplitTotals(form);
+  splitRecalc(form);
 }
 function bulkSplitSkuChanged(input) {}
 function bulkSplitSubmit(formEl) {
@@ -342,6 +343,16 @@ function bulkSplitSubmit(formEl) {
       var inp = document.createElement('input'); inp.type = 'hidden'; inp.name = 'entity_id'; inp.value = entityId;
       formEl.appendChild(inp);
     } else { existing.value = entityId; }
+  }
+  // Disable the confirm button for the duration of the request so a double-click cannot
+  // double-post; htmx:afterRequest re-enables it (e.g. when a validation error swaps back).
+  var confirmBtn = formEl.querySelector('.sp-confirm-btn');
+  if (confirmBtn && !confirmBtn.disabled) {
+    confirmBtn.disabled = true;
+    formEl.addEventListener('htmx:afterRequest', function reenable() {
+      confirmBtn.disabled = false;
+      formEl.removeEventListener('htmx:afterRequest', reenable);
+    });
   }
   return true;
 }
