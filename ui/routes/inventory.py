@@ -2682,6 +2682,28 @@ function celerpPrintLabel(entityId, templateId) {
                     hx_swap="outerHTML",
                     style="display:none",
                 )
+        # Allow-splitting change on the detail page: return the toggled cell plus an OOB reload
+        # of the actions card so the Split card reflects the new value without a page reload.
+        # Mirrors the category -> attributes-section idiom above. On any non-detail URL the branch
+        # is skipped and execution falls through to the generic display_cell return (no
+        # #item-advanced-panel element exists there).
+        if field == "allow_splitting":
+            current_url = request.headers.get("hx-current-url", "")
+            if "/inventory/item:" in current_url:
+                from ui.components.table import display_cell
+                split_cell = display_cell(
+                    entity_id=entity_id, field=field, value=item.get(field, ""),
+                    cell_type=cell_type, options=options,
+                    editable=f_def.get("editable", True) if f_def else True,
+                )
+                oob_reload = Div(
+                    hx_get=f"/api/items/{entity_id}/advanced-panel",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
+                    hx_swap_oob="true",
+                    id="item-advanced-panel",
+                )
+                return split_cell, oob_reload
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
             from ui.components.table import fmt_money
@@ -2879,6 +2901,25 @@ function celerpPrintLabel(entityId, templateId) {
             _detail_table(entity_id, item, right, title="Attributes", currency=currency),
             id="item-attributes-section",
         )
+
+    @app.get("/api/items/{entity_id}/advanced-panel")
+    async def item_advanced_panel(request: Request, entity_id: str):
+        """Return the item operations (actions) card fragment. Used by the item-detail page to
+        refresh the Split card in place after the allow_splitting toggle changes."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Response(str(e.detail), status_code=500)
+        # Fresh split preview in its own try/except so a non-splittable item (or any preview
+        # error) degrades to the disabled card rather than blanking the fragment.
+        try:
+            split_preview = await api.split_preview(token, entity_id)
+        except APIError:
+            split_preview = None
+        return _advanced_panel(entity_id, item, split_preview)
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
@@ -7415,6 +7456,7 @@ function batchSplitSubmit_{safe_id}(form) {{
         ),
         P(t("inv.to_merge_items_select_multiple_from_the_inventory"), cls="form-hint"),
         *([Div(*module_item_actions, cls="actions-group", style="margin-top:0.5rem")] if module_item_actions else []),
+        id="item-advanced-panel",
         cls="detail-card",
     )
 
