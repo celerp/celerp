@@ -11853,8 +11853,8 @@ class TestSendToPurchaseOrder:
             return by_id[eid]
 
         mock_create = AsyncMock(side_effect=[
-            {"entity_id": "doc:PO-A", "ref_id": "PO-A"},
-            {"entity_id": "doc:PO-B", "ref_id": "PO-B"},
+            {"id": "doc:PO-A", "event_id": "evt-A"},
+            {"id": "doc:PO-B", "event_id": "evt-B"},
         ])
         with (
             patch("ui.api_client.get_item", new=_get_item),

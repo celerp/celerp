@@ -3945,8 +3945,10 @@ function celerpPrintLabel(entityId, templateId) {
                         if sup:
                             payload["contact_name"] = sup
                         result = await api.create_doc(token, payload)
-                        did = result.get("entity_id") or result.get("id", "")
-                        ref = result.get("ref_id") or result.get("doc_number") or did.split(":")[-1][:8]
+                        # create_doc returns id="doc:<ref_id>"; the part after the
+                        # prefix is the human-readable document number (e.g. PO-2608-0003).
+                        did = result.get("id", "")
+                        ref = did.split(":", 1)[-1]
                         created.append((sup, did, ref))
                     if len(created) == 1:
                         return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{created[0][1]}"})
@@ -4787,7 +4789,7 @@ def _bulk_context_templates(
                 Option(t("inv.document_type"), value="", disabled=True, selected=True),
                 *send_to_opts,
                 name="send_to_doc_type", cls="form-input form-input--sm",
-                onchange="sendToTypeChanged(this.value)",
+                onchange="sendToTypeChanged(this.value, this.options[this.selectedIndex].text)",
                 id="send-to-type-select",
             ),
             Select(
