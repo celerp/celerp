@@ -438,14 +438,16 @@ def test_preview_delta_badge(page, ui_server, api):
     assert r.status_code in {200, 201}, f"create failed: {r.text}"
     item = r.json()
 
-    # Bulk-split preview badge.
+    # Bulk-split preview badge: Delta is net gain/loss (parcel - (mother_post +
+    # child)), not the mother's remaining weight. On open, child is 0 and the
+    # mother starts at the full parcel, so the net is 0.
     _open_split_panel(page, ui_server, item["id"])
     badge = page.locator("#bulk-split-preview form .sp-delta-badge .sp-delta-val")
     assert badge.count() > 0, "bulk-split preview must render a delta badge beside Confirm"
     page.wait_for_timeout(200)
     val = badge.first.inner_text().strip()
-    assert val not in {"--", ""} and float(val) == pytest.approx(80.0), (
-        f"bulk-split delta badge should show 80 (parcel - 0), got '{val}'"
+    assert val not in {"--", ""} and float(val) == pytest.approx(0.0), (
+        f"bulk-split delta badge should show 0 (parcel - (mother_post + 0)), got '{val}'"
     )
 
     # Transform preview badge.
@@ -467,4 +469,78 @@ def test_preview_delta_badge(page, ui_server, api):
     )
 
     _save_screenshot(page, "preview-delta-badge")
+
+
+def test_bulk_split_delta_zero_on_balanced_split(page, ui_server, api):
+    """Carving a child from the mother keeps the bulk-split Delta at 0: the
+    mother auto-derives to the remainder, so mother_post + child = parcel."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-BALANCED-001",
+        "name": "Split Delta Balanced Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_split_panel(page, ui_server, item["id"])
+    form = page.locator("#bulk-split-preview form")
+    badge = form.locator(".sp-delta-badge .sp-delta-val")
+
+    child_qty = form.locator('input[name="child_qty"]')
+    child_qty.fill("30")
+    child_qty.dispatch_event("change")
+    page.wait_for_timeout(200)
+
+    mother_qty = form.locator(".mother-qty-input")
+    mother_val = mother_qty.input_value()
+    assert float(mother_val) == pytest.approx(70.0), (
+        f"mother should auto-derive to 70 (100-30), got '{mother_val}'"
+    )
+
+    val = badge.first.inner_text().strip()
+    assert val not in {"--", ""} and float(val) == pytest.approx(0.0), (
+        f"delta should be 0 (100 - (70+30)), got '{val}'"
+    )
+
+    _save_screenshot(page, "bulk-split-delta-balanced")
+
+
+def test_bulk_split_delta_nonzero_when_mother_modified(page, ui_server, api):
+    """Overriding the mother weight after carving a child breaks the balance:
+    Delta shows the net gain/loss, not 0, once mother_post + child != parcel."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-DELTA-MOTHER-MOD-001",
+        "name": "Split Delta Mother Modified Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_split_panel(page, ui_server, item["id"])
+    form = page.locator("#bulk-split-preview form")
+    badge = form.locator(".sp-delta-badge .sp-delta-val")
+
+    child_qty = form.locator('input[name="child_qty"]')
+    child_qty.fill("30")
+    child_qty.dispatch_event("change")
+    page.wait_for_timeout(200)
+
+    mother_qty = form.locator(".mother-qty-input")
+    mother_qty.fill("20")
+    mother_qty.dispatch_event("change")
+    page.wait_for_timeout(200)
+
+    mother_val = mother_qty.input_value()
+    assert float(mother_val) == pytest.approx(20.0), (
+        f"mother should hold the manually-entered 20, got '{mother_val}'"
+    )
+
+    val = badge.first.inner_text().strip()
+    assert val not in {"--", ""} and float(val) == pytest.approx(50.0), (
+        f"delta should be 50 (100 - (20+30)), got '{val}'"
+    )
+
+    _save_screenshot(page, "bulk-split-delta-mother-modified")
 

@@ -39,13 +39,22 @@ def _sp_static_td(val, num: bool = False) -> FT:
     return Td(val, cls="sp-td sp-td--num" if num else "sp-td")
 
 # Shared live-delta helper, injected on all three split surfaces: the item-detail manual
-# split card (three-line reconciliation trio) and the bulk-split / transform preview badges.
-# One definition, one term everywhere. Parcel weight comes from data-parent-weight (or
-# data-parent-qty when the parcel is weight-sold, data-sell-by-weight="1"); the outgoing
-# split weight is the running sum of the inputs marked data-delta-weight; delta = parcel -
-# split weight. The card gates the trio at the "--" empty marker (GDR 2k) until the first
-# split qty is entered (data-delta-gated); the previews open with prefilled child weights
-# and show a value immediately.
+# split card (three-line reconciliation trio), the bulk-split preview badge, and the
+# transform preview badge. One definition, one term for the sum-and-subtract math; delta =
+# parcel weight - sum of the elements marked data-delta-weight. Which elements carry that
+# marker is what diverges by surface, and that divergence is deliberate and temporary
+# (owner directed the item-detail card to be reviewed separately; transform delta is
+# intentionally trim-loss, parent_in - child_out, not net gain/loss):
+#   - bulk-split preview: marks BOTH the mother's post-split weight/qty element and the
+#     child's outgoing weight/qty element, so delta = original - (mother_post + child) = the
+#     net gain/loss of the split, non-zero only when the mother is edited independently or
+#     the child exceeds the mother.
+#   - item-detail card and transform preview: mark only the outgoing child element (their
+#     existing, unchanged behavior).
+# Parcel weight comes from data-parent-weight (or data-parent-qty when the parcel is
+# weight-sold, data-sell-by-weight="1"). The card gates the trio at the "--" empty marker
+# (GDR 2k) until the first split qty is entered (data-delta-gated); the previews open with
+# prefilled child weights and show a value immediately.
 _SPLIT_DELTA_JS = """
 function _updateSplitDelta(form) {
   var deltaEl = form.querySelector('.sp-delta-val');
@@ -76,8 +85,10 @@ function _updateSplitDelta(form) {
       return;
     }
   }
-  // The template marks whichever input carries the outgoing weight with data-delta-weight;
-  // one marker means one behavior across all three surfaces, no field-name knowledge in JS.
+  // The template marks whichever elements carry the surface's split-weight terms with
+  // data-delta-weight; this function only sums the marker, never a field name, so which
+  // elements are marked (child only, or mother-post-split plus child) is a template decision
+  // per surface, not a branch here.
   var sumW = 0;
   form.querySelectorAll('[data-delta-weight]').forEach(function(el) {
     var raw = (el.value !== undefined ? el.value : el.textContent);
@@ -3092,8 +3103,14 @@ function celerpPrintLabel(entityId, templateId) {
                 elif is_child:
                     cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td sp-td--num"))
                 else:
-                    # Mother: static display (grey italic), updated by JS
-                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val"), cls="sp-td sp-td--num"))
+                    # Mother: static display (grey italic), updated by JS. Also carries the
+                    # delta marker (data-delta-weight) when sell_by is NOT weight-type, so the
+                    # bulk-split badge sums mother_post + child (net gain/loss), not child alone.
+                    # When sell_by IS weight, this span may not render at all (no weight column
+                    # for a pure weight-sold parcel), so the marker lives on .mother-qty-input
+                    # instead (mother_row below), which holds the same quantity in that case.
+                    _mother_span_dw = {"data_delta_weight": "1"} if sell_by_type != "weight" else {}
+                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val", **_mother_span_dw), cls="sp-td sp-td--num"))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 # Child pieces is editable only when sell_by is NOT a pieces unit.
@@ -3109,13 +3126,16 @@ function celerpPrintLabel(entityId, templateId) {
                     cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
             return Tr(*cells)
 
+        # When sell_by is weight, qty IS the mother's post-split weight (no separate weight
+        # column may render), so this input carries the delta marker instead of the span above.
+        _mother_qty_dw = {"data_delta_weight": "1"} if sell_by_type == "weight" else {}
         mother_row = _parcel_row(
             "Mother",
             _sp_static_td(preview["parent_sku"]),
             Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
                      step=str(10 ** -decimals if decimals > 0 else 1), min="0",
                      cls="form-input form-input--xs sp-input mother-qty-input",
-                     onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td sp-td--num"),
+                     onchange="bulkSplitMotherQtyChanged(this)", **_mother_qty_dw), cls="sp-td sp-td--num"),
             preview.get("parent_weight"),
             parent_pieces_val,
             weight_name=None,
@@ -3179,10 +3199,16 @@ function celerpPrintLabel(entityId, templateId) {
                 cls="sp-td sp-total-val sp-total-pieces",
             ))
 
-        # Live delta badge next to Confirm: parcel weight - sum(outgoing child weights). The
-        # outgoing weight input carries the data-delta-weight marker (child_qty when
-        # weight-sold, editable child_weight when pieces-sold); the JS reads the parcel weight
-        # from data-parent-qty/data-parent-weight. Units with no weight carry no delta.
+        # Live delta badge next to Confirm: net gain/loss of the split, parcel weight -
+        # (mother's post-split weight + child's outgoing weight). Both weight-carrying
+        # elements now carry the data-delta-weight marker (mother_qty/mother-weight-display
+        # per sell_by_type above, plus child_qty when weight-sold or editable child_weight
+        # when pieces-sold), so the badge reads 0 for an ordinary split (mother_post + child =
+        # original) and non-zero only when the mother is edited independently or the child
+        # exceeds the mother. The item-detail card and transform preview are unchanged (owner
+        # directed the card to be reviewed separately; transform delta is intentionally
+        # trim-loss). The JS reads the parcel weight from data-parent-qty/data-parent-weight.
+        # Units with no weight carry no delta.
         delta_unit = f" {weight_display}" if weight_display else ""
         _show_delta_badge = (sell_by_type == "weight") or show_weight
 
