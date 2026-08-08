@@ -562,3 +562,68 @@ def test_bulk_split_delta_nonzero_when_mother_modified(page, ui_server, api):
 
     _save_screenshot(page, "bulk-split-delta-mother-modified")
 
+
+def test_split_esc_exits_input(page, ui_server, api):
+    """GDR 2j: Esc exits every split-table field. Focusing the Mother qty input and
+    pressing Escape must blur it (the shared onkeydown handler calls this.blur())."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-ESC-001",
+        "name": "Split Esc Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+    form = page.locator(".action-card form:has(.split-preview-table)")
+
+    mother = form.locator(".mother-qty-input").first
+    mother.focus()
+    assert page.evaluate(
+        "() => document.activeElement && document.activeElement.classList.contains('mother-qty-input')"
+    ), "mother qty input should hold focus after .focus()"
+
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(100)
+    assert not page.evaluate(
+        "() => document.activeElement && document.activeElement.classList.contains('mother-qty-input')"
+    ), "Escape must blur the split-table input (GDR 2j)"
+
+    _save_screenshot(page, "split-esc-exits-input")
+
+
+def test_split_numeric_headers_right_aligned(page, ui_server, api):
+    """HTML/CSS 4a: numeric column headers (QTY/Weight/Pieces) are right-aligned over
+    their figures, while the text SKU header stays centered."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-HDR-ALIGN-001",
+        "name": "Split Header Align Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+
+    aligns = page.evaluate("""() => {
+        const table = document.querySelector('.action-card .split-preview-table');
+        const out = {num: [], text: []};
+        table.querySelectorAll('thead th').forEach(th => {
+            const a = window.getComputedStyle(th).textAlign;
+            if (th.classList.contains('sp-th--num')) out.num.push(a);
+            else if (th.textContent.trim() === 'SKU') out.text.push(a);
+        });
+        return out;
+    }""")
+    assert aligns["num"], "no numeric split-table headers found"
+    assert all(a == "right" for a in aligns["num"]), (
+        f"numeric headers must be right-aligned, got {aligns['num']}"
+    )
+    assert all(a == "center" for a in aligns["text"]), (
+        f"the SKU header must be centered, got {aligns['text']}"
+    )
+
+    _save_screenshot(page, "split-numeric-headers-right-aligned")
+
