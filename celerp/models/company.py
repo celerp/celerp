@@ -42,9 +42,17 @@ class WorkCenter(Base):
 
     Optionally carries a WIP location, an hourly labor rate and a capacity (capacity is reserved for
     later scheduling work). Runs may reference a work centre via work_center_id.
+
+    hours_per_day is the working day length used to turn daily labour into hours; the
+    company's default centre supplies it to the To-Make board. A partial unique index
+    keeps at most one default centre per company.
     """
     __tablename__ = "work_centers"
-    __table_args__ = (UniqueConstraint("company_id", "name", name="uq_work_center_company_name"),)
+    __table_args__ = (
+        UniqueConstraint("company_id", "name", name="uq_work_center_company_name"),
+        sa.Index("uq_work_center_one_default", "company_id",
+                 unique=True, postgresql_where=sa.text("is_default")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
@@ -52,6 +60,8 @@ class WorkCenter(Base):
     wip_location_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
     labor_rate: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     capacity: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    hours_per_day: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 

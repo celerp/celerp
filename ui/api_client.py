@@ -1257,6 +1257,11 @@ async def patch_work_center(token: str, wc_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/manufacturing/work-centers/{wc_id}", json=data)).json()
 
 
+async def set_default_work_center(token: str, wc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/manufacturing/work-centers/{wc_id}/is_default")).json()
+
+
 async def delete_work_center(token: str, wc_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/manufacturing/work-centers/{wc_id}")).json()

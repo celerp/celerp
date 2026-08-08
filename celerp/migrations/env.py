@@ -35,7 +35,12 @@ except ImportError:
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: alembic runs in-process during
+    # `celerp migrate`/`celerp start` and the restore reconcile, so the default
+    # (True) would silence every application logger already created, including
+    # the reconcile's own failure logger. Configure alembic's loggers without
+    # muting the app's.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

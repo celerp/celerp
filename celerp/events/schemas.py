@@ -125,6 +125,10 @@ class ItemSplit(BaseModel):
     # One entry per child: {child_id, child_sku, origin_event_id, qty_before, qty_after,
     # pieces_before, pieces_after, weight_before, weight_after}. Sequential mother deltas.
     children_detail: list[dict[str, Any]] = Field(default_factory=list)
+    # Weight expected to remain minus weight measured, recorded only when a real
+    # measurement exists (full weighed break-up, or an operator re-weigh). None when
+    # the remainder is only derived, so no false anomaly is asserted.
+    delta: float | None = None
 
 
 class ItemSplitFrom(BaseModel):
@@ -150,6 +154,9 @@ class ItemTransform(BaseModel):
     pieces_after: float | None = None
     weight_before: float | None = None
     weight_after: float | None = None
+    # Processing/trim loss: mother weight in minus child weight out, recorded only
+    # when both weights exist. None otherwise (no fabricated loss).
+    delta: float | None = None
 
 
 class ItemTransformedFrom(BaseModel):

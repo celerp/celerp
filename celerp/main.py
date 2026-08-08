@@ -211,9 +211,20 @@ async def lifespan(_app: FastAPI):
             # instance that already has companies).
             from celerp.modules.slots import fire_lifecycle as _fire
             from celerp.db import SessionLocal as _SessionLocal
+            # Best-effort, like the two sibling blocks below: a hook that fails
+            # during flush poisons the shared session, so the commit raises.
+            # Roll back and log at ERROR rather than let that crash boot - the
+            # manufacturing seed hook, for one, must never be able to take the
+            # app down.
             async with _SessionLocal() as _sess:
-                await _fire("on_modules_ready", session=_sess)
-                await _sess.commit()
+                try:
+                    await _fire("on_modules_ready", session=_sess)
+                    await _sess.commit()
+                except Exception:
+                    await _sess.rollback()
+                    logging.getLogger(__name__).exception(
+                        "on_modules_ready hooks failed (non-fatal); their data was rolled back"
+                    )
 
             # A bundled default whose content no longer matches the first-party
             # lock is demoted to untrusted. Surface that in the notification bell

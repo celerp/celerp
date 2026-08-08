@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from test_helpers import make_test_token, authed_cookies
+from ui.api_client import APIError
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -484,3 +485,92 @@ async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):
     assert r.status_code == 200
     assert b"VAT" in r.content
     assert b"Coming soon" not in r.content
+
+
+@pytest.mark.asyncio
+async def test_settings_inline_save_persists_auto_complete(ui_client):
+    """Option A: POST /settings/manufacturing saves inline - a 200 whose corner-toast
+    trigger confirms the save, not a 303 reload - and passes auto_complete_work_orders
+    through to the client."""
+    saved = AsyncMock(return_value={})
+    with patch("ui.api_client.update_mfg_settings", new=saved):
+        r = await ui_client.post(
+            "/settings/manufacturing",
+            data={"auto_complete_work_orders": "1", "auto_create_work_orders": "1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 200
+    assert "Settings saved." in r.headers.get("HX-Trigger", "")
+    saved.assert_awaited_once()
+    payload = saved.await_args.args[1]
+    assert payload["auto_complete_work_orders"] is True
+
+
+# ── Reorder digest upsell nudge ───────────────────────────────────────────────
+
+class TestReorderDigestUpsell:
+    """POST /settings/inventory/reorder: a non-paid user who flips the low-stock
+    digest off->on saves the setting and is nudged toward Connect delivery; a
+    paid user, a re-check (already on), or a relay-status failure gets no nudge."""
+
+    _URL = "/settings/inventory/reorder"
+
+    def _post_data(self) -> dict:
+        return {
+            "reorder_alert_email": "1",
+            "reorder_alerts_enabled": "1",
+            "inventory_method": "fifo",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reorder_digest_paid_no_upsell(self, ui_client):
+        """A paid user's save consults relay status and redirects saved=1 with no upsell=1."""
+        prior = {**_COMPANY, "reorder_alert_email": False}
+        relay = AsyncMock(return_value={"connected": True, "tier": "cloud"})
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
+            patch("ui.api_client.patch_company", new=AsyncMock()) as patch_co,
+            patch("ui.api_client.get_relay_status", new=relay),
+        ):
+            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+        assert r.status_code == 303
+        loc = r.headers.get("location", "")
+        assert "tab=reorder" in loc and "saved=1" in loc
+        assert "upsell=1" not in loc
+        relay.assert_awaited()  # paid branch requires the relay status to be consulted
+        assert patch_co.await_args.args[1]["reorder_alert_email"] is True
+
+    @pytest.mark.asyncio
+    async def test_reorder_digest_recheck_no_modal(self, ui_client):
+        """A non-paid save that leaves the digest already-on emits no upsell=1 (transition-only)."""
+        prior = {**_COMPANY, "reorder_alert_email": True}
+        relay = AsyncMock(return_value={"connected": False, "tier": None})
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
+            patch("ui.api_client.patch_company", new=AsyncMock()),
+            patch("ui.api_client.get_relay_status", new=relay),
+        ):
+            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+        assert r.status_code == 303
+        loc = r.headers.get("location", "")
+        assert "saved=1" in loc
+        assert "upsell=1" not in loc
+        relay.assert_awaited()  # status is still consulted, but no off->on flip means no nudge
+
+    @pytest.mark.asyncio
+    async def test_reorder_digest_relay_error_skips_modal(self, ui_client):
+        """When relay status errors on the off->on save, the setting still saves and no upsell=1."""
+        prior = {**_COMPANY, "reorder_alert_email": False}
+        relay = AsyncMock(side_effect=APIError(503, "relay down"))
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=prior)),
+            patch("ui.api_client.patch_company", new=AsyncMock()) as patch_co,
+            patch("ui.api_client.get_relay_status", new=relay),
+        ):
+            r = await ui_client.post(self._URL, data=self._post_data(), cookies=_authed())
+        assert r.status_code == 303
+        loc = r.headers.get("location", "")
+        assert "saved=1" in loc
+        assert "upsell=1" not in loc
+        relay.assert_awaited()  # the read was attempted, then swallowed
+        assert patch_co.await_args.args[1]["reorder_alert_email"] is True  # saved as submitted

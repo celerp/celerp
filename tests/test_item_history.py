@@ -651,3 +651,148 @@ def test_transform_row_links_child():
     assert "Item Transform - MUM" in html
     assert "/inventory/item:c1#evt-51" in html
     assert "Qty: 10 → 0" in html
+
+
+# --------------------------------------------------------------------------- #
+# Split / transform weight-reconciliation delta
+#   delta = expected_remaining - measured_remaining
+# Backend emission tests exercise the real split/transform endpoints; render
+# tests feed a hand-built event to activity_table.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_split_records_delta_full_breakup(client):
+    """A fully weighed break-up (parent consumed, every child weighed) records
+    delta = parent_weight - sum(child_weights). Here 10 - (5 + 3) = 2."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/split", json={"children": [
+        {"sku": "MUM.1", "quantity": 5.0, "weight": 5.0},
+        {"sku": "MUM.2", "quantity": 5.0, "weight": 3.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"]
+    assert len(split) == 1
+    d = split[0]["data"]
+    assert "delta" in d
+    assert d["delta"] == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_split_records_delta_on_reconcile(client):
+    """A partial draw whose mother re-weigh differs from the derived remainder
+    records delta = parent_weight - sum(child_weights) - mother_weight.
+    Here 10 - 3 - 6 = 1 (derived remainder would have been 7)."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "MUM.1", "quantity": 3.0, "weight": 3.0}],
+        "mother_weight": 6.0}, headers=h)
+    assert r.status_code == 200, r.text
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"]
+    assert len(split) == 1
+    d = split[0]["data"]
+    assert "delta" in d
+    assert d["delta"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_split_delta_none_on_routine_draw(client):
+    """A routine partial draw with no re-weigh has no measured remainder, so delta
+    is present but None (honest degradation, never a fabricated anomaly)."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "MUM.1", "quantity": 3.0, "weight": 3.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"]
+    assert len(split) == 1
+    d = split[0]["data"]
+    assert "delta" in d
+    assert d["delta"] is None
+
+
+@pytest.mark.asyncio
+async def test_split_delta_none_when_child_unweighed(client):
+    """A full break-up in which a child carries no weight cannot be reconciled, so
+    delta is present but None."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "MUM.1", "quantity": 10.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"]
+    assert len(split) == 1
+    d = split[0]["data"]
+    assert "delta" in d
+    assert d["delta"] is None
+
+
+@pytest.mark.asyncio
+async def test_transform_records_delta(client):
+    """A transform records delta = parent_weight - child_weight. Here 10 - 8 = 2."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/transform", json={
+        "child_sku": "CUT-1", "child_category": "Cut", "child_sell_by": "piece",
+        "child_quantity": 1.0, "child_cost_total": 90.0, "child_weight": 8.0}, headers=h)
+    assert r.status_code == 200, r.text
+    tr = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.transform"]
+    assert len(tr) == 1
+    d = tr[0]["data"]
+    assert "delta" in d
+    assert d["delta"] == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
+async def test_transform_delta_none_when_unweighed(client):
+    """A transform whose child carries no weight cannot be reconciled, so delta is
+    present but None."""
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, weight=10.0)
+    r = await client.post(f"/items/{parent_id}/transform", json={
+        "child_sku": "CUT-2", "child_category": "Cut", "child_sell_by": "piece",
+        "child_quantity": 1.0, "child_cost_total": 90.0}, headers=h)
+    assert r.status_code == 200, r.text
+    tr = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.transform"]
+    assert len(tr) == 1
+    d = tr[0]["data"]
+    assert "delta" in d
+    assert d["delta"] is None
+
+
+def test_split_delta_rendered_in_history():
+    """A nonzero split delta renders one mother-level 'Delta' line in history."""
+    ev = _split_event()
+    ev["data"]["delta"] = 2.0
+    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    assert "Delta" in html
+
+
+def test_split_delta_zero_not_rendered():
+    """A zero delta is a clean reconciliation and shows no Delta line."""
+    ev = _split_event()
+    ev["data"]["delta"] = 0.0
+    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    assert "Delta" not in html
+
+
+def test_split_delta_negative_flagged():
+    """A negative split delta (measured more than expected) renders a Delta line
+    flagged with the negative cell class."""
+    ev = _split_event()
+    ev["data"]["delta"] = -2.0
+    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    assert "Delta" in html
+    assert "cell--negative" in html
+
+
+def test_transform_delta_rendered_in_history():
+    """A nonzero transform delta renders a 'Delta' line in history."""
+    ev = {"id": 200, "event_type": "item.transform", "entity_id": "item:mum",
+          "ts": "2026-06-21T10:00:00+00:00",
+          "data": {"child_id": "item:c1", "child_sku": "CUT-1", "child_category": "Cut",
+                   "parent_cost_total": 100.0, "child_cost_total": 90.0, "parent_sku": "MUM",
+                   "child_origin_event_id": 51, "qty_before": 10, "qty_after": 0,
+                   "delta": 2.0}}
+    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    assert "Delta" in html

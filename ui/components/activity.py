@@ -868,6 +868,30 @@ def _qpw_delta(d: dict, currency: str | None = None) -> str:
     return ", ".join(parts)
 
 
+def _delta_detail(data: dict) -> FT | None:
+    """Mother-level 'Delta: {value} {unit}' line for split/transform history.
+    Rendered only when a delta was recorded and rounds to non-zero (nothing to explain
+    otherwise); a negative delta carries the standard negative-value style, and the
+    tooltip explains what an abnormal value means. Returns None when there is no line."""
+    if not isinstance(data, dict):
+        return None
+    delta = data.get("delta")
+    if delta is None:
+        return None
+    try:
+        dv = float(delta)
+    except (TypeError, ValueError):
+        return None
+    if round(dv, 6) == 0:
+        return None
+    unit = str(data.get("weight_unit") or "").strip()
+    text = f"{t('inv.split_delta')}: {fmt_qty(dv)}{(' ' + unit) if unit else ''}"
+    attrs = {"title": t("inv.split_delta_tooltip")}
+    if dv < 0:
+        attrs["cls"] = "cell--negative"
+    return Span(text, **attrs)
+
+
 def _origin_detail(data: dict, with_category: bool = False) -> str:
     """Child origin detail: '0 → received' for each measure the child actually got."""
     parts = [f"Qty: 0 → {fmt_qty(data.get('qty'))}"]
@@ -936,6 +960,9 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
                 _item_link(c.get("child_id"), str(c.get("child_sku") or ""), c.get("origin_event_id")),
             )
             specs.append((content, _qpw_delta(c, currency), f"-{i}"))
+        delta_line = _delta_detail(data)
+        if delta_line is not None:
+            specs.append((Span(f"Item Split - {psku}"), delta_line, "-delta"))
         return specs
 
     if etype == "item.split_from":
@@ -950,7 +977,13 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
             f"Item Transform - {psku} → ",
             _item_link(data.get("child_id"), str(data.get("child_sku") or ""), data.get("child_origin_event_id")),
         )
-        return [(content, _qpw_delta(data, currency), "")]
+        detail_txt = _qpw_delta(data, currency)
+        delta_line = _delta_detail(data)
+        if delta_line is not None:
+            detail: FT | str = Span(detail_txt, Br(), delta_line) if detail_txt else delta_line
+        else:
+            detail = detail_txt
+        return [(content, detail, "")]
 
     if etype == "item.transformed_from":
         content = Span("Transformed from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))

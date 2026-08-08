@@ -49,6 +49,30 @@ def _run_migration(engine, module_name: str, fn: str) -> None:
                     getattr(mig, fn)()
 
 
+def run_migration_ops(engine, module_name: str) -> None:
+    """Run versions/<module_name>.upgrade() through a REAL alembic Operations
+    context, in its own transaction.
+
+    Unlike `_run_migration`'s MagicMock op (which only records calls and suits a
+    raw-SQL migration reached via op.get_bind()), this binds a live Operations
+    context, so real DDL ops (op.add_column, op.create_index, op.alter_column)
+    actually execute against the connection. A raw-SQL migration works here too:
+    its op.get_bind() returns the same connection.
+    """
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+
+    full = f"celerp.migrations.versions.{module_name}"
+    with engine.connect() as conn:
+        with conn.begin():
+            ctx = MigrationContext.configure(conn)
+            if full in sys.modules:
+                del sys.modules[full]
+            with Operations.context(ctx):
+                mig = importlib.import_module(full)
+                mig.upgrade()
+
+
 class MigDB:
     """An isolated Postgres schema holding a projections table (item state)."""
 
@@ -227,3 +251,74 @@ def fresh_db():
             )
             c.execute(text(f'DROP DATABASE IF EXISTS "{dbname}"'))
         admin.dispose()
+
+
+def wc_mkcompany(conn, settings: dict) -> str:
+    """Insert one company with the given settings; return its id."""
+    cid = str(uuid.uuid4())
+    conn.execute(text("INSERT INTO companies (id, name, settings) VALUES (:id, :n, CAST(:s AS json))"),
+                 {"id": cid, "n": "Co", "s": json.dumps(settings)})
+    return cid
+
+
+def wc_add_work_center(conn, company_id: str, name: str) -> None:
+    """Insert a plain (non-default) work center for a company."""
+    conn.execute(text(
+        "INSERT INTO work_centers (id, company_id, name, created_at) "
+        "VALUES (gen_random_uuid(), :cid, :n, NOW())"),
+        {"cid": company_id, "n": name})
+
+
+@pytest.fixture()
+def wc_db():
+    """Isolated Postgres schema with companies, a 7-column work_centers (the
+    pre-migration shape: no is_default/hours_per_day), and notifications.
+
+    The schema migration adds the two columns and the partial index; the data
+    migration seeds/notifies/strips. Two migrations run against one schema, so a
+    test can compose them exactly as alembic would.
+    """
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"wcmig_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE companies (id UUID PRIMARY KEY, name TEXT, settings JSON NOT NULL)"))
+        conn.execute(text("""
+            CREATE TABLE work_centers (
+                id UUID PRIMARY KEY,
+                company_id UUID NOT NULL REFERENCES companies(id),
+                name TEXT NOT NULL,
+                wip_location_id UUID,
+                labor_rate DOUBLE PRECISION,
+                capacity DOUBLE PRECISION,
+                created_at TIMESTAMPTZ NOT NULL,
+                CONSTRAINT uq_work_center_company_name UNIQUE (company_id, name)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE notifications (
+                id UUID PRIMARY KEY,
+                company_id UUID NOT NULL,
+                user_id UUID,
+                category VARCHAR(32) NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                action_url TEXT,
+                priority VARCHAR(16) NOT NULL DEFAULT 'medium',
+                read BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ NOT NULL
+            )
+        """))
+    yield engine
+    engine.dispose()
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+    admin.dispose()
