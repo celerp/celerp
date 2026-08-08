@@ -462,13 +462,16 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         headers.append(Th(weight_col_header, cls="sp-th sp-th--num"))
     if show_pieces:
         headers.append(Th("Pieces", cls="sp-th sp-th--num"))
+    if allow_add_child:
+        headers.append(Th("", cls="sp-th-remove"))
 
     # ESC-to-blur on every editable input the helper renders (GDR 2j); mirrors the
     # repeated-row convention in the journal-entry table (ui/routes/accounting.py:442).
     esc = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
 
-    def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False) -> FT:
-        kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input", onkeydown=esc)
+    def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False, width_cls: str | None = None) -> FT:
+        base_cls = "form-input form-input--xs sp-input" + (f" {width_cls}" if width_cls else "")
+        kwargs = dict(type="number", name=name, value=val, step="any", cls=base_cls, onkeydown=esc)
         if oninput:
             kwargs["oninput"] = oninput
         if onblur:
@@ -487,7 +490,8 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
     _child_pieces_onblur = "splitClampPieces(this)"
 
     def _parcel_row(label, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
-                    weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
+                    weight_name: str | None, pieces_name: str | None, is_child: bool = False,
+                    trailing: FT | None = None) -> FT:
         cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
         if show_weight:
             w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
@@ -496,7 +500,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             child_weight_editable = is_child and weight_name and sell_by_type != "weight"
             if child_weight_editable:
                 # This editable weight IS the outgoing weight for the delta sum (marker).
-                cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur, num=True, dw=True))
+                cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur, num=True, dw=True, width_cls="sp-input--weight"))
             elif is_child:
                 cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td sp-td--num"))
             else:
@@ -513,11 +517,15 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
             if child_pieces_editable:
                 pieces_max = str(int(parent_pieces_val or 1) - 1)
-                cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max, num=True))
+                cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max, num=True, width_cls="sp-input--pieces"))
             elif is_child:
                 cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
             else:
                 cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
+        # Trailing remove column, present on every row when add-child is enabled so the mother,
+        # first child, and each cloned child keep an equal column count.
+        if allow_add_child:
+            cells.append(trailing or Td("", cls="sp-td sp-remove-td"))
         return Tr(*cells)
 
     # When sell_by is weight, qty IS the mother's post-split weight (no separate weight
@@ -528,7 +536,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         _sp_static_td(preview["parent_sku"]),
         Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
                  step=str(10 ** -decimals if decimals > 0 else 1), min="0",
-                 cls="form-input form-input--xs sp-input mother-qty-input",
+                 cls="form-input form-input--xs sp-input sp-input--qty mother-qty-input",
                  onchange="bulkSplitMotherQtyChanged(this)", onkeydown=esc, **_mother_qty_dw), cls="sp-td sp-td--num"),
         preview.get("parent_weight"),
         parent_pieces_val,
@@ -551,17 +559,29 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         qty_cell = Td(Input(type="number", name="child_qty", value="0",
                             step=str(10 ** -decimals if decimals > 0 else 1), min="0",
                             max=fmt.format(preview["parent_qty"] - (10 ** -decimals if decimals > 0 else 1)),
-                            cls="form-input form-input--xs sp-input", onkeydown=esc,
+                            cls="form-input form-input--xs sp-input sp-input--qty", onkeydown=esc,
                             onchange="bulkSplitChildQtyChanged(this)", **_child_qty_dw), cls="sp-td sp-td--num")
+        # Removable children (cloned from the template) carry a trailing remove control; the
+        # single permanent child carries the gutter "+" in its leading label cell. Both only
+        # when add-child is enabled (item-detail card); bulk passes allow_add_child=False.
         if removable:
-            label = Span(
+            label = "Child"
+            trailing = Td(
                 Button("✕", type="button", cls="btn btn--ghost btn--xs split-remove-child-btn",
                        title="Remove child",
                        onclick="var f=this.closest('form');var tr=this.closest('tr');if(tr)tr.remove();splitRecalc(f);"),
+                cls="sp-td sp-remove-td",
+            )
+        elif allow_add_child:
+            label = Span(
+                Button("+", type="button", cls="btn btn--ghost btn--xs split-add-child-btn",
+                       title="Add another child", onclick="splitAddChild(this)"),
                 " Child",
             )
+            trailing = None
         else:
             label = "Child"
+            trailing = None
         return _parcel_row(
             label,
             sku_cell,
@@ -571,6 +591,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             weight_name="child_weight" if (show_weight and sell_by_type != "weight") else None,
             pieces_name="child_pieces" if (show_pieces and sell_by_type != "pieces") else None,
             is_child=True,
+            trailing=trailing,
         )
 
     child_row = _child_row(removable=False)
@@ -609,6 +630,8 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             str(int(parent_pieces_val or 0)),
             cls="sp-td sp-total-val sp-total-pieces",
         ))
+    if allow_add_child:
+        tfoot_cells.append(Td("", cls="sp-total-val"))
 
     # Live delta badge next to Confirm: net gain/loss of the split, parcel weight minus the
     # sum of the elements marked data-delta-weight (the mother's post-split weight/qty plus
@@ -621,13 +644,11 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
 
     add_child_controls = []
     if allow_add_child:
+        # The template wraps the child row in Table(Tbody(...)) so the server HTML parser keeps
+        # the <tr> intact inside <template>; splitAddChild extracts and appends that <tr>. The
+        # gutter "+" that adds a child lives in the first child's label cell (see _child_row).
         add_child_controls = [
             Template(Table(Tbody(_child_row(removable=True))), cls="split-child-template"),
-            Div(
-                Button("+ Add child", type="button", cls="btn btn--secondary btn--xs split-add-child-btn",
-                       onclick="splitAddChild(this)", title="Add another child"),
-                cls="sp-add-child-row",
-            ),
         ]
 
     return Form(

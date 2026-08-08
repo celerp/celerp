@@ -1923,6 +1923,17 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .sp-sku { font-family: monospace; font-size: 0.82rem; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
 .sp-input { width: 72px !important; padding: 2px 5px !important; font-size: 0.82rem !important; height: auto !important; text-align: left; }
+/* Per-column input widths: count/QTY narrow, weight wide, pieces medium. */
+.sp-input--qty { width: 60px !important; font-size: 0.78rem !important; }
+.sp-input--weight { width: 84px !important; font-size: 0.78rem !important; }
+.sp-input--pieces { width: 64px !important; font-size: 0.78rem !important; }
+/* Trailing remove column: the "✕" sits right, hard against the row's edge. */
+.sp-remove-td { text-align: right; white-space: nowrap; }
+/* Item-detail card only: indent the split table so the add-child "+" pops into the freed
+   left gutter (the bulk preview is not under .action-card, so it is unaffected). */
+.action-card .split-preview-table { margin-left: 26px; }
+.action-card .split-preview-table .sp-row-label { position: relative; }
+.split-add-child-btn { position: absolute; left: -26px; top: 50%; transform: translateY(-50%); }
 .sp-confirm-btn { margin-top: 8px; }
 /* Live delta badge (split preview table + transform preview). */
 .sp-delta-val { font-variant-numeric: tabular-nums; }
