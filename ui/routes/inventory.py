@@ -3935,29 +3935,53 @@ function celerpPrintLabel(entityId, templateId) {
                         items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
                     groups = group_by_supplier(items)
                     created: list[tuple[str, str, str]] = []
+                    failed: list[str] = []
                     for sup, ids in groups.items():
-                        line_items = await _reorder_lines_from_inventory(token, ids)
-                        payload = {"doc_type": "purchase_order", "status": "draft",
-                                   "purchase_kind": "inventory", "line_items": line_items}
-                        # preferred_supplier is a free-text name, so record it as the
-                        # draft's contact name (shown on the PO); it is not a contact
-                        # reference, so contact_id is left for the user to link.
-                        if sup:
-                            payload["contact_name"] = sup
-                        result = await api.create_doc(token, payload)
+                        label = sup or t("inv.no_supplier")
+                        try:
+                            line_items = await _reorder_lines_from_inventory(token, ids)
+                            payload = {"doc_type": "purchase_order", "status": "draft",
+                                       "purchase_kind": "inventory", "line_items": line_items}
+                            # preferred_supplier is a free-text name, so record it as the
+                            # draft's contact name (shown on the PO); it is not a contact
+                            # reference, so contact_id is left for the user to link.
+                            if sup:
+                                payload["contact_name"] = sup
+                            result = await api.create_doc(token, payload)
+                        except APIError as e:
+                            # One supplier group failed. Record it and keep going so the
+                            # drafts already created are never discarded: the user is shown
+                            # exactly which POs exist and which supplier to retry, rather than
+                            # a bare error that invites re-sending the whole selection and
+                            # duplicating the drafts that did succeed.
+                            failed.append(f"{label}: {e.detail}")
+                            continue
                         # create_doc returns id="doc:<ref_id>"; the part after the
                         # prefix is the human-readable document number (e.g. PO-2608-0003).
                         did = result.get("id", "")
                         ref = did.split(":", 1)[-1]
                         created.append((sup, did, ref))
-                    if len(created) == 1:
+                    if not created:
+                        # Every group failed: surface the errors, nothing was created.
+                        return Div(
+                            P(t("inv.pos_none_created"), cls="flash flash--error"),
+                            *[P(m) for m in failed],
+                            id="bulk-action-result",
+                        )
+                    if not failed and len(created) == 1:
                         return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{created[0][1]}"})
-                    # More than one supplier: show each draft created (no silent multi-create),
-                    # labelled by supplier and draft reference to match the document listing.
+                    # One or more drafts created; list each by supplier and draft reference
+                    # (no silent multi-create). Any group that failed is listed too, so a
+                    # partially successful send never hides the drafts it already created.
+                    children = [P(A(f"{sup or t('inv.no_supplier')}: {ref}",
+                                    href=f"/docs/{did}", cls="link")) for sup, did, ref in created]
+                    if failed:
+                        children.append(P(t("inv.pos_some_failed"), cls="flash flash--error"))
+                        children.extend(P(m) for m in failed)
                     return Div(
-                        P(t("inv.pos_created", n=len(created)), cls="flash flash--success"),
-                        *[P(A(f"{sup or t('inv.no_supplier')}: {ref}",
-                              href=f"/docs/{did}", cls="link")) for sup, did, ref in created],
+                        P(t("inv.pos_created", n=len(created)),
+                          cls="flash flash--warning" if failed else "flash flash--success"),
+                        *children,
                         id="bulk-action-result",
                     )
         except APIError as e:

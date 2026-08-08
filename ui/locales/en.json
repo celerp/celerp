@@ -710,6 +710,8 @@
   "inv.no_document_type_selected": "No document type selected.",
   "inv.no_supplier": "No supplier",
   "inv.pos_created": "Created {n} draft purchase orders.",
+  "inv.pos_none_created": "No draft purchase orders could be created.",
+  "inv.pos_some_failed": "Some suppliers could not be created and were left out:",
   "inv.no_label_templates": "No label templates.",
   "inv.override_hero_images": "Override existing hero images",
   "inv.quantity_must_be_greater_than_0": "Quantity must be greater than 0",

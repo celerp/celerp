@@ -11879,6 +11879,90 @@ class TestSendToPurchaseOrder:
         assert "contact_id" not in payloads[0]                 # free text is not a contact reference
         assert "contact_name" not in payloads[1]               # unassigned -> no supplier name
 
+    @pytest.mark.asyncio
+    async def test_send_to_rejects_unauthenticated_request(self, ui_client):
+        """An unauthenticated send-to request is rejected at the auth boundary and
+        performs no action: the htmx post is bounced to login and no document is
+        created. Pre-existing gate; covers the trust boundary of the changed handler."""
+        mock_create = AsyncMock(return_value={"id": "doc:PO-X"})
+        with patch("ui.api_client.create_doc", new=mock_create):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded", "HX-Request": "true"},
+            )
+        assert r.headers.get("hx-redirect", "").startswith("/login")   # bounced to login
+        assert mock_create.call_count == 0                             # no document created
+
+    @pytest.mark.asyncio
+    async def test_send_to_multi_supplier_partial_failure_keeps_created_drafts(self, ui_client):
+        """When one supplier group fails mid-run, the drafts already created are still
+        surfaced with their references and the failed supplier is reported, so the user
+        never loses a created PO or unwittingly recreates it on retry."""
+        acme = {**self._PO_ITEM, "entity_id": "item:po1", "preferred_supplier": "Acme Supplies"}
+        beta = {**self._PO_ITEM, "entity_id": "item:po2", "sku": "GADGET", "name": "Gadget",
+                "preferred_supplier": "Beta Trading"}
+        by_id = {"item:po1": acme, "item:po2": beta}
+
+        async def _get_item(_token, eid):
+            return by_id[eid]
+
+        # First group succeeds, second raises: the created draft must survive the failure.
+        mock_create = AsyncMock(side_effect=[
+            {"id": "doc:PO-A", "event_id": "evt-A"},
+            APIError(500, "supplier create failed"),
+        ])
+        with (
+            patch("ui.api_client.get_item", new=_get_item),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&selected=item%3Apo2"
+                        b"&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert mock_create.call_count == 2                  # both groups attempted
+        assert b"Created 1 draft purchase order" in r.content   # the successful draft is reported
+        assert b"PO-A" in r.content                         # and surfaced by reference, not discarded
+        assert b"supplier create failed" in r.content       # the failure is shown, not hidden
+
+    @pytest.mark.asyncio
+    async def test_send_to_multi_supplier_all_failed_creates_nothing(self, ui_client):
+        """When every supplier group fails, the response says nothing was created and
+        lists each failure; no draft link is fabricated for a group that failed."""
+        acme = {**self._PO_ITEM, "entity_id": "item:po1", "preferred_supplier": "Acme Supplies"}
+        beta = {**self._PO_ITEM, "entity_id": "item:po2", "sku": "GADGET", "name": "Gadget",
+                "preferred_supplier": "Beta Trading"}
+        by_id = {"item:po1": acme, "item:po2": beta}
+
+        async def _get_item(_token, eid):
+            return by_id[eid]
+
+        mock_create = AsyncMock(side_effect=[
+            APIError(500, "acme failed"),
+            APIError(500, "beta failed"),
+        ])
+        with (
+            patch("ui.api_client.get_item", new=_get_item),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
+            patch("ui.api_client.create_doc", new=mock_create),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Apo1&selected=item%3Apo2"
+                        b"&send_to_doc_type=purchase_order&send_to_target=__new__",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"No draft purchase orders could be created" in r.content
+        assert b"PO-" not in r.content                       # no fabricated draft reference
+        assert b"acme failed" in r.content and b"beta failed" in r.content
+
 
 async def _api_headers(client) -> dict:
     r = await client.post(
