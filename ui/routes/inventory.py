@@ -148,18 +148,24 @@ function splitRecalc(form) {
     var motherQty = Math.max(0, parentQty - _sumInputs(form, '[name="child_qty"]'));
     _setMotherQty(form, motherQty, decimals);
     var sellByType = form.dataset.sellByType;
+    // The sell-by dimension IS the qty, so its mother display mirrors the derived mother qty.
     if (sellByType === 'weight') {
-      var mwEl = form.querySelector('.mother-weight-display');
-      if (mwEl) mwEl.textContent = motherQty.toFixed(weightDecimals);
+      var mwSell = form.querySelector('.mother-weight-display');
+      if (mwSell) mwSell.textContent = motherQty.toFixed(weightDecimals);
     } else if (sellByType === 'pieces') {
-      var mpEl = form.querySelector('.mother-pieces-display');
-      if (mpEl) mpEl.textContent = String(Math.round(motherQty));
-    } else {
+      var mpSell = form.querySelector('.mother-pieces-display');
+      if (mpSell) mpSell.textContent = String(Math.round(motherQty));
+    }
+    // Any dimension that is NOT the sell-by unit is independent: derive its mother display from
+    // that dimension's own parent total minus the sum of its children so it stays live too.
+    if (sellByType !== 'weight') {
       var parentWeight = parseFloat(form.dataset.parentWeight);
       if (!isNaN(parentWeight)) {
         var mwd = form.querySelector('.mother-weight-display');
         if (mwd) mwd.textContent = Math.max(0, parentWeight - _sumInputs(form, '[name="child_weight"]')).toFixed(weightDecimals);
       }
+    }
+    if (sellByType !== 'pieces') {
       var parentPieces = parseFloat(form.dataset.parentPieces);
       if (!isNaN(parentPieces)) {
         var mpd = form.querySelector('.mother-pieces-display');
@@ -1798,9 +1804,9 @@ def setup_routes(app):
                     cls="header-actions",
                 ),
             ),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -7261,8 +7267,8 @@ function batchSplitPreview_{safe_id}(form) {{
   if (!qty || !count) {{ el.innerHTML = ''; return; }}
   var total = qty * count;
   var over  = total > avail;
-  el.innerHTML = count + ' × ' + qty + ' ' + unit
-    + ' = ' + total.toFixed(2) + ' ' + unit
+  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
+    + ' = ' + total.toFixed(2) + '\u00a0' + unit
     + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
 }}
 function batchSplitSubmit_{safe_id}(form) {{
