@@ -80,17 +80,19 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     assert page.locator(".drafts-tab").count() == 0
     assert page.locator(".preset-btn").count() >= 7  # full date-filter bar on the drafts view too
 
-    # Item 4: on a splittable item, the +, inputs and Go sit on one line (.split-line).
+    # Item 4: on a splittable item, the split card renders the shared split table
+    # (mother row + child row + add-child button + Confirm), the same UI as bulk split.
     page.goto(f"{ui_server}/inventory/{item}?tab=details", wait_until="domcontentloaded")
-    page.wait_for_selector(".split-line", timeout=10000)
-    line = page.locator(".split-line").first
-    add = line.locator(".split-add-btn").bounding_box()
-    go = line.locator("button[type=submit]").first.bounding_box()
-    inp = line.locator("input[name=split_qty]").first.bounding_box()
-    # + first, input in the middle, Go last — all roughly on the same row.
-    assert add["x"] < inp["x"] < go["x"], (add, inp, go)
-    assert abs(add["y"] - go["y"]) < 40, (add["y"], go["y"])
-    page.screenshot(path=str(SHOTS / "02-split-line.png"))
+    page.wait_for_selector(".action-card .split-preview-table", timeout=10000)
+    form = page.locator(".action-card form:has(.split-preview-table)")
+    assert form.locator(".mother-qty-input").count() == 1, "editable mother row must render"
+    assert form.locator('input[name="child_qty"]').count() == 1, "one child row on open"
+    assert form.locator(".split-add-child-btn").count() == 1, "add-child (+) button must render"
+    confirm = form.locator("button[type=submit]").first.bounding_box()
+    add = form.locator(".split-add-child-btn").first.bounding_box()
+    # + and Confirm both sit within the card.
+    assert confirm is not None and add is not None, (confirm, add)
+    page.screenshot(path=str(SHOTS / "02-split-table.png"))
 
 
 def test_in_production_esc_cancels_inline_edit(page, ui_server, api):

@@ -315,22 +315,20 @@ def test_piece_sync_03_no_pieces_column_without_weight(page, ui_server, api):
 # ---------------------------------------------------------------------------
 
 def _open_item_detail_split(page, ui_server, item_id: str) -> None:
-    """Open an item's detail page and wait for the manual split card."""
+    """Open an item's detail page and wait for the shared split table card."""
     page.goto(f"{ui_server}/inventory/{item_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "item detail page")
-    page.wait_for_selector('input[name="split_qty"]', timeout=5000)
+    page.wait_for_selector(".action-card .split-preview-table", timeout=5000)
 
 
-def _trio_text(page, cls: str) -> str:
-    return page.locator(f".{cls}").first.inner_text().strip()
+def _detail_delta(page) -> str:
+    """The item-detail split card's live delta badge value."""
+    return page.locator(".action-card .sp-delta-badge .sp-delta-val").first.inner_text().strip()
 
 
-def test_split_delta_weight_sold_live(page, ui_server, api):
-    """J1: on a weight-sold item, entering split_qty makes the Delta numeric.
-
-    Parcel weight is the quantity (item.weight is empty for weight-sold), the
-    outgoing weight is split_qty, so Delta = quantity - split_qty.
-    """
+def test_item_detail_delta_balanced_zero(page, ui_server, api):
+    """J1: carving a child from the mother on item-detail keeps the delta at 0.00; the
+    mother auto-derives to the remainder (mother_post + child = parcel)."""
     r = api.post("/items", json={
         "sku": "SPLIT-DELTA-WEIGHT-001",
         "name": "Split Delta Weight Item",
@@ -341,73 +339,93 @@ def test_split_delta_weight_sold_live(page, ui_server, api):
     item = r.json()
 
     _open_item_detail_split(page, ui_server, item["id"])
+    form = page.locator(".action-card form:has(.split-preview-table)")
 
-    # Original parcel weight is known up front and is a number (from quantity).
-    parcel = _trio_text(page, "sp-parcel-val")
-    assert float(parcel) == pytest.approx(100.0), f"parcel weight should be 100, got '{parcel}'"
-
-    qty = page.locator('input[name="split_qty"]').first
-    qty.fill("30")
-    qty.dispatch_event("input")
+    child = form.locator('input[name="child_qty"]').first
+    child.fill("30")
+    child.dispatch_event("change")
     page.wait_for_timeout(200)
 
-    split_w = _trio_text(page, "sp-split-weight-val")
-    delta = _trio_text(page, "sp-delta-val")
-    assert split_w != "--" and float(split_w) == pytest.approx(30.0), f"split weight should be 30, got '{split_w}'"
-    assert delta != "--" and float(delta) == pytest.approx(70.0), f"delta should be 70 (100-30), got '{delta}'"
+    mother_val = form.locator(".mother-qty-input").first.input_value()
+    assert float(mother_val) == pytest.approx(70.0), f"mother should auto-derive to 70, got '{mother_val}'"
 
-    _save_screenshot(page, "split-delta-weight-sold")
+    delta = _detail_delta(page)
+    assert delta not in {"--", ""} and float(delta) == pytest.approx(0.0), (
+        f"delta should be 0 (100 - (70+30)), got '{delta}'"
+    )
+    _save_screenshot(page, "item-detail-delta-balanced")
 
 
-def test_split_delta_pieces_sold_live(page, ui_server, api):
-    """J2: on a pieces-sold weighed item, entering split_qty un-gates the trio to
-    numbers, and entering the split weight updates Split weight + Delta.
-
-    Parcel weight is item.weight; the outgoing weight is the split_weight
-    complement, so Delta = item.weight - split_weight.
-    """
+def test_item_detail_delta_nonzero_when_mother_edited(page, ui_server, api):
+    """J3: editing the Mother row on item-detail breaks the balance so the delta shows the
+    net gain/loss, not 0."""
     r = api.post("/items", json={
-        "sku": "SPLIT-DELTA-PIECE-001",
-        "name": "Split Delta Piece Item",
-        "sell_by": "piece",
-        "quantity": 10.0,
-        "weight": 5.0,
-        "weight_unit": "gram",
+        "sku": "SPLIT-DELTA-MOTHER-001",
+        "name": "Split Delta Mother Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
     })
     assert r.status_code in {200, 201}, f"create failed: {r.text}"
     item = r.json()
 
     _open_item_detail_split(page, ui_server, item["id"])
+    form = page.locator(".action-card form:has(.split-preview-table)")
 
-    parcel = _trio_text(page, "sp-parcel-val")
-    assert float(parcel) == pytest.approx(5.0), f"parcel weight should be 5, got '{parcel}'"
-
-    # Entering only split_qty un-gates: split weight defaults to 0, Delta = full parcel.
-    qty = page.locator('input[name="split_qty"]').first
-    qty.fill("2")
-    qty.dispatch_event("input")
+    child = form.locator('input[name="child_qty"]').first
+    child.fill("30")
+    child.dispatch_event("change")
     page.wait_for_timeout(200)
-    split_w = _trio_text(page, "sp-split-weight-val")
-    delta = _trio_text(page, "sp-delta-val")
-    assert split_w != "--" and float(split_w) == pytest.approx(0.0), f"split weight should be 0, got '{split_w}'"
-    assert delta != "--" and float(delta) == pytest.approx(5.0), f"delta should be 5 (5-0), got '{delta}'"
 
-    # Entering the outgoing weight updates both numbers.
-    wt = page.locator('input[name="split_weight"]').first
-    wt.fill("1.5")
-    wt.dispatch_event("input")
+    mother = form.locator(".mother-qty-input").first
+    mother.fill("20")
+    mother.dispatch_event("change")
     page.wait_for_timeout(200)
-    split_w = _trio_text(page, "sp-split-weight-val")
-    delta = _trio_text(page, "sp-delta-val")
-    assert float(split_w) == pytest.approx(1.5), f"split weight should be 1.5, got '{split_w}'"
-    assert float(delta) == pytest.approx(3.5), f"delta should be 3.5 (5-1.5), got '{delta}'"
 
-    _save_screenshot(page, "split-delta-pieces-sold")
+    delta = _detail_delta(page)
+    assert delta not in {"--", ""} and float(delta) == pytest.approx(50.0), (
+        f"delta should be 50 (100 - (20+30)), got '{delta}'"
+    )
+    _save_screenshot(page, "item-detail-delta-mother-edited")
+
+
+def test_item_detail_add_second_child_updates_totals(page, ui_server, api):
+    """J2: the + button appends a second child row; the QTY total footer equals the mother
+    plus the sum of children."""
+    r = api.post("/items", json={
+        "sku": "SPLIT-ADD-CHILD-001",
+        "name": "Split Add Child Item",
+        "sell_by": "gram",
+        "quantity": 100.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_item_detail_split(page, ui_server, item["id"])
+    form = page.locator(".action-card form:has(.split-preview-table)")
+
+    form.locator(".split-add-child-btn").first.click()
+    page.wait_for_timeout(150)
+
+    child_inputs = form.locator('input[name="child_qty"]')
+    assert child_inputs.count() == 2, f"expected 2 child rows, got {child_inputs.count()}"
+
+    child_inputs.nth(0).fill("30")
+    child_inputs.nth(0).dispatch_event("change")
+    child_inputs.nth(1).fill("20")
+    child_inputs.nth(1).dispatch_event("change")
+    page.wait_for_timeout(200)
+
+    mother_val = form.locator(".mother-qty-input").first.input_value()
+    assert float(mother_val) == pytest.approx(50.0), f"mother should auto-derive to 50 (100-30-20), got '{mother_val}'"
+
+    total = form.locator(".sp-total-qty").first.inner_text().strip()
+    assert float(total) == pytest.approx(100.0), f"QTY total should be mother+children = 100, got '{total}'"
+    _save_screenshot(page, "item-detail-add-second-child")
 
 
 def test_split_delta_empty_marker_before_input(page, ui_server, api):
-    """J1/P4.5: Split weight and Delta show the '--' empty marker before any
-    split qty is entered; Original Parcel Weight still shows a number."""
+    """J1: the item-detail delta badge shows a live 0.00 before any child qty is entered
+    (the gated '--' marker is gone; the card opens with a prefilled child qty 0)."""
     r = api.post("/items", json={
         "sku": "SPLIT-DELTA-EMPTY-001",
         "name": "Split Delta Empty Marker Item",
@@ -419,10 +437,10 @@ def test_split_delta_empty_marker_before_input(page, ui_server, api):
 
     _open_item_detail_split(page, ui_server, item["id"])
 
-    assert _trio_text(page, "sp-parcel-val") not in {"--", ""}, "parcel weight must render a number"
-    assert _trio_text(page, "sp-split-weight-val") == "--", "split weight must show '--' before input"
-    assert _trio_text(page, "sp-delta-val") == "--", "delta must show '--' before input"
-
+    delta = _detail_delta(page)
+    assert delta not in {"--", ""} and float(delta) == pytest.approx(0.0), (
+        f"delta should open at a live 0.00, got '{delta}'"
+    )
     _save_screenshot(page, "split-delta-empty-marker")
 
 

@@ -5785,7 +5785,7 @@ class TestBulkActionsPhase1to5:
     async def test_bulk_split_rejects_invalid_qty(self, ui_client):
         r = await ui_client.post(
             "/api/items/bulk/split",
-            content=b"selected=item%3Ax&split_qty=abc",
+            content=b"selected=item%3Ax&child_qty=abc",
             headers={"content-type": "application/x-www-form-urlencoded"},
             cookies=_authed(),
         )
@@ -13583,7 +13583,7 @@ class TestBugFixesBatch25Mar:
         ):
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
-                "split_qty": "3",
+                "child_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
         assert b"DEMO-001" in r.content
@@ -13600,7 +13600,7 @@ class TestBugFixesBatch25Mar:
         ):
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
-                "split_qty": "3",
+                "child_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
         assert b"DEMO-001" in r.content
@@ -13616,7 +13616,7 @@ class TestBugFixesBatch25Mar:
         ):
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:2",
-                "split_qty": "2",
+                "child_qty": "2",
             }, cookies=_authed())
         assert r.status_code == 200
         assert b"DEMO-001.1" in r.content
@@ -13730,7 +13730,7 @@ class TestBugFixesBatch25Mar6Bugs:
         ):
             r = await ui_client.post("/api/items/bulk/split", data={
                 "selected": "item:1",
-                "split_qty": "3",
+                "child_qty": "3",
             }, cookies=_authed())
         assert r.status_code == 200
         # Only 1 child should be sent (the new split-off item)
@@ -16441,30 +16441,181 @@ async def test_forgot_password_with_email_redirects_to_form(ui_client):
     assert r.headers.get("HX-Redirect") == "/forgot-password"
 
 
-@pytest.mark.asyncio
-async def test_split_inline_omits_child_sku(ui_client):
-    """The detail-page split (split-inline) sends children with NO sku, so the backend keeps
-    the parent SKU. Guards the UI writer against re-introducing the '.1' suffix (the bug)."""
-    captured = {}
+def _split_preview_dict(**over) -> dict:
+    """A server-shaped split_preview dict for the item-detail split card tests."""
+    d = {
+        "parent_sku": "1000",
+        "parent_name": "Parcel",
+        "parent_qty": 10.0,
+        "child_sku": "1000",
+        "sell_by": "gram",
+        "sell_by_label": "Gram (g)",
+        "sell_by_type": "weight",
+        "weight_unit": "gram",
+        "weight_unit_label": "Gram (g)",
+        "unit_decimals": 2,
+        "weight_decimals": 2,
+        "has_weight": True,
+        "has_pieces": False,
+        "cannot_split": False,
+        "weight_unit_names": ["gram", "kilogram"],
+        "parent_weight": 10.0,
+    }
+    d.update(over)
+    return d
 
-    async def _capture_split(token, eid, payload):
-        captured["payload"] = payload
-        return {"children": []}
 
-    with patch("ui.api_client.get_item", new=AsyncMock(return_value={
-                   "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "piece"})), \
-         patch("ui.api_client.split_item", new=_capture_split):
-        r = await ui_client.post(
-            "/api/items/item:p/split-inline",
-            cookies=_authed(),
-            data={"split_qty": ["3", "2"]},
-        )
+class TestItemDetailSplit:
+    """The item-detail split card reuses the shared bulk split table via
+    _split_table_form: an editable Mother row, N child rows, totals footer, a live
+    delta badge, and a + button that appends children. Backend split-inline reads
+    child_qty and forwards a hand-set mother."""
 
-    assert r.status_code in (200, 204), r.text
-    assert captured.get("payload"), "split_item was not called"
-    children = captured["payload"]["children"]
-    assert len(children) == 2
-    assert all("sku" not in c for c in children)   # no SKU sent -> backend keeps the parent's
+    def test_split_card_renders_split_table(self):
+        """J1: the item-detail split card renders the shared .split-preview-table with an
+        editable Mother row and a child row named child_qty."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _advanced_panel
+        item = {"sku": "1000", "name": "Parcel", "quantity": 10, "sell_by": "gram",
+                "allow_splitting": True, "status": "available"}
+        html = to_xml(_advanced_panel("item:p", item, _split_preview_dict()))
+        assert "split-preview-table" in html
+        assert "mother-qty-input" in html
+        assert 'name="child_qty"' in html
+
+    def test_split_card_has_add_child_button_and_template(self):
+        """J2: the card renders a + add-child control and a <template> child row for cloning."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _advanced_panel
+        item = {"sku": "1000", "name": "Parcel", "quantity": 10, "sell_by": "gram",
+                "allow_splitting": True, "status": "available"}
+        html = to_xml(_advanced_panel("item:p", item, _split_preview_dict()))
+        assert "splitAddChild" in html
+        assert "<template" in html
+        assert "split-child-template" in html
+
+    @pytest.mark.asyncio
+    async def test_split_inline_reads_child_qty_and_omits_sku(self, ui_client):
+        """J1/J2: posting child_qty=["3","2"] sends 2 children, none carrying a SKU (the
+        backend keeps the parent SKU). Replaces the old split_qty reader."""
+        captured = {}
+
+        async def _capture_split(token, eid, payload):
+            captured["payload"] = payload
+            return {"children": []}
+
+        with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                       "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "piece"})), \
+             patch("ui.api_client.split_item", new=_capture_split):
+            r = await ui_client.post(
+                "/api/items/item:p/split-inline",
+                cookies=_authed(),
+                data={"child_qty": ["3", "2"]},
+            )
+
+        assert r.status_code in (200, 204), r.text
+        assert captured.get("payload"), "split_item was not called"
+        children = captured["payload"]["children"]
+        assert len(children) == 2
+        assert all("sku" not in c for c in children)
+
+    @pytest.mark.asyncio
+    async def test_split_inline_forwards_mother_weight(self, ui_client):
+        """J3: posting child_qty + a hand-set mother_weight forwards mother_weight in the
+        split payload."""
+        captured = {}
+
+        async def _capture_split(token, eid, payload):
+            captured["payload"] = payload
+            return {"children": []}
+
+        with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                       "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
+             patch("ui.api_client.split_item", new=_capture_split):
+            r = await ui_client.post(
+                "/api/items/item:p/split-inline",
+                cookies=_authed(),
+                data={"child_qty": ["3"], "mother_weight": "6"},
+            )
+
+        assert r.status_code in (200, 204), r.text
+        assert captured.get("payload"), "split_item was not called"
+        assert captured["payload"].get("mother_weight") == 6.0
+
+    @pytest.mark.asyncio
+    async def test_split_inline_diverging_mother_denied_without_amount_perm(self, ui_client):
+        """J3/security: when the server rejects a diverging mother_weight with 403, its
+        detail is flashed in #item-action-error. This is only reachable because the handler
+        now forwards mother_weight."""
+        from ui.api_client import APIError
+
+        async def _deny_split(token, eid, payload):
+            assert "mother_weight" in payload, "mother_weight must be forwarded to reach the 403"
+            raise APIError(403, "Setting the split weight requires the inventory amounts permission")
+
+        with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                       "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
+             patch("ui.api_client.split_item", new=_deny_split):
+            r = await ui_client.post(
+                "/api/items/item:p/split-inline",
+                cookies=_authed(role="staff"),
+                data={"child_qty": ["3"], "mother_weight": "9"},
+            )
+
+        assert r.status_code == 200, r.text
+        assert b"item-action-error" in r.content
+        assert b"requires the inventory amounts permission" in r.content
+
+    @pytest.mark.asyncio
+    async def test_split_inline_zero_child_qty_flashes_positivity(self, ui_client):
+        """J1: posting child_qty=0 flashes the positivity message in #item-action-error."""
+        with patch("ui.api_client.get_item", new=AsyncMock(return_value={
+                       "id": "item:p", "sku": "1000", "quantity": 10, "sell_by": "gram"})), \
+             patch("ui.api_client.split_item", new=AsyncMock(return_value={"children": []})):
+            r = await ui_client.post(
+                "/api/items/item:p/split-inline",
+                cookies=_authed(),
+                data={"child_qty": ["0"]},
+            )
+        assert r.status_code == 200, r.text
+        from ui.i18n import t as _t
+        assert _t("inv.split_quantity_must_be_greater_than_0").encode() in r.content
+        assert b"item-action-error" in r.content
+
+
+def test_split_table_form_bulk_output_unchanged():
+    """Regression: the shared _split_table_form with allow_add_child=False still emits the
+    bulk Mother row, one child_qty input, tfoot totals, and a delta badge."""
+    from fasthtml.common import to_xml
+    from ui.routes.inventory import _split_table_form
+    preview = _split_preview_dict(parent_sku="B-1", child_sku="B-1", entity_id="item:b")
+    html = to_xml(_split_table_form(
+        preview, action="/api/items/bulk/split", target="#bulk-action-result",
+        form_id="bulk-split-preview-form", allow_add_child=False, child_sku_editable=True))
+    assert "mother-qty-input" in html
+    assert html.count('name="child_qty"') == 1
+    assert "sp-total-qty" in html
+    assert "sp-delta-val" in html
+    assert "split-child-template" not in html   # no add-child template when disabled
+
+
+def test_split_table_form_pieces_variant():
+    """The helper reads unit context from preview, not DEFAULT_UNITS: a preview with
+    has_pieces=True and a custom (non-default) unit renders the pieces cells and the
+    weight unit label from the preview."""
+    from fasthtml.common import to_xml
+    from ui.routes.inventory import _split_table_form
+    preview = _split_preview_dict(
+        sell_by="widget", sell_by_label="Widget (wg)", sell_by_type="other",
+        unit_decimals=0, has_weight=True, has_pieces=True,
+        weight_unit="karat", weight_unit_label="Karat (kt)", weight_decimals=3,
+        parent_weight=20.0, parent_pieces=8,
+    )
+    html = to_xml(_split_table_form(
+        preview, action="/api/items/i/split-inline", target="#item-action-error",
+        form_id="split-form-i", allow_add_child=True, child_sku_editable=False))
+    assert 'name="child_pieces"' in html
+    assert "Karat" in html
 
 
 class TestCelerpAccountSurface:
