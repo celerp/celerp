@@ -1933,7 +1933,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
    left gutter (the bulk preview is not under .action-card, so it is unaffected). */
 .action-card .split-preview-table { margin-left: 26px; }
 .action-card .split-preview-table .sp-row-label { position: relative; }
-.split-add-child-btn { position: absolute; left: -20px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 13px; line-height: 1; justify-content: center; }
+.split-add-child-btn.btn--xs { position: absolute; left: -20px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 13px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .sp-confirm-btn { margin-top: 8px; }
 /* Live delta badge (split preview table + transform preview). */
 .sp-delta-val { font-variant-numeric: tabular-nums; }
@@ -2049,7 +2049,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .action-card-row--col .btn--primary { align-self: flex-start; margin-top: 2px; }
 .action-card-row .form-input--sm.split-qty-main { flex: 0 0 108px; width: 108px; font-size: 11px; }
 .action-card-row .form-input--sm.split-complement { flex: 0 0 116px; width: 116px; font-size: 11px; }
-.action-card-row .form-input--sm.batch-split-count { flex: 0 0 54px; width: 54px; font-size: 11px; }
+.action-card-row .form-input--sm.batch-split-count { flex: 0 0 66px; width: 66px; font-size: 11px; }
 .form-input--sm { padding: 4px 8px; font-size: 12px; height: 28px; }
 .btn--xs { padding: 3px 10px; font-size: 11px; height: 28px; }
 @media (max-width: 640px) { .action-cards-grid { grid-template-columns: 1fr; } }
