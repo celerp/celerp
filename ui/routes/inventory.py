@@ -182,7 +182,12 @@ function splitAddChild(btn) {
   var tpl = form.querySelector('.split-child-template');
   var tbody = form.querySelector('.split-preview-table tbody');
   if (!tpl || !tbody) return;
-  tbody.appendChild(tpl.content.cloneNode(true));
+  // The template wraps its child row in <table><tbody> so the server HTML parser keeps the
+  // <tr> intact; extract that <tr> and append it, or it nests a whole <table> in one column.
+  var frag = tpl.content.cloneNode(true);
+  var tr = frag.querySelector('tr');
+  if (!tr) return;
+  tbody.appendChild(tr);
   splitRecalc(form);
   var rows = tbody.querySelectorAll('tr');
   var last = rows[rows.length - 1];
