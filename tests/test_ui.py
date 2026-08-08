@@ -10863,9 +10863,12 @@ class TestInventoryItemDetailFixes:
     async def test_batch_split_card_rendered_when_splitting_allowed(self, ui_client):
         """Item detail page must include Batch Split card when allow_splitting=True."""
         item = {**_ITEM, "allow_splitting": True, "quantity": 100, "sell_by": "piece"}
+        preview = _split_preview_dict(sell_by="piece", sell_by_label="Piece", sell_by_type="pieces",
+                                      parent_qty=100.0, has_weight=False, parent_weight=None)
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
@@ -10885,9 +10888,12 @@ class TestInventoryItemDetailFixes:
     async def test_batch_split_card_absent_when_splitting_disabled(self, ui_client):
         """Batch Split card must not appear when allow_splitting=False."""
         item = {**_ITEM, "allow_splitting": False, "quantity": 100, "sell_by": "piece"}
+        preview = _split_preview_dict(sell_by="piece", sell_by_label="Piece", sell_by_type="pieces",
+                                      parent_qty=100.0, has_weight=False, parent_weight=None)
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
@@ -15205,20 +15211,25 @@ class TestSplitThreeRules:
     # ── Rule 2: mother recalc only before motherEdited ────────────────────────
 
     def test_rule2_child_weight_change_respects_mother_edited_guard(self):
-        """bulkSplitChildWeightChanged must use _setMotherQty (which checks motherEdited)."""
+        """bulkSplitChildWeightChanged must delegate to splitRecalc, which recomputes the
+        mother from the sum of all children only while motherEdited is false."""
         js = self._get_js()
         fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
-        assert "_setMotherQty" in fn, (
-            "bulkSplitChildWeightChanged must call _setMotherQty so motherEdited guard is respected"
+        assert "splitRecalc(form)" in fn, (
+            "bulkSplitChildWeightChanged must call splitRecalc so motherEdited guard is respected"
         )
+        recalc = _extract_js_fn(js, "splitRecalc")
+        assert "motherEdited" in recalc, "splitRecalc must guard the mother recompute on motherEdited"
 
     def test_rule2_child_pieces_change_respects_mother_edited_guard(self):
-        """bulkSplitChildPiecesChanged must call _setMotherQty."""
+        """bulkSplitChildPiecesChanged must delegate to splitRecalc (motherEdited guard)."""
         js = self._get_js()
         fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
-        assert "_setMotherQty" in fn, (
-            "bulkSplitChildPiecesChanged must call _setMotherQty so motherEdited guard is respected"
+        assert "splitRecalc(form)" in fn, (
+            "bulkSplitChildPiecesChanged must call splitRecalc so motherEdited guard is respected"
         )
+        recalc = _extract_js_fn(js, "splitRecalc")
+        assert "motherEdited" in recalc, "splitRecalc must guard the mother recompute on motherEdited"
 
     def test_rule2_set_mother_qty_checks_mother_edited(self):
         """_setMotherQty must bail out when form.dataset.motherEdited === 'true'."""
