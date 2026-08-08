@@ -18,6 +18,7 @@ import asyncio
 import logging
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -115,6 +116,19 @@ async def suggest_reorder(
     }
 
 
+def group_by_supplier(items: list[dict]) -> dict[str, list[str]]:
+    """Group item entity_ids by their preferred supplier so a reorder selection can
+    become one draft PO per supplier. Items with no supplier group under '' (the
+    caller renders that as an 'unassigned' draft). Order is preserved per group."""
+    groups: dict[str, list[str]] = {}
+    for it in items:
+        sup = (it.get("preferred_supplier") or "").strip()
+        eid = it.get("entity_id") or it.get("id")
+        if eid:
+            groups.setdefault(sup, []).append(eid)
+    return groups
+
+
 def _digest_body(items: list[dict], limit: int = 5) -> str:
     """First few ``name (on-hand / reorder_point)`` lines for the digest body."""
     lines = []
@@ -128,19 +142,9 @@ def _digest_body(items: list[dict], limit: int = 5) -> str:
     return "\n".join(lines)
 
 
-async def run_reorder_scan(session: AsyncSession, company) -> object | None:
-    """Scan one company for below-reorder items and, on a *new* dip, create one
-    digest notification. Idempotent: re-running with no change notifies nothing.
-
-    Returns the created Notification, or None when nothing new was alerted.
-    Latch + timestamp are persisted on ``company.settings``.
-    """
+async def _detect_low_stock(session: AsyncSession, company) -> list[dict]:
+    """Items at or below their reorder point (available stock only)."""
     from celerp.models.projections import Projection
-    from celerp.notifications import service as notif_service
-
-    settings = dict(company.settings or {})
-    if not settings.get("reorder_alerts_enabled", True):
-        return None
 
     rows = (await session.execute(
         select(Projection).where(
@@ -148,7 +152,6 @@ async def run_reorder_scan(session: AsyncSession, company) -> object | None:
             Projection.entity_type == "item",
         )
     )).scalars().all()
-
     below: list[dict] = []
     for r in rows:
         st = r.state or {}
@@ -163,7 +166,23 @@ async def run_reorder_scan(session: AsyncSession, company) -> object | None:
             "quantity": float(st.get("quantity", 0) or 0),
             "reorder_point": reorder_point_of(st),
         })
+    return below
 
+
+async def run_reorder_scan(session: AsyncSession, company) -> object | None:
+    """Scan one company for below-reorder items and, on a *new* dip, create one
+    digest notification. Idempotent: re-running with no change notifies nothing.
+
+    Returns the created Notification, or None when nothing new was alerted.
+    Latch + timestamp are persisted on ``company.settings``.
+    """
+    from celerp.notifications import service as notif_service
+
+    settings = dict(company.settings or {})
+    if not settings.get("reorder_alerts_enabled", True):
+        return None
+
+    below = await _detect_low_stock(session, company)
     below_ids = {it["entity_id"] for it in below}
     latch = set(settings.get("reorder_alerted_ids") or [])
     newly = [it for it in below if it["entity_id"] not in latch]
@@ -232,8 +251,174 @@ async def _maybe_send_email(session: AsyncSession, company, items: list[dict]) -
         log.warning("reorder: low-stock email failed", exc_info=True)
 
 
+async def _detect_expiring(session: AsyncSession, company) -> list[dict]:
+    """In-stock items whose ``expires_at`` falls within the company's window."""
+    from datetime import date
+
+    from celerp.models.projections import Projection
+
+    days = int((company.settings or {}).get("expiring_alert_days", 30) or 30)
+    cutoff = date.today() + timedelta(days=days)
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company.id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    out: list[dict] = []
+    for r in rows:
+        st = r.state or {}
+        if (st.get("status") or "available") != "available":
+            continue
+        if float(st.get("quantity", 0) or 0) <= 0:
+            continue
+        exp_str = st.get("expires_at")
+        if not exp_str:
+            continue
+        try:
+            exp = date.fromisoformat(str(exp_str)[:10])
+        except (TypeError, ValueError):
+            continue
+        if exp <= cutoff:
+            out.append({"entity_id": r.entity_id, "name": st.get("name") or st.get("sku"),
+                        "expires_at": str(exp_str)[:10], "quantity": float(st.get("quantity", 0) or 0)})
+    return out
+
+
+async def _detect_overdue(session: AsyncSession, company) -> list[dict]:
+    """Invoices past their due date with a positive outstanding balance."""
+    from datetime import date
+
+    from celerp.models.projections import Projection
+
+    today = date.today().isoformat()
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company.id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+    out: list[dict] = []
+    for r in rows:
+        st = r.state or {}
+        if st.get("doc_type") != "invoice" or st.get("status") in ("void", "paid", "draft", "converted"):
+            continue
+        due = st.get("due_date")
+        if not due or str(due)[:10] >= today:
+            continue
+        bal = float(st.get("amount_outstanding", st.get("total", 0)) or 0)
+        if bal <= 0:
+            continue
+        out.append({"entity_id": r.entity_id, "name": st.get("ref_id") or r.entity_id,
+                    "due_date": str(due)[:10], "balance": bal, "currency": st.get("currency", "USD")})
+    return out
+
+
+def _low_line(it: dict) -> str:
+    return f"{it.get('name') or it.get('sku')} ({it['quantity']:g} on hand / reorder at {it['reorder_point']:g})"
+
+
+def _exp_line(it: dict) -> str:
+    return f"{it.get('name')} - expires {it['expires_at']} ({it['quantity']:g} on hand)"
+
+
+def _ovd_line(it: dict) -> str:
+    return f"{it['name']} - due {it['due_date']}, {it['currency']} {it['balance']:g} outstanding"
+
+
+@dataclass(frozen=True)
+class _AlertCheck:
+    enabled_setting: str
+    latch_key: str
+    label: str
+    detect: object
+    line: object
+
+
+# The registry - the one place a proactive check is declared. Adding a check is a
+# row here + its detect function; the scan loop, latch, and digest need no change.
+_CHECKS: tuple[_AlertCheck, ...] = (
+    _AlertCheck("reorder_alerts_enabled", "reorder_alerted_ids", "Low stock", _detect_low_stock, _low_line),
+    _AlertCheck("expiring_alerts_enabled", "expiring_alerted_ids", "Expiring soon", _detect_expiring, _exp_line),
+    _AlertCheck("overdue_alerts_enabled", "overdue_alerted_ids", "Overdue invoices", _detect_overdue, _ovd_line),
+)
+
+
+def _digest_lines(items: list[dict], line, limit: int = 5) -> str:
+    out = [line(it) for it in items[:limit]]
+    if len(items) > limit:
+        out.append(f"…and {len(items) - limit} more")
+    return "\n".join(out)
+
+
+async def run_all_alerts(session: AsyncSession, company) -> object | None:
+    """Run every enabled proactive check and, on newly-alerting items, emit ONE
+    combined digest (notification + optional email). Idempotent per latch; each
+    check re-arms independently when an item leaves its alert set."""
+    from celerp.notifications import service as notif_service
+
+    settings = dict(company.settings or {})
+    sections: list[tuple[str, list[dict], object]] = []
+    for check in _CHECKS:
+        if not settings.get(check.enabled_setting, True):
+            continue
+        current = await check.detect(session, company)
+        current_ids = {it["entity_id"] for it in current}
+        latch = set(settings.get(check.latch_key) or [])
+        newly = [it for it in current if it["entity_id"] not in latch]
+        settings[check.latch_key] = sorted(current_ids)
+        if newly:
+            sections.append((check.label, newly, check.line))
+
+    settings["reorder_last_scan_at"] = datetime.now(timezone.utc).isoformat()
+    company.settings = settings
+    session.add(company)
+
+    if not sections:
+        await session.flush()
+        return None
+
+    total = sum(len(n) for _, n, _ in sections)
+    title = f"{total} alert{'s' if total != 1 else ''} need attention"
+    body = "\n\n".join(f"{label} ({len(newly)}):\n{_digest_lines(newly, line)}"
+                       for label, newly, line in sections)
+    notif = await notif_service.create(
+        session, company.id, "inventory", title, body,
+        action_url="/dashboard", priority="high",
+    )
+    if settings.get("reorder_alert_email"):
+        await _send_combined_email(session, company, title, sections)
+    await session.flush()
+    return notif
+
+
+async def _send_combined_email(session: AsyncSession, company, title: str, sections) -> None:
+    """Best-effort: email the owner one combined digest. Never raises."""
+    try:
+        from celerp.models.accounting import UserCompany
+        from celerp.models.company import User
+        from celerp.services.email import send_email
+
+        recipient = (await session.execute(
+            select(User.email).join(UserCompany, UserCompany.user_id == User.id).where(
+                UserCompany.company_id == company.id,
+                UserCompany.role == "owner",
+                UserCompany.is_active.is_(True),
+            ).limit(1)
+        )).scalar()
+        if not recipient:
+            return
+        blocks = ""
+        for label, newly, line in sections:
+            items = "".join(f"<li>{line(it)}</li>" for it in newly[:10])
+            blocks += f"<h3>{label} ({len(newly)})</h3><ul>{items}</ul>"
+        await send_email(recipient, title, f"<p>{title}.</p>{blocks}")
+    except Exception:
+        log.warning("alerts: combined digest email failed", exc_info=True)
+
+
 async def reorder_alert_loop() -> None:
-    """Background loop: once a day per company, scan for low stock and alert.
+    """Background loop: once a day per company, run the proactive checks and alert.
 
     Started from the API lifespan. Gates on hour-of-day + a per-company
     ``reorder_last_scan_at`` so a restart can't double-fire and the digest lands
@@ -253,12 +438,12 @@ async def reorder_alert_loop() -> None:
                     if not _scan_due(company, now):
                         continue
                     try:
-                        await run_reorder_scan(session, company)
+                        await run_all_alerts(session, company)
                     except Exception as exc:
-                        log.error("reorder: scan failed for %s: %s", company.id, exc)
+                        log.error("alerts: scan failed for %s: %s", company.id, exc)
                 await session.commit()
         except Exception as exc:
-            log.error("reorder: alert loop error: %s", exc)
+            log.error("alerts: loop error: %s", exc)
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)
 
 

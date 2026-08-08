@@ -3922,11 +3922,36 @@ function celerpPrintLabel(entityId, templateId) {
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
                     # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
-                    # cost price, purchase unit, no sales taxes. Supplier picked on the draft.
-                    line_items = await _reorder_lines_from_inventory(token, entity_ids)
-                    result = await api.create_doc(token, {"doc_type": "purchase_order", "status": "draft", "purchase_kind": "inventory", "line_items": line_items})
-                    doc_id = result.get("entity_id") or result.get("id", "")
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
+                    # cost price, purchase unit, no sales taxes. Group the selection by each
+                    # item's preferred supplier so a multi-supplier reorder becomes one draft
+                    # PO per supplier (plus one for items with no supplier set).
+                    from celerp.services.reorder import group_by_supplier
+                    items = []
+                    for eid in entity_ids:
+                        try:
+                            it = await api.get_item(token, eid)
+                        except APIError:
+                            it = {}
+                        items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
+                    groups = group_by_supplier(items)
+                    created: list[tuple[str, str]] = []
+                    for sup, ids in groups.items():
+                        line_items = await _reorder_lines_from_inventory(token, ids)
+                        payload = {"doc_type": "purchase_order", "status": "draft",
+                                   "purchase_kind": "inventory", "line_items": line_items}
+                        if sup:
+                            payload["contact_id"] = sup
+                        result = await api.create_doc(token, payload)
+                        created.append((sup, result.get("entity_id") or result.get("id", "")))
+                    if len(created) == 1:
+                        return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{created[0][1]}"})
+                    # More than one supplier: show what was created (no silent multi-create).
+                    return Div(
+                        P(t("inv.pos_created", n=len(created)), cls="flash flash--success"),
+                        *[P(A(("Unassigned" if not sup else "Supplier") + f": {did}",
+                              href=f"/docs/{did}", cls="link")) for sup, did in created],
+                        id="bulk-action-result",
+                    )
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
