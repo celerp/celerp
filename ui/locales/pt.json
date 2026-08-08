@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "Quantidade em {unit} por lote filho idêntico",
   "inv.tooltip.batch_submit": "Criar N lotes filhos idênticos",
   "inv.tooltip.split_pieces_opt": "Registre opcionalmente o número de peças deste lote",
-  "inv.tooltip.split_qty": "Insira a quantidade em {unit} para este lote filho",
   "inv.tooltip.split_weight_opt": "Registre opcionalmente o peso deste lote filho",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

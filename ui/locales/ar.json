@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "أدخل كمية {unit} لكل مجموعة فرعية متطابقة",
   "inv.tooltip.batch_submit": "إنشاء N مجموعة فرعية متطابقة",
   "inv.tooltip.split_pieces_opt": "سجّل اختياريًا عدد القطع في هذه المجموعة الفرعية",
-  "inv.tooltip.split_qty": "أدخل كمية {unit} للتقسيم إلى مجموعة فرعية",
   "inv.tooltip.split_weight_opt": "سجّل اختياريًا وزن هذه المجموعة الفرعية",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

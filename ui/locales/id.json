@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "Jumlah {unit} per lot anak yang identik",
   "inv.tooltip.batch_submit": "Buat N lot anak yang identik",
   "inv.tooltip.split_pieces_opt": "Opsional: catat jumlah keping untuk lot anak ini",
-  "inv.tooltip.split_qty": "Masukkan jumlah {unit} untuk lot anak ini",
   "inv.tooltip.split_weight_opt": "Opsional: catat berat lot anak ini",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

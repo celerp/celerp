@@ -589,11 +589,6 @@ a:hover { text-decoration: underline; }
 .recipe-block .data-table input.cell-input:not(.cell-input--number) { width: 100%; box-sizing: border-box; }
 .data-table input.cell--number:disabled { background: var(--c-bg2); color: var(--c-text2); opacity: 0.55; }
 
-/* Split action: + button, inputs, Go all on one line (item 4) */
-.split-line { display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; }
-.split-line > #split-qty-rows { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-.split-line > .split-add-btn, .split-line > .btn--primary { flex: none; align-self: flex-start; }
-
 /* Component inventory type — visually distinct (item 3) */
 .inventory-type-tabs .category-tab[href*="inventory_type=component"].category-tab--active { border-bottom-color: var(--c-accent); }
 .badge--component { background: rgba(124,58,237,0.12); color: #6d28d9; border: 1px solid rgba(124,58,237,0.3); }
@@ -1929,11 +1924,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
 .sp-input { width: 72px !important; padding: 2px 5px !important; font-size: 0.82rem !important; height: auto !important; text-align: left; }
 .sp-confirm-btn { margin-top: 8px; }
-/* Split reconciliation trio (item-detail card) and live delta badge (previews). */
-.sp-reconcile { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
-.sp-reconcile-line { font-size: 0.78rem; color: var(--c-text2); }
-.sp-reconcile-line .sp-delta-label { font-weight: 600; }
-.sp-parcel-val, .sp-split-weight-val, .sp-delta-val { font-variant-numeric: tabular-nums; }
+/* Live delta badge (split preview table + transform preview). */
+.sp-delta-val { font-variant-numeric: tabular-nums; }
 .sp-confirm-row { display: flex; align-items: center; gap: 10px; }
 .sp-delta-badge { font-size: 0.8rem; color: var(--c-text2); display: inline-flex; align-items: center; gap: 2px; align-self: center; }
 .sp-delta-badge .sp-delta-label { font-weight: 600; }
@@ -2044,12 +2036,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .action-card-row .form-input--sm { flex: 1; min-width: 0; }
 .action-card-row--col { flex-direction: column; align-items: flex-start; }
 .action-card-row--col .btn--primary { align-self: flex-start; margin-top: 2px; }
-.split-qty-row { display: flex; gap: 6px; align-items: center; width: 100%; }
-.split-qty-row .form-input--sm { flex: 1; min-width: 0; }
-.split-qty-row .form-input--sm.split-qty-main { flex: 0 0 80px; width: 80px; }
-.split-add-btn { flex-shrink: 0; }
 .action-card-row .form-input--sm.split-qty-main { flex: 0 0 80px; width: 80px; }
-.split-remove-btn { flex-shrink: 0; color: var(--c-text2); }
 .form-input--sm { padding: 4px 8px; font-size: 12px; height: 28px; }
 .btn--xs { padding: 3px 10px; font-size: 11px; height: 28px; }
 @media (max-width: 640px) { .action-cards-grid { grid-template-columns: 1fr; } }

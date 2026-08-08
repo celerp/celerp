@@ -732,7 +732,6 @@
   "inv.tooltip.batch_qty": "Enter the {unit} quantity for each identical child lot",
   "inv.tooltip.batch_submit": "Create N identical child lots",
   "inv.tooltip.split_pieces_opt": "Optionally record how many pieces this child lot contains",
-  "inv.tooltip.split_qty": "Enter the {unit} quantity to split off into this child lot",
   "inv.tooltip.split_weight_opt": "Optionally record the weight of this child lot",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "Số lượng {unit} cho mỗi lô con giống nhau",
   "inv.tooltip.batch_submit": "Tạo N lô con giống nhau",
   "inv.tooltip.split_pieces_opt": "Tùy chọn: ghi số mảnh của lô con này",
-  "inv.tooltip.split_qty": "Nhập số lượng {unit} để tách thành lô con này",
   "inv.tooltip.split_weight_opt": "Tùy chọn: ghi trọng lượng của lô con này",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

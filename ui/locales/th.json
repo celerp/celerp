@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "จำนวน {unit} ต่อล็อตลูกแต่ละชุด",
   "inv.tooltip.batch_submit": "สร้าง N ล็อตลูกที่เหมือนกัน",
   "inv.tooltip.split_pieces_opt": "บันทึกจำนวนชิ้นของล็อตลูกนี้ (ไม่บังคับ)",
-  "inv.tooltip.split_qty": "ป้อนจำนวน {unit} ที่จะแยกเป็นล็อตลูก",
   "inv.tooltip.split_weight_opt": "บันทึกน้ำหนักของล็อตลูกนี้ (ไม่บังคับ)",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

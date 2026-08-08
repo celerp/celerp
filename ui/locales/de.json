@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "{unit}-Menge pro identischem Kindlos eingeben",
   "inv.tooltip.batch_submit": "N identische Kindlose erstellen",
   "inv.tooltip.split_pieces_opt": "Optionale Stückzahl für dieses Kindlos erfassen",
-  "inv.tooltip.split_qty": "{unit}-Menge für dieses Kindlos eingeben",
   "inv.tooltip.split_weight_opt": "Optionales Gewicht für dieses Kindlos erfassen",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",

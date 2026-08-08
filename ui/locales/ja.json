@@ -680,7 +680,6 @@
   "inv.tooltip.batch_qty": "同一の子ロット1件あたりの{unit}数量",
   "inv.tooltip.batch_submit": "N個の同一子ロットを作成",
   "inv.tooltip.split_pieces_opt": "任意でこの子ロットのピース数を記録",
-  "inv.tooltip.split_qty": "この子ロットに分割する{unit}数量を入力",
   "inv.tooltip.split_weight_opt": "任意でこの子ロットの重量を記録",
   "inv.transform": "Transform",
   "inv.u0001f4c1": "📁",
