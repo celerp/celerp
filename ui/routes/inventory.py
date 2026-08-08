@@ -389,6 +389,287 @@ function transformPreviewInit(formId) {
 
 
 
+def _opt_float_field(form, key: str):
+    """Parse an optional float form field: None on empty or non-numeric, so an absent or
+    malformed override is omitted from the payload rather than forwarded as 0."""
+    raw = str(form.get(key, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
+                      allow_add_child: bool, child_sku_editable: bool,
+                      entity_id: str | None = None) -> FT:
+    """Shared split-table renderer used by both the bulk-split preview and the item-detail
+    split card. Reads all unit/format context from the server preview dict and emits the
+    Mother row (editable qty), one or more Child rows, a totals footer, and the live delta
+    net-gain/loss badge next to Confirm. Both surfaces mark BOTH the mother's post-split
+    element and each child's outgoing element with data-delta-weight, so the badge reads 0
+    for a balanced carve and non-zero only when the mother is edited independently or the
+    children exceed it. allow_add_child renders a + control plus a hidden <template> child
+    row (cloned client-side for N children), each added row carrying a remove control;
+    child_sku_editable renders the child SKU as an editable input (bulk) or a static cell
+    keeping the parent SKU (item-detail)."""
+    from fasthtml.common import Template
+
+    sell_by_label = preview.get("sell_by_label", preview.get("sell_by", ""))
+    decimals = preview.get("unit_decimals", 0)
+    weight_decimals = preview.get("weight_decimals", 2)
+    fmt = f"{{:.{decimals}f}}"
+    wfmt = f"{{:.{weight_decimals}f}}"
+    sell_by_type = preview.get("sell_by_type", "other")
+    weight_unit_label = preview.get("weight_unit_label", "")
+
+    def _unit_display_name(label: str) -> str:
+        """Strip abbreviation in parens from a unit label: 'Carat (ct)' -> 'Carat'."""
+        return re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
+
+    sell_by_display = _unit_display_name(sell_by_label)
+    weight_display = _unit_display_name(weight_unit_label)
+
+    # QTY is always shown. Weight/pieces columns follow one symmetric rule:
+    #   - weight-type sell_by: qty IS weight, so the weight column is a read-only mirror of
+    #     QTY, only worth showing alongside an editable pieces column.
+    #   - pieces-type sell_by: qty IS pieces, the pieces mirror shows only alongside an
+    #     editable weight column.
+    #   - other sell_by: weight/pieces show when the item has them (editable).
+    has_weight = preview.get("has_weight", False)
+    has_pieces = preview.get("has_pieces", False)
+    parent_pieces_val = preview.get("parent_pieces")
+    if sell_by_type == "weight":
+        show_weight = has_pieces
+        show_pieces = has_pieces
+    elif sell_by_type == "pieces":
+        show_weight = has_weight
+        show_pieces = has_weight
+        if parent_pieces_val is None:
+            parent_pieces_val = int(round(float(preview["parent_qty"])))
+    else:
+        show_weight = has_weight
+        show_pieces = has_pieces
+
+    weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
+    # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); SKU stays text.
+    headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th sp-th--num")]
+    if show_weight:
+        headers.append(Th(weight_col_header, cls="sp-th sp-th--num"))
+    if show_pieces:
+        headers.append(Th("Pieces", cls="sp-th sp-th--num"))
+
+    # ESC-to-blur on every editable input the helper renders (GDR 2j); mirrors the
+    # repeated-row convention in the journal-entry table (ui/routes/accounting.py:442).
+    esc = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+
+    def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False) -> FT:
+        kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input", onkeydown=esc)
+        if oninput:
+            kwargs["oninput"] = oninput
+        if onblur:
+            kwargs["onblur"] = onblur
+        if max is not None:
+            kwargs["max"] = max
+        if min is not None:
+            kwargs["min"] = min
+        if dw:
+            kwargs["data_delta_weight"] = "1"
+        return Td(Input(**kwargs), cls="sp-td sp-td--num" if num else "sp-td")
+
+    _child_weight_oninput = "splitRecalcMotherWeight(this)"
+    _child_weight_onblur = "splitClampWeight(this)"
+    _child_pieces_oninput = "splitRecalcMotherPieces(this)"
+    _child_pieces_onblur = "splitClampPieces(this)"
+
+    def _parcel_row(label, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
+                    weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
+        cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
+        if show_weight:
+            w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
+            # Child weight is editable only when sell_by is NOT a weight unit.
+            # When sell_by IS weight, qty = weight so child weight is derived from QTY (static).
+            child_weight_editable = is_child and weight_name and sell_by_type != "weight"
+            if child_weight_editable:
+                # This editable weight IS the outgoing weight for the delta sum (marker).
+                cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur, num=True, dw=True))
+            elif is_child:
+                cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td sp-td--num"))
+            else:
+                # Mother: static display (grey italic), updated by JS. Also carries the delta
+                # marker (data-delta-weight) when sell_by is NOT weight-type, so the badge sums
+                # mother_post + children (net gain/loss), not children alone. When sell_by IS
+                # weight, this span may not render (no weight column for a pure weight-sold
+                # parcel), so the marker lives on .mother-qty-input instead (mother_row below).
+                _mother_span_dw = {"data_delta_weight": "1"} if sell_by_type != "weight" else {}
+                cells.append(Td(Span(w, cls="mother-weight-display sp-static-val", **_mother_span_dw), cls="sp-td sp-td--num"))
+        if show_pieces:
+            p = str(int(pieces_val)) if pieces_val is not None else "0"
+            # Child pieces is editable only when sell_by is NOT a pieces unit.
+            child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
+            if child_pieces_editable:
+                pieces_max = str(int(parent_pieces_val or 1) - 1)
+                cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max, num=True))
+            elif is_child:
+                cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
+            else:
+                cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
+        return Tr(*cells)
+
+    # When sell_by is weight, qty IS the mother's post-split weight (no separate weight
+    # column may render), so this input carries the delta marker instead of the span above.
+    _mother_qty_dw = {"data_delta_weight": "1"} if sell_by_type == "weight" else {}
+    mother_row = _parcel_row(
+        "Mother",
+        _sp_static_td(preview["parent_sku"]),
+        Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
+                 step=str(10 ** -decimals if decimals > 0 else 1), min="0",
+                 cls="form-input form-input--xs sp-input mother-qty-input",
+                 onchange="bulkSplitMotherQtyChanged(this)", onkeydown=esc, **_mother_qty_dw), cls="sp-td sp-td--num"),
+        preview.get("parent_weight"),
+        parent_pieces_val,
+        weight_name=None,
+        pieces_name=None,
+        is_child=False,
+    )
+
+    # When sell_by is weight, child_qty IS the outgoing weight (no separate weight field),
+    # so it carries the delta marker; oninput keeps the badge live as it is typed.
+    _child_qty_dw = {"data_delta_weight": "1", "oninput": "_updateSplitDelta(this.form)"} if sell_by_type == "weight" else {}
+
+    def _child_row(removable: bool) -> FT:
+        if child_sku_editable:
+            sku_cell = Td(Input(type="text", name="child_sku", value=preview["child_sku"],
+                                cls="form-input sp-sku-input", onkeydown=esc,
+                                oninput="bulkSplitSkuChanged(this)"), cls="sp-td")
+        else:
+            sku_cell = _sp_static_td(preview.get("child_sku") or "--")
+        qty_cell = Td(Input(type="number", name="child_qty", value="0",
+                            step=str(10 ** -decimals if decimals > 0 else 1), min="0",
+                            max=fmt.format(preview["parent_qty"] - (10 ** -decimals if decimals > 0 else 1)),
+                            cls="form-input form-input--xs sp-input", onkeydown=esc,
+                            onchange="bulkSplitChildQtyChanged(this)", **_child_qty_dw), cls="sp-td sp-td--num")
+        if removable:
+            label = Span(
+                Button("✕", type="button", cls="btn btn--ghost btn--xs split-remove-child-btn",
+                       title="Remove child",
+                       onclick="var f=this.closest('form');var tr=this.closest('tr');if(tr)tr.remove();splitRecalc(f);"),
+                " Child",
+            )
+        else:
+            label = "Child"
+        return _parcel_row(
+            label,
+            sku_cell,
+            qty_cell,
+            None,
+            0,
+            weight_name="child_weight" if (show_weight and sell_by_type != "weight") else None,
+            pieces_name="child_pieces" if (show_pieces and sell_by_type != "pieces") else None,
+            is_child=True,
+        )
+
+    child_row = _child_row(removable=False)
+
+    form_data: dict = {
+        "data_weight_decimals": str(weight_decimals),
+        "data_unit_decimals": str(decimals),
+        "data_parent_qty": str(preview["parent_qty"]),
+        "data_sell_by": preview["sell_by"],
+        "data_sell_by_type": sell_by_type,
+        "data_weight_units": ",".join(preview.get("weight_unit_names", [])),
+    }
+    if show_weight:
+        form_data["data_parent_weight"] = str(preview["parent_weight"])
+    if show_pieces:
+        form_data["data_parent_pieces"] = str(int(parent_pieces_val))
+    if sell_by_type == "weight":
+        # Weight-sold: quantity IS the weight, so the delta reads parent weight from
+        # data-parent-qty (data-parent-weight is absent for these parcels).
+        form_data["data_sell_by_weight"] = "1"
+
+    # Totals footer: mother qty (initial) + child qty (0) for QTY column; weight/pieces use
+    # parent totals since the children start at 0.
+    tfoot_cells: list = [Td("Total", cls="sp-row-label sp-total-label"), Td("")]
+    tfoot_cells.append(Td(
+        fmt.format(preview["parent_qty"]),
+        cls="sp-td sp-total-val sp-total-qty",
+    ))
+    if show_weight:
+        tfoot_cells.append(Td(
+            wfmt.format(preview.get("parent_weight") or 0),
+            cls="sp-td sp-total-val sp-total-weight",
+        ))
+    if show_pieces:
+        tfoot_cells.append(Td(
+            str(int(parent_pieces_val or 0)),
+            cls="sp-td sp-total-val sp-total-pieces",
+        ))
+
+    # Live delta badge next to Confirm: net gain/loss of the split, parcel weight minus the
+    # sum of the elements marked data-delta-weight (the mother's post-split weight/qty plus
+    # every child's outgoing weight/qty). Both surfaces mark both, so the badge reads 0 for a
+    # balanced carve and non-zero only when the mother is edited independently or the children
+    # exceed it. The JS reads the parcel weight from data-parent-weight (or data-parent-qty
+    # when the parcel is weight-sold). Units with no weight carry no delta.
+    delta_unit = f" {weight_display}" if weight_display else ""
+    _show_delta_badge = (sell_by_type == "weight") or show_weight
+
+    add_child_controls = []
+    if allow_add_child:
+        add_child_controls = [
+            Template(Table(Tbody(_child_row(removable=True))), cls="split-child-template"),
+            Div(
+                Button("+ Add child", type="button", cls="btn btn--secondary btn--xs split-add-child-btn",
+                       onclick="splitAddChild(this)", title="Add another child"),
+                cls="sp-add-child-row",
+            ),
+        ]
+
+    return Form(
+        *([Input(type="hidden", name="entity_id", value=entity_id)] if entity_id is not None else []),
+        # mother_weight hidden: tracks the mother-weight-display span value so JS can submit
+        # it; _updateSplitTotals keeps it in sync after every change.
+        *(
+            [Input(type="hidden", name="mother_weight",
+                   value=wfmt.format(preview.get("parent_weight") or 0))]
+            if show_weight else []
+        ),
+        Table(
+            Thead(Tr(*headers)),
+            Tbody(mother_row, child_row),
+            Tfoot(Tr(*tfoot_cells, cls="sp-totals-row")),
+            cls="split-preview-table",
+        ),
+        *add_child_controls,
+        Div(
+            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            *(
+                [Span(
+                    Span("Δ ", cls="sp-delta-label"),
+                    Span("", cls="sp-delta-val"),
+                    Span(delta_unit, cls="sp-delta-unit"),
+                    cls="sp-delta sp-delta-badge",
+                    title=t("inv.split_delta_tooltip"),
+                )]
+                if _show_delta_badge else []
+            ),
+            cls="sp-confirm-row",
+        ),
+        *(
+            [Script(f"_updateSplitDelta(document.getElementById('{form_id}'));")]
+            if _show_delta_badge else []
+        ),
+        hx_post=action,
+        hx_target=target,
+        hx_swap="outerHTML",
+        onsubmit="bulkSplitSubmit(this)",
+        id=form_id,
+        **form_data,
+    )
+
+
 def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
     """Derive the stock quantity from a CSV row.
 
@@ -3024,233 +3305,14 @@ function celerpPrintLabel(entityId, templateId) {
         if preview.get("cannot_split"):
             return Div(P("Cannot split - only 1 piece", cls="flash flash--warning"))
 
-        sell_by_label = preview.get("sell_by_label", preview.get("sell_by", ""))
-        decimals = preview.get("unit_decimals", 0)
-        weight_decimals = preview.get("weight_decimals", 2)
-        fmt = f"{{:.{decimals}f}}"
-        wfmt = f"{{:.{weight_decimals}f}}"
-        sell_by_type = preview.get("sell_by_type", "other")
-        weight_unit_label = preview.get("weight_unit_label", "")
-
-        def _unit_display_name(label: str) -> str:
-            """Strip abbreviation in parens from a unit label: 'Carat (ct)' → 'Carat'."""
-            import re as _re
-            return _re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
-
-        sell_by_display = _unit_display_name(sell_by_label)
-        weight_display = _unit_display_name(weight_unit_label)
-
-        # QTY is always shown. Weight/pieces columns follow one symmetric rule:
-        #   - weight-type sell_by: qty IS weight, so the weight column is a
-        #     read-only mirror of QTY - only worth showing alongside an editable
-        #     pieces column. Without pieces, QTY alone carries the information.
-        #   - pieces-type sell_by: qty IS pieces - the pieces mirror shows only
-        #     alongside an editable weight column.
-        #   - other sell_by: weight/pieces show when the item has them (editable).
-        has_weight = preview.get("has_weight", False)
-        has_pieces = preview.get("has_pieces", False)
-        parent_pieces_val = preview.get("parent_pieces")
-        if sell_by_type == "weight":
-            show_weight = has_pieces
-            show_pieces = has_pieces
-        elif sell_by_type == "pieces":
-            show_weight = has_weight
-            show_pieces = has_weight
-            if parent_pieces_val is None:
-                parent_pieces_val = int(round(float(preview["parent_qty"])))
-        else:
-            show_weight = has_weight
-            show_pieces = has_pieces
-
-        weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
-        # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); SKU stays text.
-        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th sp-th--num")]
-        if show_weight:
-            headers.append(Th(weight_col_header, cls="sp-th sp-th--num"))
-        if show_pieces:
-            headers.append(Th("Pieces", cls="sp-th sp-th--num"))
-
-        def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None, num: bool = False, dw: bool = False) -> FT:
-            kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
-            if oninput:
-                kwargs["oninput"] = oninput
-            if onblur:
-                kwargs["onblur"] = onblur
-            if max is not None:
-                kwargs["max"] = max
-            if min is not None:
-                kwargs["min"] = min
-            if dw:
-                kwargs["data_delta_weight"] = "1"
-            return Td(Input(**kwargs), cls="sp-td sp-td--num" if num else "sp-td")
-
-        _child_weight_oninput = "splitRecalcMotherWeight(this)"
-        _child_weight_onblur = "splitClampWeight(this)"
-        _child_pieces_oninput = "splitRecalcMotherPieces(this)"
-        _child_pieces_onblur = "splitClampPieces(this)"
-
-        def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
-                        weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
-            cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
-            if show_weight:
-                w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
-                # Child weight is editable only when sell_by is NOT a weight unit.
-                # When sell_by IS weight, qty = weight so child weight is derived from QTY (static).
-                child_weight_editable = is_child and weight_name and sell_by_type != "weight"
-                if child_weight_editable:
-                    # This editable weight IS the outgoing weight for the delta sum (marker).
-                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur, num=True, dw=True))
-                elif is_child:
-                    cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td sp-td--num"))
-                else:
-                    # Mother: static display (grey italic), updated by JS. Also carries the
-                    # delta marker (data-delta-weight) when sell_by is NOT weight-type, so the
-                    # bulk-split badge sums mother_post + child (net gain/loss), not child alone.
-                    # When sell_by IS weight, this span may not render at all (no weight column
-                    # for a pure weight-sold parcel), so the marker lives on .mother-qty-input
-                    # instead (mother_row below), which holds the same quantity in that case.
-                    _mother_span_dw = {"data_delta_weight": "1"} if sell_by_type != "weight" else {}
-                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val", **_mother_span_dw), cls="sp-td sp-td--num"))
-            if show_pieces:
-                p = str(int(pieces_val)) if pieces_val is not None else "0"
-                # Child pieces is editable only when sell_by is NOT a pieces unit.
-                # When sell_by IS pieces, qty = pieces so child pieces is derived from QTY (static).
-                child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
-                if child_pieces_editable:
-                    pieces_max = str(int(parent_pieces_val or 1) - 1)
-                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max, num=True))
-                elif is_child:
-                    cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
-                else:
-                    # Mother pieces: static display (grey italic), updated by JS
-                    cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td sp-td--num"))
-            return Tr(*cells)
-
-        # When sell_by is weight, qty IS the mother's post-split weight (no separate weight
-        # column may render), so this input carries the delta marker instead of the span above.
-        _mother_qty_dw = {"data_delta_weight": "1"} if sell_by_type == "weight" else {}
-        mother_row = _parcel_row(
-            "Mother",
-            _sp_static_td(preview["parent_sku"]),
-            Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
-                     step=str(10 ** -decimals if decimals > 0 else 1), min="0",
-                     cls="form-input form-input--xs sp-input mother-qty-input",
-                     onchange="bulkSplitMotherQtyChanged(this)", **_mother_qty_dw), cls="sp-td sp-td--num"),
-            preview.get("parent_weight"),
-            parent_pieces_val,
-            weight_name=None,
-            pieces_name=None,
-            is_child=False,
-        )
-        # When sell_by is weight, child_qty IS the outgoing weight (no separate weight field),
-        # so it carries the delta marker; oninput keeps the badge live as it is typed.
-        _child_qty_dw = {"data_delta_weight": "1", "oninput": "_updateSplitDelta(this.form)"} if sell_by_type == "weight" else {}
-        child_row = _parcel_row(
-            "Child",
-            Td(Input(type="text", name="child_sku", value=preview["child_sku"],
-                     cls="form-input sp-sku-input",
-                     oninput="bulkSplitSkuChanged(this)"), cls="sp-td"),
-            Td(Input(type="number", name="child_qty", value="0",
-                     step=str(10 ** -decimals if decimals > 0 else 1), min="0",
-                     max=fmt.format(preview["parent_qty"] - (10 ** -decimals if decimals > 0 else 1)),
-                     cls="form-input form-input--xs sp-input",
-                     onchange="bulkSplitChildQtyChanged(this)", **_child_qty_dw), cls="sp-td sp-td--num"),
-            None,
-            0,
-            # When sell_by is weight, child weight = qty (static, no editable field submitted).
-            # When sell_by is pieces, child pieces = qty (static, no editable field submitted).
-            weight_name="child_weight" if (show_weight and sell_by_type != "weight") else None,
-            pieces_name="child_pieces" if (show_pieces and sell_by_type != "pieces") else None,
-            is_child=True,
-        )
-
-        form_data: dict = {
-            "data_weight_decimals": str(weight_decimals),
-            "data_unit_decimals": str(decimals),
-            "data_parent_qty": str(preview["parent_qty"]),
-            "data_sell_by": preview["sell_by"],
-            "data_sell_by_type": sell_by_type,
-            "data_weight_units": ",".join(preview.get("weight_unit_names", [])),
-        }
-        if show_weight:
-            form_data["data_parent_weight"] = str(preview["parent_weight"])
-        if show_pieces:
-            form_data["data_parent_pieces"] = str(int(parent_pieces_val))
-        if sell_by_type == "weight":
-            # Weight-sold: quantity IS the weight, so the delta reads parent weight from
-            # data-parent-qty (data-parent-weight is absent for these parcels).
-            form_data["data_sell_by_weight"] = "1"
-
-        # Totals footer: mother qty (initial) + child qty (0) for QTY column;
-        # weight/pieces use parent totals since child starts at 0.
-        tfoot_cells: list = [Td("Total", cls="sp-row-label sp-total-label"), Td("")]  # label + SKU col
-        tfoot_cells.append(Td(
-            fmt.format(preview["parent_qty"]),
-            cls="sp-td sp-total-val sp-total-qty",
-        ))
-        if show_weight:
-            tfoot_cells.append(Td(
-                wfmt.format(preview.get("parent_weight") or 0),
-                cls="sp-td sp-total-val sp-total-weight",
-            ))
-        if show_pieces:
-            tfoot_cells.append(Td(
-                str(int(parent_pieces_val or 0)),
-                cls="sp-td sp-total-val sp-total-pieces",
-            ))
-
-        # Live delta badge next to Confirm: net gain/loss of the split, parcel weight -
-        # (mother's post-split weight + child's outgoing weight). Both weight-carrying
-        # elements now carry the data-delta-weight marker (mother_qty/mother-weight-display
-        # per sell_by_type above, plus child_qty when weight-sold or editable child_weight
-        # when pieces-sold), so the badge reads 0 for an ordinary split (mother_post + child =
-        # original) and non-zero only when the mother is edited independently or the child
-        # exceeds the mother. The item-detail card and transform preview are unchanged (owner
-        # directed the card to be reviewed separately; transform delta is intentionally
-        # trim-loss). The JS reads the parcel weight from data-parent-qty/data-parent-weight.
-        # Units with no weight carry no delta.
-        delta_unit = f" {weight_display}" if weight_display else ""
-        _show_delta_badge = (sell_by_type == "weight") or show_weight
-
-        return Form(
-            Input(type="hidden", name="entity_id", value=entity_id),
-            # mother_weight hidden: tracks the mother-weight-display span value so JS
-            # can submit it; _updateSplitTotals keeps it in sync after every change.
-            *(
-                [Input(type="hidden", name="mother_weight",
-                       value=wfmt.format(preview.get("parent_weight") or 0))]
-                if show_weight else []
-            ),
-            Table(
-                Thead(Tr(*headers)),
-                Tbody(mother_row, child_row),
-                Tfoot(Tr(*tfoot_cells, cls="sp-totals-row")),
-                cls="split-preview-table",
-            ),
-            Div(
-                Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
-                *(
-                    [Span(
-                        Span("Δ ", cls="sp-delta-label"),
-                        Span("", cls="sp-delta-val"),
-                        Span(delta_unit, cls="sp-delta-unit"),
-                        cls="sp-delta sp-delta-badge",
-                        title=t("inv.split_delta_tooltip"),
-                    )]
-                    if _show_delta_badge else []
-                ),
-                cls="sp-confirm-row",
-            ),
-            *(
-                [Script("_updateSplitDelta(document.getElementById('bulk-split-preview-form'));")]
-                if _show_delta_badge else []
-            ),
-            hx_post="/api/items/bulk/split",
-            hx_target="#bulk-action-result",
-            hx_swap="outerHTML",
-            onsubmit="bulkSplitSubmit(this)",
-            id="bulk-split-preview-form",
-            **form_data,
+        return _split_table_form(
+            preview,
+            action="/api/items/bulk/split",
+            target="#bulk-action-result",
+            form_id="bulk-split-preview-form",
+            allow_add_child=False,
+            child_sku_editable=True,
+            entity_id=entity_id,
         )
 
     @app.post("/api/items/bulk/split")
