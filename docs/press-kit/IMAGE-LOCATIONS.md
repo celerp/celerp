@@ -38,7 +38,7 @@ All are optimized PNG, ≤1600 px wide, ~170–390 KB each (≈2 MB total).
 ## Industry folders (full set per business type)
 
 For press covering a specific vertical, the complete screen set for each demo company is published
-under `docs/press-kit/screenshots/<industry>/` (13 screens each). These are **WebP** (q82, ≤1280 px)
+under `docs/press-kit/screenshots/<industry>/` (per-folder screen counts in the table below). These are **WebP** (q82, ≤1280 px)
 — a browse-and-pick archive, not the social-preview/CMS surface, so WebP's ~80% size win applies with
 no visible loss. Each folder has a generated `README.md` gallery that GitHub renders on open.
 
