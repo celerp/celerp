@@ -5,14 +5,24 @@
 Covers:
 - ROLES derived from auth.ROLE_LEVELS with i18n label keys
 - PERMISSIONS catalogue: keys, defaults, floors, fixed rows
-- Resolver: defaults, overrides, stale overrides, fail-closed roles
+- Resolver: default membership, per-role grants, stale grants, fail-closed roles
 - assert_role_permission 403 shape
-- Threshold monotonicity
+- Per-role grant independence (a grant to one role never cascades to another)
 """
 from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+
+
+def _roles_from(role: str) -> list[str]:
+    """The role keys at or above *role* in the hierarchy: the per-role grant set a
+    threshold expands to under the role_grants model. A grant recorded down to
+    *role* holds for that role and every higher one, and no lower one."""
+    from celerp.services.auth import ROLE_LEVELS
+
+    floor = ROLE_LEVELS[role]
+    return [r for r, lvl in ROLE_LEVELS.items() if lvl >= floor]
 
 
 # ── Registry shape ────────────────────────────────────────────────────────────
@@ -95,25 +105,32 @@ def test_fixed_rows_not_grantable():
 
 # ── Resolver ──────────────────────────────────────────────────────────────────
 
-def test_permission_min_level_default():
-    """Empty overrides resolve to the registry default level."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
+def test_default_resolution_membership():
+    """Empty grants resolve each key to its registry default set: the default role
+    and every role above it hold it, and the role just below does not."""
+    from celerp.services.permissions import role_has_permission
 
-    assert permission_min_level({}, "set_inventory_prices") == ROLE_LEVELS["manager"]
-    assert permission_min_level({}, "set_sales_doc_prices") == ROLE_LEVELS["operator"]
-    assert permission_min_level({}, "view_inventory") == ROLE_LEVELS["viewer"]
+    # set_inventory_prices default manager.
+    assert role_has_permission({}, "manager", "set_inventory_prices") is True
+    assert role_has_permission({}, "operator", "set_inventory_prices") is False
+    # set_sales_doc_prices default operator.
+    assert role_has_permission({}, "operator", "set_sales_doc_prices") is True
+    assert role_has_permission({}, "viewer", "set_sales_doc_prices") is False
+    # view_inventory default viewer: every role holds it.
+    assert role_has_permission({}, "viewer", "view_inventory") is True
 
 
-def test_permission_min_level_override():
-    """An override {perm_key: role_key} changes the resolved level."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
+def test_grant_resolution_membership():
+    """A role_grants entry sets exactly which roles hold the key, independent of the
+    registry default."""
+    from celerp.services.permissions import role_has_permission
 
-    settings = {"role_permissions": {"set_inventory_prices": "operator"}}
-    assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["operator"]
-    settings = {"role_permissions": {"set_sales_doc_prices": "manager"}}
-    assert permission_min_level(settings, "set_sales_doc_prices") == ROLE_LEVELS["manager"]
+    settings = {"role_grants": {"set_inventory_prices": _roles_from("operator")}}
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is True
+    assert role_has_permission(settings, "viewer", "set_inventory_prices") is False
+    settings = {"role_grants": {"set_sales_doc_prices": _roles_from("manager")}}
+    assert role_has_permission(settings, "manager", "set_sales_doc_prices") is True
+    assert role_has_permission(settings, "operator", "set_sales_doc_prices") is False
 
 
 def test_manage_company_settings_floor_is_admin():
@@ -125,35 +142,44 @@ def test_manage_company_settings_floor_is_admin():
     assert by_key["manage_company_settings"].floor_role == "admin"
 
 
-def test_permission_min_level_clamps_sub_floor_override():
-    """A grandfathered override below the floor is clamped up to the floor at read
-    time: a stored operator override for manage_company_settings resolves to admin,
+def test_grant_clamped_to_floor_membership():
+    """A stored grant below the floor does not admit the sub-floor role: a grant of
+    manage_company_settings that names operator still resolves to admin-and-up,
     so the raised floor is a real invariant on read and not only on save."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
+    from celerp.services.permissions import role_has_permission
 
-    settings = {"role_permissions": {"manage_company_settings": "operator"}}
-    assert permission_min_level(settings, "manage_company_settings") == ROLE_LEVELS["admin"]
-
-
-def test_permission_min_level_stale_override_ignored():
-    """Overrides naming unknown roles or permissions fall back to the default."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
-
-    settings = {"role_permissions": {"set_inventory_prices": "archduke"}}
-    assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["manager"]
-    settings = {"role_permissions": {"no_such_permission": "operator"}}
-    assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["manager"]
+    settings = {"role_grants": {"manage_company_settings":
+                                ["operator", "manager", "admin", "owner"]}}
+    assert role_has_permission(settings, "operator", "manage_company_settings") is False
+    assert role_has_permission(settings, "manager", "manage_company_settings") is False
+    assert role_has_permission(settings, "admin", "manage_company_settings") is True
 
 
-def test_permission_min_level_fixed_rows_ignore_overrides():
-    """Fixed rows resolve at owner even when the blob carries an override."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
+def test_stale_role_in_grant_ignored_membership():
+    """A grant naming a role no longer in ROLE_LEVELS drops that role; the remaining
+    valid roles still resolve, and an all-stale set admits no one (never a crash,
+    never an accidental grant). An unknown key falls back to its default set."""
+    from celerp.services.permissions import role_has_permission
 
-    settings = {"role_permissions": {"manage_permissions": "viewer"}}
-    assert permission_min_level(settings, "manage_permissions") == ROLE_LEVELS["owner"]
+    settings = {"role_grants": {"set_inventory_prices": ["archduke", "manager"]}}
+    assert role_has_permission(settings, "manager", "set_inventory_prices") is True
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is False
+    settings = {"role_grants": {"set_inventory_prices": ["archduke"]}}
+    assert role_has_permission(settings, "manager", "set_inventory_prices") is False
+    settings = {"role_grants": {"no_such_permission": ["operator"]}}
+    assert role_has_permission(settings, "manager", "set_inventory_prices") is True
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is False
+
+
+def test_fixed_permission_ignores_role_grants():
+    """Fixed rows resolve at their owner default even when role_grants names them:
+    the grantable short-circuit prevents both escalation and self-lockout."""
+    from celerp.services.permissions import role_has_permission
+
+    settings = {"role_grants": {"manage_permissions":
+                                ["viewer", "operator", "manager", "admin", "owner"]}}
+    assert role_has_permission(settings, "viewer", "manage_permissions") is False
+    assert role_has_permission(settings, "owner", "manage_permissions") is True
 
 
 def test_role_has_permission_unknown_role_fails_closed():
@@ -182,33 +208,285 @@ def test_assert_role_permission_raises_403():
     assert_role_permission({}, "manager", "set_inventory_prices")
 
 
-def test_threshold_monotonic():
-    """Granting a lower role implies every higher role passes."""
+def test_defaults_are_registry_membership():
+    """With empty grants every registry key resolves to a set: exactly the roles at
+    or above its default_role hold it, every role below does not. This pins the same
+    default thresholds the enforcement sites carried before, expressed as membership
+    of role_has_permission rather than a numeric minimum."""
     from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import role_has_permission
-
-    settings = {"role_permissions": {"set_inventory_prices": "operator"}}
-    for role, level in ROLE_LEVELS.items():
-        expected = level >= ROLE_LEVELS["operator"]
-        assert role_has_permission(settings, role, "set_inventory_prices") is expected, role
-
-
-def test_defaults_match_current_behavior():
-    """With empty overrides every registry entry resolves to the minimum role
-    its enforcement sites carry today; the old static table's rows are a subset."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import PERMISSIONS, permission_min_level
+    from celerp.services.permissions import PERMISSIONS, role_has_permission
 
     for p in PERMISSIONS:
         expected_role, _, _ = EXPECTED_CATALOGUE[p.key]
-        assert permission_min_level({}, p.key) == ROLE_LEVELS[expected_role], p.key
+        want = ROLE_LEVELS[expected_role]
+        for role, lvl in ROLE_LEVELS.items():
+            assert role_has_permission({}, role, p.key) is (lvl >= want), (p.key, role)
 
 
 # ── Gate 1: inventory cost visibility and price writes ───────────
 
-from test_helpers import grant_permission, perm_setup  # noqa: E402
+from test_helpers import grant_permission, invite_user, perm_setup  # noqa: E402
 
-_GRANTED = {"role_permissions": {"view_inventory_costs": "operator"}}
+_GRANTED = {"role_grants": {"view_inventory_costs": _roles_from("operator")}}
+
+_ROLE_PERM_URL = "/companies/me/role-permissions"
+
+
+async def _company_settings(client, headers: dict) -> dict:
+    """Read the caller's company settings fresh from the API."""
+    r = await client.get("/companies/me", headers=headers)
+    assert r.status_code == 200, r.text
+    return (r.json().get("settings") or {})
+
+
+async def _toggle(client, headers: dict, perm_key: str, role_key: str, granted: bool) -> None:
+    """Toggle one (permission, role) matrix cell through the owner-gated route."""
+    r = await client.patch(
+        _ROLE_PERM_URL,
+        json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+
+# ── Per-role grant independence (grants are a set, not a cascading threshold) ──
+
+
+async def test_grant_is_independent_per_role(client, session):
+    """Granting a perm to viewer alone does not grant it to operator: a grant is
+    per-role, not a threshold that fills in every role above the one granted."""
+    from celerp.services.permissions import role_has_permission
+
+    ctx = await perm_setup(client, session)
+    # set_inventory_prices defaults to manager, so operator sits above viewer but
+    # below the default: the only way operator holds it is if the grant cascaded.
+    await _toggle(client, ctx["admin_h"], "set_inventory_prices", "viewer", True)
+    settings = await _company_settings(client, ctx["admin_h"])
+    assert role_has_permission(settings, "viewer", "set_inventory_prices") is True
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is False
+
+
+async def test_revoke_is_independent_per_role(client, session):
+    """Revoking a perm from one role leaves every other role's grant untouched."""
+    from celerp.services.permissions import role_has_permission
+
+    ctx = await perm_setup(client, session)
+    await _toggle(client, ctx["admin_h"], "set_inventory_prices", "viewer", True)
+    await _toggle(client, ctx["admin_h"], "set_inventory_prices", "operator", True)
+    await _toggle(client, ctx["admin_h"], "set_inventory_prices", "operator", False)
+    settings = await _company_settings(client, ctx["admin_h"])
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is False
+    assert role_has_permission(settings, "viewer", "set_inventory_prices") is True
+
+
+async def test_matrix_toggle_changes_only_that_cell(client, session):
+    """Toggling one matrix cell flips exactly that role's membership and no other."""
+    from celerp.services.auth import ROLE_LEVELS
+    from celerp.services.permissions import role_has_permission
+
+    ctx = await perm_setup(client, session)
+    key = "set_inventory_prices"
+    s_before = await _company_settings(client, ctx["admin_h"])
+    before = {r: role_has_permission(s_before, r, key) for r in ROLE_LEVELS}
+    await _toggle(client, ctx["admin_h"], key, "viewer", True)
+    s_after = await _company_settings(client, ctx["admin_h"])
+    after = {r: role_has_permission(s_after, r, key) for r in ROLE_LEVELS}
+    changed = {r for r in ROLE_LEVELS if before[r] != after[r]}
+    assert changed == {"viewer"}
+
+
+async def test_noncontiguous_grant_independent(client, session):
+    """A grant set need not be contiguous: viewer and admin can hold a perm while
+    operator and manager between them do not."""
+    from celerp.services.permissions import role_has_permission
+
+    ctx = await perm_setup(client, session)
+    key = "set_inventory_prices"  # default manager set: {manager, admin, owner}
+    await _toggle(client, ctx["admin_h"], key, "viewer", True)   # add viewer
+    await _toggle(client, ctx["admin_h"], key, "manager", False)  # drop manager
+    settings = await _company_settings(client, ctx["admin_h"])
+    assert role_has_permission(settings, "viewer", key) is True
+    assert role_has_permission(settings, "operator", key) is False
+    assert role_has_permission(settings, "manager", key) is False
+    assert role_has_permission(settings, "admin", key) is True
+
+
+async def test_admin_cannot_write_role_grants_via_company_settings(client, session):
+    """The permissions matrix is owner-only: an admin cannot bypass it by writing
+    role_grants (or the retired role_permissions key) through PATCH /companies/me.
+    Both blobs are rejected 422 and no effective permission changes."""
+    from celerp.services.permissions import role_has_permission
+
+    ctx = await perm_setup(client, session)
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'adm@perm.example', 'admin')}"}
+    for blob in (
+        {"role_grants": {"set_inventory_prices": ["viewer", "operator", "manager", "admin", "owner"]}},
+        {"role_permissions": {"set_inventory_prices": "viewer"}},
+    ):
+        r = await client.patch("/companies/me", json={"settings": blob}, headers=admin_h)
+        assert r.status_code == 422, (blob, r.text)
+    settings = await _company_settings(client, ctx["admin_h"])
+    assert role_has_permission(settings, "operator", "set_inventory_prices") is False
+
+
+# ── Migration: role_permissions threshold -> role_grants set (bug 2) ──────────
+
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
+import uuid as _uuid  # noqa: E402
+
+from sqlalchemy import create_engine as _create_engine  # noqa: E402
+from sqlalchemy import text as _sa_text  # noqa: E402
+
+def _load_migration_harness():
+    """Load the migration test harness (run_migration_ops, wc_mkcompany) from the
+    migration package's conftest. It is loaded by file path because the tests
+    directory is a namespace package, so tests.test_migrations is not importable
+    as a dotted module from a sibling test file; the migration tests themselves
+    reach it through a relative import that only works from inside that package."""
+    import importlib.util as _ilu
+
+    path = _os.path.join(_os.path.dirname(__file__), "test_migrations", "conftest.py")
+    spec = _ilu.spec_from_file_location("_role_grants_migration_harness", path)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.run_migration_ops, mod.wc_mkcompany
+
+
+run_migration_ops, wc_mkcompany = _load_migration_harness()  # noqa: E402
+
+# The alembic head at merge-base; the role_grants expansion migration descends
+# from it. Before that migration is written, discovery returns None and the
+# T8-T10 tests fail at merge-base for the right reason: it is not present.
+_BASE_HEAD = "f8a9b0c1d2e3"
+
+
+def _role_grants_migration_module():
+    """Module stem of the migration whose down_revision is the pinned base head,
+    or None when no such migration exists yet."""
+    from alembic.script import ScriptDirectory
+
+    from celerp.alembic_config import build_alembic_config
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    for rev in script.walk_revisions():
+        if rev.down_revision == _BASE_HEAD:
+            return _os.path.splitext(_os.path.basename(rev.path))[0]
+    return None
+
+
+def _read_settings(engine, cid: str) -> dict:
+    with engine.connect() as conn:
+        row = conn.execute(_sa_text("SELECT settings FROM companies WHERE id = :id"),
+                           {"id": cid}).scalar()
+    return row if isinstance(row, dict) else _json.loads(row)
+
+
+@pytest.fixture()
+def role_grants_migration_db():
+    """Isolated Postgres schema with only a companies table, for the settings-only
+    role_permissions->role_grants data migration. Mirrors the repo's other
+    migration harnesses (tests/test_migrations/conftest.py): a sync psycopg2 engine
+    scoped to a throwaway schema, run through a real alembic Operations context."""
+    base_url = _os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"rgmig_{_uuid.uuid4().hex[:8]}"
+
+    admin = _create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(_sa_text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = _create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    with engine.begin() as conn:
+        conn.execute(_sa_text(
+            "CREATE TABLE companies (id UUID PRIMARY KEY, name TEXT, settings JSON NOT NULL)"))
+    yield engine
+    engine.dispose()
+
+    admin = _create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(_sa_text(f'DROP SCHEMA "{schema}" CASCADE'))
+    admin.dispose()
+
+
+def test_migration_expands_overrides_preserving_effective_permissions(role_grants_migration_db):
+    """The data migration expands each stored threshold override into an explicit
+    per-role grant set, deltas-only, with the same effective permissions for every
+    role. A sub-floor threshold clamps up to the floor; unoverridden keys stay
+    absent from role_grants; the old role_permissions key is dropped."""
+    from celerp.services.auth import ROLE_LEVELS
+    from celerp.services.permissions import role_has_permission
+
+    module = _role_grants_migration_module()
+    assert module is not None, "role_grants expansion migration not present at merge-base"
+
+    with role_grants_migration_db.begin() as conn:
+        cid = wc_mkcompany(conn, {
+            "role_permissions": {
+                "view_payments": "operator",              # manager default, floor viewer
+                "manage_company_settings": "operator",    # admin default, floor admin (clamps)
+            },
+            "currency": "USD",
+        })
+    run_migration_ops(role_grants_migration_db, module)
+
+    settings = _read_settings(role_grants_migration_db, cid)
+    grants = settings.get("role_grants") or {}
+    # Only the two overridden keys expand; nothing else is materialized.
+    assert set(grants) == {"view_payments", "manage_company_settings"}
+    assert set(grants["view_payments"]) == {"operator", "manager", "admin", "owner"}
+    # operator threshold clamps up to the admin floor for the destructive key.
+    assert set(grants["manage_company_settings"]) == {"admin", "owner"}
+    # The retired key is gone; unrelated settings survive.
+    assert "role_permissions" not in settings
+    assert settings.get("currency") == "USD"
+    # Effective permission is unchanged for every role, overridden and default alike.
+    for r in ROLE_LEVELS:
+        assert role_has_permission(settings, r, "view_payments") is (
+            ROLE_LEVELS[r] >= ROLE_LEVELS["operator"])
+        assert role_has_permission(settings, r, "manage_company_settings") is (
+            ROLE_LEVELS[r] >= ROLE_LEVELS["admin"])
+        assert role_has_permission(settings, r, "set_inventory_prices") is (
+            ROLE_LEVELS[r] >= ROLE_LEVELS["manager"])
+
+
+def test_migration_idempotent(role_grants_migration_db):
+    """Running the migration twice (alembic apply then a reconcile replay) leaves
+    role_grants stable and never re-introduces role_permissions."""
+    module = _role_grants_migration_module()
+    assert module is not None, "role_grants expansion migration not present at merge-base"
+
+    with role_grants_migration_db.begin() as conn:
+        cid = wc_mkcompany(conn, {"role_permissions": {"view_payments": "operator"}})
+    run_migration_ops(role_grants_migration_db, module)
+    first = _read_settings(role_grants_migration_db, cid)
+    run_migration_ops(role_grants_migration_db, module)
+    second = _read_settings(role_grants_migration_db, cid)
+
+    assert second == first
+    assert "role_permissions" not in second
+    assert set(second.get("role_grants", {})) == {"view_payments"}
+
+
+def test_migration_ignores_stale_override_role(role_grants_migration_db):
+    """An override naming a role not in ROLE_LEVELS resolved to the default already,
+    so it becomes no delta: absent from role_grants, no crash. A valid override
+    alongside it still expands."""
+    module = _role_grants_migration_module()
+    assert module is not None, "role_grants expansion migration not present at merge-base"
+
+    with role_grants_migration_db.begin() as conn:
+        cid = wc_mkcompany(conn, {"role_permissions": {
+            "view_payments": "archduke",           # stale role -> dropped
+            "set_inventory_prices": "operator",    # real delta -> expands
+        }})
+    run_migration_ops(role_grants_migration_db, module)
+
+    settings = _read_settings(role_grants_migration_db, cid)
+    grants = settings.get("role_grants") or {}
+    assert "view_payments" not in grants
+    assert set(grants.get("set_inventory_prices", [])) == {"operator", "manager", "admin", "owner"}
+    assert "role_permissions" not in settings
 
 
 async def test_operator_granted_sees_cost_fields(client, session):
@@ -511,10 +789,6 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
 
 # ── Matrix save API: PATCH /companies/me/role-permissions (J3) ─────────────────
 
-from test_helpers import invite_user  # noqa: E402
-
-_ROLE_PERM_URL = "/companies/me/role-permissions"
-
 
 async def test_patch_role_permissions_owner_only(client, session):
     """Editing permissions is owner-only: an admin is refused, the owner accepts."""
@@ -575,8 +849,8 @@ async def test_patch_role_permissions_persists(client, session):
 
     r2 = await client.get("/companies/me", headers=ctx["admin_h"])
     assert r2.status_code == 200, r2.text
-    overrides = (r2.json()["settings"] or {}).get("role_permissions") or {}
-    assert overrides.get("set_inventory_prices") == "operator"
+    grants = (r2.json()["settings"] or {}).get("role_grants") or {}
+    assert "operator" in (grants.get("set_inventory_prices") or [])
 
 
 async def test_patch_role_permissions_malformed_boolean_422(client, session):
@@ -667,7 +941,8 @@ async def test_matrix_reflects_overrides(ui):
     """A stored override checks the lower role's column that the default leaves clear."""
     assert "checked" not in _cell(await _render_users_tab(ui, "owner", {}),
                                   "set_inventory_prices", "operator")
-    html = await _render_users_tab(ui, "owner", {"role_permissions": {"set_inventory_prices": "operator"}})
+    html = await _render_users_tab(ui, "owner",
+                                   {"role_grants": {"set_inventory_prices": _roles_from("operator")}})
     assert "checked" in _cell(html, "set_inventory_prices", "operator")
 
 
@@ -683,9 +958,9 @@ async def test_matrix_role_columns_from_registry(ui):
         _cell(html, "edit_documents", role.key)
 
 
-async def test_matrix_row_swap_shows_threshold_fill(client, session):
-    """Toggling a cell returns the full re-rendered row with the higher roles that
-    inherit the permission also checked (the unmissable threshold feedback)."""
+async def test_matrix_row_swap_reflects_single_cell(client, session):
+    """Toggling a cell returns the re-rendered row with exactly that role's box now
+    checked; roles above it are not filled in by the toggle (grants are per-role)."""
     from unittest.mock import patch
 
     from httpx import ASGITransport, AsyncClient
@@ -713,9 +988,10 @@ async def test_matrix_row_swap_shows_threshold_fill(client, session):
                 data={"granted": "true"},
             )
     assert r.status_code == 200, r.text
-    # operator now granted, so manager and admin (higher) inherit and show checked too.
-    for role in ("operator", "manager", "admin"):
-        assert "checked" in _cell(r.text, "set_inventory_prices", role), role
+    # operator is now granted; manager holds it by default already, but viewer -
+    # the role below the toggled cell - is not swept in.
+    assert "checked" in _cell(r.text, "set_inventory_prices", "operator")
+    assert "checked" not in _cell(r.text, "set_inventory_prices", "viewer")
 
 
 # ── Dashboard UI follows the permission ───────────────────────────────────────
@@ -796,11 +1072,10 @@ async def test_cost_basis_kpi_follows_permission(ui):
 # ── Default parity, override flips, and write floors (2.8) ─────────────────────
 
 async def test_owner_can_grant_write_to_viewer(client, session):
-    """The owner may lower a write key to viewer: the matrix save returns 200 and
-    the resolver now admits a viewer. Viewers stay read-only by default; the owner
-    is free to grant any grantable key down to viewer."""
-    from celerp.services.auth import ROLE_LEVELS
-    from celerp.services.permissions import permission_min_level
+    """The owner may grant a write key to viewer: the matrix save returns 200 and
+    the resolver then admits a viewer. Viewers stay read-only by default; the owner
+    is free to grant any grantable key to viewer."""
+    from celerp.services.permissions import role_has_permission
 
     ctx = await perm_setup(client, session)
     r = await client.patch(
@@ -810,8 +1085,8 @@ async def test_owner_can_grant_write_to_viewer(client, session):
     )
     assert r.status_code == 200, r.text
 
-    settings = {"role_permissions": {"set_inventory_prices": "viewer"}}
-    assert permission_min_level(settings, "set_inventory_prices") == ROLE_LEVELS["viewer"]
+    settings = await _company_settings(client, ctx["admin_h"])
+    assert role_has_permission(settings, "viewer", "set_inventory_prices") is True
 
 
 async def test_default_parity_matrix(client, session):
@@ -910,13 +1185,13 @@ def test_nav_visibility_follows_permissions():
         # Payments gates on view_payments (manager default): operator cannot see it...
         assert "/payments" not in to_xml(_sidebar("dashboard", role="operator", settings={}))
         # ...until it is granted down to operator.
-        granted = {"role_permissions": {"view_payments": "operator"}}
+        granted = {"role_grants": {"view_payments": _roles_from("operator")}}
         assert "/payments" in to_xml(_sidebar("dashboard", role="operator", settings=granted))
 
         # Sales Documents gate on view_documents (viewer default): a manager sees them,
         # but not once the key is raised to admin.
         assert "/docs?type=invoice" in to_xml(_sidebar("dashboard", role="manager", settings={}))
-        revoked = {"role_permissions": {"view_documents": "admin"}}
+        revoked = {"role_grants": {"view_documents": _roles_from("admin")}}
         assert "/docs?type=invoice" not in to_xml(_sidebar("dashboard", role="manager", settings=revoked))
     finally:
         slots.clear()
@@ -941,7 +1216,7 @@ def test_kpi_specs_follow_permissions():
     op = to_xml(_kpi_grid(cfg, values, role="operator", settings={}))
     assert "Cost Basis" not in op and "Item Count" in op
 
-    granted = {"role_permissions": {"view_inventory_costs": "operator"}}
+    granted = {"role_grants": {"view_inventory_costs": _roles_from("operator")}}
     assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="operator", settings=granted))
     assert "Cost Basis" in to_xml(_kpi_grid(cfg, values, role="manager", settings={}))
 
@@ -1075,7 +1350,7 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     from test_helpers import make_test_token
 
     company = {"currency": "THB",
-               "settings": {"role_permissions": {"view_inventory": "operator"}}}
+               "settings": {"role_grants": {"view_inventory": _roles_from("operator")}}}
     patches = [
         patch("ui.api_client.get_company", AsyncMock(return_value=company)),
         patch("ui.api_client.get_item_schema", AsyncMock(return_value={})),
@@ -1102,7 +1377,7 @@ async def _assert_page_redirects_when_revoked(ui, path: str, perm_key: str):
     from test_helpers import make_test_token
 
     company = {"currency": "THB",
-               "settings": {"role_permissions": {perm_key: "operator"}}}
+               "settings": {"role_grants": {perm_key: _roles_from("operator")}}}
     with patch("ui.api_client.get_company", AsyncMock(return_value=company)):
         r = await ui.get(path, cookies={"celerp_token": make_test_token(role="viewer")})
     assert r.status_code == 302, (path, r.status_code)
@@ -1114,7 +1389,7 @@ async def test_dashboard_page_requires_view_dashboards(ui):
     /dashboard, not the KPI grid. The page has nowhere to redirect (it is the
     redirect target), so it degrades in place with a clear message."""
     no_access = b"You do not have access to this page."
-    revoked = {"role_permissions": {"view_dashboards": "operator"}}
+    revoked = {"role_grants": {"view_dashboards": _roles_from("operator")}}
     content = await _render_dashboard(ui, "viewer", revoked, "coins_precious_metals")
     assert no_access in content
 
@@ -1292,25 +1567,33 @@ async def test_adjust_still_allowed_without_amount_permission(client, session):
     """adjust_item is gated by adjust_inventory, not by edit_inventory_amounts: a
     role granted adjust_inventory but lacking the amount key can still adjust."""
     ctx = await perm_setup(client, session)
-    # One settings write (shallow merge would clobber a second call): grant
-    # adjust_inventory down to operator AND raise edit_inventory_amounts above it.
-    r = await client.patch(
-        "/companies/me",
-        json={"settings": {"role_permissions": {
-            "adjust_inventory": "operator", "edit_inventory_amounts": "manager"}}},
-        headers=ctx["admin_h"],
-    )
-    assert r.status_code == 200, r.text
+    # Grant adjust_inventory down to operator AND raise edit_inventory_amounts above
+    # it, so the operator has the adjust gate but not the amount gate.
+    await grant_permission(client, ctx["admin_h"], "adjust_inventory", "operator")
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
     r = await client.post(f"/items/{ctx['item_id']}/adjust", json={"new_qty": 3},
                           headers=ctx["operator_h"])
     assert r.status_code == 200, r.text
 
 
-async def test_sell_by_change_allowed_without_amount_permission(client, session):
-    """Changing sell_by (which server-syncs quantity) is not a hand-edit of an
-    amount and stays allowed for a role lacking edit_inventory_amounts."""
+async def test_sell_by_change_denied_without_amount_permission(client, session):
+    """sell_by is gated under edit_inventory_amounts: a role lacking that key cannot
+    change it, and the 403 names the field so the user knows why the edit failed."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.patch(
+        f"/items/{ctx['item_id']}",
+        json={"fields_changed": {"sell_by": {"old": "piece", "new": "gram"}}},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 403, r.text
+    assert "sell_by" in r.json()["detail"]
+
+
+async def test_sell_by_change_allowed_with_amount_permission(client, session):
+    """A role holding edit_inventory_amounts can change sell_by."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "operator")
     r = await client.patch(
         f"/items/{ctx['item_id']}",
         json={"fields_changed": {"sell_by": {"old": "piece", "new": "gram"}}},
@@ -1407,11 +1690,51 @@ async def test_batch_import_nonamount_allowed_without_permission(client, session
     ]}, headers=ctx["operator_h"])
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
 
+
+async def test_bulk_import_sell_by_change_denied_without_permission(client, session):
+    """A batch upsert whose sell_by differs from the stored value is a hand-edit of
+    an amount-gated field: skipped-with-error for a role lacking
+    edit_inventory_amounts, and the stored sell_by is left unchanged. The gate is
+    diff-based, so re-sending the same sell_by is not blocked (covered separately)."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    eid = "item:bi-sb"
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-SB", "name": "BI SB", "sell_by": "piece", "quantity": 5}, "bi-sb")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+
+    # Upsert the same key changing sell_by piece -> gram.
     r = await client.post("/items/import/batch", json={"upsert": True, "records": [
-        _import_record(eid, {"sku": "BI-2", "sell_by": "piece", "name": "BI 2 Renamed"}, "bi-name")
+        _import_record(eid, {"sku": "BI-SB", "sell_by": "gram"}, "bi-sb")
     ]}, headers=ctx["operator_h"])
     assert r.status_code == 200, r.text
-    assert r.json()["updated"] == 1
+    result = r.json()
+    assert result["updated"] == 0
+    assert result["errors"]
+    # The blocked sell_by change never landed on the item.
+    item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
+    assert item.get("sell_by") == "piece"
+
+
+async def test_bulk_import_non_sellby_change_allowed_without_permission(client, session):
+    """A batch upsert that leaves sell_by unchanged (only name changes) is applied
+    for a role lacking edit_inventory_amounts: the diff carries no gated field."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    eid = "item:bi-nsb"
+    r = await client.post("/items/import/batch", json={"records": [
+        _import_record(eid, {"sku": "BI-NSB", "name": "BI NSB", "sell_by": "piece", "quantity": 5}, "bi-nsb")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+
+    r = await client.post("/items/import/batch", json={"upsert": True, "records": [
+        _import_record(eid, {"sku": "BI-NSB", "name": "BI NSB renamed", "sell_by": "piece"}, "bi-nsb")
+    ]}, headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["updated"] == 1
+    assert not result["errors"]
 
 
 async def test_batch_import_negative_amount_rejected(client, session):

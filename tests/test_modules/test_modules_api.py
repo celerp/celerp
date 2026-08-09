@@ -621,14 +621,15 @@ class TestModuleDataPurge:
         from celerp.models.company import Company
         from sqlalchemy import select as sa_select
         ctx = await perm_setup(client, session)
-        # Simulate the pre-change grandfathered state the raised floor now bars:
-        # write manage_company_settings -> operator straight into company.settings
-        # (the save API would refuse it after the raise), predating the clamp.
+        # Simulate the pre-change grandfathered state the raised floor still bars:
+        # a stored grant of manage_company_settings down to operator written straight
+        # into company.settings. The floor (admin) clamps operator out at read, so
+        # the purge is still refused.
         company = (await session.execute(sa_select(Company))).scalars().first()
         settings = dict(company.settings or {})
-        rp = dict(settings.get("role_permissions") or {})
-        rp["manage_company_settings"] = "operator"
-        settings["role_permissions"] = rp
+        rg = dict(settings.get("role_grants") or {})
+        rg["manage_company_settings"] = ["operator", "manager", "admin", "owner"]
+        settings["role_grants"] = rg
         company.settings = settings
         await session.commit()
         module_dir = tmp_path / "modules"

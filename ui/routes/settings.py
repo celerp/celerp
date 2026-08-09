@@ -3093,8 +3093,8 @@ def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
 
     A cell is interactive only for the owner, on a grantable permission, and never
     for the always-granted owner column; every other cell renders disabled. Toggling
-    a cell saves through the per-toggle route and swaps this whole row, so the higher
-    roles that inherit the change light up at once."""
+    a cell saves through the per-toggle route and swaps this whole row, so only the
+    toggled role changes and every other role keeps the grant it already had."""
     from celerp.services.permissions import ROLES, role_has_permission
 
     reason = _FIXED_ROW_REASON.get(perm.key) if not perm.grantable else None
@@ -3141,8 +3141,9 @@ def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = 
             cls="data-table role-ref-table",
         ),
         P(
-            "Roles are hierarchical - each role inherits every permission from the roles below it. "
-            "There must always be at least one Owner.",
+            "Each role's permissions are set independently: granting or removing a "
+            "permission for one role never changes any other role. There must always "
+            "be at least one Owner.",
             cls="role-ref-note",
         ),
         cls="role-ref-details mt-lg",
