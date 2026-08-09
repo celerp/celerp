@@ -22,6 +22,7 @@ from celerp.services.permissions import (
     ROLES,
     get_current_company_settings,
     require_permission,
+    resolved_grant_roles,
     role_has_permission,
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
@@ -286,6 +287,16 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
     # and category_schemas whenever a caller sent only one field (the UI happens
     # to pre-merge, but partial callers — and a name-only patch — must be safe).
     if payload.settings:
+        # Role grants are owner-only and may be written only through the dedicated
+        # PATCH /me/role-permissions endpoint (manage_permissions). This door is
+        # admin-gated (manage_company_settings), so accepting role_grants here would
+        # let an admin self-escalate around the owner gate. role_permissions is the
+        # retired storage key; reject it too so it can never be re-introduced.
+        if "role_grants" in payload.settings or "role_permissions" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="Role permissions are set through the permissions matrix, not company settings",
+            )
         merged = {**(company.settings or {}), **payload.settings}
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
@@ -309,12 +320,12 @@ async def patch_role_permissions(
     _: None = require_permission("manage_permissions"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set one permission's minimum role from a matrix checkbox toggle.
+    """Toggle one (permission, role) cell from the matrix.
 
     Owner-only (manage_permissions is a fixed owner row, so no owner can revoke
     their own ability to edit permissions). A toggle names a (permission, role)
-    cell and whether that role should now hold the permission; the stored
-    override is the resulting threshold role, and every higher role inherits it.
+    cell and whether that role should now hold the permission; only that role's
+    membership changes - every other role keeps the grant it already had.
     """
     perm = next((p for p in PERMISSIONS if p.key == payload.perm_key), None)
     if perm is None:
@@ -324,31 +335,29 @@ async def patch_role_permissions(
     if not perm.grantable:
         raise HTTPException(status_code=403, detail=f"The {perm.key} permission is fixed and cannot be reassigned")
 
-    # Checking a role's box lowers the threshold to that role; unchecking raises it
-    # to the next role up, since every role at or above the threshold inherits.
-    if payload.granted:
-        new_threshold = payload.role_key
-    else:
-        higher = sorted((r for r in ROLES if r.level > ROLE_LEVELS[payload.role_key]), key=lambda r: r.level)
-        # The owner column is always granted and never rendered as an unchecked box,
-        # so there is always a higher role to raise the threshold to here.
-        new_threshold = higher[0].key
-    if ROLE_LEVELS[new_threshold] < ROLE_LEVELS[perm.floor_role]:
-        raise HTTPException(
-            status_code=422,
-            detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
-        )
-
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     settings = dict(company.settings or {})
-    overrides = dict(settings.get("role_permissions") or {})
-    overrides[perm.key] = new_threshold
-    settings["role_permissions"] = overrides
+    grants = dict(settings.get("role_grants") or {})
+    # Seed from the currently RESOLVED set on first touch, so toggling one role
+    # leaves every other role's grant exactly as it is today.
+    roles = set(resolved_grant_roles(settings, perm.key))
+    if payload.granted:
+        roles.add(payload.role_key)
+    else:
+        roles.discard(payload.role_key)
+    # Floor guard: no override may drop the permission below its floor role.
+    if payload.granted and ROLE_LEVELS[payload.role_key] < ROLE_LEVELS[perm.floor_role]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
+        )
+    grants[perm.key] = sorted(roles, key=lambda r: ROLE_LEVELS[r])
+    settings["role_grants"] = grants
     company.settings = settings
     await session.commit()
-    return {"ok": True, "perm_key": perm.key, "threshold_role": new_threshold}
+    return {"ok": True, "perm_key": perm.key, "roles": grants[perm.key]}
 
 
 # ---------------------------------------------------------------------------

@@ -179,6 +179,20 @@ def _wait_swap(page, click_target):
     page.wait_for_function(_PINNED_JS, timeout=6000)
 
 
+def _drag_resize_handle(page, th_sel, dx):
+    """Press-drag-release the resize handle inside th_sel by dx px, via real mouse events (not
+    a direct style write) so the resizer's own mousedown/onMove/onUp - including its onUp ->
+    saveWidths() persistence - actually runs, the same as a user dragging a column wider."""
+    handle = page.locator(f"{th_sel} .col-resize-handle").first
+    handle.scroll_into_view_if_needed()
+    handle.hover()
+    box = handle.bounding_box()
+    assert box is not None, f"resize handle has no bounding box for {th_sel}"
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] / 2 + dx, box["y"] + box["height"] / 2, steps=12)
+    page.mouse.up()
+
+
 # ── behaviors (a) + (b): inline before the top, frozen once the table top reaches it ───────
 def test_header_freezes_at_viewport_top(page, ui_server, sticky_inventory):
     _goto(page, ui_server)
@@ -446,3 +460,91 @@ def test_phantom_scrollbar_cleared_on_print(page, ui_server, sticky_inventory):
     page.wait_for_timeout(150)
     assert not _pinned(page) and not _phantom_pinned(page)
     assert _top_scroll_spacers(page) == 0
+
+
+# ── a saved custom column layout must reach the pinned header's LOCKED geometry, not just ──
+# ── the live thead: the header pin captures widths once (colgroup + cell styles) and a ─────
+# ── later width restore can land after that capture without ever reaching the colgroup ─────
+def test_pinned_header_aligns_with_body_under_custom_layout(page, ui_server, sticky_inventory):
+    """With a saved custom column-width layout, the pinned header must line up with the body
+    columns. The load-time width restore is deferred (requestAnimationFrame) and can commit
+    after the pin has already captured and locked geometry into the colgroup - a real race that
+    depends on unobservable browser scheduling. This intercepts requestAnimationFrame so the
+    restore is queued but never auto-fires, scrolls to pin (capturing whatever geometry is live
+    at that moment, before any restore has run), then flushes the queued restore and reads
+    alignment in the same synchronous script - so no later async pass can paper over the exact
+    state right after the restore lands post-pin."""
+    # add_init_script runs a raw script at document-start; it must be a self-invoking
+    # expression, not a bare arrow, or the body never executes and the override is a no-op.
+    page.add_init_script(
+        "(() => { window.__pendingRaf = [];"
+        " window.requestAnimationFrame = function(cb) { window.__pendingRaf.push(cb); return window.__pendingRaf.length; };"
+        " window.__flushRaf = function() { var cbs = window.__pendingRaf.splice(0); cbs.forEach(function(cb){ cb(0); }); }; })()"
+    )
+    _goto(page, ui_server)
+    keys = _data_keys(page)
+    custom = {keys[0]: "300px", keys[1]: "80px"}
+    page.evaluate(
+        "(a) => localStorage.setItem(a[0], JSON.stringify(a[1]))",
+        ["celerp_col_widths_inventory", custom],
+    )
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
+    # scroll to pin BEFORE the deferred width restore has run at all (it is only queued,
+    # never auto-firing, under the requestAnimationFrame override above) - pin() captures
+    # whatever geometry is live right now, which is the server-rendered default.
+    _scroll_to_pin(page)
+    assert _pinned(page)
+    # now let the deferred restore land, after pin() already captured geometry - exactly the
+    # race in the bug report - and read alignment in the SAME synchronous call so no later
+    # MutationObserver-driven re-evaluate can run between the write and the read.
+    result = page.evaluate(
+        "(k) => { if (window.__flushRaf) window.__flushRaf();"
+        " var th=document.querySelector('#data-table thead th[data-key=\"'+k+'\"]');"
+        " var td=document.querySelector('#data-table tbody tr.data-row td[data-col=\"'+k+'\"]');"
+        " return th && td ? [th.getBoundingClientRect().left, td.getBoundingClientRect().left] : null; }",
+        keys[1],
+    )
+    assert result is not None, "missing header/body cell for the alignment check"
+    assert abs(result[0] - result[1]) <= 1.5, (
+        f"pinned header column '{keys[1]}' misaligned with its body column once the deferred "
+        f"custom-width restore landed after pin: header left {result[0]:.1f}, body left {result[1]:.1f}"
+    )
+
+
+# ── dragging a resize handle while the header is pinned must keep the dragged width, not ───
+# ── the pre-drag default the pin/unpin cycle recaptures when the drag's own style write ────
+# ── is mistaken for an external mutation ────────────────────────────────────────────────────
+def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
+    """A column resized WHILE the header is pinned must keep the dragged width (and persist it
+    to WIDTH_KEY), not silently revert to the pre-drag width. The resize handle's own onMove
+    writes th.style.width, which the sticky controller's MutationObserver cannot distinguish
+    from an external change: it clears the pinned header's captured widths and recaptures
+    fresh geometry - if that recapture happens while the drag's style write has been cleared,
+    the drag is lost even though the header stays visually aligned with the (also-reverted)
+    body. This drags the actual handle (mousedown/move/up), the only path that also exercises
+    the handle's onUp -> persistence, matching what a user does."""
+    _goto(page, ui_server)
+    page.evaluate("(k) => localStorage.removeItem(k)", "celerp_col_widths_inventory")
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#data-table thead th[data-key] .col-resize-handle", timeout=10000)
+    _scroll_to_pin(page)
+    assert _pinned(page)
+
+    key = _data_keys(page)[0]
+    th_sel = f'#data-table thead th[data-key="{key}"]'
+    before = page.evaluate("(s) => document.querySelector(s).getBoundingClientRect().width", th_sel)
+
+    _drag_resize_handle(page, th_sel, 220)
+    page.wait_for_timeout(250)  # let the pin/unpin churn the drag can trigger settle
+
+    after = page.evaluate("(s) => document.querySelector(s).getBoundingClientRect().width", th_sel)
+    assert after > before + 150, (
+        f"column '{key}' did not keep the width dragged while pinned: {before:.0f}px -> {after:.0f}px"
+    )
+    stored = page.evaluate("(k) => JSON.parse(localStorage.getItem(k) || 'null')", "celerp_col_widths_inventory")
+    assert stored and key in stored, f"resize while pinned was not persisted to localStorage: {stored}"
+    stored_px = float(str(stored[key]).replace("px", ""))
+    assert stored_px > before + 150, (
+        f"persisted width for '{key}' lost the drag: stored {stored_px:.0f}px, pre-drag {before:.0f}px"
+    )

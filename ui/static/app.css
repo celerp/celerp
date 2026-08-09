@@ -379,6 +379,19 @@ a:hover { text-decoration: underline; }
   background: rgba(14,165,122,0.07);
   border-bottom-color: var(--c-accent);
 }
+/* Read-only paired spans (amount or sell unit without edit_inventory_amounts):
+   drop the click-to-edit affordance so they do not read as editable. Placed after
+   the base rules so the equal-specificity override wins by source order. */
+.cell--paired .paired-primary--readonly,
+.cell--paired .paired-secondary--readonly {
+  cursor: default;
+  border-bottom: none;
+}
+.cell--paired .paired-primary--readonly:hover,
+.cell--paired .paired-secondary--readonly:hover {
+  background: none;
+  border-bottom-color: transparent;
+}
 .cell--paired .paired-sep { color: var(--c-text-muted, #888); user-select: none; }
 .cell--paired .paired-tertiary { color: var(--c-text-muted, #888); font-style: italic; cursor: default; user-select: none; }
 
