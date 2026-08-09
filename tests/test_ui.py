@@ -2362,6 +2362,37 @@ class TestCSSConsistency:
         assert ".combobox-list" in css
         assert ".combobox-option" in css
 
+    @pytest.mark.asyncio
+    async def test_sticky_header_css_present(self):
+        """The pinned sticky header rule must fix the thead to the viewport top, screen-only.
+
+        Red at merge-base: no .sticky-head / .hdr-pinned styling exists yet, so the regex
+        for a fixed-position pinned thead finds nothing.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        m = re.search(
+            r"\.data-table\.sticky-head\.hdr-pinned\s*>\s*thead\s*\{[^}]*position:\s*fixed[^}]*\}",
+            css,
+        )
+        assert m, "no fixed-position rule for the pinned sticky-head thead"
+        assert "top: 0" in m.group(0) or "top:0" in m.group(0)
+        # The pin is confined to on-screen rendering, never print.
+        assert "@media screen" in css
+
+    @pytest.mark.asyncio
+    async def test_sticky_header_print_spacer_hidden(self):
+        """The header-height spacer row must be hidden in print so it leaves no blank gap.
+
+        Red at merge-base: no .hdr-spacer print rule exists yet.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        m = re.search(r"@media print\s*\{.*?\.hdr-spacer[^}]*display:\s*none[^}]*\}", css, re.S)
+        assert m, "no @media print rule hiding .hdr-spacer"
+
 
 class TestSearchableSelect:
     """Verify the searchable_select component renders correctly."""
@@ -3574,6 +3605,24 @@ class TestColumnDefaults:
         css = open(pathlib.Path(__file__).parent.parent / "ui/static/app.css").read()
         assert "col-resize-handle" in css
         assert "cursor: col-resize" in css
+
+    @pytest.mark.asyncio
+    async def test_sticky_header_optin_on_list_pages(self, ui_client):
+        """List pages opt the shared data-table into the sticky header, and the pin controller
+        ships so every data-table.sticky-head list page freezes its header.
+
+        Red at merge-base: neither the sticky-head opt-in class nor the controller exist yet.
+        """
+        schema = [{"key": "sku", "label": "SKU", "type": "text", "editable": True}]
+        items = [{"entity_id": "item:1", "sku": "SKU-1", "name": "Widget"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert b"sticky-head" in r.content
+        assert b"table.data-table.sticky-head" in r.content
 
 
 # ===========================================================================
