@@ -27,8 +27,13 @@ left absent.
 
 Signature-less (data only), so the develop-to-release reconcile replays it on
 every create_all/restore database. Idempotent: guarded on the presence of the
-retired key, so a second application is a no-op. Forward-only in effect; the
-downgrade drops the new key.
+retired key, so a second application is a no-op. The downgrade is the best-effort
+inverse: it collapses each grant set back to a single threshold at its lowest
+granted role and restores the retired key, so a rollback to the threshold-reading
+code keeps a company's effective permissions. This round-trips exactly for the
+contiguous sets the upgrade produces; a hand-authored non-contiguous set is
+documented lossy (it collapses to its lowest role, which the older resolver then
+re-expands as a block).
 
 The catalogue (floor role and overridability per permission) and the role levels
 are snapshotted here as literals, because a migration is immutable history: it
@@ -101,6 +106,18 @@ def _expand(stored_role: str, floor_role: str) -> list[str]:
     )
 
 
+def _collapse(granted_roles: list[str]) -> str | None:
+    """Best-effort inverse of _expand: the threshold role at the lowest granted
+    level. Exact for a contiguous set (the shape upgrade produces); lossy for a
+    non-contiguous set, which no longer round-trips to the same set. None when no
+    granted role is known, leaving the permission absent (resolves to default)."""
+    levels = [_ROLE_LEVELS[r] for r in granted_roles if r in _ROLE_LEVELS]
+    if not levels:
+        return None
+    low = min(levels)
+    return next(r for r, lvl in _ROLE_LEVELS.items() if lvl == low)
+
+
 def upgrade() -> None:
     conn = op.get_bind()
     # Only companies that still carry the retired key; this is also the
@@ -135,7 +152,24 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
-    conn.execute(sa.text(
-        "UPDATE companies SET settings = (settings::jsonb - 'role_grants')::json "
-        "WHERE settings::jsonb ? 'role_grants'"
-    ))
+    # Only companies that carry the new key; this is also the idempotency guard.
+    rows = conn.execute(sa.text(
+        "SELECT id, settings FROM companies WHERE settings::jsonb ? 'role_grants'"
+    )).fetchall()
+
+    for cid, settings in rows:
+        data = settings if isinstance(settings, dict) else json.loads(settings)
+        grants = data.get("role_grants")
+        role_perms = dict(data.get("role_permissions") or {})
+        if isinstance(grants, dict):
+            for key, roles in grants.items():
+                threshold = _collapse(roles if isinstance(roles, list) else [])
+                if threshold is not None:
+                    role_perms[key] = threshold
+        if role_perms:
+            data["role_permissions"] = role_perms
+        data.pop("role_grants", None)
+        conn.execute(
+            sa.text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :id"),
+            {"s": json.dumps(data), "id": str(cid)},
+        )

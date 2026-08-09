@@ -489,6 +489,42 @@ def test_migration_ignores_stale_override_role(role_grants_migration_db):
     assert "role_permissions" not in settings
 
 
+def test_migration_downgrade_collapses_grants_to_threshold(role_grants_migration_db):
+    """downgrade() is the best-effort inverse of upgrade(): each grant set collapses
+    back to a single role_permissions threshold at its lowest granted role, the
+    retired key is restored, and role_grants is dropped. An upgrade-then-downgrade
+    round trip reconstructs the exact thresholds a contiguous set came from; a
+    hand-authored non-contiguous set collapses to its lowest role (documented
+    lossy)."""
+    module = _role_grants_migration_module()
+    assert module is not None, "role_grants expansion migration not present at merge-base"
+
+    with role_grants_migration_db.begin() as conn:
+        # (a) threshold -> grants -> threshold, expected to round-trip exactly.
+        cid_rt = wc_mkcompany(conn, {
+            "role_permissions": {
+                "view_payments": "operator",             # manager default, floor viewer
+                "manage_company_settings": "operator",   # admin default, floor admin (clamps up)
+            },
+            "currency": "USD",
+        })
+        # (b) a non-contiguous set upgrade never produces; downgrade takes the lowest.
+        cid_nc = wc_mkcompany(conn, {"role_grants": {"view_payments": ["viewer", "admin"]}})
+    run_migration_ops(role_grants_migration_db, module)               # (a) threshold -> grants
+    run_migration_ops(role_grants_migration_db, module, "downgrade")  # grants -> threshold
+
+    rt = _read_settings(role_grants_migration_db, cid_rt)
+    assert "role_grants" not in rt
+    # Lowest granted role restores the original threshold; the admin clamp collapses to admin.
+    assert (rt.get("role_permissions") or {}) == {
+        "view_payments": "operator", "manage_company_settings": "admin"}
+    assert rt.get("currency") == "USD"
+
+    nc = _read_settings(role_grants_migration_db, cid_nc)
+    assert "role_grants" not in nc
+    assert (nc.get("role_permissions") or {}).get("view_payments") == "viewer"
+
+
 async def test_operator_granted_sees_cost_fields(client, session):
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")

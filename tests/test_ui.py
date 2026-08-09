@@ -568,6 +568,35 @@ class TestClickToEdit:
         assert b"<select" not in r.content
 
     @pytest.mark.asyncio
+    async def test_sell_by_paired_edit_readonly_without_permission(self, ui_client):
+        """GET the paired-edit cell for sell_by, as a role lacking
+        edit_inventory_amounts, returns the read-only paired display: no <input> and
+        no <select>, so the sell unit cannot enter edit state from its paired entry
+        point either (it server-syncs quantity, so it is amount-gated like the
+        single-field cell)."""
+        schema = [{"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
+        item = {"entity_id": "gc:123", "sell_by": "piece", "quantity": 5}
+        # Operator holds edit_inventory (default); edit_inventory_amounts is granted
+        # only to manager and up, so the paired sell_by cell must render read-only.
+        company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
+        units = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
+        ):
+            r = await ui_client.get(
+                "/api/items/gc:123/field/sell_by/paired-edit",
+                cookies=_authed(role="operator"),
+            )
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<select" not in r.content
+
+    @pytest.mark.asyncio
     async def test_patch_item_field_returns_display_td(self, ui_client):
         """PATCH /api/items/{id}/field/{field} → saves, returns display <td> with new value."""
         updated = {**_ITEM, "name": "Sapphire"}
