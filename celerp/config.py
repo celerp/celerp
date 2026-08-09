@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     idle_logout_minutes: int = 15
     # Set to "true" to allow the default JWT secret (CI only).
     allow_insecure_jwt: str = "false"
+    # Serve the OpenAPI schema (/openapi.json) and the grouped API reference.
+    # Default off: production does not publish the API shape. Enabled only by the
+    # press-kit capture harness (and CI) to render the reference. Never set true
+    # in production.
+    expose_openapi_schema: bool = False
     # Logging level for both API and UI processes. Override with LOG_LEVEL env var.
     # Accepted values: debug, info, warning, error, critical (case-insensitive).
     log_level: str = "INFO"
