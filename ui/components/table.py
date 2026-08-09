@@ -1464,13 +1464,15 @@ def data_table(
   function saveWidths() {{
     var w = {{}};
     ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
-    localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
+    try {{ localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); }} catch(e) {{}}
   }}
-  // Restore persisted widths on load — defer to rAF so HTMX-swapped DOM has committed layout
-  requestAnimationFrame(function() {{
+  // Restore persisted widths synchronously. A saved width is an explicit px value that needs no
+  // committed layout, and applying it before the sticky controller can pin the header is what keeps
+  // the frozen header's captured geometry in step with the body for a custom column layout.
+  (function() {{
     var saved = loadWidths();
     if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }});
+  }})();
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
@@ -1482,6 +1484,9 @@ def data_table(
       startW = th.offsetWidth;
       e.preventDefault();
       e.stopPropagation();
+      // Signal an in-progress resize so the sticky-header controller leaves the header alone while
+      // dragging (its per-mutation re-pin would otherwise recapture the pre-drag width every pixel).
+      document.body.classList.add('col-resizing');
       var scrollWrap = table.closest('.table-scroll-wrap');
       var autoScrollRaf = null;
       function onMove(e2) {{
@@ -1506,6 +1511,10 @@ def data_table(
         document.removeEventListener('mouseup', onUp);
         if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
         saveWidths();
+        document.body.classList.remove('col-resizing');
+        // Let the sticky controller recapture the new width once, now the drag is over, so a pinned
+        // header re-aligns its body to the dragged column instead of staying at the old geometry.
+        window.dispatchEvent(new Event('resize'));
       }}
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
