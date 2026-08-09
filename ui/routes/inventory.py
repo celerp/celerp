@@ -3922,11 +3922,68 @@ function celerpPrintLabel(entityId, templateId) {
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
                     # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
-                    # cost price, purchase unit, no sales taxes. Supplier picked on the draft.
-                    line_items = await _reorder_lines_from_inventory(token, entity_ids)
-                    result = await api.create_doc(token, {"doc_type": "purchase_order", "status": "draft", "purchase_kind": "inventory", "line_items": line_items})
-                    doc_id = result.get("entity_id") or result.get("id", "")
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
+                    # cost price, purchase unit, no sales taxes. Group the selection by each
+                    # item's preferred supplier so a multi-supplier reorder becomes one draft
+                    # PO per supplier (plus one for items with no supplier set).
+                    from celerp.services.reorder import group_by_supplier
+                    items = []
+                    for eid in entity_ids:
+                        try:
+                            it = await api.get_item(token, eid)
+                        except APIError:
+                            it = {}
+                        items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
+                    groups = group_by_supplier(items)
+                    created: list[tuple[str, str, str]] = []
+                    failed: list[str] = []
+                    for sup, ids in groups.items():
+                        label = sup or t("inv.no_supplier")
+                        try:
+                            line_items = await _reorder_lines_from_inventory(token, ids)
+                            payload = {"doc_type": "purchase_order", "status": "draft",
+                                       "purchase_kind": "inventory", "line_items": line_items}
+                            # preferred_supplier is a free-text name, so record it as the
+                            # draft's contact name (shown on the PO); it is not a contact
+                            # reference, so contact_id is left for the user to link.
+                            if sup:
+                                payload["contact_name"] = sup
+                            result = await api.create_doc(token, payload)
+                        except APIError as e:
+                            # One supplier group failed. Record it and keep going so the
+                            # drafts already created are never discarded: the user is shown
+                            # exactly which POs exist and which supplier to retry, rather than
+                            # a bare error that invites re-sending the whole selection and
+                            # duplicating the drafts that did succeed.
+                            failed.append(f"{label}: {e.detail}")
+                            continue
+                        # create_doc returns id="doc:<ref_id>"; the part after the
+                        # prefix is the human-readable document number (e.g. PO-2608-0003).
+                        did = result.get("id", "")
+                        ref = did.split(":", 1)[-1]
+                        created.append((sup, did, ref))
+                    if not created:
+                        # Every group failed: surface the errors, nothing was created.
+                        return Div(
+                            P(t("inv.pos_none_created"), cls="flash flash--error"),
+                            *[P(m) for m in failed],
+                            id="bulk-action-result",
+                        )
+                    if not failed and len(created) == 1:
+                        return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{created[0][1]}"})
+                    # One or more drafts created; list each by supplier and draft reference
+                    # (no silent multi-create). Any group that failed is listed too, so a
+                    # partially successful send never hides the drafts it already created.
+                    children = [P(A(f"{sup or t('inv.no_supplier')}: {ref}",
+                                    href=f"/docs/{did}", cls="link")) for sup, did, ref in created]
+                    if failed:
+                        children.append(P(t("inv.pos_some_failed"), cls="flash flash--error"))
+                        children.extend(P(m) for m in failed)
+                    return Div(
+                        P(t("inv.pos_created", n=len(created)),
+                          cls="flash flash--warning" if failed else "flash flash--success"),
+                        *children,
+                        id="bulk-action-result",
+                    )
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
@@ -4756,7 +4813,7 @@ def _bulk_context_templates(
                 Option(t("inv.document_type"), value="", disabled=True, selected=True),
                 *send_to_opts,
                 name="send_to_doc_type", cls="form-input form-input--sm",
-                onchange="sendToTypeChanged(this.value)",
+                onchange="sendToTypeChanged(this.value, this.options[this.selectedIndex].text)",
                 id="send-to-type-select",
             ),
             Select(

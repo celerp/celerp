@@ -21,7 +21,7 @@ from celerp.services.reorder import (
     is_below_reorder,
     is_reorder_alert,
     reorder_point_of,
-    run_reorder_scan,
+    run_all_alerts,
     suggest_reorder,
 )
 
@@ -141,49 +141,126 @@ async def test_alert_transition_idempotency_and_rearm(session):
     await ProjectionEngine.rebuild(session)
 
     # First run: exactly one digest listing the below item; latch records it.
-    notif = await run_reorder_scan(session, co)
+    notif = await run_all_alerts(session, co)
     assert notif is not None
     assert notif.category == "inventory"
-    assert notif.action_url == "/inventory?filter=low_stock"
-    assert notif.title.startswith("1 item")
-    assert "Low" in notif.body and "High" not in notif.body
+    assert notif.action_url == "/dashboard"
+    assert notif.title.startswith("1 alert")
+    assert "Low stock" in notif.body and "Low" in notif.body and "High" not in notif.body
     assert await _notif_count(session, co.id) == 1
 
     # Second run, no change: no new notification (idempotent).
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 1
 
     # Rise back above the reorder point -> no alert, latch cleared (re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 10})
     await ProjectionEngine.rebuild(session)
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 1
     assert co.settings.get("reorder_alerted_ids") == []
 
     # Drop below again -> alerts again (proves re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 1})
     await ProjectionEngine.rebuild(session)
-    notif2 = await run_reorder_scan(session, co)
+    notif2 = await run_all_alerts(session, co)
     assert notif2 is not None
     assert await _notif_count(session, co.id) == 2
 
 
 @pytest.mark.asyncio
-async def test_alert_priority_high_at_or_below_zero(session):
+async def test_alert_digest_is_high_priority(session):
     co = await _company(session, "ZeroCo")
     await _emit(session, co.id, "item:z", "item.created", {"sku": "Z", "name": "Z", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    notif = await run_reorder_scan(session, co)
+    notif = await run_all_alerts(session, co)
     assert notif is not None and notif.priority == "high"
 
 
 @pytest.mark.asyncio
-async def test_alert_disabled_setting_is_noop(session):
+async def test_below_reorder_but_in_stock_is_medium_priority(session):
+    # Below the reorder point but still on hand (qty > 0): a heads-up, not out of
+    # stock, so the digest is "medium" and raises no desktop push.
+    co = await _company(session, "SoftCo")
+    await _emit(session, co.id, "item:s", "item.created", {"sku": "S", "name": "S", "quantity": 2, "reorder_point": 5})
+    await ProjectionEngine.rebuild(session)
+    notif = await run_all_alerts(session, co)
+    assert notif is not None and notif.priority == "medium"
+
+
+@pytest.mark.asyncio
+async def test_low_stock_disabled_setting_is_noop(session):
     co = await _company(session, "OffCo")
     co.settings = {"reorder_alerts_enabled": False}
     session.add(co)
     await session.flush()
     await _emit(session, co.id, "item:o", "item.created", {"sku": "O", "name": "O", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    assert await run_reorder_scan(session, co) is None
+    assert await run_all_alerts(session, co) is None
     assert await _notif_count(session, co.id) == 0
+
+
+# ── Proactive alerts: expiring, overdue, combined digest ──────────────────────
+
+async def _emit_doc(session, cid, eid, event_type, data):
+    await emit_event(
+        session, company_id=cid, entity_id=eid, entity_type="doc",
+        event_type=event_type, data=data, actor_id=None, location_id=None,
+        source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_expiring_alert_and_rearm(session):
+    from datetime import date, timedelta
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "ExpCo")
+    soon = (date.today() + timedelta(days=10)).isoformat()
+    await _emit(session, co.id, "item:e", "item.created", {"sku": "E", "name": "Milk", "quantity": 5, "expires_at": soon})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None and "Expiring soon" in n.body and "Milk" in n.body
+    assert await run_all_alerts(session, co) is None  # idempotent
+
+    await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 0})
+    await ProjectionEngine.rebuild(session)
+    assert await run_all_alerts(session, co) is None
+    assert co.settings.get("expiring_alerted_ids") == []  # re-armed
+
+    await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 5})
+    await ProjectionEngine.rebuild(session)
+    assert await run_all_alerts(session, co) is not None
+
+
+@pytest.mark.asyncio
+async def test_overdue_invoice_alert(session):
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "OvdCo")
+    await _emit_doc(session, co.id, "doc:i1", "doc.created", {
+        "doc_type": "invoice", "ref_id": "INV-1", "total": 100.0,
+        "due_date": "2020-01-01", "status": "awaiting_payment"})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None and "Overdue invoices" in n.body and "INV-1" in n.body
+    assert await run_all_alerts(session, co) is None  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_combined_digest_is_one_notification(session):
+    from datetime import date, timedelta
+    from celerp.services.reorder import run_all_alerts
+    co = await _company(session, "AllCo")
+    await _emit(session, co.id, "item:lo", "item.created", {"sku": "L", "name": "Low", "quantity": 2, "reorder_point": 5})
+    soon = (date.today() + timedelta(days=5)).isoformat()
+    await _emit(session, co.id, "item:ex", "item.created", {"sku": "X", "name": "Exp", "quantity": 9, "expires_at": soon})
+    await _emit_doc(session, co.id, "doc:i", "doc.created", {
+        "doc_type": "invoice", "ref_id": "INV-9", "total": 50.0,
+        "due_date": "2020-01-01", "status": "awaiting_payment"})
+    await ProjectionEngine.rebuild(session)
+
+    n = await run_all_alerts(session, co)
+    assert n is not None
+    assert await _notif_count(session, co.id) == 1  # ONE combined digest
+    assert "Low stock" in n.body and "Expiring soon" in n.body and "Overdue invoices" in n.body

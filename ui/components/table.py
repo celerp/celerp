@@ -1819,13 +1819,13 @@ function _populateMergeTargets(){
     confirmDiv.appendChild(btnRow);
   });
 }
-function sendToTypeChanged(docType){
+function sendToTypeChanged(docType, docLabel){
   var targetSel=document.getElementById('send-to-target-select');
   if(!targetSel) return;
-  // Reset to just "New"
+  // Reset to just "New <type>", using the type's display label not its raw key
   targetSel.innerHTML='';
   var newOpt=document.createElement('option');
-  newOpt.value='__new__';newOpt.textContent='New '+docType;
+  newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);
   targetSel.appendChild(newOpt);
   if(!docType) return;
   // Fetch matching docs
