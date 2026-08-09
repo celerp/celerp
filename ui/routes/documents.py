@@ -3319,7 +3319,7 @@ celerpUpdateBulkAlloc();
         payment_table = Table(
             Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount")), Th(t("th.status")))),
             Tbody(*[_pay_row(p) for p in payments_list]) if payments_list else Tbody(Tr(Td(t("doc.no_payments_found"), colspan="7", cls="empty-state-msg"))),
-            cls="data-table", id="payments-table",
+            cls="data-table sticky-head", id="payments-table",
         )
 
         lang = get_lang(request)
@@ -4854,7 +4854,7 @@ def _doc_table(
                 _th("Status", "status"),
             )),
             Tbody(*[_row(d) for d in docs]),
-            cls="data-table",
+            cls="data-table sticky-head",
         ),
         bulk_js,
         id="doc-table",
@@ -8574,7 +8574,7 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
             Th(t("th.status")),
         )),
         Tbody(*[_row(d) for d in lists]),
-        cls="data-table",
+        cls="data-table sticky-head",
         id="list-table",
     )
 

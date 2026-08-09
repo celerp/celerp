@@ -291,7 +291,7 @@ def _categories_tab(
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
                          Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),
-                cls="data-table",
+                cls="data-table sticky-head",
             ),
             cls="settings-card",
         )

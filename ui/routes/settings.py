@@ -3302,7 +3302,7 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.text")), Th(t("th.document_types")), Th(t("th.default_for")), Th(""))),
             Tbody(*[_row(gi, tpl) for gi, tpl in filtered]),
-            cls="data-table",
+            cls="data-table sticky-head",
         ),
         cls="settings-card",
     )
@@ -3621,7 +3621,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             Table(
                 Thead(Tr(Th("Order", title="Display order - click to change"), Th("Name"), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
-                cls="data-table",
+                cls="data-table sticky-head",
             ),
             cls="settings-card",
         )
@@ -3650,7 +3650,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
         Table(
             Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")), Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")), Th(t("th.options")))),
             Tbody(*[_row(i, f) for i, f in enumerate(sorted_schema)]),
-            cls="data-table",
+            cls="data-table sticky-head",
         ),
         cls="settings-card",
     )
@@ -3698,7 +3698,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.address")), Th(t("th.default")), Th(""))),
             Tbody(*[_row(l) for l in locations]) if locations else Tbody(Tr(Td(t("settings.no_locations_yet"), colspan="5", cls="empty-state-msg"))),
-            cls="data-table",
+            cls="data-table sticky-head",
         ),
         cls="settings-card",
     )
@@ -4161,7 +4161,7 @@ def _import_history_tab(batches: list[dict]) -> FT:
             Tbody(*[_row(b) for b in batches]) if batches else Tbody(
                 Tr(Td(t("settings.no_imports_yet"), colspan="6", cls="empty-state-msg"))
             ),
-            cls="data-table",
+            cls="data-table sticky-head",
         ),
         cls="settings-card",
     )
