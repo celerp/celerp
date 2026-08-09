@@ -2,6 +2,7 @@
 
 Full set of Celerp screens captured for **Meridian Coffee Roasters** (fictional demo data). Part of the [Celerp press kit](../../README.md).
 
+<!-- PRESS_KIT:gallery start -->
 ### Dashboard - revenue trend, receivables aging, and inventory mix
 
 ![Dashboard - revenue trend, receivables aging, and inventory mix](dashboard.webp)
@@ -53,6 +54,15 @@ Full set of Celerp screens captured for **Meridian Coffee Roasters** (fictional 
 ### Built-in REST API for integrations
 
 ![Built-in REST API for integrations](rest-api.webp)
+
+### International shipping document - commercial invoice and customs detail
+
+![International shipping document - commercial invoice and customs detail](international-shipping-document.webp)
+
+### Extended journal - every posting with full detail
+
+![Extended journal - every posting with full detail](extended-journal.webp)
+<!-- PRESS_KIT:gallery end -->
 
 ## Usage & copyright
 

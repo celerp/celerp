@@ -40,6 +40,13 @@ _PROMOTED = {
     "work-centers",
 }
 _CANONICAL = _BASE_CANONICAL | _PROMOTED
+# Of the promoted shots, only these two made the curated root README grid; the
+# other two (extended-journal, work-centers) stay published as canonical PNGs and
+# in the Files table but are not gridded on the front page.
+_GRID_NEW = {
+    "international-shipping-document",
+    "statement-of-account",
+}
 
 # The screen set every vertical folder has carried.
 _BASE_SCREENS = {
@@ -61,7 +68,7 @@ _BASE_SCREENS = {
 _NEW_BY_VERTICAL = {
     "apparel": {"work-centers", "invoice-pay", "label-designer", "modules"},
     "coffee": {"international-shipping-document", "extended-journal"},
-    "cosmetics": {"connectors"},
+    "cosmetics": set(),
     "jewelry": {"statement-of-account", "memo-holdings"},
 }
 _VERTICALS = sorted(_NEW_BY_VERTICAL)
@@ -131,23 +138,33 @@ def test_press_kit_screenshot_set():
 
 
 def test_press_kit_consumers_reference_new_shots():
-    root_readme = (_PRESS_KIT / "README.md").read_text()
+    root_readme = (_PRESS_KIT.parent.parent / "README.md").read_text()
+    kit_readme = (_PRESS_KIT / "README.md").read_text()
     image_locations = (_PRESS_KIT / "IMAGE-LOCATIONS.md").read_text()
 
-    root_grid = _between(root_readme, "grid")
+    root_hero = _between(root_readme, "root-hero")
+    root_grid = _between(root_readme, "root-grid")
     files_table = _between(image_locations, "files-table")
 
-    # Every promoted shot is referenced by the root README grid and the Files table,
-    # each checked independently so a regen that updates one surface but not the other
-    # still fails.
-    for name in _PROMOTED:
+    # The hero shot the repo front page opens with.
+    assert "manufacturing-worksheet.png" in root_hero, (
+        "root README hero does not reference manufacturing-worksheet.png"
+    )
+    # The two new marquee shots that made the curated root grid appear there.
+    for name in _GRID_NEW:
         png = f"{name}.png"
         assert png in root_grid, f"root README grid does not reference {png}"
+    # Every promoted shot is in the canonical Files table, whether or not it is
+    # gridded on the front page.
+    for name in _PROMOTED:
+        png = f"{name}.png"
         assert png in files_table, f"IMAGE-LOCATIONS Files table does not reference {png}"
 
     # Each vertical gallery README references its own new shots by filename, and its
-    # generated screen count matches the folder on disk.
-    root_industries = _between(root_readme, "industries")
+    # generated screen count matches the folder on disk in both consumer surfaces:
+    # the press-kit README industry list ("N screens") and the IMAGE-LOCATIONS table
+    # (a bare count in the vertical's row).
+    industry_list = _between(kit_readme, "industry-list")
     industry_table = _between(image_locations, "industry-table")
     for vertical in _VERTICALS:
         gallery = _between((_SHOTS / vertical / "README.md").read_text(), "gallery")
@@ -155,20 +172,19 @@ def test_press_kit_consumers_reference_new_shots():
             webp = f"{name}.webp"
             assert webp in gallery, f"{vertical}/README.md does not reference {webp}"
         count = len(list((_SHOTS / vertical).glob("*.webp")))
-        needle = f"{count} screens"
-        assert needle in root_industries, (
-            f"root README industry list missing '{needle}' for {vertical}"
+        assert f"{count} screens" in industry_list, (
+            f"press-kit README industry list missing '{count} screens' for {vertical}"
         )
-        assert needle in industry_table, (
-            f"IMAGE-LOCATIONS industry table missing '{needle}' for {vertical}"
+        assert f"`{vertical}/` | {count} " in industry_table, (
+            f"IMAGE-LOCATIONS industry table missing count {count} for {vertical}"
         )
 
     # Generated regions are publish-ready: no em dash, no attribution name pulled into
     # a caption or table row (it belongs only to the hand-written copyright blocks).
-    attribution = _ATTRIBUTION_RE.search(root_readme)
-    assert attribution, "root README copyright line has no recognizable attribution name"
+    attribution = _ATTRIBUTION_RE.search(kit_readme)
+    assert attribution, "press-kit README copyright line has no recognizable attribution name"
     attributed_name = attribution.group(1)
-    generated = [root_grid, root_industries, files_table, industry_table]
+    generated = [root_hero, root_grid, industry_list, files_table, industry_table]
     generated += [
         _between((_SHOTS / v / "README.md").read_text(), "gallery") for v in _VERTICALS
     ]

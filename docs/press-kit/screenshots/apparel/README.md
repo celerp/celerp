@@ -2,6 +2,7 @@
 
 Full set of Celerp screens captured for **Northbound Apparel** (fictional demo data). Part of the [Celerp press kit](../../README.md).
 
+<!-- PRESS_KIT:gallery start -->
 ### Dashboard - revenue trend, receivables aging, and inventory mix
 
 ![Dashboard - revenue trend, receivables aging, and inventory mix](dashboard.webp)
@@ -53,6 +54,23 @@ Full set of Celerp screens captured for **Northbound Apparel** (fictional demo d
 ### Built-in REST API for integrations
 
 ![Built-in REST API for integrations](rest-api.webp)
+
+### Work centers - labor rates and capacity by station
+
+![Work centers - labor rates and capacity by station](work-centers.webp)
+
+### Shareable invoice with an online payment link
+
+![Shareable invoice with an online payment link](invoice-pay.webp)
+
+### Label designer - drag-and-drop barcode and price labels
+
+![Label designer - drag-and-drop barcode and price labels](label-designer.webp)
+
+### Modules - install and manage optional features
+
+![Modules - install and manage optional features](modules.webp)
+<!-- PRESS_KIT:gallery end -->
 
 ## Usage & copyright
 
