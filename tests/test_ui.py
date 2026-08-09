@@ -2362,6 +2362,69 @@ class TestCSSConsistency:
         assert ".combobox-list" in css
         assert ".combobox-option" in css
 
+    @pytest.mark.asyncio
+    async def test_sticky_header_css_present(self):
+        """The pinned sticky header rule must fix the thead to the viewport top, screen-only.
+
+        Red at merge-base: no .sticky-head / .hdr-pinned styling exists yet, so the regex
+        for a fixed-position pinned thead finds nothing.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        m = re.search(
+            r"\.data-table\.sticky-head\.hdr-pinned\s*>\s*thead\s*\{[^}]*position:\s*fixed[^}]*\}",
+            css,
+        )
+        assert m, "no fixed-position rule for the pinned sticky-head thead"
+        assert "top: 0" in m.group(0) or "top:0" in m.group(0)
+        # The pin is confined to on-screen rendering, never print.
+        assert "@media screen" in css
+
+    @pytest.mark.asyncio
+    async def test_sticky_header_print_spacer_hidden(self):
+        """The header-height spacer row must be hidden in print so it leaves no blank gap.
+
+        Red at merge-base: no .hdr-spacer print rule exists yet.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        m = re.search(r"@media print\s*\{.*?\.hdr-spacer[^}]*display:\s*none[^}]*\}", css, re.S)
+        assert m, "no @media print rule hiding .hdr-spacer"
+
+    @pytest.mark.asyncio
+    async def test_sticky_scrollbar_css_present(self):
+        """The pinned phantom top-scrollbar rules must fix it above the header, gate the header
+        drop on a phantom being present, single-source its height, and hide its print spacer.
+
+        Red at merge-base: none of .top-scroll-pinned, the .has-top-phantom header offset,
+        the --top-scroll-h var, or the .top-scroll-spacer print rule exist yet.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        # (1) the frozen phantom is fixed at the very top, above the header (z-index above the thead).
+        pin = re.search(
+            r"\.table-top-scroll\.top-scroll-pinned\s*\{[^}]*position:\s*fixed[^}]*\}", css
+        )
+        assert pin, "no fixed-position rule for the pinned phantom scrollbar"
+        assert "top: 0" in pin.group(0) or "top:0" in pin.group(0)
+        # (2) the header drop is gated on .has-top-phantom, so a phantom-less table keeps top:0.
+        off = re.search(
+            r"\.data-table\.sticky-head\.hdr-pinned\.has-top-phantom\s*>\s*thead\s*\{[^}]*top:\s*var\(--top-scroll-h\)[^}]*\}",
+            css,
+        )
+        assert off, "header offset rule must require .has-top-phantom and use var(--top-scroll-h)"
+        # (3) the phantom height is single-sourced through the CSS variable.
+        assert re.search(r"--top-scroll-h:\s*16px", css), "no --top-scroll-h definition"
+        assert re.search(r"\.table-top-scroll\s*\{[^}]*height:\s*var\(--top-scroll-h\)", css), \
+            "the phantom height must read var(--top-scroll-h), not a literal"
+        # (4) the pin lives on screen only, and the print spacer is hidden like the header spacer.
+        assert "@media screen" in css
+        assert re.search(r"@media print\s*\{.*?\.top-scroll-spacer[^}]*display:\s*none[^}]*\}", css, re.S), \
+            "no @media print rule hiding .top-scroll-spacer"
+
 
 class TestSearchableSelect:
     """Verify the searchable_select component renders correctly."""
@@ -3574,6 +3637,24 @@ class TestColumnDefaults:
         css = open(pathlib.Path(__file__).parent.parent / "ui/static/app.css").read()
         assert "col-resize-handle" in css
         assert "cursor: col-resize" in css
+
+    @pytest.mark.asyncio
+    async def test_sticky_header_optin_on_list_pages(self, ui_client):
+        """List pages opt the shared data-table into the sticky header, and the pin controller
+        ships so every data-table.sticky-head list page freezes its header.
+
+        Red at merge-base: neither the sticky-head opt-in class nor the controller exist yet.
+        """
+        schema = [{"key": "sku", "label": "SKU", "type": "text", "editable": True}]
+        items = [{"entity_id": "item:1", "sku": "SKU-1", "name": "Widget"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert b"sticky-head" in r.content
+        assert b"table.data-table.sticky-head" in r.content
 
 
 # ===========================================================================

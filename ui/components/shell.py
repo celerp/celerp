@@ -1047,6 +1047,180 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     )
 
 
+_STICKY_HEADER_JS = """
+(function(){
+  // Freeze the header row of the excel-style list tables while the table body is on screen.
+  // Opt-in by class: only table.data-table.sticky-head is touched. The header cannot both live
+  // inside the horizontal-scroll wrap and stick to the window via pure CSS (the overflow-x wrap
+  // clips position:sticky), so this pins the LIVE thead with position:fixed (from CSS) and keeps
+  // the whole table's column geometry aligned. See app.css .data-table.sticky-head.hdr-pinned.
+  var SEL = 'table.data-table.sticky-head';
+  var mqPrint = window.matchMedia ? window.matchMedia('print') : null;
+  var mo = null;
+  // Set the moment print is requested and cleared when it ends. beforeprint fires before some
+  // browsers flip the print media query, and a mutation arriving in that gap would otherwise
+  // re-pin the header we just cleared; this flag keeps the controller a no-op through print.
+  var printing = false;
+
+  function isPinned(t){ return t.classList.contains('hdr-pinned'); }
+
+  // The phantom top-scrollbar (.table-top-scroll) is a sibling of the table's .table-scroll-wrap,
+  // both under #data-table-wrap, and exists only when the table has enough rows to warrant it
+  // (ui/components/table.py). When the header freezes, the phantom must freeze stacked directly
+  // above it so a user scrolled mid-table can still scroll left/right; it is null when absent.
+  function wrapOf(t){ return t.closest('.table-scroll-wrap'); }
+  function phantomOf(t){
+    var w = wrapOf(t); var c = w && w.parentElement;
+    return c ? c.querySelector(':scope > .table-top-scroll') : null;
+  }
+
+  // Every DOM write the controller makes (colgroup, spacer row, thead styles, the pinned class)
+  // is itself a mutation. MutationObserver callbacks are async microtasks, so a boolean "busy"
+  // guard is already reset by the time the callback runs and cannot suppress them - the observer
+  // would re-fire on its own writes forever. Disconnect it for the duration of every write pass
+  // instead; genuine external mutations (rows added, an inline edit) still fire once we reconnect.
+  function pauseObserver(fn){
+    if(mo){ mo.disconnect(); }
+    try { fn(); } finally { observe(); }
+  }
+
+  function reposition(t){
+    var thead = t.tHead; if(!thead) return;
+    var rect = t.getBoundingClientRect();
+    // rect.left already reflects the wrap's horizontal scroll, so it is the body's content left.
+    thead.style.left = rect.left + 'px';
+    thead.style.width = rect.width + 'px';
+    // Keep the frozen phantom aligned with the on-screen wrap so its track spans the visible body.
+    // Its scrollLeft stays synced to the wrap by the existing bidirectional listener, unaffected
+    // by fixing position (that sync is scrollLeft-based, not layout-based).
+    var ph = phantomOf(t);
+    if(ph && ph.classList.contains('top-scroll-pinned')){
+      var w = wrapOf(t); var wr = w.getBoundingClientRect();
+      ph.style.left = wr.left + 'px';
+      ph.style.width = w.clientWidth + 'px';
+    }
+  }
+
+  // Remove every colgroup/spacer the controller has ever added to this table. querySelectorAll,
+  // not querySelector: a re-render can leave the artifacts in place while stripping the pinned
+  // class, so pin/unpin must clear ALL of them or a duplicate survives every later cycle.
+  function clearPinArtifacts(t){
+    var cgs = t.querySelectorAll(':scope > colgroup.hdr-cg');
+    for(var i=0;i<cgs.length;i++) cgs[i].remove();
+    var tb = t.tBodies[0];
+    if(tb){ var sps = tb.querySelectorAll(':scope > tr.hdr-spacer'); for(var j=0;j<sps.length;j++) sps[j].remove(); }
+    // Revert the frozen phantom scrollbar and drop every top-scroll spacer this table ever added.
+    var ph = phantomOf(t);
+    if(ph){ ph.classList.remove('top-scroll-pinned'); ph.style.left = ''; ph.style.width = ''; }
+    t.classList.remove('has-top-phantom');
+    var wrap = wrapOf(t); var cont = wrap && wrap.parentElement;
+    if(cont){ var tss = cont.querySelectorAll(':scope > .top-scroll-spacer'); for(var k=0;k<tss.length;k++) tss[k].remove(); }
+  }
+
+  function pin(t){
+    var thead = t.tHead; if(!thead || !thead.rows.length) return;
+    // Idempotent: drop any stale artifacts before recapturing, so re-pinning never duplicates them.
+    clearPinArtifacts(t);
+    var cells = thead.rows[0].cells;
+    var widths = [], i;
+    for(i=0;i<cells.length;i++) widths.push(cells[i].getBoundingClientRect().width);
+    var theadH = thead.getBoundingClientRect().height;
+    var tableW = t.getBoundingClientRect().width;
+    // Lock the whole table's columns so the body does not re-resolve once the thead leaves flow.
+    var cg = document.createElement('colgroup'); cg.className = 'hdr-cg';
+    for(i=0;i<widths.length;i++){ var col = document.createElement('col'); col.style.width = widths[i] + 'px'; cg.appendChild(col); }
+    t.insertBefore(cg, t.firstChild);
+    t.style.tableLayout = 'fixed';
+    t.style.width = tableW + 'px';
+    // Spacer row keeps the body from jumping up by the header's height while it is fixed.
+    var tb = t.tBodies[0];
+    if(tb){
+      var sp = document.createElement('tr'); sp.className = 'hdr-spacer';
+      var td = document.createElement('td'); td.colSpan = cells.length;
+      td.style.padding = '0'; td.style.border = '0'; td.style.height = theadH + 'px';
+      sp.appendChild(td); tb.insertBefore(sp, tb.firstChild);
+    }
+    // The fixed thead is its own table box so its cells lay out at the captured widths.
+    thead.style.display = 'table';
+    thead.style.tableLayout = 'fixed';
+    for(i=0;i<cells.length;i++) cells[i].style.width = widths[i] + 'px';
+    // Freeze the phantom top-scrollbar stacked directly above the header when one exists. The
+    // has-top-phantom class shifts the fixed thead down by the phantom height (CSS) so they stack;
+    // a spacer where the phantom sat keeps the content below from jumping up as it leaves flow.
+    var ph = phantomOf(t);
+    if(ph){
+      t.classList.add('has-top-phantom');
+      ph.classList.add('top-scroll-pinned');
+      var cont = wrapOf(t).parentElement;
+      var sp2 = document.createElement('div'); sp2.className = 'top-scroll-spacer';
+      sp2.style.height = ph.getBoundingClientRect().height + 'px';
+      cont.insertBefore(sp2, ph);
+    }
+    t.classList.add('hdr-pinned');
+    reposition(t);
+  }
+
+  function unpin(t){
+    t.classList.remove('hdr-pinned');
+    var thead = t.tHead;
+    if(thead){
+      thead.style.display = ''; thead.style.tableLayout = ''; thead.style.width = ''; thead.style.left = '';
+      if(thead.rows.length){ var cells = thead.rows[0].cells; for(var i=0;i<cells.length;i++) cells[i].style.width = ''; }
+    }
+    t.style.tableLayout = ''; t.style.width = '';
+    clearPinArtifacts(t);
+  }
+
+  function unpinAll(){
+    pauseObserver(function(){
+      var tables = document.querySelectorAll(SEL);
+      for(var i=0;i<tables.length;i++) if(isPinned(tables[i])) unpin(tables[i]);
+    });
+  }
+
+  function evaluate(full){
+    if(printing || (mqPrint && mqPrint.matches)){ unpinAll(); return; }
+    pauseObserver(function(){
+      var tables = document.querySelectorAll(SEL);
+      for(var i=0;i<tables.length;i++){
+        var t = tables[i];
+        var thead = t.tHead; if(!thead){ continue; }
+        // On a full re-evaluate (resize, re-render, reorder) drop stale geometry so widths recapture.
+        if(full && isPinned(t)) unpin(t);
+        var rect = t.getBoundingClientRect();
+        var theadH = thead.getBoundingClientRect().height;
+        var shouldPin = rect.top <= 0 && (rect.bottom - theadH) > 0;
+        if(shouldPin){
+          if(!isPinned(t)) pin(t); else reposition(t);
+        } else if(isPinned(t)){
+          unpin(t);
+        }
+      }
+    });
+  }
+
+  function onScroll(){ evaluate(false); }
+  function onFull(){ evaluate(true); }
+
+  document.addEventListener('DOMContentLoaded', onFull);
+  // Capture phase so whichever element scrolls vertically (window or an inner wrap) is caught,
+  // and so the wrap's horizontal scroll repositions the frozen header in lockstep with the body.
+  document.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', onFull);
+  document.addEventListener('htmx:afterSwap', onFull);
+  document.addEventListener('celerp:col-reorder', onFull);
+  window.addEventListener('beforeprint', function(){ printing = true; unpinAll(); });
+  window.addEventListener('afterprint', function(){ printing = false; onScroll(); });
+
+  mo = new MutationObserver(onFull);
+  // attributes:true catches a column-resize style write on a th; the controller's own writes
+  // never re-fire it because pauseObserver disconnects the observer for the duration of each pass.
+  function observe(){ if(mo && document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
+  if(document.body) observe(); else document.addEventListener('DOMContentLoaded', observe);
+})();
+"""
+
+
 async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
     from ui.config import get_user_email, get_relay_info, get_token
@@ -1079,6 +1253,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         Script(_USER_MENU_JS),
         Script(_BUG_LINK_JS),
         Script(_STAR_CTA_JS),
+        Script(_STICKY_HEADER_JS),
     ]
     if extra_head:
         head_items.extend(extra_head)

@@ -327,7 +327,7 @@ def _chart_table(chart: list[dict]) -> FT:
         Thead(Tr(Th(t("th.code")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.parent")),
                  Th(t("th.cash_flow_section")), Th(t("th.status")), Th(""))),
         Tbody(*sections),
-        cls="data-table",
+        cls="data-table sticky-head",
     )
 
 

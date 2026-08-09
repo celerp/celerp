@@ -1994,7 +1994,7 @@ function sendToTypeChanged(docType, docLabel){
     return Div(
         top_scroll,
         Div(
-            Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"),
+            Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table sticky-head", id="data-table"),
             cls="table-scroll-wrap",
         ),
         *scripts,

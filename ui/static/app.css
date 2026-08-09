@@ -37,6 +37,8 @@
   --c-amber: #d97706;
   --c-amber-dark: #92400e;
   --c-drafts: #e6a817;
+  /* Height of the phantom top-scrollbar; the frozen header offsets down by this so they stack. */
+  --top-scroll-h: 16px;
   /* Recon-specific semantic colors */
   --c-green-bg: #f0fdf4;
   --c-green-text: #166534;
@@ -273,7 +275,7 @@ a:hover { text-decoration: underline; }
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
 /* Phantom top scrollbar: mirrors .table-scroll-wrap, sits directly above the table body.
    overflow-x:auto on a zero-height div shows only the scrollbar track. */
-.table-top-scroll { overflow-x: auto; overflow-y: hidden; width: 100%; height: 16px; }
+.table-top-scroll { overflow-x: auto; overflow-y: hidden; width: 100%; height: var(--top-scroll-h); }
 /* Catalog autocomplete dropdowns must escape table overflow */
 .data-table {
   width: max-content;
@@ -298,6 +300,31 @@ a:hover { text-decoration: underline; }
   user-select: none; overflow: hidden;
 }
 .data-table th[draggable="true"] { cursor: grab; }
+/* Sticky (frozen) table header. A JS controller (_STICKY_HEADER_JS) pins the live
+   thead while the table body is on screen, adding .hdr-pinned to the opted-in table.
+   Screen only: print keeps the native per-page thead repeat, so position/top/z-index
+   live here and are never set inline. The opaque background matches .data-table thead
+   above so body rows never show through the frozen header. */
+@media screen {
+  .data-table.sticky-head.hdr-pinned > thead {
+    position: fixed;
+    top: 0;
+    z-index: 5;
+    background: var(--c-bg3);
+  }
+  /* When a phantom top-scrollbar exists it freezes stacked directly above the header, so the
+     frozen header drops down by the scrollbar height. Tables with no phantom keep top:0. The
+     JS controller adds .has-top-phantom to the table and .top-scroll-pinned to the phantom. */
+  .data-table.sticky-head.hdr-pinned.has-top-phantom > thead {
+    top: var(--top-scroll-h);
+  }
+  .table-top-scroll.top-scroll-pinned {
+    position: fixed;
+    top: 0;
+    z-index: 6;
+    background: var(--c-bg3);
+  }
+}
 .data-table th[draggable="true"]:active { cursor: grabbing; }
 .data-table th.col-dragging { opacity: 0.5; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
@@ -1356,6 +1383,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
   /* Always hide the bulk toolbar and checkboxes in print */
   .li-bulk-toolbar, #li-bulk-toolbar, .li-checkbox-cell { display: none !important; }
+
+  /* Sticky-header spacer row and top-scroll spacer are screen-only scaffolding; never print them as a blank gap */
+  .hdr-spacer, .top-scroll-spacer { display: none !important; }
 }
 
 /* Line item checkbox column */
