@@ -22,7 +22,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -1036,11 +1036,13 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= COST_ITEM_KEYS
     if not role_has_permission(settings, role, "set_inventory_prices"):
         restricted |= COST_ITEM_KEYS
-    # Amount fields (quantity/weight/pieces/gross_weight) are gated by
-    # edit_inventory_amounts, mirroring the cost gate above.
-    restricted -= AMOUNT_ITEM_KEYS
+    # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
+    # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
+    # included because changing it rewrites quantity, so it carries the same
+    # authority; the gate fires only on a real change (blocked = changed & restricted).
+    restricted -= AMOUNT_EDIT_GATED_KEYS
     if not role_has_permission(settings, role, "edit_inventory_amounts"):
-        restricted |= AMOUNT_ITEM_KEYS
+        restricted |= AMOUNT_EDIT_GATED_KEYS
     changed_keys = set(payload.fields_changed.keys())
     blocked = changed_keys & restricted
     if blocked:
@@ -2785,13 +2787,23 @@ async def batch_import_items(
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
             if body.upsert:
-                # Hand-editing an existing item's amount via CSV upsert is a genuine
-                # hand-edit surface, gated by edit_inventory_amounts. A create (below)
-                # defines the item and stays on edit_inventory.
-                if (AMOUNT_ITEM_KEYS & set(rec.data)) and not role_has_permission(settings, role, "edit_inventory_amounts"):
-                    errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing amount fields requires the edit_inventory_amounts permission")
-                    skipped += 1
-                    continue
+                # Hand-editing an existing item's amount or sell unit via CSV upsert is
+                # a genuine hand-edit surface, gated by edit_inventory_amounts. A create
+                # (below) defines the item and stays on edit_inventory. The amount keys
+                # are optional per row, so their presence already signals intent to
+                # change; sell_by is required on every row (validated above), so gating
+                # it on mere presence would block every upsert by an ungranted role.
+                # Gate sell_by on a real CHANGE against the stored value instead.
+                if not role_has_permission(settings, role, "edit_inventory_amounts"):
+                    gated = set(AMOUNT_ITEM_KEYS & set(rec.data))
+                    stored_proj = await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id})
+                    stored_sell_by = str((stored_proj.state.get("sell_by") if stored_proj else "") or "").strip()
+                    if sell_by != stored_sell_by:
+                        gated.add("sell_by")
+                    if gated:
+                        errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing {sorted(gated)} requires the edit_inventory_amounts permission")
+                        skipped += 1
+                        continue
                 # Emit patch event with a upsert-specific idempotency key
                 upsert_idem = f"{scoped_key}:upsert"
                 upsert_existing = set(

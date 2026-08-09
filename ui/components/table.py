@@ -746,6 +746,7 @@ def paired_display_cell(
     secondary_options: list[str] | None = None,
     format_fn=None,
     primary_editable: bool = True,
+    secondary_editable: bool = True,
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
@@ -756,9 +757,10 @@ def paired_display_cell(
     format_fn: optional callable(value) -> str for formatting the primary value.
     When provided, it is used instead of str(). Callers supply unit-aware formatters
     (e.g. format_qty) without coupling this generic component to inventory logic.
-    primary_editable: when False the primary (amount) value renders as a plain,
-    non-clickable span - no dblclick trigger, no edit affordance - while the
-    secondary unit stays editable. Used to honor the edit_inventory_amounts gate.
+    primary_editable / secondary_editable: when False the corresponding value renders
+    as a plain, non-clickable span - no dblclick trigger, no edit affordance. The
+    sell unit gates on the same edit_inventory_amounts permission as the amount it
+    pairs with, because changing the unit rewrites the amount.
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
@@ -780,9 +782,7 @@ def paired_display_cell(
         if primary_editable
         else Span(pri_disp, cls="paired-primary paired-primary--readonly")
     )
-    return Td(
-        pri_span,
-        Span(" ", cls="paired-sep"),
+    sec_span = (
         Span(
             sec_disp,
             cls="paired-secondary",
@@ -791,7 +791,14 @@ def paired_display_cell(
             hx_target="closest td",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-        ),
+        )
+        if secondary_editable
+        else Span(sec_disp, cls="paired-secondary paired-secondary--readonly")
+    )
+    return Td(
+        pri_span,
+        Span(" ", cls="paired-sep"),
+        sec_span,
         cls=f"cell cell--paired",
         data_col=primary_field,
     )
