@@ -61,6 +61,34 @@ def _thead_top(page):
     )
 
 
+def _phantom_h(page):
+    # height of the phantom top-scrollbar element (16px whenever it exists), 0 if absent.
+    return page.evaluate(
+        "() => { var p=document.querySelector('#data-table-wrap > .table-top-scroll');"
+        " return p ? p.getBoundingClientRect().height : 0; }"
+    )
+
+
+def _phantom_top(page):
+    return page.evaluate(
+        "() => { var p=document.querySelector('#data-table-wrap > .table-top-scroll');"
+        " return p ? p.getBoundingClientRect().top : null; }"
+    )
+
+
+def _phantom_pinned(page) -> bool:
+    return page.evaluate(
+        "() => { var p=document.querySelector('#data-table-wrap > .table-top-scroll');"
+        " return !!(p && p.classList.contains('top-scroll-pinned')); }"
+    )
+
+
+def _top_scroll_spacers(page) -> int:
+    return page.evaluate(
+        "() => document.querySelectorAll('#data-table-wrap > .top-scroll-spacer').length"
+    )
+
+
 def _data_keys(page):
     return page.evaluate(
         "() => Array.from(document.querySelectorAll('#data-table thead th[data-key]'))"
@@ -167,7 +195,8 @@ def test_header_freezes_at_viewport_top(page, ui_server, sticky_inventory):
     # (b) scroll the table top above the viewport top: frozen at top, columns aligned.
     _scroll_to_pin(page)
     assert _pinned(page)
-    assert abs(_thead_top(page)) <= 1.5
+    # this fixture has a phantom top-scrollbar, so the header freezes directly below it.
+    assert abs(_thead_top(page) - _phantom_h(page)) <= 2
     key = _data_keys(page)[0]
     lefts = _col_lefts(page, key)
     assert lefts is not None and abs(lefts[0] - lefts[1]) <= 1.5
@@ -178,7 +207,7 @@ def test_header_unpins_past_table_end(page, ui_server, sticky_inventory):
     _goto(page, ui_server)
     _add_scroll_room(page)
     _scroll_to_pin(page)
-    assert _pinned(page) and abs(_thead_top(page)) <= 1.5
+    assert _pinned(page) and abs(_thead_top(page) - _phantom_h(page)) <= 2
     # scroll until the table BOTTOM is above the viewport top.
     for _ in range(40):
         bottom = page.evaluate("() => document.querySelector('#data-table').getBoundingClientRect().bottom")
@@ -213,7 +242,7 @@ def test_pinned_header_stays_interactive(page, ui_server, sticky_inventory):
         _wait_swap(page, page.locator(f'#data-table thead th[data-key="{key}"] a.sort-link').first)
         after = _col_values(page, key)
     assert after != before, "sort from the pinned header did not reorder the rows"
-    assert _pinned(page) and abs(_thead_top(page)) <= 2
+    assert _pinned(page) and abs(_thead_top(page) - _phantom_h(page)) <= 2
 
     # (iii) column filter from the pinned header applies server-side (fresh load resets the URL).
     _goto(page, ui_server)
@@ -291,7 +320,7 @@ def test_pinned_header_survives_htmx_swap(page, ui_server, sticky_inventory):
     assert _pinned(page)
     key = _data_keys(page)[0]
     _wait_swap(page, page.locator(f'#data-table thead th[data-key="{key}"] a.sort-link').first)
-    assert _pinned(page) and abs(_thead_top(page)) <= 2
+    assert _pinned(page) and abs(_thead_top(page) - _phantom_h(page)) <= 2
     counts = page.evaluate(
         "() => ({pinned: document.querySelectorAll('.hdr-pinned').length,"
         " spacer: document.querySelectorAll('.hdr-spacer').length})"
@@ -338,3 +367,82 @@ def test_beforeprint_unpins_pinned_header(page, ui_server, sticky_inventory):
 
 
 
+
+# ── the phantom top-scrollbar freezes in the top band, stacked directly above the header ────
+def test_phantom_scrollbar_freezes_above_header(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    # this fixture renders > 10 rows, so the phantom top-scrollbar exists.
+    assert _phantom_h(page) > 0, "fixture table should render the phantom scrollbar"
+    _scroll_to_pin(page)
+    assert _pinned(page)
+    # phantom frozen in the top band...
+    ptop = _phantom_top(page)
+    assert ptop is not None and abs(ptop) <= 2, f"phantom not frozen at the top band: {ptop}"
+    assert _phantom_pinned(page)
+    # ...and the header sits directly beneath it, offset by exactly the phantom height.
+    assert abs(_thead_top(page) - _phantom_h(page)) <= 2
+
+
+# ── while frozen, the phantom stays on-screen and its scrollLeft tracks the body ───────────
+def test_phantom_scrollbar_tracks_horizontal_scroll(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    _scroll_to_pin(page)
+    assert _pinned(page) and _phantom_pinned(page)
+    page.evaluate(
+        "() => { var w=document.querySelector('#data-table-wrap .table-scroll-wrap');"
+        " w.scrollLeft = 120; w.dispatchEvent(new Event('scroll')); }"
+    )
+    page.wait_for_timeout(100)
+    ptop = _phantom_top(page)
+    assert ptop is not None and abs(ptop) <= 2, "frozen phantom left the top band on horizontal scroll"
+    synced = page.evaluate(
+        "() => { var w=document.querySelector('#data-table-wrap .table-scroll-wrap');"
+        " var p=document.querySelector('#data-table-wrap > .table-top-scroll');"
+        " return Math.abs(w.scrollLeft - p.scrollLeft); }"
+    )
+    assert synced <= 2, "phantom scrollLeft did not track the wrap"
+
+
+# ── unpinning restores the phantom to normal flow: no pin class, no spacer, no inline style ─
+def test_phantom_scrollbar_restores_on_unpin(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    _scroll_to_pin(page)
+    assert _pinned(page) and _phantom_pinned(page)
+    assert _top_scroll_spacers(page) >= 1, "a spacer should hold the phantom's place while frozen"
+    _scroll_to_top(page)
+    page.wait_for_function(_UNPINNED_JS, timeout=6000)
+    assert not _phantom_pinned(page)
+    assert _top_scroll_spacers(page) == 0
+    style = page.evaluate(
+        "() => { var p=document.querySelector('#data-table-wrap > .table-top-scroll');"
+        " return {left: p.style.left, width: p.style.width}; }"
+    )
+    assert style["left"] == "" and style["width"] == ""
+
+
+# ── after an htmx re-render while pinned, exactly one phantom is frozen and no spacer piles up ─
+def test_phantom_survives_htmx_swap(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    _scroll_to_pin(page)
+    assert _pinned(page) and _phantom_pinned(page)
+    key = _data_keys(page)[0]
+    _wait_swap(page, page.locator(f'#data-table thead th[data-key="{key}"] a.sort-link').first)
+    assert _pinned(page) and _phantom_pinned(page)
+    counts = page.evaluate(
+        "() => ({pinned: document.querySelectorAll('.table-top-scroll.top-scroll-pinned').length,"
+        " spacer: document.querySelectorAll('#data-table-wrap > .top-scroll-spacer').length})"
+    )
+    assert counts["pinned"] == 1, "exactly one phantom should be frozen after the swap"
+    assert counts["spacer"] <= 1, "no orphaned top-scroll spacer from the old table"
+
+
+# ── beforeprint clears the frozen phantom and its spacer, same as the header ───────────────
+def test_phantom_scrollbar_cleared_on_print(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    _scroll_to_pin(page)
+    assert _pinned(page) and _phantom_pinned(page)
+    assert _top_scroll_spacers(page) >= 1
+    page.evaluate("() => window.dispatchEvent(new Event('beforeprint'))")
+    page.wait_for_timeout(150)
+    assert not _pinned(page) and not _phantom_pinned(page)
+    assert _top_scroll_spacers(page) == 0

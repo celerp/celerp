@@ -2393,6 +2393,38 @@ class TestCSSConsistency:
         m = re.search(r"@media print\s*\{.*?\.hdr-spacer[^}]*display:\s*none[^}]*\}", css, re.S)
         assert m, "no @media print rule hiding .hdr-spacer"
 
+    @pytest.mark.asyncio
+    async def test_sticky_scrollbar_css_present(self):
+        """The pinned phantom top-scrollbar rules must fix it above the header, gate the header
+        drop on a phantom being present, single-source its height, and hide its print spacer.
+
+        Red at merge-base: none of .top-scroll-pinned, the .has-top-phantom header offset,
+        the --top-scroll-h var, or the .top-scroll-spacer print rule exist yet.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        # (1) the frozen phantom is fixed at the very top, above the header (z-index above the thead).
+        pin = re.search(
+            r"\.table-top-scroll\.top-scroll-pinned\s*\{[^}]*position:\s*fixed[^}]*\}", css
+        )
+        assert pin, "no fixed-position rule for the pinned phantom scrollbar"
+        assert "top: 0" in pin.group(0) or "top:0" in pin.group(0)
+        # (2) the header drop is gated on .has-top-phantom, so a phantom-less table keeps top:0.
+        off = re.search(
+            r"\.data-table\.sticky-head\.hdr-pinned\.has-top-phantom\s*>\s*thead\s*\{[^}]*top:\s*var\(--top-scroll-h\)[^}]*\}",
+            css,
+        )
+        assert off, "header offset rule must require .has-top-phantom and use var(--top-scroll-h)"
+        # (3) the phantom height is single-sourced through the CSS variable.
+        assert re.search(r"--top-scroll-h:\s*16px", css), "no --top-scroll-h definition"
+        assert re.search(r"\.table-top-scroll\s*\{[^}]*height:\s*var\(--top-scroll-h\)", css), \
+            "the phantom height must read var(--top-scroll-h), not a literal"
+        # (4) the pin lives on screen only, and the print spacer is hidden like the header spacer.
+        assert "@media screen" in css
+        assert re.search(r"@media print\s*\{.*?\.top-scroll-spacer[^}]*display:\s*none[^}]*\}", css, re.S), \
+            "no @media print rule hiding .top-scroll-spacer"
+
 
 class TestSearchableSelect:
     """Verify the searchable_select component renders correctly."""

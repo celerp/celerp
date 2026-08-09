@@ -1064,6 +1064,16 @@ _STICKY_HEADER_JS = """
 
   function isPinned(t){ return t.classList.contains('hdr-pinned'); }
 
+  // The phantom top-scrollbar (.table-top-scroll) is a sibling of the table's .table-scroll-wrap,
+  // both under #data-table-wrap, and exists only when the table has enough rows to warrant it
+  // (ui/components/table.py). When the header freezes, the phantom must freeze stacked directly
+  // above it so a user scrolled mid-table can still scroll left/right; it is null when absent.
+  function wrapOf(t){ return t.closest('.table-scroll-wrap'); }
+  function phantomOf(t){
+    var w = wrapOf(t); var c = w && w.parentElement;
+    return c ? c.querySelector(':scope > .table-top-scroll') : null;
+  }
+
   // Every DOM write the controller makes (colgroup, spacer row, thead styles, the pinned class)
   // is itself a mutation. MutationObserver callbacks are async microtasks, so a boolean "busy"
   // guard is already reset by the time the callback runs and cannot suppress them - the observer
@@ -1080,6 +1090,15 @@ _STICKY_HEADER_JS = """
     // rect.left already reflects the wrap's horizontal scroll, so it is the body's content left.
     thead.style.left = rect.left + 'px';
     thead.style.width = rect.width + 'px';
+    // Keep the frozen phantom aligned with the on-screen wrap so its track spans the visible body.
+    // Its scrollLeft stays synced to the wrap by the existing bidirectional listener, unaffected
+    // by fixing position (that sync is scrollLeft-based, not layout-based).
+    var ph = phantomOf(t);
+    if(ph && ph.classList.contains('top-scroll-pinned')){
+      var w = wrapOf(t); var wr = w.getBoundingClientRect();
+      ph.style.left = wr.left + 'px';
+      ph.style.width = w.clientWidth + 'px';
+    }
   }
 
   // Remove every colgroup/spacer the controller has ever added to this table. querySelectorAll,
@@ -1090,6 +1109,12 @@ _STICKY_HEADER_JS = """
     for(var i=0;i<cgs.length;i++) cgs[i].remove();
     var tb = t.tBodies[0];
     if(tb){ var sps = tb.querySelectorAll(':scope > tr.hdr-spacer'); for(var j=0;j<sps.length;j++) sps[j].remove(); }
+    // Revert the frozen phantom scrollbar and drop every top-scroll spacer this table ever added.
+    var ph = phantomOf(t);
+    if(ph){ ph.classList.remove('top-scroll-pinned'); ph.style.left = ''; ph.style.width = ''; }
+    t.classList.remove('has-top-phantom');
+    var wrap = wrapOf(t); var cont = wrap && wrap.parentElement;
+    if(cont){ var tss = cont.querySelectorAll(':scope > .top-scroll-spacer'); for(var k=0;k<tss.length;k++) tss[k].remove(); }
   }
 
   function pin(t){
@@ -1119,6 +1144,18 @@ _STICKY_HEADER_JS = """
     thead.style.display = 'table';
     thead.style.tableLayout = 'fixed';
     for(i=0;i<cells.length;i++) cells[i].style.width = widths[i] + 'px';
+    // Freeze the phantom top-scrollbar stacked directly above the header when one exists. The
+    // has-top-phantom class shifts the fixed thead down by the phantom height (CSS) so they stack;
+    // a spacer where the phantom sat keeps the content below from jumping up as it leaves flow.
+    var ph = phantomOf(t);
+    if(ph){
+      t.classList.add('has-top-phantom');
+      ph.classList.add('top-scroll-pinned');
+      var cont = wrapOf(t).parentElement;
+      var sp2 = document.createElement('div'); sp2.className = 'top-scroll-spacer';
+      sp2.style.height = ph.getBoundingClientRect().height + 'px';
+      cont.insertBefore(sp2, ph);
+    }
     t.classList.add('hdr-pinned');
     reposition(t);
   }
