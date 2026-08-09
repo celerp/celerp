@@ -298,6 +298,19 @@ a:hover { text-decoration: underline; }
   user-select: none; overflow: hidden;
 }
 .data-table th[draggable="true"] { cursor: grab; }
+/* Sticky (frozen) table header. A JS controller (_STICKY_HEADER_JS) pins the live
+   thead while the table body is on screen, adding .hdr-pinned to the opted-in table.
+   Screen only: print keeps the native per-page thead repeat, so position/top/z-index
+   live here and are never set inline. The opaque background matches .data-table thead
+   above so body rows never show through the frozen header. */
+@media screen {
+  .data-table.sticky-head.hdr-pinned > thead {
+    position: fixed;
+    top: 0;
+    z-index: 5;
+    background: var(--c-bg3);
+  }
+}
 .data-table th[draggable="true"]:active { cursor: grabbing; }
 .data-table th.col-dragging { opacity: 0.5; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
@@ -1356,6 +1369,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
   /* Always hide the bulk toolbar and checkboxes in print */
   .li-bulk-toolbar, #li-bulk-toolbar, .li-checkbox-cell { display: none !important; }
+
+  /* Sticky-header spacer row is screen-only scaffolding; never print it as a blank gap */
+  .hdr-spacer { display: none !important; }
 }
 
 /* Line item checkbox column */
