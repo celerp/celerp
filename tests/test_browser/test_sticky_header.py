@@ -37,11 +37,21 @@ def _goto(page, ui_server):
     page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
 
 
+# The controller marks the opted-in table with .hdr-pinned; the CSS rule
+# .data-table.sticky-head.hdr-pinned > thead then fixes the header. The class lives
+# on the table, so every pinned/unpinned check reads the table, not the thead.
+_PINNED_JS = (
+    "() => { var t=document.querySelector('#data-table');"
+    " return !!(t && t.classList.contains('hdr-pinned')); }"
+)
+_UNPINNED_JS = (
+    "() => { var t=document.querySelector('#data-table');"
+    " return !!(t && !t.classList.contains('hdr-pinned')); }"
+)
+
+
 def _pinned(page) -> bool:
-    return page.evaluate(
-        "() => { var th=document.querySelector('#data-table thead');"
-        " return !!(th && th.classList.contains('hdr-pinned')); }"
-    )
+    return page.evaluate(_PINNED_JS)
 
 
 def _thead_top(page):
@@ -118,11 +128,7 @@ def _scroll_to_pin(page, margin=40):
         if cur is None or cur <= -margin + 1:
             break
         _scroll_delta(page, cur + margin)
-    page.wait_for_function(
-        "() => { var th=document.querySelector('#data-table thead');"
-        " return !!(th && th.classList.contains('hdr-pinned')); }",
-        timeout=6000,
-    )
+    page.wait_for_function(_PINNED_JS, timeout=6000)
 
 
 def _add_scroll_room(page):
@@ -142,11 +148,7 @@ def _wait_swap(page, click_target):
         "() => { var t=document.querySelector('#data-table'); return !!t && !t.hasAttribute('data-swaptmp'); }",
         timeout=8000,
     )
-    page.wait_for_function(
-        "() => { var th=document.querySelector('#data-table thead');"
-        " return !!(th && th.classList.contains('hdr-pinned')); }",
-        timeout=6000,
-    )
+    page.wait_for_function(_PINNED_JS, timeout=6000)
 
 
 # ── behaviors (a) + (b): inline before the top, frozen once the table top reaches it ───────
@@ -183,11 +185,7 @@ def test_header_unpins_past_table_end(page, ui_server, sticky_inventory):
         if bottom <= -5:
             break
         _scroll_delta(page, bottom + 40)
-    page.wait_for_function(
-        "() => { var th=document.querySelector('#data-table thead');"
-        " return !!(th && !th.classList.contains('hdr-pinned')); }",
-        timeout=6000,
-    )
+    page.wait_for_function(_UNPINNED_JS, timeout=6000)
     assert not _pinned(page)
     assert _thead_top(page) < 0  # the header left with the table, no longer stuck at 0
 
@@ -280,11 +278,7 @@ def test_scroll_back_up_restores_inline_header(page, ui_server, sticky_inventory
     _scroll_to_pin(page)
     assert _pinned(page)
     _scroll_to_top(page)
-    page.wait_for_function(
-        "() => { var th=document.querySelector('#data-table thead');"
-        " return !!(th && !th.classList.contains('hdr-pinned')); }",
-        timeout=6000,
-    )
+    page.wait_for_function(_UNPINNED_JS, timeout=6000)
     assert not _pinned(page)
     assert page.evaluate("() => getComputedStyle(document.querySelector('#data-table thead')).position") == "static"
     assert page.evaluate("() => document.querySelectorAll('#data-table .hdr-spacer').length") == 0
@@ -341,3 +335,6 @@ def test_beforeprint_unpins_pinned_header(page, ui_server, sticky_inventory):
         " return {position: th.style.position, left: th.style.left, width: th.style.width}; }"
     )
     assert inline["position"] == "" and inline["left"] == "" and inline["width"] == ""
+
+
+

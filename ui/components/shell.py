@@ -1055,11 +1055,24 @@ _STICKY_HEADER_JS = """
   // clips position:sticky), so this pins the LIVE thead with position:fixed (from CSS) and keeps
   // the whole table's column geometry aligned. See app.css .data-table.sticky-head.hdr-pinned.
   var SEL = 'table.data-table.sticky-head';
-  var busy = false;
   var mqPrint = window.matchMedia ? window.matchMedia('print') : null;
+  var mo = null;
+  // Set the moment print is requested and cleared when it ends. beforeprint fires before some
+  // browsers flip the print media query, and a mutation arriving in that gap would otherwise
+  // re-pin the header we just cleared; this flag keeps the controller a no-op through print.
+  var printing = false;
 
-  function scrollerOf(t){ return t.closest('.table-scroll-wrap') || t.closest('.main-content'); }
   function isPinned(t){ return t.classList.contains('hdr-pinned'); }
+
+  // Every DOM write the controller makes (colgroup, spacer row, thead styles, the pinned class)
+  // is itself a mutation. MutationObserver callbacks are async microtasks, so a boolean "busy"
+  // guard is already reset by the time the callback runs and cannot suppress them - the observer
+  // would re-fire on its own writes forever. Disconnect it for the duration of every write pass
+  // instead; genuine external mutations (rows added, an inline edit) still fire once we reconnect.
+  function pauseObserver(fn){
+    if(mo){ mo.disconnect(); }
+    try { fn(); } finally { observe(); }
+  }
 
   function reposition(t){
     var thead = t.tHead; if(!thead) return;
@@ -1069,9 +1082,20 @@ _STICKY_HEADER_JS = """
     thead.style.width = rect.width + 'px';
   }
 
+  // Remove every colgroup/spacer the controller has ever added to this table. querySelectorAll,
+  // not querySelector: a re-render can leave the artifacts in place while stripping the pinned
+  // class, so pin/unpin must clear ALL of them or a duplicate survives every later cycle.
+  function clearPinArtifacts(t){
+    var cgs = t.querySelectorAll(':scope > colgroup.hdr-cg');
+    for(var i=0;i<cgs.length;i++) cgs[i].remove();
+    var tb = t.tBodies[0];
+    if(tb){ var sps = tb.querySelectorAll(':scope > tr.hdr-spacer'); for(var j=0;j<sps.length;j++) sps[j].remove(); }
+  }
+
   function pin(t){
     var thead = t.tHead; if(!thead || !thead.rows.length) return;
-    busy = true;
+    // Idempotent: drop any stale artifacts before recapturing, so re-pinning never duplicates them.
+    clearPinArtifacts(t);
     var cells = thead.rows[0].cells;
     var widths = [], i;
     for(i=0;i<cells.length;i++) widths.push(cells[i].getBoundingClientRect().width);
@@ -1097,46 +1121,45 @@ _STICKY_HEADER_JS = """
     for(i=0;i<cells.length;i++) cells[i].style.width = widths[i] + 'px';
     t.classList.add('hdr-pinned');
     reposition(t);
-    busy = false;
   }
 
   function unpin(t){
-    busy = true;
     t.classList.remove('hdr-pinned');
     var thead = t.tHead;
     if(thead){
       thead.style.display = ''; thead.style.tableLayout = ''; thead.style.width = ''; thead.style.left = '';
       if(thead.rows.length){ var cells = thead.rows[0].cells; for(var i=0;i<cells.length;i++) cells[i].style.width = ''; }
     }
-    var cg = t.querySelector(':scope > colgroup.hdr-cg'); if(cg) cg.remove();
     t.style.tableLayout = ''; t.style.width = '';
-    var tb = t.tBodies[0];
-    if(tb){ var sp = tb.querySelector(':scope > tr.hdr-spacer'); if(sp) sp.remove(); }
-    busy = false;
+    clearPinArtifacts(t);
   }
 
   function unpinAll(){
-    var tables = document.querySelectorAll(SEL);
-    for(var i=0;i<tables.length;i++) if(isPinned(tables[i])) unpin(tables[i]);
+    pauseObserver(function(){
+      var tables = document.querySelectorAll(SEL);
+      for(var i=0;i<tables.length;i++) if(isPinned(tables[i])) unpin(tables[i]);
+    });
   }
 
   function evaluate(full){
-    if(mqPrint && mqPrint.matches){ unpinAll(); return; }
-    var tables = document.querySelectorAll(SEL);
-    for(var i=0;i<tables.length;i++){
-      var t = tables[i];
-      var thead = t.tHead; if(!thead){ continue; }
-      // On a full re-evaluate (resize, re-render, reorder) drop stale geometry so widths recapture.
-      if(full && isPinned(t)) unpin(t);
-      var rect = t.getBoundingClientRect();
-      var theadH = thead.getBoundingClientRect().height;
-      var shouldPin = rect.top <= 0 && (rect.bottom - theadH) > 0;
-      if(shouldPin){
-        if(!isPinned(t)) pin(t); else reposition(t);
-      } else if(isPinned(t)){
-        unpin(t);
+    if(printing || (mqPrint && mqPrint.matches)){ unpinAll(); return; }
+    pauseObserver(function(){
+      var tables = document.querySelectorAll(SEL);
+      for(var i=0;i<tables.length;i++){
+        var t = tables[i];
+        var thead = t.tHead; if(!thead){ continue; }
+        // On a full re-evaluate (resize, re-render, reorder) drop stale geometry so widths recapture.
+        if(full && isPinned(t)) unpin(t);
+        var rect = t.getBoundingClientRect();
+        var theadH = thead.getBoundingClientRect().height;
+        var shouldPin = rect.top <= 0 && (rect.bottom - theadH) > 0;
+        if(shouldPin){
+          if(!isPinned(t)) pin(t); else reposition(t);
+        } else if(isPinned(t)){
+          unpin(t);
+        }
       }
-    }
+    });
   }
 
   function onScroll(){ evaluate(false); }
@@ -1147,14 +1170,15 @@ _STICKY_HEADER_JS = """
   // and so the wrap's horizontal scroll repositions the frozen header in lockstep with the body.
   document.addEventListener('scroll', onScroll, true);
   window.addEventListener('resize', onFull);
-  document.body && document.body.addEventListener('htmx:afterSwap', onFull);
   document.addEventListener('htmx:afterSwap', onFull);
   document.addEventListener('celerp:col-reorder', onFull);
-  window.addEventListener('beforeprint', unpinAll);
-  window.addEventListener('afterprint', onScroll);
+  window.addEventListener('beforeprint', function(){ printing = true; unpinAll(); });
+  window.addEventListener('afterprint', function(){ printing = false; onScroll(); });
 
-  var mo = new MutationObserver(function(){ if(busy) return; onFull(); });
-  function observe(){ if(document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
+  mo = new MutationObserver(onFull);
+  // attributes:true catches a column-resize style write on a th; the controller's own writes
+  // never re-fire it because pauseObserver disconnects the observer for the duration of each pass.
+  function observe(){ if(mo && document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
   if(document.body) observe(); else document.addEventListener('DOMContentLoaded', observe);
 })();
 """
