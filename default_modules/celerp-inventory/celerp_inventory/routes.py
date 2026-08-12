@@ -545,6 +545,8 @@ async def list_items(
 async def get_valuation(
     category: str | None = None,
     status: str | None = None,
+    on_memo_to: str | None = None,
+    consigned_from: str | None = None,
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
@@ -553,14 +555,42 @@ async def get_valuation(
     """Aggregate inventory valuation from projections.
 
     Optional ?category= and ?status= filters scope totals + count_by_status to that slice.
-    category_counts is always global (all active items) — used by the category tab bar.
-    count_by_status is scoped to the current category/status filter — used by status cards.
+    on_memo_to: customer contact_id. Scope counts to items currently out on memo to that customer.
+    consigned_from: supplier contact_id. Scope counts to items currently held on consignment.
+    category_counts is always global (all active items) - used by the category tab bar.
+    count_by_status is scoped to the current category/status/holdings filter - used by status cards.
     """
     rows = (
         await session.execute(
             select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
         )
     ).scalars().all()
+
+    holding_scope: set[str] | None = None
+    if on_memo_to or consigned_from:
+        from celerp.services.holdings import consignment_holdings, memo_holdings
+        items_state = [(r.entity_id, r.state) for r in rows]
+        scope_doc_type = "memo" if on_memo_to else "consignment_in"
+        scope_contact = on_memo_to or consigned_from
+        scope_docs = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "doc",
+                    Projection.state["doc_type"].as_string() == scope_doc_type,
+                    Projection.state["contact_id"].as_string() == scope_contact,
+                )
+            )
+        ).scalars().all()
+        issued = [
+            (d.entity_id, d.state) for d in scope_docs
+            if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
+        ]
+        scope_value = (
+            memo_holdings(items_state, issued) if on_memo_to
+            else consignment_holdings(items_state, issued)
+        )
+        holding_scope = set(scope_value.keys())
 
     # Compute price totals dynamically per price list
     _price_config = await get_price_config(session, company_id)
@@ -585,6 +615,10 @@ async def get_valuation(
         # Exclude non-stocked and service items from valuation (only stocked items have physical value)
         inv_type = state.get("inventory_type") or "stocked"
         if inv_type != "stocked":
+            continue
+
+        # Holdings scope: when filtering by on_memo_to or consigned_from, include only matching items
+        if holding_scope is not None and row.entity_id not in holding_scope:
             continue
 
         # category_counts: scoped to the active status filter (or global non-hidden when no filter)

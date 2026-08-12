@@ -1293,7 +1293,6 @@
   "settings._connected": "✓ Connected",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ Cost price is tracked per-item from purchase documents, not as a price list.",
   "settings._default": "★ Default",
-  "settings._email_notifications_are_disabled": "⚠ Email notifications are disabled. ",
   "settings._local_filesystem_no_connection_needed": "✓ Local filesystem - no connection needed.",
   "settings._restored_previous_db_url_restarting": "↩ Restored previous DB URL. Restarting...",
   "settings._saved": "✓ Saved.",

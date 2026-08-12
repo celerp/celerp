@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ Verbunden",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ Der Einstandspreis wird pro Artikel aus Einkaufsdokumenten verfolgt, nicht als Preisliste.",
   "settings._default": "★ Standard",
-  "settings._email_notifications_are_disabled": "⚠ E-Mail-Benachrichtigungen sind deaktiviert. ",
   "settings._local_filesystem_no_connection_needed": "✓ Lokales Dateisystem – keine Verbindung erforderlich.",
   "settings._restored_previous_db_url_restarting": "↩ Vorherige DB-URL wiederhergestellt. Wird neu gestartet...",
   "settings._saved": "✓ Gespeichert.",

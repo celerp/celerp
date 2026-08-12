@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ Đã kết nối",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ Giá vốn được theo dõi từng mặt hàng từ chứng từ mua hàng chứ không phải dưới dạng bảng giá.",
   "settings._default": "★ Mặc định",
-  "settings._email_notifications_are_disabled": "⚠ Thông báo qua email bị tắt.",
   "settings._local_filesystem_no_connection_needed": "✓ Hệ thống tập tin cục bộ - không cần kết nối.",
   "settings._restored_previous_db_url_restarting": "↩ Đã khôi phục URL DB trước đó. Đang khởi động lại...",
   "settings._saved": "✓ Đã lưu.",
