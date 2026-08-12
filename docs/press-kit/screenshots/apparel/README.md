@@ -43,9 +43,9 @@ Full set of Celerp screens captured for **Northbound Apparel** (fictional demo d
 
 ![Balance sheet generated live from the event-sourced ledger](balance-sheet.webp)
 
-### Immutable audit log of every change
+### Accounting journal - register of financial postings
 
-![Immutable audit log of every change](audit-log.webp)
+![Accounting journal - register of financial postings](audit-log.webp)
 
 ### Role-based access permissions
 
