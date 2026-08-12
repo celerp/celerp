@@ -31,9 +31,9 @@ async def star_cta(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Return the relay-resolved CTA for ``medium`` (or the neutral link if the relay
-    is unreachable), plus the install-level dismissed flag. ``{}`` when disabled."""
+    is unreachable), plus the install-level dismissed flag. Neutral mode when disabled."""
     if not settings.star_cta_enabled:
-        return {}
+        return {"mode": "neutral"}
     cta = await get_star_cta(medium) or neutral_cta(medium)
     return {**cta, "dismissed": await star_prompt_dismissed(session)}
 
