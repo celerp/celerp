@@ -37,9 +37,9 @@ More in the [press kit](docs/press-kit/).
 
 | Platform | Link |
 |----------|------|
-| Windows (.exe) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
-| Linux (.AppImage) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
-| macOS (.dmg) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
+| Windows (.exe) | [Download](https://celerp.com/download-thanks.html?dl=win) |
+| Linux (.deb) | [Download](https://celerp.com/download-thanks.html?dl=linux) |
+| macOS (.dmg) | [Download](https://celerp.com/download-thanks.html?dl=mac) |
 
 **Double-click. No account. No credit card. Your computer securely becomes the server for your office**
 
@@ -166,8 +166,7 @@ Celerp is open-core:
   self-hosting permitted, contributions welcome.
 - **An MIT-licensed module ecosystem** - the default business modules are MIT, so you can
   fork them, build your own modules, and ship them however you like. See [LICENSING.md](LICENSING.md).
-- **A proprietary application + cloud layer** (official UI, document/PDF output, and the cloud/AI
-  services) that powers the hosted experience.
+- **A source available application** (official UI, document/PDF output and AI & Connect services).
 
 See [LICENSING.md](LICENSING.md) for the full map and [TRADEMARK.md](legal/TRADEMARK.md) for use of the Celerp
 name. One restriction: don't resell Celerp itself as a competing product.
