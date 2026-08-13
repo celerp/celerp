@@ -18,7 +18,7 @@ from celerp.notifications.sse import subscribe, unsubscribe
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(tags=["events"])
 
 _TICK = object()  # sentinel: asyncio.TimeoutError path
 

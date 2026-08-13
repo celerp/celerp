@@ -2157,30 +2157,6 @@ def setup_routes(app):
             public_url=data.get("public_url", ""),
         )
 
-    @app.get("/settings/email-status")
-    async def email_status_fragment(request: Request):
-        """HTMX fragment: render email warning banner if not configured."""
-        import httpx
-        from ui.config import API_BASE
-        token = _token(request)
-        try:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
-                r = await c.get("/settings/email-status", headers=headers)
-                data = r.json() if r.status_code == 200 else {}
-        except Exception:
-            data = {}
-        smtp_configured = data.get("smtp_configured", False)
-        gateway_connected = data.get("gateway_connected", False)
-        if not smtp_configured and not gateway_connected:
-            return Div(t("settings._email_notifications_are_disabled"),
-                A(t("settings.connect_to_celerp_cloud"), href="https://celerp.com/pricing", target="_blank"),
-                " or configure SMTP to send invoices and alerts.",
-                id="email-warning-banner",
-                cls="flash flash--warning flex-row gap-xs",
-            )
-        return Div(id="email-warning-banner")  # empty - no banner needed
-
     # ── Verticals / Category Library endpoints ───────────────────────
 
     @app.post("/settings/verticals/apply-preset")

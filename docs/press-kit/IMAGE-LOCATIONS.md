@@ -16,9 +16,10 @@ place, so anything pointing at the URLs below updates automatically on the next 
 
 ## Files
 
+<!-- PRESS_KIT:files-table start -->
 | Purpose | File | jsDelivr URL |
 |---|---|---|
-| **Hero** — manufacturing cost worksheet | `manufacturing-worksheet.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/manufacturing-worksheet.png |
+| **Hero** - manufacturing cost worksheet | `manufacturing-worksheet.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/manufacturing-worksheet.png |
 | Trial balance | `trial-balance.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/trial-balance.png |
 | Balance sheet | `balance-sheet.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/balance-sheet.png |
 | General ledger | `general-ledger.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/general-ledger.png |
@@ -26,27 +27,37 @@ place, so anything pointing at the URLs below updates automatically on the next 
 | Production planning | `production-planning.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/production-planning.png |
 | REST API | `rest-api.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/rest-api.png |
 | Dashboard | `dashboard.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/dashboard.png |
+| International shipping document | `international-shipping-document.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/international-shipping-document.png |
+| Statement of account | `statement-of-account.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/statement-of-account.png |
+| Extended journal | `extended-journal.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/extended-journal.png |
+| Work centers | `work-centers.png` | https://cdn.jsdelivr.net/gh/celerp/celerp@main/docs/press-kit/screenshots/work-centers.png |
+<!-- PRESS_KIT:files-table end -->
 
 All are optimized PNG, ≤1600 px wide, ~170–390 KB each (≈2 MB total).
 
 ## Industry folders (full set per business type)
 
 For press covering a specific vertical, the complete screen set for each demo company is published
-under `docs/press-kit/screenshots/<industry>/` (13 screens each). These are **WebP** (q82, ≤1280 px)
+under `docs/press-kit/screenshots/<industry>/` (per-folder screen counts in the table below). These are **WebP** (q82, ≤1280 px)
 — a browse-and-pick archive, not the social-preview/CMS surface, so WebP's ~80% size win applies with
 no visible loss. Each folder has a generated `README.md` gallery that GitHub renders on open.
 
-| Industry | Folder | CDN base |
-|---|---|---|
-| Apparel & clothing (Northbound Apparel) | `apparel/` | …/screenshots/apparel/`<name>.webp` |
-| Coffee roasting (Meridian Coffee Roasters) | `coffee/` | …/screenshots/coffee/`<name>.webp` |
-| Cosmetics & skincare (Lumera Skincare) | `cosmetics/` | …/screenshots/cosmetics/`<name>.webp` |
-| Jewelry (Aurelia Atelier) | `jewelry/` | …/screenshots/jewelry/`<name>.webp` |
+<!-- PRESS_KIT:industry-table start -->
+| Industry | Folder | Screens | CDN base |
+|---|---|---|---|
+| Apparel & clothing (Northbound Apparel) | `apparel/` | 17 | .../screenshots/apparel/`<name>.webp` |
+| Coffee roasting (Meridian Coffee Roasters) | `coffee/` | 15 | .../screenshots/coffee/`<name>.webp` |
+| Cosmetics & skincare (Lumera Skincare) | `cosmetics/` | 13 | .../screenshots/cosmetics/`<name>.webp` |
+| Jewelry (Aurelia Atelier) | `jewelry/` | 15 | .../screenshots/jewelry/`<name>.webp` |
+<!-- PRESS_KIT:industry-table end -->
 
-Screen names per folder: `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`,
-`invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`,
-`balance-sheet`, `audit-log`, `permissions`, `rest-api` (all `.webp`). The four folders add ~2.4 MB
-to the tree.
+<!-- PRESS_KIT:screen-names start -->
+Screen names per folder:
+- Apparel & clothing (17): `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`, `invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`, `balance-sheet`, `audit-log`, `permissions`, `rest-api`, `work-centers`, `invoice-pay`, `label-designer`, `modules`
+- Coffee roasting (15): `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`, `invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`, `balance-sheet`, `audit-log`, `permissions`, `rest-api`, `international-shipping-document`, `extended-journal`
+- Cosmetics & skincare (13): `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`, `invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`, `balance-sheet`, `audit-log`, `permissions`, `rest-api`
+- Jewelry (15): `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`, `invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`, `balance-sheet`, `audit-log`, `permissions`, `rest-api`, `statement-of-account`, `memo-holdings`
+<!-- PRESS_KIT:screen-names end -->
 
 ## Artwork (hand-illustrated brand graphics)
 
@@ -73,12 +84,6 @@ the GitHub UI (not via git).
 Format constraints: GitHub accepts **PNG/JPG/GIF only (not WebP)**, max **1 MB**, recommended
 **1280×640** (2:1). The committed card is 1280×640 PNG, ~740 KB. Keep new exports under 1 MB or GitHub
 rejects the upload.
-
-## Demo data backup
-The full demo instance backup (~48 MB) is intentionally **not** in the git tree (it would bloat every
-clone forever and is excluded from PyPI/binaries). Publish it as a GitHub **Release** asset instead:
-`gh release create demo-data context/marketing/backups/celerp-demo-full.celerp-backup -t "Demo data" -n "Importable demo dataset"`
-Then link it from the website / README. This keeps it on GitHub, out of clones, PyPI, and binaries.
 
 ## Copyright
 See `docs/press-kit/README.md` — screenshots depict the proprietary Celerp UI (© 2026 Noah Severs);

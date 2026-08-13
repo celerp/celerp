@@ -852,7 +852,13 @@ async def _inventory_content(
     #inventory-content so the entire dynamic section re-renders consistently.
     """
     try:
-        valuation = await api.get_valuation(token, category=p.get("category") or None, status=p.get("status") or None)
+        valuation = await api.get_valuation(
+            token,
+            category=p.get("category") or None,
+            status=p.get("status") or None,
+            on_memo_to=p.get("on_memo_to") or None,
+            consigned_from=p.get("consigned_from") or None,
+        )
         params: dict = {"limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
         if p["q"]:
             params["q"] = p["q"]

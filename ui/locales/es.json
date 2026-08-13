@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ Conectado",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ El precio de costo se rastrea por artículo a partir de los documentos de compra, no como una lista de precios.",
   "settings._default": "★ Predeterminado",
-  "settings._email_notifications_are_disabled": "⚠ Las notificaciones por correo electrónico están deshabilitadas.",
   "settings._local_filesystem_no_connection_needed": "✓ Sistema de archivos local: no se necesita conexión.",
   "settings._restored_previous_db_url_restarting": "↩ URL de BD anterior restaurada. Reiniciando...",
   "settings._saved": "✓ Guardado.",

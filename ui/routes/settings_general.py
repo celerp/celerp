@@ -139,13 +139,6 @@ def setup_routes(app):
             _section_breadcrumb("General"),
             page_header(t("page.settings", lang)),
             *([setup_banner] if setup_banner else []),
-            Div(
-                id="email-warning-banner",
-                hx_get="/settings/email-status",
-                hx_trigger="load",
-                hx_target="this",
-                hx_swap="outerHTML",
-            ),
             _general_tabs(tab, lang=lang, is_admin=is_admin),
             content,
             title="Settings - Celerp",

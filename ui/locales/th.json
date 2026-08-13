@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ เชื่อมต่อแล้ว",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ ติดตามราคาต้นทุนต่อรายการจากเอกสารการซื้อ ไม่ใช่รายการราคา",
   "settings._default": "★ ค่าเริ่มต้น",
-  "settings._email_notifications_are_disabled": "⚠ การแจ้งเตือนทางอีเมลถูกปิดใช้งาน",
   "settings._local_filesystem_no_connection_needed": "✓ ระบบไฟล์ในเครื่อง - ไม่จำเป็นต้องเชื่อมต่อ",
   "settings._restored_previous_db_url_restarting": "↩ คืนค่า URL ฐานข้อมูลก่อนหน้าแล้ว กำลังรีสตาร์ท...",
   "settings._saved": "✓ บันทึกแล้ว",

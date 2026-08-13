@@ -610,12 +610,22 @@ async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
         )).json()
 
 
-async def get_valuation(token: str, category: str | None = None, status: str | None = None) -> dict:
+async def get_valuation(
+    token: str,
+    category: str | None = None,
+    status: str | None = None,
+    on_memo_to: str | None = None,
+    consigned_from: str | None = None,
+) -> dict:
     params: dict = {}
     if category:
         params["category"] = category
     if status:
         params["status"] = status
+    if on_memo_to:
+        params["on_memo_to"] = on_memo_to
+    if consigned_from:
+        params["consigned_from"] = consigned_from
     async with _api_client(token) as c:
         return _raise(await c.get("/items/valuation", params=params)).json()
 
