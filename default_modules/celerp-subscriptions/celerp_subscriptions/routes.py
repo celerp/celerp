@@ -77,6 +77,7 @@ def _build_router() -> APIRouter:
     async def list_subscription_templates(
         direction: str | None = None,
         status: str | None = None,
+        q: str | None = None,
         limit: int = 50,
         offset: int = 0,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -104,6 +105,18 @@ def _build_router() -> APIRouter:
         if status:
             where.append(Projection.state["status"].as_string() == status)
         from sqlalchemy import func as _func
+        if q and q.strip():
+            # Push the search into the WHERE so it runs BEFORE the COUNT and LIMIT
+            # (a Python post-filter would run after pagination truncated the rows).
+            # A subscription template stores ref_id at creation and only gains
+            # doc_number on a later renumber, so both are matched; name is the
+            # human template label the global bar most often searches.
+            _fields = ("name", "doc_number", "ref_id", "contact_name")
+            terms = [t.strip().lower() for t in q.split(",") if t.strip()]
+            where.append(_or(*[
+                _func.lower(Projection.state[f].as_string()).like(f"%{term}%")
+                for term in terms for f in _fields
+            ]))
         total = (await session.execute(
             select(_func.count()).select_from(Projection).where(*where)
         )).scalar_one()
