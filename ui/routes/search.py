@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -17,13 +19,25 @@ from ui.i18n import t, get_lang
 logger = logging.getLogger(__name__)
 
 
+async def _safe(coro):
+    """Run one module's list call in isolation. On an APIError (e.g. a 403 from a
+    permission-gated module, or a 500) return an empty response so one module's
+    failure never blanks the whole search - the other modules still render."""
+    try:
+        return await coro
+    except APIError as e:
+        logger.warning("search module error: %s", e.detail)
+        return {}
 
 
 def setup_routes(app):
 
     @app.get("/search")
     async def global_search(request: Request):
-        """HTMX partial: search across items, contacts, docs."""
+        """HTMX partial: search WIDE across every primary module (items - all
+        statuses, contacts, documents, manufacturing orders, subscriptions and
+        journal entries), each through its existing authenticated list endpoint so
+        role/company scoping is preserved."""
         token = _token(request)
         if not token:
             return Div()
@@ -31,40 +45,57 @@ def setup_routes(app):
         if len(q) < 2:
             return Div()
 
+        # (coroutine, results_key, icon, label_fn, href_fn, sub_fn). Items pass
+        # status="all" so sold/archived/merged/expired surface in the global bar
+        # (the on-page inventory search keeps its active-only default). Each call
+        # reuses the module's authenticated wrapper - status="all" filters, it
+        # does not bypass the role/company scoping those endpoints enforce.
+        descriptors = [
+            (api.list_items(token, {"q": q, "limit": "5", "status": "all"}),
+             "items", "📦",
+             lambda r: r.get("name") or r.get("sku") or "",
+             lambda r: f"/inventory/{r.get('entity_id', '')}",
+             lambda r: r.get("sku") or ""),
+            (api.list_contacts(token, {"q": q, "limit": "5"}),
+             "items", "👤",
+             lambda r: r.get("name") or r.get("contact_name") or "",
+             lambda r: f"/crm/{r.get('entity_id') or r.get('id') or ''}",
+             lambda r: ""),
+            (api.list_docs(token, {"q": q, "limit": "5"}),
+             "items", "📄",
+             lambda r: r.get("doc_number") or r.get("ref") or "",
+             lambda r: f"/docs/{r.get('entity_id', '')}",
+             lambda r: r.get("doc_type") or ""),
+            (api.list_mfg_orders(token, {"q": q, "limit": "5"}),
+             "items", "🏭",
+             lambda r: r.get("description") or r.get("id") or "",
+             lambda r: f"/manufacturing/production?q={quote(q)}",
+             lambda r: ""),
+            (api.list_subscriptions(token, {"q": q, "limit": "5"}),
+             "items", "🔁",
+             lambda r: r.get("name") or r.get("doc_number") or r.get("ref_id") or r.get("id") or "",
+             lambda r: f"/subscriptions/{r.get('entity_id') or r.get('id') or ''}",
+             lambda r: ""),
+            (api.get_journal(token, {"q": q, "limit": "5"}),
+             "entries", "📒",
+             lambda r: r.get("memo") or ((r.get("lines") or [{}])[0].get("name") or ""),
+             lambda r: "/accounting",
+             lambda r: ""),
+        ]
+
+        responses = await asyncio.gather(*[_safe(d[0]) for d in descriptors])
+
         results: list[FT] = []
-        try:
-            items = (await api.list_items(token, {"q": q, "limit": "5"})).get("items", [])
-            for it in items[:5]:
-                name = it.get("name", it.get("sku", ""))
-                sku = it.get("sku", "")
+        for resp, (_coro, key, icon, label_fn, href_fn, sub_fn) in zip(responses, descriptors):
+            for record in (resp.get(key) or [])[:5]:
+                label = label_fn(record)
+                if not label:
+                    continue
+                sub = sub_fn(record)
                 results.append(
-                    A(f"📦 {name}", Small(f" ({sku})") if sku else "",
-                      href=f"/inventory/{it.get('entity_id', '')}", cls="search-result-item")
+                    A(f"{icon} {label}", Small(f" ({sub})") if sub else "",
+                      href=href_fn(record), cls="search-result-item")
                 )
-        except APIError as e:
-            logger.warning("search items error: %s", e.detail)
-
-        try:
-            contact_resp = await api.list_contacts(token, {"q": q, "limit": "5"})
-            for c in contact_resp.get("items", [])[:5]:
-                name = c.get("name", c.get("contact_name", ""))
-                results.append(
-                    A(f"👤 {name}", href=f"/crm/{c.get('entity_id', c.get('id', ''))}", cls="search-result-item")
-                )
-        except APIError as e:
-            logger.warning("search contacts error: %s", e.detail)
-
-        try:
-            docs = (await api.list_docs(token, {"q": q, "limit": "5"})).get("items", [])
-            for d in docs[:5]:
-                ref = d.get("doc_number", d.get("ref", ""))
-                dtype = d.get("doc_type", "")
-                results.append(
-                    A(f"📄 {ref}", Small(f" ({dtype})") if dtype else "",
-                      href=f"/docs/{d.get('entity_id', '')}", cls="search-result-item")
-                )
-        except APIError as e:
-            logger.warning("search docs error: %s", e.detail)
 
         if not results:
             return Div(Span(t("msg.no_results"), cls="search-empty"), cls="search-results-list")

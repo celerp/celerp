@@ -186,6 +186,22 @@ def _accounting_mocks():
     }
 
 
+def _search_mocks(**overrides):
+    """Mocks for the six modules the global /search bar aggregates. Each defaults to
+    an empty result; pass an AsyncMock by keyword (e.g. list_items=...) to override."""
+    mocks = {
+        "ui.api_client.list_items": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.list_docs": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.list_subscriptions": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.get_journal": AsyncMock(return_value={"entries": []}),
+    }
+    for k, v in overrides.items():
+        mocks[f"ui.api_client.{k}"] = v
+    return mocks
+
+
 def _apply(mocks: dict):
     """Create a combined context manager for multiple patches."""
     import contextlib
@@ -987,19 +1003,86 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_empty_search_results(self, ui):
-        with _Patches({"ui.api_client.list_items": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.list_docs": AsyncMock(return_value={"items": [], "total": 0})}):
+        with _Patches(_search_mocks()):
             r = await ui.get("/search?q=zzzzzznonexistent", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_special_chars_in_search(self, ui):
-        with _Patches({"ui.api_client.list_items": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.list_docs": AsyncMock(return_value={"items": [], "total": 0})}):
+        with _Patches(_search_mocks()):
             r = await ui.get("/search?q=%3Cscript%3Ealert(1)%3C/script%3E", cookies=_c())
         assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_global_search_returns_sold_item(self, ui):
+        """The global bar searches WIDE: it requests all item statuses so a sold item
+        surfaces. Red at merge-base: /search calls list_items with only q+limit, no
+        status, so the sold item is filtered out by the active-only default."""
+        mock_items = AsyncMock(return_value={"items": [
+            {"name": "Sold Widget", "sku": "SW1", "entity_id": "item:sw1", "status": "sold"}], "total": 1})
+        with _Patches(_search_mocks(list_items=mock_items)):
+            r = await ui.get("/search?q=widget", cookies=_c())
+        assert r.status_code == 200
+        assert b"Sold Widget" in r.content
+        _, params = mock_items.call_args.args
+        assert params.get("status") == "all"
+
+    @pytest.mark.asyncio
+    async def test_global_search_includes_new_modules(self, ui):
+        """The global bar reaches manufacturing, subscriptions and journal. Red at
+        merge-base: /search only queries items/contacts/docs, so none of these appear."""
+        mocks = _search_mocks(
+            list_mfg_orders=AsyncMock(return_value={"items": [{"description": "MO Assembly Run", "id": "mo:1"}], "total": 1}),
+            list_subscriptions=AsyncMock(return_value={"items": [{"name": "Gold Retainer", "id": "doc:sub1"}], "total": 1}),
+            get_journal=AsyncMock(return_value={"entries": [{"je_id": "je:9", "memo": "Depreciation JE", "lines": []}]}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=zz", cookies=_c())
+        assert r.status_code == 200
+        assert b"MO Assembly Run" in r.content
+        assert b"Gold Retainer" in r.content
+        assert b"Depreciation JE" in r.content
+
+    @pytest.mark.asyncio
+    async def test_global_search_journal_hidden_without_perm(self, ui):
+        """A user lacking view_financial_reports gets 403 from get_journal; the bar
+        still returns the item, manufacturing and subscription results while journal
+        is silently omitted (auth preserved by reusing the gated endpoint). Red at
+        merge-base: /search queries none of manufacturing/subscriptions/journal, so
+        the manufacturing/subscription results the assertion requires are absent."""
+        from ui.api_client import APIError
+        mocks = _search_mocks(
+            get_journal=AsyncMock(side_effect=APIError(403, "Forbidden")),
+            list_items=AsyncMock(return_value={"items": [
+                {"name": "Visible Item", "sku": "VI", "entity_id": "item:vi", "status": "active"}], "total": 1}),
+            list_mfg_orders=AsyncMock(return_value={"items": [{"description": "MO Weld Batch", "id": "mo:2"}], "total": 1}),
+            list_subscriptions=AsyncMock(return_value={"items": [{"name": "Silver Retainer", "id": "doc:sub2"}], "total": 1}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=re", cookies=_c())
+        assert r.status_code == 200
+        assert b"Visible Item" in r.content
+        assert b"MO Weld Batch" in r.content
+        assert b"Silver Retainer" in r.content
+        assert b"Depreciation" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_global_search_module_error_isolated(self, ui):
+        """One module raising does not blank the whole search; the others still return.
+        Red at merge-base: the added modules are not queried, so there is nothing to
+        isolate and the assertion on the isolated module's peers is vacuous."""
+        from ui.api_client import APIError
+        mocks = _search_mocks(
+            list_subscriptions=AsyncMock(side_effect=APIError(500, "boom")),
+            list_items=AsyncMock(return_value={"items": [
+                {"name": "Survivor Item", "sku": "SI", "entity_id": "item:si", "status": "active"}], "total": 1}),
+            get_journal=AsyncMock(return_value={"entries": [{"je_id": "je:1", "memo": "Ledger Note", "lines": []}]}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=zz", cookies=_c())
+        assert r.status_code == 200
+        assert b"Survivor Item" in r.content
+        assert b"Ledger Note" in r.content
 
     @pytest.mark.asyncio
     async def test_unicode_in_search(self, ui):
