@@ -1040,7 +1040,7 @@ a:hover { text-decoration: underline; }
 /* Global search */
 .global-search-wrap { position: relative; flex: 1; max-width: 400px; margin: 0 16px; }
 .global-search-input {
-  width: 100%; padding: 6px 12px; font-size: 12px; border-radius: var(--radius);
+  width: 100%; padding: 6px 30px 6px 12px; font-size: 12px; border-radius: var(--radius);
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
 }
 .global-search-input:focus { outline: none; border-color: var(--c-accent); }
@@ -1063,6 +1063,29 @@ a:hover { text-decoration: underline; }
 .search-empty--table { text-align: center; padding: 32px 16px; color: var(--c-text2); font-style: italic; }
 .search-clear { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--c-text2); text-decoration: none; cursor: pointer; border: none; background: none; padding: 2px 6px; border-radius: 4px; }
 .search-clear:hover { background: var(--c-bg3); color: var(--c-text); }
+
+/* ─── Global search help (?) tooltip ──────────────────────────────────── */
+.global-search-help-wrap { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); }
+.global-search-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; font-size: 11px; font-weight: 600;
+  line-height: 1; color: var(--c-text2); background: var(--c-bg3);
+  border: 1px solid var(--c-border); border-radius: 50%; cursor: pointer;
+}
+.global-search-help:hover, .global-search-help:focus { color: var(--c-text); border-color: var(--c-accent); outline: none; }
+.global-search-help-panel {
+  display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
+  width: 320px; padding: 12px 14px; font-size: 12px; color: var(--c-text);
+  background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(26,29,46,0.1);
+}
+.global-search-help-panel.open { display: block; }
+.global-search-help-title { font-weight: 600; margin-bottom: 6px; }
+.global-search-help-panel ul { margin: 0 0 8px; padding-left: 16px; }
+.global-search-help-panel li { margin: 3px 0; }
+.global-search-help-op { font-family: monospace; font-weight: 600; color: var(--c-accent); }
+.global-search-help-example { color: var(--c-text2); border-top: 1px solid var(--c-border); padding-top: 8px; }
+.global-search-help-panel code { font-family: monospace; background: var(--c-bg3); padding: 1px 4px; border-radius: 3px; }
 
 /* ─── Column resize handle (T12) ──────────────────────────────────────── */
 .col-resize-handle {

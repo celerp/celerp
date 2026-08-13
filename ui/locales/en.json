@@ -1061,6 +1061,7 @@
   "msg.rows_ready": "rows ready",
   "msg.saved": "Saved",
   "msg.schema_hint": "Global columns shown for all items. Order matches display order.",
+  "msg.search_help": "Search syntax",
   "msg.search_inventory_placeholder": "Search SKU, name, barcode… (comma or Enter = OR)",
   "msg.search_placeholder": "Search items, contacts, docs…",
   "msg.search_timezone_placeholder": "Search timezone or UTC offset…",
