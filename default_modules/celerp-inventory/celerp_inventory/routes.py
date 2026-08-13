@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -300,6 +301,80 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
+
+# ── Search grammar ─────────────────────────────────────────────────────────────
+# The inventory (and global) search bar accepts: `,` = OR groups, `&` = AND terms,
+# `lo-hi` = numeric range over quantity/weight/pieces, a bare number = numeric-exact
+# OR text substring, anything else = text substring over the fields below.
+_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
+_NUMERIC_FIELDS = ("quantity", "weight", "pieces")
+# Keys excluded from the free-text substring loop (numeric columns are matched only
+# by the explicit numeric path, never by substring, so "5" never matches "50").
+_SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
+                        "weight", "pieces", "status", "created_at", "updated_at"})
+# A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
+_RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
+
+
+def _numeric_values(record: dict) -> list[float]:
+    """The item's numeric column values as floats, skipping missing/unparseable ones."""
+    vals: list[float] = []
+    for f in _NUMERIC_FIELDS:
+        v = record.get(f)
+        if v is None or v == "":
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return vals
+
+
+def _text_match(record: dict, term: str) -> bool:
+    """True if term is a substring of any searchable text field or attribute value."""
+    for field in _SEARCH_FIELDS:
+        if term in str(record.get(field, "")).lower():
+            return True
+    for v in (record.get("attributes") or {}).values():
+        if term in str(v).lower():
+            return True
+    for k, v in record.items():
+        if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
+            continue
+        if isinstance(v, str) and term in v.lower():
+            return True
+    return False
+
+
+def _term_matches(record: dict, term: str) -> bool:
+    """One AND-term: a numeric range, or text substring plus numeric-exact for a bare number."""
+    m = _RANGE_RE.match(term)
+    if m:
+        lo, hi = float(m.group(1)), float(m.group(2))
+        if lo <= hi:
+            return any(lo <= n <= hi for n in _numeric_values(record))
+        # lo > hi is not a usable range; fall through and treat the term as literal text.
+    if _text_match(record, term):
+        return True
+    try:
+        num = float(term)
+    except (TypeError, ValueError):
+        return False
+    return any(n == num for n in _numeric_values(record))
+
+
+def item_matches_query(record: dict, q: str) -> bool:
+    """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
+    ANDs the terms within a group; empty terms and empty groups are dropped."""
+    for group in q.split(","):
+        terms = [t.strip().lower() for t in group.split("&") if t.strip()]
+        if not terms:
+            continue
+        if all(_term_matches(record, term) for term in terms):
+            return True
+    return False
+
+
 @router.get("")
 async def list_items(
     request: Request,
@@ -462,27 +537,9 @@ async def list_items(
         result = [r for r in result if is_below_reorder(r)]
 
     if q:
-        # Support comma-separated OR queries (e.g. from barcode scanner multi-scan)
-        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
-        _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
-        _SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                                 "weight", "pieces", "status", "created_at", "updated_at"})
-        def _item_matches_term(r: dict, term: str) -> bool:
-            for field in _SEARCH_FIELDS:
-                if term in str(r.get(field, "")).lower():
-                    return True
-            for v in (r.get("attributes") or {}).values():
-                if term in str(v).lower():
-                    return True
-            for k, v in r.items():
-                if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
-                    continue
-                if isinstance(v, str) and term in v.lower():
-                    return True
-            return False
-        def _item_matches(r: dict) -> bool:
-            return any(_item_matches_term(r, term) for term in terms)
-        result = [r for r in result if _item_matches(r)]
+        # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
+        # number = numeric-exact OR text, else text substring (item_matches_query).
+        result = [r for r in result if item_matches_query(r, q)]
 
     # Apply visible_to_roles filtering from company field schema
     field_schema = await get_effective_field_schema(session, company_id, category=None)
