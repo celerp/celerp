@@ -816,6 +816,34 @@ async def _assert_no_foreign_reserved(
         )
 
 
+async def _assert_no_draft_items(session: AsyncSession, company_id, eids) -> None:
+    """A draft item is not stock yet: it cannot be put on any document or list.
+    Applies to EVERY doc type (a quotation listing a draft would quote phantom
+    stock). Function-level validation: an id can still arrive via scan, import,
+    or a stale form, so the add is what fails, with the reason."""
+    conflicts: list[dict] = []
+    for eid in sorted({e for e in eids if e}):
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if proj is None:
+            continue
+        st = proj.state or {}
+        if str(st.get("status") or "").lower() == "draft":
+            sku = st.get("sku") or eid
+            conflicts.append({
+                "entity_id": eid,
+                "sku": sku,
+                "message": f"{sku}: item is a draft - make it available first",
+            })
+    if conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "; ".join(c["message"] for c in conflicts),
+                "conflicts": conflicts,
+            },
+        )
+
+
 @router.post("")
 async def create_doc(
     payload: DocCreatePayload,
@@ -854,6 +882,10 @@ async def create_doc(
         # A brand-new doc cannot own a reservation yet, so any reserved line is foreign.
         await _assert_no_foreign_reserved(
             session, company_id, payload.doc_type, None,
+            (li.entity_id or li.item_id for li in payload.line_items),
+        )
+        await _assert_no_draft_items(
+            session, company_id,
             (li.entity_id or li.item_id for li in payload.line_items),
         )
 
@@ -1080,6 +1112,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             session, company_id, row.state.get("doc_type") or "", entity_id,
             incoming_eids - existing_eids,
         )
+        await _assert_no_draft_items(session, company_id, incoming_eids - existing_eids)
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
@@ -2867,6 +2900,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             session, company_id, "invoice", None,
             (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
         )
+        await _assert_no_draft_items(
+            session, company_id,
+            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
+        )
         company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
@@ -3561,6 +3598,10 @@ async def create_list(
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    await _assert_no_draft_items(
+        session, company_id,
+        (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
+    )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -3586,6 +3627,11 @@ async def patch_list(
     _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
+        _existing = {li.get("item_id") for li in row.state.get("line_items") or []}
+        await _assert_no_draft_items(
+            session, company_id,
+            {li.get("item_id") for li in _new_lines} - _existing,
+        )
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
     await session.commit()
@@ -5491,6 +5537,9 @@ async def scan_list(
     item = await _resolve_barcode(session, company_id, code)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
+    if str((item.state or {}).get("status") or "").lower() == "draft":
+        sku = (item.state or {}).get("sku") or code
+        raise HTTPException(status_code=422, detail=f"{sku}: item is a draft - make it available first")
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)

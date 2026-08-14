@@ -1300,8 +1300,9 @@ async def delete_work_center(
 # Production-run execution (issue components / receive finished goods)
 # ---------------------------------------------------------------------------
 
-# Item statuses whose stock no longer counts toward a product's on-hand (sold/consumed/etc.).
-_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired"})
+# Item statuses whose stock does not count toward a product's on-hand:
+# sold/consumed/etc., plus draft (created but not yet committed to stock).
+_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft"})
 
 
 def _component_unit_cost(state: dict | None) -> float:
