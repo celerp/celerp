@@ -5497,7 +5497,6 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         Button(t("doc.print_labels"), type="button", id="li-bulk-labels-btn",
                cls="btn btn--secondary btn--sm", style="display:none",
                onclick="liBulkLabelsConfirmed()"),
-        Div(id="li-bulk-context"),
     ]
     if scan_marks:
         children += [
@@ -7655,9 +7654,7 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    var ctx=document.getElementById('li-bulk-context');
-    if(!ids.length){{if(ctx)ctx.innerHTML='<span class="flash flash--warning">No inventory items selected. Labels can only be printed for items linked to inventory records.</span>';return;}}
-    if(ctx)ctx.innerHTML='';
+    if(!ids.length){{if(window.celerpToast)celerpToast('No inventory items selected. Labels can only be printed for items linked to inventory records.','error');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
@@ -7893,9 +7890,7 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    var ctx=document.getElementById('li-bulk-context');
-    if(!ids.length){{if(ctx)ctx.innerHTML='<span class="flash flash--warning">No inventory items selected. Labels can only be printed for items linked to inventory records.</span>';return;}}
-    if(ctx)ctx.innerHTML='';
+    if(!ids.length){{if(window.celerpToast)celerpToast('No inventory items selected. Labels can only be printed for items linked to inventory records.','error');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
