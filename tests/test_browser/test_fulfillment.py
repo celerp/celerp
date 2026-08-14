@@ -416,7 +416,9 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     for i in range(boxes.count()):
         boxes.nth(i).check()
     page.locator("#li-bulk-select").select_option(value="li-revert")
-    page.locator("#li-bulk-revert-btn button[type='submit']").first.click()
+    # Set as available is a plain button (not an HTMX submit form): its handler
+    # awaits both the release and revert calls before reloading.
+    page.locator("#li-bulk-revert-btn").click()
 
     # Both partitions land available: the reserved half released, the sold half reverted.
     deadline_ok = False
