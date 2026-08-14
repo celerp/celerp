@@ -16861,6 +16861,105 @@ class TestInboundReceiveToolbar:
         assert "Record Receipt" not in html, "Old Record Receipt button must be removed"
 
 
+class TestDraftStatusColumn:
+    """Drafts of outbound docs and reservable lists show the item Status column; inbound
+    drafts and audits do not."""
+
+    def _draft_doc(self, doc_type: str, **extra) -> dict:
+        return {
+            "entity_id": "doc:draft-1",
+            "doc_type": doc_type,
+            "status": "draft",
+            "ref_id": "DRAFT-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": [
+                {"sku": "W-A", "name": "Widget A", "description": "Widget A", "quantity": 1,
+                 "unit_price": 100, "line_total": 100, "entity_id": "item:d1"},
+            ],
+            **extra,
+        }
+
+    def test_invoice_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("invoice")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+        assert "Reserved" in html
+
+    def test_memo_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("memo")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+        assert "col-item-status" in html
+        assert "badge--available" in html
+
+    def test_quotation_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("list", list_type="quotation")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+
+    def test_bill_draft_hides_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("bill")
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "col-item-status" not in html
+
+    def test_audit_draft_hides_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("list", list_type="audit")
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "col-item-status" not in html
+
+    def test_draft_status_column_header_matches_row_cells(self):
+        """Every draft body row must carry exactly as many cells as the header has columns."""
+        import re
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("invoice")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+        thead = html.split("<thead")[1].split("</thead>")[0]
+        n_headers = len(re.findall(r"<th[ >]", thead))
+        first_row = html.split("</thead>")[1].split("<tr")[1].split("</tr>")[0]
+        n_cells = len(re.findall(r"<td[ >]", first_row))
+        assert n_cells == n_headers, f"draft row has {n_cells} cells for {n_headers} headers"
+
+    @pytest.mark.asyncio
+    async def test_finalized_list_status_badges_populated(self, ui_client):
+        """The list detail route must fetch item statuses so finalized quotation badges
+        show the real status, not '-'."""
+        lst = {
+            "entity_id": "list:q1", "doc_type": "list", "list_type": "quotation",
+            "status": "finalized", "ref_id": "QUO-001", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 100, "total": 100,
+            "line_items": [
+                # Scan-added list lines carry the item's id in item_id only (see
+                # _scan_line_from_item); editable-UI lines set entity_id to the same item id.
+                {"item_id": "item:q1", "sku": "Q-A", "name": "Widget",
+                 "description": "Widget", "quantity": 1, "unit_price": 100, "line_total": 100},
+            ],
+        }
+        item = {"entity_id": "item:q1", "sku": "Q-A", "name": "Widget", "status": "reserved",
+                "quantity": 1}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+        ):
+            r = await ui_client.get("/lists/list:q1", cookies=_authed())
+        assert r.status_code == 200
+        assert "badge--reserved" in r.text, "finalized list must show the item's real status"
+
+
 # ── Factory Reset danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:

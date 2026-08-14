@@ -342,6 +342,21 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "expired":       ("Expired",      "badge--expired"),
     "not_received":  ("Not Received", "badge--not_received"),
 }
+
+
+def _item_status_badge_cell(status_val: str, eid: str) -> FT:
+    """Status column cell for a document line: linked badge when the item's status is
+    known, muted '-' otherwise. Shared by the draft and finalized line tables."""
+    if status_val and status_val in _STATUS_BADGE:
+        label, badge_cls = _STATUS_BADGE[status_val]
+        badge_el = (
+            A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{eid}", title="View in catalog")
+            if eid else Span(label, cls=f"badge {badge_cls}")
+        )
+        return Td(badge_el, cls="col-item-status")
+    return Td(Span("-", cls="muted"), cls="col-item-status")
+
+
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
     "purchase_order": "Purchase Orders",
@@ -2074,7 +2089,12 @@ celerpUpdateBulkAlloc();
         # invoice PCS+WEIGHT editability; needed on drafts too, so fetch for invoices
         # regardless of status.
         item_meta_map: dict[str, dict] = {}
-        _need_status = (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",)
+        # Outbound docs show the item-status column on drafts too (the user picks lines
+        # while drafting); inbound docs only after receiving starts - draft lines have
+        # no received items yet.
+        _need_status = (doc_type in _FULFILLABLE_DOC_TYPES) or (
+            doc_type in ("bill", "consignment_in") and status not in ("draft",)
+        )
         # Showing barcodes also needs the items (legacy lines predate barcode stamping).
         if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku":
             try:
@@ -4182,9 +4202,11 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Build item_meta_map for On-hand quantities (needed for audit list_type).
+        # Build item_meta_map for On-hand quantities (needed for audit list_type) and
+        # item_status_map for the Status column on reservable lists.
         # Mirrors the /docs/{id} gather block so _doc_detail gets the same data.
         item_meta_map: dict[str, dict] = {}
+        item_status_map: dict[str, str] = {}
         if (lst.get("list_type") or "") in ("audit",) or True:
             try:
                 _line_eids = [
@@ -4208,6 +4230,8 @@ celerpUpdateBulkAlloc();
                     for eid, item in _results:
                         if item:
                             item_meta_map[eid] = item_measure_meta(item, _unit_map)
+                            if item.get("status"):
+                                item_status_map[eid] = item["status"]
                     if _ident_mode != "sku":
                         # Lines saved before barcodes were stamped: fill from the catalog item.
                         _items_by_eid = {eid: item for eid, item in _results if item}
@@ -4251,7 +4275,7 @@ celerpUpdateBulkAlloc();
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
-                        notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
+                        notes=list_notes, item_status_map=item_status_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         line_identifier_mode=_ident_mode, relay_error=_ls_error),
             title=f"List {ref} - Celerp",
@@ -6281,6 +6305,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell--number col-counted",
             )
 
+        # Drafts of outbound docs and reservable lists show the item Status column, so the
+        # user sees each line's stock state while building the document. Inbound drafts
+        # (bill, consignment in) have no received items yet; audits and transfers track
+        # counts, not sale status.
+        _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or (
+            is_list and list_type in _RESERVABLE_LIST_TYPES_UI
+        )
+
         def _li_editable_row(li: dict, idx: int) -> FT:
             qty = li.get("quantity", 0)
             price = li.get("unit_price", 0)
@@ -6380,6 +6412,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    cls="col-sku"),
                 _desc_cell,
             ]
+            if _draft_show_item_status:
+                cells.insert(1, _item_status_badge_cell(
+                    (item_status_map or {}).get(li_entity_id, ""), li_entity_id))
             if category_cell:
                 cells.append(category_cell)
             if receive_as_cell:
@@ -6523,6 +6558,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(), cls="col-sku"), _e_desc_cell,
             ]
+            if _draft_show_item_status:
+                # No item picked yet; newly added rows show '-' until the next reload.
+                cells.insert(1, Td(Span("-", cls="muted"), cls="col-item-status"))
             if _cat_cell:
                 cells.append(_cat_cell)
             if _ra_cell:
@@ -6589,6 +6627,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # PCS/WEIGHT inline inside the description cell and merge the unit into the qty cell,
         # so they have no PCS/WEIGHT/UNIT columns of their own.
         _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
+        if _draft_show_item_status:
+            _line_headers.insert(1, Th("Status", cls="col-item-status"))
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category"), cls="col-cat"))
             _line_headers.append(Th(t("th.type"), cls="col-type"))
@@ -7708,16 +7748,7 @@ async function celerpCsvImport(input, entityId) {{
                     cells.append(Td(Span("Not Received", cls="badge badge--not_received"), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
-                    if status_val and status_val in _STATUS_BADGE:
-                        label, badge_cls = _STATUS_BADGE[status_val]
-                        # Link to inventory item if entity_id is available
-                        badge_el = (
-                            A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{li_eid}", title="View in catalog")
-                            if li_eid else Span(label, cls=f"badge {badge_cls}")
-                        )
-                        cells.append(Td(badge_el, cls="col-item-status"))
-                    else:
-                        cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
+                    cells.append(_item_status_badge_cell(status_val, li_eid))
             # Pieces / Weight as compact sub-lines under the description (shared with
             # the print view + PDF): source from the line, else the parcel; skip the
             # measure the quantity already is.
