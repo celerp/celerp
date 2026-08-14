@@ -925,6 +925,16 @@ async def _inventory_content(
         for f in eff_schema
     ]
     eff_schema = _apply_amount_edit_permission(eff_schema, role, company.get("settings") or {})
+    # Draft rows stay authorable: when the transform above locked the amount fields
+    # for this role, mark each DRAFT row so the table renders those cells
+    # click-to-edit anyway - the edit endpoints re-check status + permission
+    # server-side, so this is presentation only.
+    _cs = company.get("settings") or {}
+    if (role_has_permission(_cs, role, "edit_inventory")
+            and not role_has_permission(_cs, role, "edit_inventory_amounts")):
+        for _it in items:
+            if str(_it.get("status") or "").lower() == "draft":
+                _it["_row_editable_keys"] = sorted(AMOUNT_EDIT_GATED_KEYS)
     # Under a contact holdings scope the meaningful per-row value is the scope value the
     # total is summed from (quoted memo price / consignment cost), not the catalog price.
     # Surface it as a read-only column so the rows visibly add up to the banner figure.
@@ -2332,10 +2342,14 @@ function celerpPrintLabel(entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False)
-        if field in AMOUNT_EDIT_GATED_KEYS and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts"):
+        if (field in AMOUNT_EDIT_GATED_KEYS
+                and str(item.get("status") or "").lower() != "draft"
+                and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts")):
             # Amount fields (quantity/weight/pieces/gross_weight) and sell_by are gated
             # by edit_inventory_amounts: this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
+            # Draft items are exempt - the lock attaches when the item is committed to
+            # available, so its creator can finish authoring it (status re-read per edit).
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -3151,12 +3165,12 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
-        if field in AMOUNT_EDIT_GATED_KEYS:
+        if field in AMOUNT_EDIT_GATED_KEYS and str(item.get("status") or "").lower() != "draft":
             # The paired cell is a second inline-edit entry point for amount fields
             # (quantity/weight/gross_weight) and the sell unit; gate it exactly like
             # field_edit_cell so nothing gated can be hand-set without
-            # edit_inventory_amounts. Restore the read-only paired cell rather than an
-            # editable input.
+            # edit_inventory_amounts (draft items exempt, same as field_edit_cell).
+            # Restore the read-only paired cell rather than an editable input.
             try:
                 _pe_company = await api.get_company(token)
             except Exception:
@@ -4952,40 +4966,48 @@ _VERTICAL_STATUS_CARDS: dict[str, list[tuple[str, str, str]]] = {
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "wine_spirits": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("draft", "Drafts", "gray"),
     ],
     "food_beverage": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("expired", "Expired", "red"),
+        ("draft", "Drafts", "gray"),
     ],
     "agricultural": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("expired", "Expired", "red"),
+        ("draft", "Drafts", "gray"),
     ],
     "watches_accessories": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "artwork": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "coins_precious_metals": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
 }
 _DEFAULT_STATUS_CARDS: list[tuple[str, str, str]] = [
     ("available", "Available", "green"),
     ("reserved", "Reserved", "blue"),
+    ("draft", "Drafts", "gray"),
 ]
 
 
@@ -5238,14 +5260,17 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     raw_pri = row.get(pri, "")
                     unit_for_pri = row.get(sec, "") if pri in ("quantity", "weight") else None
                     fmt_pri = format_qty(raw_pri, unit_for_pri, _umap) if pt == "number" else raw_pri
+                    # Same per-row escape as data_table._row: draft rows keep their
+                    # amount cells click-to-edit despite the schema-level lock.
+                    _rek = set(row.get("_row_editable_keys") or ())
                     return paired_display_cell(
                         entity_id=entity_id,
                         primary_field=pri, primary_value=fmt_pri,
                         secondary_field=sec, secondary_value=row.get(sec, ""),
                         primary_type=pt, secondary_type=st,
                         primary_options=po, secondary_options=so,
-                        primary_editable=ped,
-                        secondary_editable=sed,
+                        primary_editable=ped or pri in _rek,
+                        secondary_editable=sed or sec in _rek,
                     )
                 return renderer
             renderers[primary] = _make()

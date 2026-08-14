@@ -1332,6 +1332,10 @@ def data_table(
         row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         if str(row.get("inventory_type") or "") == "component":
             row_cls += " data-row--component"  # visual cue for component (raw-material) items
+        # Per-row editability escape: a row may carry _row_editable_keys naming fields
+        # that render click-to-edit even when the schema marked them read-only
+        # (used for draft items, whose amount fields stay authorable until commit).
+        row_editable = set(row.get("_row_editable_keys") or ())
         return Tr(
             *checkbox_td,
             *[
@@ -1342,7 +1346,7 @@ def data_table(
                     value=row.get(f["key"], ""),
                     cell_type=f.get("type", "text"),
                     options=f.get("options"),
-                    editable=f.get("editable", True),
+                    editable=f.get("editable", True) or f["key"] in row_editable,
                     currency=currency,
                     link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
                     edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),

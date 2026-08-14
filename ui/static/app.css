@@ -474,6 +474,7 @@ a:hover { text-decoration: underline; }
 .badge--memo_out, .badge--memo-out { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--production { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--reserved { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
+.badge--draft { background: rgba(139,148,172,0.10); color: var(--c-text2); border: 1px dashed rgba(139,148,172,0.4); }
 
 /* ─── Valuation bar ───────────────────────────────────────────────────── */
 .valuation-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }

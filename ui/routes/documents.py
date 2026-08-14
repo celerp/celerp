@@ -1333,7 +1333,10 @@ def setup_routes(app):
 
         async def _first(params: dict) -> list:
             resp = await api.list_items(token, params)
-            return resp.get("items", []) if isinstance(resp, dict) else resp
+            found = resp.get("items", []) if isinstance(resp, dict) else resp
+            # Drafts are not stock: never offer them on a document. The API rejects
+            # a draft line anyway; filtering here keeps the picker honest.
+            return [i for i in found if str(i.get("status") or "").lower() != "draft"]
 
         def _ambiguous(code: str, items: list) -> dict:
             # SKU maps to N physical lots - hand back a chooser instead of silently
@@ -1413,6 +1416,8 @@ def setup_routes(app):
                 seen = set()
                 items = []
                 for item in sold + active:
+                    if str(item.get("status") or "").lower() == "draft":
+                        continue  # drafts are not stock; never offered on a document
                     key = item.get("entity_id") or item.get("id") or item.get("sku")
                     if key and key not in seen:
                         seen.add(key)
@@ -1421,6 +1426,7 @@ def setup_routes(app):
             else:
                 resp = await api.list_items(token, {"q": q, "limit": 10})
                 items = resp.get("items", []) if isinstance(resp, dict) else resp
+                items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
                 # Forward sales: collapse splittable lots of a SKU into one option.
                 items = _consolidate_sales_lots(items, _company_settings)
                 return _J([_extract(i) for i in items])
