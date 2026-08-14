@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class APIError(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, data: dict | None = None):
         self.status = status
         self.detail = detail
+        self.data = data
         super().__init__(f"API {status}: {detail}")
 
 
@@ -95,6 +96,14 @@ def _raise(r: httpx.Response) -> httpx.Response:
             detail = r.json().get("detail", r.text)
         except Exception:
             detail = r.text
+        data = None
+        if isinstance(detail, dict) and "message" in detail:
+            # Structured detail (message + extras): keep detail a plain string for
+            # the sites that render it, carry the full payload on APIError.data.
+            # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
+            # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
+            data = detail
+            detail = detail.get("message") or r.text
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
@@ -104,7 +113,7 @@ def _raise(r: httpx.Response) -> httpx.Response:
             logger.debug("API 409: %s", detail)
         else:
             logger.warning("API %s: %s", r.status_code, detail)
-        raise APIError(r.status_code, detail)
+        raise APIError(r.status_code, detail, data=data)
     return r
 
 
@@ -758,6 +767,16 @@ async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]
         payload["quantities"] = quantities
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
+
+
+async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
+                        new_status: str, is_list: bool = False) -> dict:
+    """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
+    whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
+    base = "/lists" if is_list else "/docs"
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines",
+                                   json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:

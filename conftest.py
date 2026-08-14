@@ -18,6 +18,17 @@ os.environ.setdefault(
     "CELERP_CONFIG",
     os.path.join(_tempfile.gettempdir(), f"celerp-test-config-{_worker}.toml"),
 )
+# Start from a clean config: a temp file left by a previous local run (e.g. a
+# persisted [cloud] disconnected = true from the disconnect endpoint) must not
+# leak into this session. Scoped to our own temp path so a real CELERP_CONFIG
+# passed in by CI is never touched.
+_cfg_start = os.environ["CELERP_CONFIG"]
+if (
+    os.path.dirname(_cfg_start) == _tempfile.gettempdir()
+    and os.path.basename(_cfg_start).startswith("celerp-test-config-")
+    and os.path.exists(_cfg_start)
+):
+    os.remove(_cfg_start)
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
@@ -472,9 +483,29 @@ def _reset_cloud_settings():
     """
     from celerp.config import settings as _s
     snapshot = {f: getattr(_s, f) for f in _CLOUD_SETTINGS_FIELDS}
+    # The disconnect endpoint also PERSISTS to the config file
+    # ([cloud] disconnected = true via write_config). That file is shared per
+    # xdist worker, so a persisted disconnect leaks into a later test whose app
+    # lifespan calls load_cloud_config() and re-reads it - which re-sets
+    # cloud_disconnected and defeats the in-memory restore below. Snapshot and
+    # restore the file too, symmetric with the settings restore.
+    _cfg_path = os.environ.get("CELERP_CONFIG")
+    _cfg_before = None
+    if _cfg_path and os.path.exists(_cfg_path):
+        with open(_cfg_path, "rb") as _fh:
+            _cfg_before = _fh.read()
     yield
     for f, v in snapshot.items():
         setattr(_s, f, v)
+    if _cfg_path:
+        if _cfg_before is None:
+            try:
+                os.remove(_cfg_path)
+            except FileNotFoundError:
+                pass
+        elif _cfg_before != (open(_cfg_path, "rb").read() if os.path.exists(_cfg_path) else None):
+            with open(_cfg_path, "wb") as _fh:
+                _fh.write(_cfg_before)
 
 
 @pytest.fixture(autouse=True)

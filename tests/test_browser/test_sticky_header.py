@@ -315,6 +315,39 @@ def test_pinned_header_tracks_horizontal_scroll(page, ui_server, sticky_inventor
     assert lefts is not None and abs(lefts[0] - lefts[1]) <= 2
 
 
+# ── the frozen header stays clipped inside the table, never painting over the sidebar (#274) ──
+def test_pinned_header_never_overlaps_sidebar_when_scrolled_right(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    # widen the first column so the table overflows its wrap and can be scrolled far right.
+    page.evaluate(
+        "() => { var th=document.querySelector('#data-table thead th[data-key]'); if(th) th.style.width='1200px'; }"
+    )
+    _scroll_to_pin(page)
+    assert _pinned(page)
+    # scroll the wrap to its far right so the table's left edge slides in under the sidebar.
+    page.evaluate(
+        "() => { var w=document.querySelector('.table-scroll-wrap');"
+        " w.scrollLeft=w.scrollWidth; w.dispatchEvent(new Event('scroll')); }"
+    )
+    page.wait_for_timeout(200)
+    probe = page.evaluate(
+        """() => {
+          var wrap=document.querySelector('.table-scroll-wrap');
+          var thead=document.querySelector('#data-table thead');
+          var wr=wrap.getBoundingClientRect(), tr=thead.getBoundingClientRect();
+          var x=wr.left-5, y=tr.top+Math.min(tr.height,20)/2;
+          var el=document.elementFromPoint(x, y);
+          return {headerLeft: tr.left, wrapLeft: wr.left,
+                  hitThead: !!(el && el.closest('#data-table thead'))};
+        }"""
+    )
+    # precondition: the header box really does extend left of the probe point (in under the
+    # sidebar), so the probe is a meaningful test of clipping and not a no-op.
+    assert probe["headerLeft"] < probe["wrapLeft"] - 5, "setup: header not scrolled left of the wrap"
+    # the frozen header must be clipped to the wrap; nothing of it may paint over the sidebar band.
+    assert not probe["hitThead"], "frozen header paints over the sidebar when scrolled right"
+
+
 # ── scrolling back to the top restores the inline header (no pin, no spacer, no inline style) ─
 def test_scroll_back_up_restores_inline_header(page, ui_server, sticky_inventory):
     _goto(page, ui_server)

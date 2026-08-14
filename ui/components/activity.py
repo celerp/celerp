@@ -35,7 +35,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "item.transform": "Item transformed",
     "item.transformed_from": "Transformed from",
     "item.source_deactivated": "Merged into another item",
-    "item.fulfilled": "Sold / fulfilled",
+    "item.fulfilled": "Sold",
     "item.fulfillment_reversed": "Sale reversed",
     "item.consumed": "Consumed in production",
     "item.produced": "Produced",

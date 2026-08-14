@@ -1110,14 +1110,26 @@ _STICKY_HEADER_JS = """
     // rect.left already reflects the wrap's horizontal scroll, so it is the body's content left.
     thead.style.left = rect.left + 'px';
     thead.style.width = rect.width + 'px';
-    // Keep the frozen phantom aligned with the on-screen wrap so its track spans the visible body.
-    // Its scrollLeft stays synced to the wrap by the existing bidirectional listener, unaffected
-    // by fixing position (that sync is scrollLeft-based, not layout-based).
-    var ph = phantomOf(t);
-    if(ph && ph.classList.contains('top-scroll-pinned')){
-      var w = wrapOf(t); var wr = w.getBoundingClientRect();
-      ph.style.left = wr.left + 'px';
-      ph.style.width = w.clientWidth + 'px';
+    // The header is position:fixed, so the wrap's overflow does not clip it: scrolled sideways it
+    // would paint over the sidebar on the left and past the table on the right. Clip it to the
+    // wrap's visible box, the same geometry the phantom scrollbar below already tracks. clip-path
+    // clips painting and hit-testing but leaves getBoundingClientRect intact, so columns stay aligned.
+    var w = wrapOf(t);
+    if(w){
+      var wr = w.getBoundingClientRect();
+      var clipL = Math.max(0, wr.left - rect.left);
+      var clipR = Math.max(0, (rect.left + rect.width) - (wr.left + w.clientWidth));
+      thead.style.clipPath = 'inset(0 ' + clipR + 'px 0 ' + clipL + 'px)';
+      // Keep the frozen phantom aligned with the on-screen wrap so its track spans the visible body.
+      // Its scrollLeft stays synced to the wrap by the existing bidirectional listener, unaffected
+      // by fixing position (that sync is scrollLeft-based, not layout-based).
+      var ph = phantomOf(t);
+      if(ph && ph.classList.contains('top-scroll-pinned')){
+        ph.style.left = wr.left + 'px';
+        ph.style.width = w.clientWidth + 'px';
+      }
+    } else {
+      thead.style.clipPath = '';
     }
   }
 
@@ -1184,7 +1196,7 @@ _STICKY_HEADER_JS = """
     t.classList.remove('hdr-pinned');
     var thead = t.tHead;
     if(thead){
-      thead.style.display = ''; thead.style.tableLayout = ''; thead.style.width = ''; thead.style.left = '';
+      thead.style.display = ''; thead.style.tableLayout = ''; thead.style.width = ''; thead.style.left = ''; thead.style.clipPath = '';
       // Leave the cell widths in place: they carry the user's applied/resized column sizes, and a
       // re-pin recaptures from them. Blanking them here dropped custom widths on scroll-up and wiped
       // an in-progress resize before it could persist.
