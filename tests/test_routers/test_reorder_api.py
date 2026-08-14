@@ -20,11 +20,11 @@ async def test_list_filter_low_stock(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     # below: qty 2 <= reorder_point 5
-    await client.post("/items", json={"sku": "LOW", "name": "Low", "quantity": 2, "sell_by": "piece", "reorder_point": 5}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "LOW", "name": "Low", "quantity": 2, "sell_by": "piece", "reorder_point": 5}, headers=h)
     # above: qty 20 > reorder_point 5
-    await client.post("/items", json={"sku": "OK", "name": "Ok", "quantity": 20, "sell_by": "piece", "reorder_point": 5}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "OK", "name": "Ok", "quantity": 20, "sell_by": "piece", "reorder_point": 5}, headers=h)
     # unset item at qty 0 counts as low (== out of stock, byte-identical to old behaviour)
-    await client.post("/items", json={"sku": "ZERO", "name": "Zero", "quantity": 0, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "ZERO", "name": "Zero", "quantity": 0, "sell_by": "piece"}, headers=h)
 
     r = await client.get("/items?filter=low_stock", headers=h)
     assert r.status_code == 200, r.text
@@ -38,7 +38,7 @@ async def test_list_filter_low_stock(client):
 async def test_reorder_suggestion_endpoint_no_history(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "SUG", "name": "S", "quantity": 5, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SUG", "name": "S", "quantity": 5, "sell_by": "piece"}, headers=h)
     item_id = r.json()["id"]
     r = await client.get(f"/items/{item_id}/reorder-suggestion", headers=h)
     assert r.status_code == 200, r.text

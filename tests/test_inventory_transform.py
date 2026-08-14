@@ -22,7 +22,7 @@ async def _token(client) -> str:
 async def _seed_item(client, headers, sku="PARENT-SKU", qty=10.0, cost_price=100.0, sell_by="piece", category="Raw") -> str:
     r = await client.post(
         "/items",
-        json={"sku": sku, "name": "Parent Item", "quantity": qty, "sell_by": sell_by, "category": category, "cost_price": cost_price},
+        json={"status": "available", "sku": sku, "name": "Parent Item", "quantity": qty, "sell_by": sell_by, "category": category, "cost_price": cost_price},
         headers=headers,
     )
     assert r.status_code == 200, r.text
@@ -207,7 +207,7 @@ async def test_transform_child_sku_may_reuse_existing(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
     # Create an item with SKU "CHILD-SKU" first
-    await client.post("/items", json={"sku": "CHILD-SKU", "name": "Existing", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    await client.post("/items", json={"status": "available", "sku": "CHILD-SKU", "name": "Existing", "quantity": 1, "sell_by": "piece"}, headers=headers)
     parent_id = await _seed_item(client, headers, sku="PARENT-2")
 
     r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(child_sku="CHILD-SKU"), headers=headers)
@@ -263,7 +263,7 @@ async def test_transform_inherits_purchase_fields(client):
     # Create parent with purchase fields
     sku = f"TR-PURCH-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent with purchase info",
+        "status": "available", "sku": sku, "name": "Parent with purchase info",
         "quantity": 10, "sell_by": "gram", "category": "Raw",
         "purchase_unit": "kg", "purchase_conversion_factor": 1000.0,
         "purchase_sku": "VENDOR-SKU-001", "purchase_name": "Raw Material Bulk",
@@ -292,7 +292,7 @@ async def test_transform_inherits_inventory_type(client):
 
     sku = f"TR-INVTYPE-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Service item",
+        "status": "available", "sku": sku, "name": "Service item",
         "quantity": 0, "sell_by": "piece", "inventory_type": "service",
     }, headers=headers)
     assert r.status_code == 200, r.text
@@ -318,7 +318,7 @@ async def test_transform_inherits_custom_attributes(client):
 
     sku = f"TR-ATTR-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Gem with grade",
+        "status": "available", "sku": sku, "name": "Gem with grade",
         "quantity": 5, "sell_by": "gram", "category": "Gem",
         "attributes": {"beauty_grade": "AAA", "origin": "Burma"},
     }, headers=headers)

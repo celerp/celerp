@@ -5094,6 +5094,11 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
 def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en", status: str = "") -> FT:
     from ui.components.table import fmt_money
     active_count = valuation.get('active_item_count', valuation.get('item_count', 0))
+    # On a status-filtered view the chip counts that slice, not the committed-stock
+    # count: count_by_status is scoped server-side, and drafts sit outside
+    # active_item_count by design, which would show "Draft: 0" above a listed draft.
+    if status and status != "all" and valuation.get("count_by_status"):
+        active_count = sum(valuation["count_by_status"].values())
     # Label reflects the active status filter
     if status == "sold":
         count_label = t("chip.sold", lang)

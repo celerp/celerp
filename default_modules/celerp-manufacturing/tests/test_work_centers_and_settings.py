@@ -258,10 +258,10 @@ async def test_provision_hook_failure_does_not_abort_registration(client, mfg_pr
 
 async def _ring_with_daily_labor(client, token):
     gold = (await client.post("/items", headers=_h(token),
-                              json={"sku": f"G-{uuid.uuid4().hex[:6]}", "name": "Gold", "quantity": 100,
+                              json={"status": "available", "sku": f"G-{uuid.uuid4().hex[:6]}", "name": "Gold", "quantity": 100,
                                     "sell_by": "gram", "cost_total": 8000})).json()["id"]
     ring = (await client.post("/items", headers=_h(token),
-                              json={"sku": f"R-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": 0,
+                              json={"status": "available", "sku": f"R-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": 0,
                                     "sell_by": "piece"})).json()["id"]
     await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}],
@@ -331,10 +331,10 @@ async def test_tomake_est_hours_no_default_falls_back_to_8(client, session):
 async def test_require_issued_before_complete_setting(client):
     token = await _register(client)
     gold = (await client.post("/items", headers=_h(token),
-                              json={"sku": "GREQ", "name": "Gold", "quantity": 100, "sell_by": "gram",
+                              json={"status": "available", "sku": "GREQ", "name": "Gold", "quantity": 100, "sell_by": "gram",
                                     "cost_total": 8000})).json()["id"]
     ring = (await client.post("/items", headers=_h(token),
-                              json={"sku": "RREQ", "name": "Ring", "quantity": 0, "sell_by": "piece"})).json()["id"]
+                              json={"status": "available", "sku": "RREQ", "name": "Ring", "quantity": 0, "sell_by": "piece"})).json()["id"]
     await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
 

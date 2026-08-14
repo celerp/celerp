@@ -376,13 +376,20 @@ async def assert_status_change_allowed(
             status_code=409,
             detail=f"Cannot revert to draft: the item has circulation history ({', '.join(circulated)})",
         )
-    from sqlalchemy import cast
+    from sqlalchemy import cast, or_
     from sqlalchemy.dialects.postgresql import JSONB
+    # Doc lines are item_id-keyed via POST /docs (LineItem normalizes entity_id)
+    # but entity_id-keyed via the patch path and receiving/fulfillment writes, so
+    # membership must match either key.
+    _lines = cast(Projection.state["line_items"], JSONB)
     doc_ref = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type.in_(("doc", "list")),
-            cast(Projection.state["line_items"], JSONB).contains([{"item_id": entity_id}]),
+            or_(
+                _lines.contains([{"item_id": entity_id}]),
+                _lines.contains([{"entity_id": entity_id}]),
+            ),
         ).limit(1)
     )).scalars().first()
     if doc_ref:

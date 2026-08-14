@@ -356,7 +356,7 @@ class TestManufacturingModuleHTTP:
     async def test_create_and_get_order(self, client):
         token = await _register(client, "cago")
         # Create an item to consume
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "R1", "name": "Raw", "quantity": 5, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "R1", "name": "Raw", "quantity": 5, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         r = await client.post(
@@ -379,7 +379,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_full_order_lifecycle(self, client):
         token = await _register(client, "lifecycle")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         # Create
@@ -407,7 +407,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_cannot_complete_order_twice(self, client):
         token = await _register(client, "twice")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-T", "name": "Raw T", "quantity": 5, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-T", "name": "Raw T", "quantity": 5, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         order_r = await client.post(
@@ -423,7 +423,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_cancel_completed_order_rejected(self, client):
         token = await _register(client, "cancelcomp")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-CC", "name": "Raw CC", "quantity": 5, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-CC", "name": "Raw CC", "quantity": 5, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         order_r = await client.post(
@@ -440,7 +440,7 @@ class TestManufacturingModuleHTTP:
     async def test_issue_to_closed_run_rejected(self, client):
         token = await _register(client, "issueclosed")
         item_id = (await client.post("/items", headers=_h(token),
-                                     json={"sku": "RAW-IC", "name": "Raw IC", "quantity": 5, "sell_by": "piece"})).json()["id"]
+                                     json={"status": "available", "sku": "RAW-IC", "name": "Raw IC", "quantity": 5, "sell_by": "piece"})).json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "IC", "inputs": [{"item_id": item_id, "quantity": 1}],
                      "expected_outputs": [{"sku": "OUT-IC", "name": "Out IC", "quantity": 1}]})).json()["id"]
@@ -450,7 +450,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_start_already_completed_order_rejected(self, client):
         token = await _register(client, "startcomp")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-SC", "name": "Raw SC", "quantity": 5, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-SC", "name": "Raw SC", "quantity": 5, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         order_r = await client.post(
@@ -472,7 +472,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_hold_and_resume_lifecycle(self, client):
         token = await _register(client, "hold")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-H", "name": "Raw H", "quantity": 5, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-H", "name": "Raw H", "quantity": 5, "sell_by": "piece"})
         item_id = item_r.json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "Hold flow", "inputs": [{"item_id": item_id, "quantity": 1}],
@@ -489,7 +489,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_list_status_filter(self, client):
         token = await _register(client, "statusfilter")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-SF", "name": "Raw SF", "quantity": 9, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-SF", "name": "Raw SF", "quantity": 9, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
         def _mk(desc):

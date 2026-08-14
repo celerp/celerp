@@ -30,8 +30,8 @@ async def _doc_events(client, h, doc_id):
 async def test_partial_revert_reads_as_revert_with_items(client):
     token = await _register(client)
     h = _h(token)
-    a = (await client.post("/items", headers=h, json={"sku": "ITEM-A", "name": "A", "quantity": 2, "sell_by": "piece"})).json()["id"]
-    b = (await client.post("/items", headers=h, json={"sku": "ITEM-B", "name": "B", "quantity": 3, "sell_by": "piece"})).json()["id"]
+    a = (await client.post("/items", headers=h, json={"status": "available", "sku": "ITEM-A", "name": "A", "quantity": 2, "sell_by": "piece"})).json()["id"]
+    b = (await client.post("/items", headers=h, json={"status": "available", "sku": "ITEM-B", "name": "B", "quantity": 3, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": a, "sku": "ITEM-A", "name": "A", "quantity": 2, "unit_price": 10, "sell_by": "piece"},
         {"entity_id": b, "sku": "ITEM-B", "name": "B", "quantity": 3, "unit_price": 10, "sell_by": "piece"}],
@@ -65,7 +65,7 @@ async def test_partial_revert_reads_as_revert_with_items(client):
 async def test_full_revert_still_fulfillment_reversed(client):
     token = await _register(client)
     h = _h(token)
-    a = (await client.post("/items", headers=h, json={"sku": "FR-A", "name": "A", "quantity": 2, "sell_by": "piece"})).json()["id"]
+    a = (await client.post("/items", headers=h, json={"status": "available", "sku": "FR-A", "name": "A", "quantity": 2, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": a, "sku": "FR-A", "name": "A", "quantity": 2, "unit_price": 10, "sell_by": "piece"}],
     })).json()["id"]
@@ -81,7 +81,7 @@ async def test_doc_cogs_redacted_for_operator(client, session):
     """COGS on a fulfilled doc must not ship to an under-manager role via the ledger."""
     token = await _register(client)
     h = _h(token)
-    a = (await client.post("/items", headers=h, json={"sku": "COGS-A", "name": "A", "quantity": 2, "sell_by": "piece", "cost_price": 7.0})).json()["id"]
+    a = (await client.post("/items", headers=h, json={"status": "available", "sku": "COGS-A", "name": "A", "quantity": 2, "sell_by": "piece", "cost_price": 7.0})).json()["id"]
     doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": a, "sku": "COGS-A", "name": "A", "quantity": 2, "unit_price": 10, "sell_by": "piece"}],
     })).json()["id"]

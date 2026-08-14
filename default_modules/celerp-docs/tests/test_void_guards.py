@@ -30,7 +30,7 @@ def _h(t):
 async def _finalized_doc_with_stock(client, t, doc_type: str) -> tuple[str, str]:
     sku = f"VG-{uuid.uuid4().hex[:6]}"
     item = (await client.post("/items", headers=_h(t), json={
-        "sku": sku, "name": "Stone", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": sku, "name": "Stone", "quantity": 5, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": doc_type, "line_items": [
         {"entity_id": item, "sku": sku, "name": "Stone", "quantity": 5, "unit_price": 10,
          "sell_by": "piece"}], "total": 50})).json()["id"]

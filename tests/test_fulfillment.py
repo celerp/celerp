@@ -284,7 +284,7 @@ async def auth(session, _setup_ids):
 
 async def _create_item(client, auth, sku, qty, cost_price=0, expires_at=None, sell_by="piece"):
     """Helper: create inventory item via API."""
-    data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": sell_by}
+    data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": sell_by, "status": "available"}
     if cost_price:
         data["cost_total"] = cost_price * qty  # cost_total is now the primitive
     if expires_at:
@@ -1218,7 +1218,7 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
     """Fulfill → revert-lines → re-fulfill must succeed (no idempotency key collision on COGS JE)."""
     # Create invoice with one inventory item
     item_r = await client.post("/items", headers=auth["headers"], json={
-        "sku": "REFULFILL-001", "name": "Re-fulfill test item", "quantity": 1,
+        "status": "available", "sku": "REFULFILL-001", "name": "Re-fulfill test item", "quantity": 1,
         "cost_price": 100.0, "unit_price": 200.0, "sell_by": "piece",
     })
     assert item_r.status_code == 200, item_r.text
@@ -1421,7 +1421,7 @@ async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
     and the mother floors at 0. sell_by=piece, mother 5pcs/15ct -> child 3pcs/20ct,
     mother 2pcs/0ct."""
     r = await client.post("/items", headers=auth["headers"], json={
-        "sku": "SPLIT-SEC", "name": "SPLIT-SEC", "quantity": 5, "sell_by": "piece",
+        "status": "available", "sku": "SPLIT-SEC", "name": "SPLIT-SEC", "quantity": 5, "sell_by": "piece",
         "weight": 15, "weight_unit": "carat",
     })
     assert r.status_code == 200, r.text
@@ -1447,7 +1447,7 @@ async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
 async def test_fulfill_whole_draw_secondary_must_equal(client, auth):
     """A whole-quantity draw must take all the secondary measure — a reduced weight is rejected."""
     r = await client.post("/items", headers=auth["headers"], json={
-        "sku": "SPLIT-WHOLE", "name": "SPLIT-WHOLE", "quantity": 4, "sell_by": "piece",
+        "status": "available", "sku": "SPLIT-WHOLE", "name": "SPLIT-WHOLE", "quantity": 4, "sell_by": "piece",
         "weight": 12, "weight_unit": "carat",
     })
     item_id = r.json()["id"]
@@ -1465,7 +1465,7 @@ async def test_fulfill_whole_draw_secondary_must_equal(client, auth):
 async def test_fulfill_whole_draw_secondary_equal_ok(client, auth):
     """A whole-quantity draw with the matching secondary measure fulfills the parcel."""
     r = await client.post("/items", headers=auth["headers"], json={
-        "sku": "SPLIT-WHOLE-OK", "name": "SPLIT-WHOLE-OK", "quantity": 4, "sell_by": "piece",
+        "status": "available", "sku": "SPLIT-WHOLE-OK", "name": "SPLIT-WHOLE-OK", "quantity": 4, "sell_by": "piece",
         "weight": 12, "weight_unit": "carat",
     })
     item_id = r.json()["id"]
@@ -1485,11 +1485,11 @@ async def test_fulfill_spans_across_lots_specific_id_cogs(client, session, auth,
     are consumed and COGS is each lot's own cost (specific identification by lot)."""
     h = auth["headers"]
     sku = f"SPAN-{uuid.uuid4().hex[:6]}"
-    ra = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 60,
+    ra = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku, "quantity": 60,
                            "sell_by": "piece", "cost_total": 60.0, "allow_splitting": True})
     assert ra.status_code == 200, ra.text
     lot_a = ra.json()["id"]
-    rb = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 40,
+    rb = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku, "quantity": 40,
                            "sell_by": "piece", "cost_total": 80.0, "allow_splitting": True})
     assert rb.status_code == 200, rb.text
     lot_b = rb.json()["id"]
@@ -1520,7 +1520,7 @@ async def test_fulfill_spans_across_lots_specific_id_cogs(client, session, auth,
 
 async def _memo_out(client, auth, sku, unit_price, contact_id, cost_price=0.0, retail_price=None):
     """Create an item, put it on memo to `contact_id` at `unit_price`, return its id."""
-    data = {"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece"}
+    data = {"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece", "status": "available"}
     if cost_price:
         data["cost_total"] = cost_price
     if retail_price is not None:
@@ -1629,7 +1629,7 @@ async def test_partial_memo_return_keeps_balance_out_with_customer(client, sessi
     cust = "contact:partialMemo"
     sku = f"PM-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"],
-                          json={"sku": sku, "name": sku, "quantity": 7, "sell_by": "piece",
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 7, "sell_by": "piece",
                                 "cost_total": 700.0})
     assert r.status_code == 200, r.text
     eid = r.json()["id"]
@@ -1673,7 +1673,7 @@ async def test_full_quantity_revert_still_reverts_whole_line(client, session, au
     cust = "contact:fullQtyMemo"
     sku = f"FQ-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"],
-                          json={"sku": sku, "name": sku, "quantity": 5, "sell_by": "piece"})
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 5, "sell_by": "piece"})
     eid = r.json()["id"]
     doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 5, "unit_price": 10.0, "entity_id": eid},
@@ -1697,7 +1697,7 @@ async def test_partial_memo_return_rejects_more_than_went_out(client, session, a
     cust = "contact:overReturn"
     sku = f"OR-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"],
-                          json={"sku": sku, "name": sku, "quantity": 2, "sell_by": "piece"})
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 2, "sell_by": "piece"})
     eid = r.json()["id"]
     doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 2, "unit_price": 10.0, "entity_id": eid},
@@ -1722,7 +1722,7 @@ async def test_revert_lines_without_quantities_is_unchanged(client, session, aut
     cust = "contact:noQty"
     sku = f"NQ-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"],
-                          json={"sku": sku, "name": sku, "quantity": 3, "sell_by": "piece"})
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 3, "sell_by": "piece"})
     eid = r.json()["id"]
     doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 3, "unit_price": 10.0, "entity_id": eid},
@@ -1745,7 +1745,7 @@ async def test_convert_after_partial_memo_return_bills_only_what_was_kept(client
     cust = "contact:convertPartial"
     sku = f"CP-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"],
-                          json={"sku": sku, "name": sku, "quantity": 10, "sell_by": "piece"})
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 10, "sell_by": "piece"})
     eid = r.json()["id"]
     doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 10, "unit_price": 50.0, "line_total": 500.0, "entity_id": eid},
@@ -1874,11 +1874,11 @@ async def test_set_as_shipped_spans_lots_for_own_reserved_line(client, session, 
     """Sending an own-reserved line that needs a cross-lot span keeps the reserved primary in the candidate set."""
     h = auth["headers"]
     sku = f"RSPAN-{uuid.uuid4().hex[:6]}"
-    ra = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 60,
+    ra = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku, "quantity": 60,
                            "sell_by": "piece", "cost_total": 60.0, "allow_splitting": True})
     assert ra.status_code == 200, ra.text
     lot_a = ra.json()["id"]
-    rb = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 40,
+    rb = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku, "quantity": 40,
                            "sell_by": "piece", "cost_total": 80.0, "allow_splitting": True})
     assert rb.status_code == 200, rb.text
     lot_b = rb.json()["id"]

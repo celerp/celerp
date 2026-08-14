@@ -238,6 +238,97 @@ async def test_revert_blocked_when_on_document(client, session):
     assert "document" in rv.json()["detail"].lower()
 
 
+async def test_revert_blocked_when_on_document_via_patch_path(client, session):
+    """Doc lines written through PATCH /docs keep their entity_id key (POST /docs
+    normalizes to item_id), so the membership guard must match both spellings."""
+    ctx = await perm_setup(client, session)
+    filler = await create_item(client, ctx["admin_h"], ctx["location_id"], sku="RVDP-F")
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVDP-1"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+
+    doc = await client.post(
+        "/docs",
+        json={"doc_type": "invoice",
+              "line_items": [{"item_id": filler, "sku": "RVDP-F", "name": "Perm Item",
+                              "quantity": 1, "unit_price": 10.0}]},
+        headers=ctx["admin_h"])
+    assert doc.status_code == 200, doc.text
+    doc_id = doc.json()["id"]
+    old_lines = (await client.get(f"/docs/{doc_id}", headers=ctx["admin_h"])).json()["line_items"]
+    patch = await client.patch(
+        f"/docs/{doc_id}",
+        json={"fields_changed": {"line_items": {
+            "old": old_lines,
+            "new": old_lines + [{"entity_id": item_id, "sku": "RVDP-1",
+                                 "name": "Draft Widget", "quantity": 1, "unit_price": 12.0}],
+        }}},
+        headers=ctx["admin_h"])
+    assert patch.status_code == 200, patch.text
+
+    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    assert rv.status_code == 409, rv.text
+    assert "document" in rv.json()["detail"].lower()
+
+
+async def test_revert_of_reserved_item_rejected(client, session):
+    """Only an available item reverts to draft: a reserved item answers 409 naming
+    its current status, never quietly dropping a reservation."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVR-1"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _set_status(client, ctx["admin_h"], item_id, "reserved")).status_code == 200
+
+    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    assert rv.status_code == 409, rv.text
+    assert "available" in rv.json()["detail"].lower()
+    assert "reserved" in rv.json()["detail"].lower()
+
+
+async def test_revert_via_item_patch_requires_permission(client, session):
+    """The revert guard also covers PATCH /items status changes: an operator
+    patching status back to draft gets the same 403 as on the status endpoint."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVPP-1"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+
+    denied = await client.patch(
+        f"/items/{item_id}",
+        json={"fields_changed": {"status": {"old": "available", "new": "draft"}}},
+        headers=ctx["operator_h"])
+    assert denied.status_code == 403, denied.text
+    assert "revert_items_to_draft" in denied.json()["detail"]
+
+
+async def test_bulk_revert_validates_all_before_any(client, session):
+    """POST /items/bulk/status validates every item before emitting anything: one
+    circulated item rejects the whole batch and the clean item keeps its status."""
+    ctx = await perm_setup(client, session)
+    clean = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BLK-C"),
+                              headers=ctx["admin_h"])
+    clean_id = clean.json()["id"]
+    dirty = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BLK-D"),
+                              headers=ctx["admin_h"])
+    dirty_id = dirty.json()["id"]
+    for iid in (clean_id, dirty_id):
+        assert (await _set_status(client, ctx["admin_h"], iid, "available")).status_code == 200
+    adj = await client.post(f"/items/{dirty_id}/adjust",
+                            json={"new_qty": 9, "reason": "count correction"},
+                            headers=ctx["admin_h"])
+    assert adj.status_code == 200, adj.text
+
+    bulk = await client.post("/items/bulk/status",
+                             json={"entity_ids": [clean_id, dirty_id], "status": "draft"},
+                             headers=ctx["admin_h"])
+    assert bulk.status_code == 409, bulk.text
+    assert (await _item_state(client, ctx["admin_h"], clean_id)).get("status") == "available"
+
+
 async def test_status_noop_transitions_are_harmless(client, session):
     """Make-available on an already-available item and draft on an already-draft
     item are accepted no-ops, keeping the bulk action idempotent."""
@@ -294,6 +385,59 @@ async def test_low_stock_filter_excludes_draft(client, session):
                              headers=ctx["admin_h"])).json()
     rows2 = low2 if isinstance(low2, list) else low2.get("items", [])
     assert any(x.get("sku") == "LOW-DFT" for x in rows2)
+
+
+async def test_dashboard_kpis_exclude_draft(client, session):
+    """The dashboard's per-item KPIs skip drafts: a draft below its reorder point
+    never counts as low stock until it is committed."""
+    ctx = await perm_setup(client, session)
+    base = (await client.get("/dashboard/kpis", headers=ctx["admin_h"])).json()
+    base_low = base["inventory"]["low_stock_items"]
+
+    body = _draft_item_body(ctx["location_id"], "KPI-DFT") | {"reorder_point": 10}
+    r = await client.post("/items", json=body, headers=ctx["admin_h"])
+    assert r.status_code == 200, r.text
+    with_draft = (await client.get("/dashboard/kpis", headers=ctx["admin_h"])).json()
+    assert with_draft["inventory"]["low_stock_items"] == base_low
+
+    assert (await _set_status(client, ctx["admin_h"], r.json()["id"], "available")).status_code == 200
+    committed = (await client.get("/dashboard/kpis", headers=ctx["admin_h"])).json()
+    assert committed["inventory"]["low_stock_items"] == base_low + 1
+
+
+async def test_opening_inventory_je_excludes_draft(client, session):
+    """The opening-balance JE recalculated on balance-sheet load counts committed
+    stock only: committing a draft raises the 1130-OB debit by exactly its cost."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "OB-DFT"),
+                          headers=ctx["admin_h"])
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    assert (await client.get("/accounting/balance-sheet", headers=ctx["admin_h"])).status_code == 200
+    led1 = await client.get("/accounting/ledger/1130-OB", headers=ctx["admin_h"])
+    assert led1.status_code == 200, led1.text
+    ob_before = sum(float(ln.get("debit", 0) or 0) for ln in led1.json()["lines"])
+
+    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await client.get("/accounting/balance-sheet", headers=ctx["admin_h"])).status_code == 200
+    led2 = await client.get("/accounting/ledger/1130-OB", headers=ctx["admin_h"])
+    ob_after = sum(float(ln.get("debit", 0) or 0) for ln in led2.json()["lines"])
+    # 5 pcs at cost 40 = 200 enters opening inventory only at commit.
+    assert ob_after - ob_before == pytest.approx(200.0, abs=0.02)
+
+
+def test_manufacturing_lot_qty_excludes_draft_lots():
+    """On-hand lot totals never count a draft lot; a lot with no status counts as
+    available, matching the projection default for pre-draft data."""
+    from celerp_manufacturing.routes import _lot_qty_by_parent
+
+    states = {
+        "item:lot-1": {"parent_item_id": "item:prod", "quantity": 4.0, "status": "available"},
+        "item:lot-2": {"parent_item_id": "item:prod", "quantity": 3.0, "status": "draft"},
+        "item:lot-3": {"parent_item_id": "item:prod", "quantity": 2.0},
+    }
+    assert _lot_qty_by_parent(states) == {"item:prod": 6.0}
 
 
 # ── Drafts cannot circulate onto documents or lists ───────────────────────────

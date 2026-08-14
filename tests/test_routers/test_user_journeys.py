@@ -51,7 +51,7 @@ def _h(token: str) -> dict:
 
 async def _item(client, token: str, *, sku: str | None = None, qty: float = 1) -> str:
     sku = sku or f"SKU-{uuid.uuid4().hex[:6]}"
-    r = await client.post("/items", headers=_h(token), json={"sku": sku, "name": f"Item {sku}", "quantity": qty, "sell_by": "piece"})
+    r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": sku, "name": f"Item {sku}", "quantity": qty, "sell_by": "piece"})
     assert r.status_code == 200, r.text
     return r.json()["id"]
 
@@ -370,7 +370,7 @@ async def test_crud_item_create_read_update(client):
     token = await _reg(client)
     h = _h(token)
 
-    r = await client.post("/items", headers=h, json={"sku": "CRUD-1", "name": "Widget", "quantity": 10, "category": "Electronics", "sell_by": "piece"})
+    r = await client.post("/items", headers=h, json={"status": "available", "sku": "CRUD-1", "name": "Widget", "quantity": 10, "category": "Electronics", "sell_by": "piece"})
     assert r.status_code == 200
     eid = r.json()["id"]
 
@@ -1337,7 +1337,7 @@ async def test_sf_item_search_by_sku_prefix(client):
 async def test_sf_item_search_by_name_partial(client):
     token = await _reg(client)
     partial = uuid.uuid4().hex[:8]
-    r = await client.post("/items", headers=_h(token), json={"sku": "NM-1", "name": f"Special {partial} Widget", "quantity": 1, "sell_by": "piece"})
+    r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "NM-1", "name": f"Special {partial} Widget", "quantity": 1, "sell_by": "piece"})
     results = (await client.get(f"/items?q={partial}", headers=_h(token))).json()["items"]
     assert any(partial in i.get("name", "") for i in results)
 
@@ -1498,7 +1498,7 @@ async def test_sf_contacts_email_in_attributes(client):
 async def test_sf_items_search_case_insensitive(client):
     token = await _reg(client)
     unique = uuid.uuid4().hex[:8].upper()
-    await client.post("/items", headers=_h(token), json={"sku": f"CI-{unique}", "sell_by": "piece", "name": f"Case {unique}", "quantity": 1})
+    await client.post("/items", headers=_h(token), json={"status": "available", "sku": f"CI-{unique}", "sell_by": "piece", "name": f"Case {unique}", "quantity": 1})
     results = (await client.get(f"/items?q={unique.lower()}", headers=_h(token))).json()["items"]
     assert len(results) >= 1
 
@@ -2318,7 +2318,7 @@ async def test_perm_cannot_void_other_company_doc(client):
 
 @pytest.mark.asyncio
 async def test_perm_write_items_requires_auth(client):
-    r = await client.post("/items", json={"sku": "NAUTH", "name": "No Auth", "quantity": 1, "sell_by": "piece"})
+    r = await client.post("/items", json={"status": "available", "sku": "NAUTH", "name": "No Auth", "quantity": 1, "sell_by": "piece"})
     assert r.status_code == 401
 
 

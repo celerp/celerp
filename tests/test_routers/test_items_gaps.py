@@ -31,7 +31,7 @@ def _h(tok: str) -> dict:
 
 async def _item(client, tok, name="Widget", sku=None, category=None, **kwargs) -> str:
     r = await client.post("/items", headers=_h(tok), json={
-        "sku": sku or f"SKU-{uuid.uuid4().hex[:6]}", "sell_by": "piece",
+        "status": "available", "sku": sku or f"SKU-{uuid.uuid4().hex[:6]}", "sell_by": "piece",
         "name": name,
         **({"category": category} if category else {}),
         **kwargs,
@@ -78,7 +78,7 @@ async def test_items_create_with_inline_pricing(client):
     """POST /items with cost_price, sale_price, wholesale_price → pricing events emitted (line 187)."""
     tok = await _reg(client)
     r = await client.post("/items", headers=_h(tok), json={
-        "sku": "PRICED-001",
+        "status": "available", "sku": "PRICED-001",
         "name": "Priced Item",
         "quantity": 10,
         "cost_price": 25.0,
@@ -180,9 +180,9 @@ async def test_items_export_csv_derives_sell_by_measure(client):
     a piece item's pieces column shows the quantity. Matches the inventory table's
     derived columns; stored companions are absent on fresh items."""
     tok = await _reg(client)
-    r_ct = await client.post("/items", json={"sku": "CSV-CT", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6}, headers=_h(tok))
+    r_ct = await client.post("/items", json={"status": "available", "sku": "CSV-CT", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6}, headers=_h(tok))
     assert r_ct.status_code == 200, r_ct.text
-    r_pc = await client.post("/items", json={"sku": "CSV-PC", "name": "Piece Item", "sell_by": "piece", "quantity": 3}, headers=_h(tok))
+    r_pc = await client.post("/items", json={"status": "available", "sku": "CSV-PC", "name": "Piece Item", "sell_by": "piece", "quantity": 3}, headers=_h(tok))
     assert r_pc.status_code == 200, r_pc.text
 
     r_csv = await client.get("/items/export/csv", headers=_h(tok))
@@ -208,7 +208,7 @@ async def test_list_items_search_by_name(client):
     """Search by name (q param) returns matching item."""
     tok = await _reg(client)
     h = _h(tok)
-    await client.post("/items", json={"sku": "SRCH-N1", "name": "UniqueWidgetAlpha", "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "SRCH-N1", "name": "UniqueWidgetAlpha", "sell_by": "piece"}, headers=h)
     r = await client.get("/items?q=UniqueWidgetAlpha", headers=h)
     assert r.status_code == 200
     items = r.json()["items"]
@@ -221,7 +221,7 @@ async def test_list_items_search_by_barcode(client):
     """Search by barcode value returns matching item."""
     tok = await _reg(client)
     h = _h(tok)
-    r = await client.post("/items", json={"sku": "SRCH-B1", "name": "BarcodeItem", "barcode": "9876543210", "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SRCH-B1", "name": "BarcodeItem", "barcode": "9876543210", "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     r = await client.get("/items?q=9876543210", headers=h)
     assert r.status_code == 200
@@ -235,7 +235,7 @@ async def test_list_items_search_by_attribute(client):
     h = _h(tok)
     r = await client.post(
         "/items",
-        json={"sku": "SRCH-A1", "name": "AttrItem", "sell_by": "piece", "attributes": {"color": "crimsonred"}},
+        json={"status": "available", "sku": "SRCH-A1", "name": "AttrItem", "sell_by": "piece", "attributes": {"color": "crimsonred"}},
         headers=h,
     )
     assert r.status_code == 200
@@ -259,7 +259,7 @@ async def test_list_items_search_case_insensitive(client):
     """Search is case-insensitive."""
     tok = await _reg(client)
     h = _h(tok)
-    await client.post("/items", json={"sku": "SRCH-C1", "name": "CaseSensitiveTest", "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "SRCH-C1", "name": "CaseSensitiveTest", "sell_by": "piece"}, headers=h)
     r = await client.get("/items?q=casesensitivetest", headers=h)
     assert r.status_code == 200
     assert any(i.get("name") == "CaseSensitiveTest" for i in r.json()["items"])

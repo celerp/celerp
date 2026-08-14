@@ -78,7 +78,7 @@ async def test_finalize_succeeds_with_a_line(client):
     """Regression: the guard must not block the normal path - a doc with a line finalizes."""
     t = await _register(client)
     item = (await client.post("/items", headers=_h(t), json={
-        "sku": "OK-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": "OK-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": "invoice", "line_items": [
         {"entity_id": item, "sku": "OK-1", "name": "Widget", "quantity": 1, "unit_price": 10,
          "sell_by": "piece"}], "total": 10})).json()["id"]

@@ -40,7 +40,7 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
     # Stock an item with a known cost (qty 10 @ cost 10 -> cost_total 100), debiting inventory 1130-P
     # would normally happen on receive; here create the item directly with cost and sell part of it.
     item = (await client.post("/items", headers=_h(t), json={
-        "sku": "RECON-1", "name": "Widget", "quantity": 10, "sell_by": "piece", "cost_total": 100})).json()["id"]
+        "status": "available", "sku": "RECON-1", "name": "Widget", "quantity": 10, "sell_by": "piece", "cost_total": 100})).json()["id"]
 
     # Sell 10 @ price 20 -> COGS 100. Fulfilling posts the COGS JE.
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": "invoice", "line_items": [
@@ -70,7 +70,7 @@ async def test_audit_adjustment_uses_canonical_inventory_account(client):
     loc = (await client.post("/companies/me/locations", headers=_h(t),
                              json={"name": "WH", "type": "warehouse"})).json()["id"]
     item = (await client.post("/items", headers=_h(t), json={
-        "sku": "AUD-RECON", "name": "W", "quantity": 10, "sell_by": "piece", "cost_total": 100,
+        "status": "available", "sku": "AUD-RECON", "name": "W", "quantity": 10, "sell_by": "piece", "cost_total": 100,
         "location_id": loc, "barcode": "55510001"})).json()["id"]
     audit = (await client.post("/lists/audit", headers=_h(t), json={"location_id": loc})).json()["id"]
     assert (await client.post(f"/lists/{audit}/finalize", headers=_h(t))).status_code == 200
