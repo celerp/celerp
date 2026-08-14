@@ -1059,13 +1059,22 @@ a:hover { text-decoration: underline; }
 .search-result-item:last-child { border-bottom: none; }
 .search-result-item:hover { background: var(--c-bg3); }
 .search-result-item small { color: var(--c-text2); }
+.search-result-status { color: var(--c-text2); }
+/* Sold/archived items, voided documents, cancelled subscriptions/orders: greyed
+   so it is immediately clear the record is not active. */
+.search-result-item--inactive, .search-result-item--inactive small,
+.search-result-item--inactive .search-result-status { color: var(--c-text2); opacity: 0.75; }
 .search-empty { display: block; padding: 8px 12px; color: var(--c-text2); font-size: 12px; }
 .search-empty--table { text-align: center; padding: 32px 16px; color: var(--c-text2); font-style: italic; }
 .search-clear { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--c-text2); text-decoration: none; cursor: pointer; border: none; background: none; padding: 2px 6px; border-radius: 4px; }
 .search-clear:hover { background: var(--c-bg3); color: var(--c-text); }
 
-/* ─── Global search help (?) tooltip ──────────────────────────────────── */
+/* ─── Search help (?) tooltip (global bar + in-page search boxes) ─────── */
 .global-search-help-wrap { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); }
+/* In-page search box with an attached (?): same absolute-anchored affordance,
+   so the wrapper provides the positioning context and the input clears it. */
+.page-search-wrap { position: relative; display: inline-block; }
+.page-search-wrap .search-input { padding-right: 30px; }
 .global-search-help {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; padding: 0; font-size: 11px; font-weight: 600;

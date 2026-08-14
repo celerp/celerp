@@ -1019,7 +1019,7 @@ class TestEdgeCases:
         surfaces. Red at merge-base: /search calls list_items with only q+limit, no
         status, so the sold item is filtered out by the active-only default."""
         mock_items = AsyncMock(return_value={"items": [
-            {"name": "Sold Widget", "sku": "SW1", "entity_id": "item:sw1", "status": "sold"}], "total": 1})
+            {"name": "Sold Widget", "sku": "SW1", "id": "item:sw1", "status": "sold"}], "total": 1})
         with _Patches(_search_mocks(list_items=mock_items)):
             r = await ui.get("/search?q=widget", cookies=_c())
         assert r.status_code == 200
@@ -1054,7 +1054,7 @@ class TestEdgeCases:
         mocks = _search_mocks(
             get_journal=AsyncMock(side_effect=APIError(403, "Forbidden")),
             list_items=AsyncMock(return_value={"items": [
-                {"name": "Visible Item", "sku": "VI", "entity_id": "item:vi", "status": "active"}], "total": 1}),
+                {"name": "Visible Item", "sku": "VI", "id": "item:vi", "status": "available"}], "total": 1}),
             list_mfg_orders=AsyncMock(return_value={"items": [{"description": "MO Weld Batch", "id": "mo:2"}], "total": 1}),
             list_subscriptions=AsyncMock(return_value={"items": [{"name": "Silver Retainer", "id": "doc:sub2"}], "total": 1}),
         )
@@ -1075,7 +1075,7 @@ class TestEdgeCases:
         mocks = _search_mocks(
             list_subscriptions=AsyncMock(side_effect=APIError(500, "boom")),
             list_items=AsyncMock(return_value={"items": [
-                {"name": "Survivor Item", "sku": "SI", "entity_id": "item:si", "status": "active"}], "total": 1}),
+                {"name": "Survivor Item", "sku": "SI", "id": "item:si", "status": "available"}], "total": 1}),
             get_journal=AsyncMock(return_value={"entries": [{"je_id": "je:1", "memo": "Ledger Note", "lines": []}]}),
         )
         with _Patches(mocks):
@@ -1083,6 +1083,70 @@ class TestEdgeCases:
         assert r.status_code == 200
         assert b"Survivor Item" in r.content
         assert b"Ledger Note" in r.content
+
+    @pytest.mark.asyncio
+    async def test_global_search_links_to_detail_pages(self, ui):
+        """Each result links straight to its record's detail page using the "id" key
+        the list endpoints actually return. Red at merge-base: item/doc hrefs read an
+        "entity_id" key the endpoints do not return (so they render as /inventory/ and
+        /docs/ with no id), and contacts point at /crm/, a route that does not exist."""
+        mocks = _search_mocks(
+            list_items=AsyncMock(return_value={"items": [
+                {"name": "Linked Widget", "sku": "LW1", "id": "item:lw1", "status": "available"}], "total": 1}),
+            list_docs=AsyncMock(return_value={"items": [
+                {"doc_number": "INV-100", "doc_type": "invoice", "id": "doc:inv100", "status": "issued"}], "total": 1}),
+            list_contacts=AsyncMock(return_value={"items": [
+                {"name": "Linked Contact", "id": "contact:lc1"}], "total": 1}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=linked", cookies=_c())
+        assert r.status_code == 200
+        assert b'href="/inventory/item:lw1"' in r.content
+        assert b'href="/docs/doc:inv100"' in r.content
+        assert b'href="/contacts/contact:lc1"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_global_search_shows_status_and_greys_inactive(self, ui):
+        """Results with a status display it (so relevance is judgeable at a glance),
+        and sold/archived items and voided documents render greyed via the
+        --inactive modifier. Red at merge-base: no status is rendered and no
+        inactive class exists."""
+        mocks = _search_mocks(
+            list_items=AsyncMock(return_value={"items": [
+                {"name": "Live Widget", "sku": "AW1", "id": "item:aw1", "status": "available"},
+                {"name": "Gone Widget", "sku": "GW1", "id": "item:gw1", "status": "sold"}], "total": 2}),
+            list_docs=AsyncMock(return_value={"items": [
+                {"doc_number": "INV-200", "doc_type": "invoice", "id": "doc:inv200", "status": "void"}], "total": 1}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=widget", cookies=_c())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert "- Available" in body
+        assert "- Sold" in body
+        assert "- Void" in body
+        # Exactly the sold item and the void doc are greyed, not the available item.
+        assert body.count("search-result-item--inactive") == 2
+        live_anchor = next(a for a in body.split("<a ") if "Live Widget" in a)
+        assert "search-result-item--inactive" not in live_anchor
+
+    @pytest.mark.asyncio
+    async def test_global_search_actives_first(self, ui):
+        """Active records sort above inactive ones across the whole result list: a
+        voided doc from an earlier-queried module still lands below an available
+        item and an issued doc. Red at merge-base: results render strictly in
+        module order with no active/inactive partition."""
+        mocks = _search_mocks(
+            list_items=AsyncMock(return_value={"items": [
+                {"name": "Stale Widget", "sku": "SW9", "id": "item:sw9", "status": "archived"}], "total": 1}),
+            list_docs=AsyncMock(return_value={"items": [
+                {"doc_number": "INV-300", "doc_type": "invoice", "id": "doc:inv300", "status": "issued"}], "total": 1}),
+        )
+        with _Patches(mocks):
+            r = await ui.get("/search?q=zz", cookies=_c())
+        assert r.status_code == 200
+        body = r.content.decode()
+        assert body.index("INV-300") < body.index("Stale Widget")
 
     @pytest.mark.asyncio
     async def test_unicode_in_search(self, ui):
