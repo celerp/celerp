@@ -1021,8 +1021,10 @@ a:hover { text-decoration: underline; }
 .preset-btn--active { color: var(--c-accent); border-color: var(--c-accent); background: rgba(14,165,122,0.08); }
 /* On-page search scope: small centered label above the box naming what it
    searches, so it reads differently from the global header search. */
-.search-scope { display: inline-flex; flex-direction: column; }
-.search-scope-label { text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; }
+/* The label is lifted out of the flow (absolute, on the row above) so the box
+   itself stays vertically aligned with the neighbouring header buttons. */
+.search-scope { position: relative; display: inline-block; }
+.search-scope-label { position: absolute; bottom: 100%; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; white-space: nowrap; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
 .date-input {
   padding: 4px 8px; font-size: 11px; border-radius: var(--radius);
