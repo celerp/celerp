@@ -1254,7 +1254,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .badge--audit { background: rgba(217,119,6,0.15); color: var(--c-amber); border: 1px solid rgba(217,119,6,0.3); }
 .badge--purchase-order { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
 .badge--received { background: rgba(34,197,94,0.15); color: var(--c-green-dark); border: 1px solid rgba(34,197,94,0.3); }
-.badge--reserved { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--disposed { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
 
 /* ─── Inline form tweaks ───────────────────────────────────── */

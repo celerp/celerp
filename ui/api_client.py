@@ -750,6 +750,16 @@ async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]
         return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
 
 
+async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
+                        new_status: str, is_list: bool = False) -> dict:
+    """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
+    whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
+    base = "/lists" if is_list else "/docs"
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines",
+                                   json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
+
+
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={"items": items, "notes": notes})).json()
