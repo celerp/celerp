@@ -523,8 +523,8 @@ class TestClickToEdit:
         schema = [{"key": field, "label": field, "type": "number", "editable": True}]
         item = {"entity_id": "gc:123", field: 5}
         # Operator holds edit_inventory (default) but edit_inventory_amounts is
-        # raised to manager, so the amount cell must render read-only.
-        company = {"settings": {"role_permissions": {"edit_inventory_amounts": "manager"}}}
+        # granted only to manager and up, so the amount cell must render read-only.
+        company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
@@ -538,6 +538,63 @@ class TestClickToEdit:
             )
         assert r.status_code == 200
         assert b"<input" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_sell_by_cell_readonly_without_permission(self, ui_client):
+        """GET the single-field edit cell for sell_by, as a role lacking
+        edit_inventory_amounts, returns a non-editable display cell: no <input> and
+        no <select>, so the unit field cannot enter edit state without the amount
+        permission (sell_by server-syncs quantity, so it is amount-gated too)."""
+        schema = [{"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
+        item = {"entity_id": "gc:123", "sell_by": "piece"}
+        # Operator holds edit_inventory (default); edit_inventory_amounts is granted
+        # only to manager and up, so the sell_by cell must render read-only.
+        company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
+        units = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
+        ):
+            r = await ui_client.get(
+                "/api/items/gc:123/field/sell_by/edit",
+                cookies=_authed(role="operator"),
+            )
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<select" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_sell_by_paired_edit_readonly_without_permission(self, ui_client):
+        """GET the paired-edit cell for sell_by, as a role lacking
+        edit_inventory_amounts, returns the read-only paired display: no <input> and
+        no <select>, so the sell unit cannot enter edit state from its paired entry
+        point either (it server-syncs quantity, so it is amount-gated like the
+        single-field cell)."""
+        schema = [{"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
+        item = {"entity_id": "gc:123", "sell_by": "piece", "quantity": 5}
+        # Operator holds edit_inventory (default); edit_inventory_amounts is granted
+        # only to manager and up, so the paired sell_by cell must render read-only.
+        company = {"settings": {"role_grants": {"edit_inventory_amounts": ["manager", "admin", "owner"]}}}
+        units = [{"name": "piece", "unit_type": "count"}, {"name": "gram", "unit_type": "weight"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
+        ):
+            r = await ui_client.get(
+                "/api/items/gc:123/field/sell_by/paired-edit",
+                cookies=_authed(role="operator"),
+            )
+        assert r.status_code == 200
+        assert b"<input" not in r.content
+        assert b"<select" not in r.content
 
     @pytest.mark.asyncio
     async def test_patch_item_field_returns_display_td(self, ui_client):
@@ -2343,6 +2400,28 @@ class TestCSSConsistency:
         css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
         assert "dashed" in css
         assert "cell--clickable" in css
+
+    @pytest.mark.asyncio
+    async def test_paired_readonly_cell_not_editable_css(self):
+        """A paired cell rendered read-only (a role lacking the amount permission)
+        must not look clickable: both --readonly halves drop the pointer cursor and
+        the dashed underline the editable paired cells carry.
+
+        Red at merge-base: no .paired-primary--readonly / .paired-secondary--readonly
+        styling exists yet.
+        """
+        import pathlib
+        import re
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        assert "paired-primary--readonly" in css
+        assert "paired-secondary--readonly" in css
+        # The rule covering the read-only primary half (grouped selector may also
+        # name the secondary half) turns off both click affordances.
+        m = re.search(r"\.paired-primary--readonly[^{]*\{[^}]*\}", css)
+        assert m, "no rule targeting .paired-primary--readonly"
+        block = m.group(0)
+        assert re.search(r"cursor:\s*default", block), block
+        assert re.search(r"border-bottom:\s*none", block), block
 
     @pytest.mark.asyncio
     async def test_column_manager_css_exists(self):

@@ -152,10 +152,27 @@ async def perm_setup(client, session):
 
 
 async def grant_permission(client, admin_headers: dict, permission: str, role: str) -> None:
-    """Set a company role_permissions override via the settings merge."""
-    r = await client.patch(
-        "/companies/me",
-        json={"settings": {"role_permissions": {permission: role}}},
-        headers=admin_headers,
-    )
-    assert r.status_code == 200, r.text
+    """Set *permission* so exactly *role* and the roles above it hold it, through the
+    owner-gated permissions matrix endpoint.
+
+    Role grants are per-role now, so this helper reproduces the single threshold its
+    callers rely on: it sets each role's cell to granted when the role is at or above
+    *role* (clamped up to the permission's floor) and to revoked when it is below.
+    That is the exact effect the old threshold override produced - every role above
+    the line holds the permission and every role below it does not - so callers that
+    "raise a key above operator" keep working unchanged. admin_headers must be an
+    owner token (register_admin creates the owner); grants can only be written
+    through this endpoint.
+    """
+    from celerp.services.auth import ROLE_LEVELS
+    from celerp.services.permissions import PERMISSIONS
+
+    perm = next(p for p in PERMISSIONS if p.key == permission)
+    target = max(ROLE_LEVELS[role], ROLE_LEVELS[perm.floor_role])
+    for role_key, level in ROLE_LEVELS.items():
+        r = await client.patch(
+            "/companies/me/role-permissions",
+            json={"perm_key": permission, "role_key": role_key, "granted": level >= target},
+            headers=admin_headers,
+        )
+        assert r.status_code == 200, r.text

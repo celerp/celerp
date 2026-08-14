@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
@@ -852,7 +852,13 @@ async def _inventory_content(
     #inventory-content so the entire dynamic section re-renders consistently.
     """
     try:
-        valuation = await api.get_valuation(token, category=p.get("category") or None, status=p.get("status") or None)
+        valuation = await api.get_valuation(
+            token,
+            category=p.get("category") or None,
+            status=p.get("status") or None,
+            on_memo_to=p.get("on_memo_to") or None,
+            consigned_from=p.get("consigned_from") or None,
+        )
         params: dict = {"limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
         if p["q"]:
             params["q"] = p["q"]
@@ -2324,10 +2330,10 @@ function celerpPrintLabel(entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False)
-        if field in AMOUNT_ITEM_KEYS and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts"):
-            # Amount fields (quantity/weight/pieces/gross_weight) are gated by
-            # edit_inventory_amounts: this GET is the single edit-entry chokepoint, so no
-            # amount cell can enter edit state without the permission, however it rendered.
+        if field in AMOUNT_EDIT_GATED_KEYS and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts"):
+            # Amount fields (quantity/weight/pieces/gross_weight) and sell_by are gated
+            # by edit_inventory_amounts: this GET is the single edit-entry chokepoint, so
+            # no gated cell can enter edit state without the permission, however it rendered.
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -3124,6 +3130,7 @@ function celerpPrintLabel(entityId, templateId) {
             primary_options=pri_opts, secondary_options=sec_opts,
             format_fn=fmt_fn,
             primary_editable=(pri_def or {}).get("editable", True),
+            secondary_editable=(sec_def or {}).get("editable", True),
         )
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
@@ -3142,11 +3149,12 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
-        if field in AMOUNT_ITEM_KEYS:
+        if field in AMOUNT_EDIT_GATED_KEYS:
             # The paired cell is a second inline-edit entry point for amount fields
-            # (quantity/weight/gross_weight); gate it exactly like field_edit_cell so no
-            # amount can be hand-set without edit_inventory_amounts. Restore the read-only
-            # paired cell rather than an editable input.
+            # (quantity/weight/gross_weight) and the sell unit; gate it exactly like
+            # field_edit_cell so nothing gated can be hand-set without
+            # edit_inventory_amounts. Restore the read-only paired cell rather than an
+            # editable input.
             try:
                 _pe_company = await api.get_company(token)
             except Exception:
@@ -5222,7 +5230,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             sec_type = "select" if sec_opts else sec_def.get("type", "text")
             def _make(pri=primary, sec=secondary, pt=pri_def.get("type", "number"),
                       st=sec_type, po=pri_def.get("options"), so=sec_opts, _um=_umap,
-                      ped=pri_def.get("editable", True)):
+                      ped=pri_def.get("editable", True), sed=sec_def.get("editable", True)):
                 def renderer(entity_id: str, row: dict, _umap=_um):
                     # Format primary numeric value using its unit's decimal precision
                     raw_pri = row.get(pri, "")
@@ -5235,6 +5243,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         primary_type=pt, secondary_type=st,
                         primary_options=po, secondary_options=so,
                         primary_editable=ped,
+                        secondary_editable=sed,
                     )
                 return renderer
             renderers[primary] = _make()
@@ -5776,16 +5785,16 @@ def _apply_unit_field_override(
 
 
 def _apply_amount_edit_permission(schema: list[dict], role: str, settings: dict) -> list[dict]:
-    """Return *schema* with amount fields marked read-only when *role* lacks the
-    edit_inventory_amounts permission. One transform at the schema source,
-    mirroring apply_field_visibility for costs (celerp.services.cost_visibility):
+    """Return *schema* with amount fields and the sell unit marked read-only when
+    *role* lacks the edit_inventory_amounts permission. One transform at the schema
+    source, mirroring apply_field_visibility for costs (celerp.services.cost_visibility):
     every cell that reads a field's 'editable' flag - the data_table default cells
-    and the weight/pieces renderers alike - inherits the restriction, so no amount
+    and the weight/pieces renderers alike - inherits the restriction, so no gated
     cell renders as click-to-edit without the permission. The backend edit
     endpoints enforce the same gate regardless of what the UI drew."""
     if role_has_permission(settings, role, "edit_inventory_amounts"):
         return schema
-    return [{**f, "editable": False} if f.get("key") in AMOUNT_ITEM_KEYS else f for f in schema]
+    return [{**f, "editable": False} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
 
 
 def _resolve_field_def(

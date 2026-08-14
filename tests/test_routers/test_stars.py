@@ -56,7 +56,7 @@ async def test_cta_empty_when_disabled(client, monkeypatch):
     monkeypatch.setattr(settings, "star_cta_enabled", False)
     r = await client.get("/stars/cta", headers=_h(token))
     assert r.status_code == 200
-    assert r.json() == {}
+    assert r.json() == {"mode": "neutral"}
 
 
 @pytest.mark.asyncio

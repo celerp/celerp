@@ -1,10 +1,15 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for /settings/cloud-status and /settings/email-status HTMX fragments."""
+"""Tests for /settings/cloud-status HTMX fragment and email-status removal.
+
+The email-status endpoint and fragment were removed project-wide (item 4b).
+"""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,63 +17,30 @@ import celerp.gateway.state as gw_state
 
 
 # ---------------------------------------------------------------------------
-# /settings/email-status
+# /settings/email-status removal verification (item 4b)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_email_status_no_config(client):
-    """Returns smtp_configured=False, gateway_connected=False when nothing configured."""
-    with (
-        patch("celerp.config.settings.smtp_host", ""),
-        patch("celerp.config.settings.gateway_token", ""),
-    ):
-        r = await client.get("/settings/email-status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["smtp_configured"] is False
-    assert data["gateway_connected"] is False
+async def test_email_status_backend_route_removed(client):
+    """GET /settings/email-status (backend) returns 404 after removal.
+
+    Red statement: The route exists and returns 200 (health.py:174).
+    """
+    r = await client.get("/settings/email-status")
+    assert r.status_code == 404, (
+        f"Expected 404 for removed email-status route, got {r.status_code}"
+    )
 
 
-@pytest.mark.asyncio
-async def test_email_status_smtp_configured(client):
-    """Returns smtp_configured=True when smtp_host is set."""
-    with (
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.gateway_token", ""),
-    ):
-        r = await client.get("/settings/email-status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["smtp_configured"] is True
-    assert data["gateway_connected"] is False
-
-
-@pytest.mark.asyncio
-async def test_email_status_gateway_configured(client):
-    """Returns gateway_connected=True when gateway_token is set."""
-    with (
-        patch("celerp.config.settings.smtp_host", ""),
-        patch("celerp.config.settings.gateway_token", "mytoken"),
-    ):
-        r = await client.get("/settings/email-status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["smtp_configured"] is False
-    assert data["gateway_connected"] is True
-
-
-@pytest.mark.asyncio
-async def test_email_status_both_configured(client):
-    """Both smtp_configured and gateway_connected can be True simultaneously."""
-    with (
-        patch("celerp.config.settings.smtp_host", "smtp.example.com"),
-        patch("celerp.config.settings.gateway_token", "mytoken"),
-    ):
-        r = await client.get("/settings/email-status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["smtp_configured"] is True
-    assert data["gateway_connected"] is True
+def test_email_locale_key_removed():
+    """settings._email_notifications_are_disabled is absent from every locale file."""
+    locale_dir = Path(__file__).parent.parent / "ui" / "locales"
+    for locale_file in locale_dir.glob("*.json"):
+        data = json.loads(locale_file.read_text())
+        settings_keys = data.get("settings", {})
+        assert "_email_notifications_are_disabled" not in settings_keys, (
+            f"Locale key settings._email_notifications_are_disabled still present in {locale_file.name}"
+        )
 
 
 # ---------------------------------------------------------------------------

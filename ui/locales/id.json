@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ Terhubung",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ Harga biaya dilacak per item dari dokumen pembelian, bukan sebagai daftar harga.",
   "settings._default": "★ Bawaan",
-  "settings._email_notifications_are_disabled": "⚠ Notifikasi email dinonaktifkan.",
   "settings._local_filesystem_no_connection_needed": "✓ Sistem file lokal - tidak diperlukan koneksi.",
   "settings._restored_previous_db_url_restarting": "↩ URL DB sebelumnya dipulihkan. Memulai ulang...",
   "settings._saved": "✓ Disimpan.",

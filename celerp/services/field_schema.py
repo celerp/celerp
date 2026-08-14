@@ -24,6 +24,13 @@ MIXED_VALUE = "Mixed"
 # COST_ITEM_KEYS precedent in celerp.services.cost_visibility.
 AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "gross_weight"})
 
+# Fields whose edit is gated by edit_inventory_amounts. Superset of the numeric
+# amount keys with sell_by added: changing the sell unit rewrites quantity, so it
+# carries the same authority as editing an amount directly. Kept distinct from
+# AMOUNT_ITEM_KEYS, which also drives the non-negative numeric validator on create
+# and import - sell_by is a unit string and must never reach that float() path.
+AMOUNT_EDIT_GATED_KEYS: frozenset[str] = AMOUNT_ITEM_KEYS | {"sell_by"}
+
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Wholesale"},
