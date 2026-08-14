@@ -8,7 +8,7 @@ and literal SKU/text substrings) is tested here without a database.
 """
 from __future__ import annotations
 
-from celerp_inventory.routes import item_matches_query
+from celerp_inventory.routes import item_matches_query, query_match_reasons
 
 
 def _item(**overrides) -> dict:
@@ -59,3 +59,26 @@ def test_inventory_search_and_operator():
     # An empty AND-term is dropped, not treated as a match-all.
     assert item_matches_query(bolt7, "bolt & ")
     assert not item_matches_query(washer, "bolt & ")
+
+
+def test_inventory_search_match_reasons():
+    """query_match_reasons names the (field, matched text) behind each hit: the term
+    for substring hits, the whole number for numeric hits, one reason per AND term
+    of the winning group, and None on a miss."""
+    item = _item(name="Widget", sku="WDGT", barcode="000255", quantity=37)
+    # Substring hit on a hidden field reports that field and the term.
+    assert query_match_reasons(item, "255") == [("barcode", "255")]
+    # Numeric-exact hit reports the field and the full number.
+    assert query_match_reasons(_item(quantity=255), "255") == [("quantity", "255")]
+    # A range hit reports the value that fell inside the range.
+    assert query_match_reasons(item, "10-50") == [("quantity", "37")]
+    # `a & b` returns one reason per AND term, in term order.
+    assert query_match_reasons(item, "widget & 255") == [("name", "widget"), ("barcode", "255")]
+    # Attribute values (flattened to top level) report their attribute key.
+    assert query_match_reasons(_item(color="ruby red"), "ruby") == [("color", "ruby")]
+    # A visible-field hit is still reported; the UI decides not to render a tag.
+    assert query_match_reasons(item, "widget") == [("name", "widget")]
+    assert query_match_reasons(item, "nope") is None
+    # item_matches_query stays the boolean view of the same grammar.
+    assert item_matches_query(item, "255")
+    assert not item_matches_query(item, "nope")

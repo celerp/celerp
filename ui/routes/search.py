@@ -30,6 +30,33 @@ async def _safe(coro):
         return {}
 
 
+def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
+    """`- field: value` tags for the record's search-match reasons (q_match, set by
+    the inventory list endpoint) in fields the row does not already display, with
+    the matched part of the value bold and long values clipped to a window around
+    it. A reason whose field is missing from the record (e.g. hidden by role
+    visibility) renders no tag."""
+    tags = []
+    for reason in record.get("q_match") or []:
+        field, match = reason.get("field") or "", str(reason.get("match") or "")
+        if not field or not match or field in visible:
+            continue
+        raw = record.get(field)
+        if raw is None or raw == "":
+            continue
+        value = format(raw, "g") if isinstance(raw, (int, float)) else str(raw)
+        i = value.lower().find(match.lower())
+        if i < 0:
+            continue
+        pre, hit, post = value[:i], value[i:i + len(match)], value[i + len(match):]
+        if len(pre) > 24:
+            pre = "..." + pre[-24:]
+        if len(post) > 24:
+            post = post[:24] + "..."
+        tags.append(Span(f" - {field}: ", pre, Strong(hit), post, cls="search-result-match"))
+    return tags
+
+
 def setup_routes(app):
 
     @app.get("/search")
@@ -111,6 +138,7 @@ def setup_routes(app):
                 rendered.append((inactive, A(
                     f"{icon} {label}",
                     Small(f" ({sub})") if sub else "",
+                    *_match_tags(record, ("name", "sku")),
                     Span(f" - {status_label}", cls="search-result-status") if status_label else "",
                     href=href_fn(record),
                     cls="search-result-item search-result-item--inactive" if inactive else "search-result-item",

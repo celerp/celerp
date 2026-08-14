@@ -1073,6 +1073,10 @@ a:hover { text-decoration: underline; }
 .search-result-item:hover { background: var(--c-bg3); }
 .search-result-item small { color: var(--c-text2); }
 .search-result-status { color: var(--c-text2); }
+/* "- field: value" tag naming the hidden field a search hit matched; the matched
+   part of the value is bold so the reason for the result is instantly visible. */
+.search-result-match { color: var(--c-text2); }
+.search-result-match strong { color: var(--c-text); }
 /* Sold/archived items, voided documents, cancelled subscriptions/orders: greyed
    so it is immediately clear the record is not active. */
 .search-result-item--inactive, .search-result-item--inactive small,
