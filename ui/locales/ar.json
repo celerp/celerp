@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ متصل",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ يتم تتبع سعر التكلفة لكل عنصر من مستندات الشراء، وليس كقائمة أسعار.",
   "settings._default": "★ الافتراضي",
-  "settings._email_notifications_are_disabled": "⚠ تم تعطيل إشعارات البريد الإلكتروني.",
   "settings._local_filesystem_no_connection_needed": "✓ نظام الملفات المحلي - لا حاجة للاتصال.",
   "settings._restored_previous_db_url_restarting": "↩ تمت استعادة عنوان URL لقاعدة البيانات السابقة. جارٍ إعادة التشغيل...",
   "settings._saved": "✓ المحفوظة.",

@@ -2,6 +2,7 @@
 
 Full set of Celerp screens captured for **Aurelia Atelier** (fictional demo data). Part of the [Celerp press kit](../../README.md).
 
+<!-- PRESS_KIT:gallery start -->
 ### Dashboard - revenue trend, receivables aging, and inventory mix
 
 ![Dashboard - revenue trend, receivables aging, and inventory mix](dashboard.webp)
@@ -42,9 +43,9 @@ Full set of Celerp screens captured for **Aurelia Atelier** (fictional demo data
 
 ![Balance sheet generated live from the event-sourced ledger](balance-sheet.webp)
 
-### Immutable audit log of every change
+### Accounting journal - register of financial postings
 
-![Immutable audit log of every change](audit-log.webp)
+![Accounting journal - register of financial postings](audit-log.webp)
 
 ### Role-based access permissions
 
@@ -53,6 +54,15 @@ Full set of Celerp screens captured for **Aurelia Atelier** (fictional demo data
 ### Built-in REST API for integrations
 
 ![Built-in REST API for integrations](rest-api.webp)
+
+### Statement of account - customer receivables at a glance
+
+![Statement of account - customer receivables at a glance](statement-of-account.webp)
+
+### Memo holdings - items out on consignment by customer
+
+![Memo holdings - items out on consignment by customer](memo-holdings.webp)
+<!-- PRESS_KIT:gallery end -->
 
 ## Usage & copyright
 

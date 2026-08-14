@@ -1185,7 +1185,9 @@ _STICKY_HEADER_JS = """
     var thead = t.tHead;
     if(thead){
       thead.style.display = ''; thead.style.tableLayout = ''; thead.style.width = ''; thead.style.left = '';
-      if(thead.rows.length){ var cells = thead.rows[0].cells; for(var i=0;i<cells.length;i++) cells[i].style.width = ''; }
+      // Leave the cell widths in place: they carry the user's applied/resized column sizes, and a
+      // re-pin recaptures from them. Blanking them here dropped custom widths on scroll-up and wiped
+      // an in-progress resize before it could persist.
     }
     t.style.tableLayout = ''; t.style.width = '';
     clearPinArtifacts(t);
@@ -1200,6 +1202,9 @@ _STICKY_HEADER_JS = """
 
   function evaluate(full){
     if(printing || (mqPrint && mqPrint.matches)){ unpinAll(); return; }
+    // A column resize sets th widths pixel by pixel; leave the header alone until the drag ends,
+    // or the per-mutation re-pin recaptures the pre-drag width every move and the drag never sticks.
+    if(document.body && document.body.classList.contains('col-resizing')) return;
     pauseObserver(function(){
       var tables = document.querySelectorAll(SEL);
       for(var i=0;i<tables.length;i++){

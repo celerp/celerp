@@ -5,8 +5,10 @@
 ROLES derives from auth.ROLE_LEVELS so the numeric hierarchy stays
 single-sourced; PERMISSIONS is the ordered catalogue of every role-gated
 behavior, with per-company overrides stored under Company.settings
-["role_permissions"] as {permission_key: minimum_role_key}. Only changed
-permissions are stored; everything else resolves to its registry default.
+["role_grants"] as {permission_key: [role_key, ...]} - the explicit set of
+roles granted each overridden permission. Only changed permissions are stored;
+everything else resolves to its registry default set. Each role is granted
+independently: a grant to one role never implies a grant to any other.
 """
 from __future__ import annotations
 
@@ -96,28 +98,36 @@ def is_permission_key(key: str) -> bool:
     return key in _PERMISSIONS_BY_KEY
 
 
-def permission_min_level(settings: dict | None, key: str) -> int:
-    """Resolve the minimum role level for *key*: override if valid, else default.
+def resolved_grant_roles(settings: dict | None, key: str) -> set[str]:
+    """The set of role keys granted *key* for this company.
 
-    An override naming a role that no longer exists in ROLE_LEVELS is ignored
-    in favor of the default: never a crash, never an accidental grant.
+    Stored override (Company.settings["role_grants"][key]) if present, else the
+    registry default set {r : level(r) >= level(default_role)}. A stored set is
+    intersected with the roles at or above floor_role, so a grandfathered or
+    hand-edited grant can never drop a permission below its floor. A stored role
+    that no longer exists in ROLE_LEVELS is ignored: never a crash, never an
+    accidental grant. A fixed (non-grantable) permission never consults stored
+    grants, so no crafted role_grants entry can widen an owner-only permission.
+    Each role is resolved independently: membership carries no hierarchy.
     """
     perm = _PERMISSIONS_BY_KEY[key]
+    floor = ROLE_LEVELS[perm.floor_role]
     if perm.grantable:
-        overrides = (settings or {}).get("role_permissions") or {}
-        override_role = overrides.get(key)
-        if override_role in ROLE_LEVELS:
-            return max(ROLE_LEVELS[override_role], ROLE_LEVELS[perm.floor_role])
-    return ROLE_LEVELS[perm.default_role]
+        grants = (settings or {}).get("role_grants") or {}
+        if key in grants:
+            stored = grants.get(key) or []
+            return {r for r in stored if r in ROLE_LEVELS and ROLE_LEVELS[r] >= floor}
+    default = ROLE_LEVELS[perm.default_role]
+    return {r for r in ROLE_LEVELS if ROLE_LEVELS[r] >= default}
 
 
 def role_has_permission(settings: dict | None, role: str, key: str) -> bool:
-    """True when *role* meets the permission's resolved minimum.
+    """True when *role* is in the permission's resolved grant set.
 
     *role* is the already-migrated role key from get_current_role; an
-    unrecognized role resolves to level 0 and fails closed.
+    unrecognized role is absent from every set and so fails closed.
     """
-    return ROLE_LEVELS.get(role, 0) >= permission_min_level(settings, key)
+    return role in resolved_grant_roles(settings, key)
 
 
 def assert_role_permission(settings: dict | None, role: str, key: str) -> None:

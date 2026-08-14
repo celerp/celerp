@@ -356,7 +356,47 @@ log = logging.getLogger(__name__)
 _storage_uri = settings.redis_url or "memory://"
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], storage_uri=_storage_uri)
 
-app = FastAPI(title="Celerp", docs_url=None, redoc_url=None, lifespan=lifespan)
+_OPENAPI_TAGS = [
+    {"name": "auth", "description": "Sign in, sessions, and access tokens."},
+    {"name": "companies", "description": "Companies, members, and roles."},
+    {"name": "items", "description": "Inventory items, stock, and valuation."},
+    {"name": "docs", "description": "Invoices, purchase orders, quotations, and credit notes."},
+    {"name": "lists", "description": "Shipping documents and packing lists."},
+    {"name": "accounting", "description": "Chart of accounts and journal entries."},
+    {"name": "ledger", "description": "Event-sourced ledger and projections."},
+    {"name": "reports", "description": "Financial statements and aging reports."},
+    {"name": "manufacturing", "description": "Bills of materials and production orders."},
+    {"name": "labels", "description": "Label templates and barcode printing."},
+    {"name": "crm", "description": "Contacts, pipeline, and activity."},
+    {"name": "subscriptions", "description": "Recurring billing and auto-invoicing."},
+    {"name": "connectors", "description": "External integrations."},
+    {"name": "payments", "description": "Payment collection."},
+    {"name": "backup", "description": "Data export and import."},
+    {"name": "notifications", "description": "In-app notifications."},
+    {"name": "events", "description": "Server-sent event stream for live updates."},
+    {"name": "system", "description": "Health, status, and instance metadata."},
+]
+
+_OPENAPI_DESCRIPTION = "REST API for Celerp, the self-hosted business management platform."
+
+
+def _openapi_settings() -> dict:
+    """FastAPI OpenAPI kwargs for the current settings. Production keeps the schema
+    unserved (openapi_url=None); the press-kit capture harness turns
+    expose_openapi_schema on to publish it for the API reference shot, and that
+    non-default state is logged so it is never silent. Isolated so the exposure
+    boundary is unit-testable without reconstructing the whole app."""
+    expose = settings.expose_openapi_schema
+    if expose:
+        log.warning("expose_openapi_schema is on: serving the public OpenAPI schema at /openapi.json")
+    return {
+        "description": _OPENAPI_DESCRIPTION,
+        "openapi_tags": _OPENAPI_TAGS,
+        "openapi_url": "/openapi.json" if expose else None,
+    }
+
+
+app = FastAPI(title="Celerp", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)

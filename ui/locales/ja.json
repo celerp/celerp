@@ -1206,7 +1206,6 @@
   "settings._connected": "✓ 接続済み",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "ℹ️ 原価は価格表としてではなく、購入書類からアイテムごとに追跡されます。",
   "settings._default": "★デフォルト",
-  "settings._email_notifications_are_disabled": "⚠メール通知は無効になっています。",
   "settings._local_filesystem_no_connection_needed": "✓ ローカル ファイル システム - 接続は必要ありません。",
   "settings._restored_previous_db_url_restarting": "↩ 以前の DB URL を復元しました。再起動中...",
   "settings._saved": "✓ 保存されました。",

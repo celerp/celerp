@@ -2157,30 +2157,6 @@ def setup_routes(app):
             public_url=data.get("public_url", ""),
         )
 
-    @app.get("/settings/email-status")
-    async def email_status_fragment(request: Request):
-        """HTMX fragment: render email warning banner if not configured."""
-        import httpx
-        from ui.config import API_BASE
-        token = _token(request)
-        try:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
-                r = await c.get("/settings/email-status", headers=headers)
-                data = r.json() if r.status_code == 200 else {}
-        except Exception:
-            data = {}
-        smtp_configured = data.get("smtp_configured", False)
-        gateway_connected = data.get("gateway_connected", False)
-        if not smtp_configured and not gateway_connected:
-            return Div(t("settings._email_notifications_are_disabled"),
-                A(t("settings.connect_to_celerp_cloud"), href="https://celerp.com/pricing", target="_blank"),
-                " or configure SMTP to send invoices and alerts.",
-                id="email-warning-banner",
-                cls="flash flash--warning flex-row gap-xs",
-            )
-        return Div(id="email-warning-banner")  # empty - no banner needed
-
     # ── Verticals / Category Library endpoints ───────────────────────
 
     @app.post("/settings/verticals/apply-preset")
@@ -3093,8 +3069,8 @@ def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
 
     A cell is interactive only for the owner, on a grantable permission, and never
     for the always-granted owner column; every other cell renders disabled. Toggling
-    a cell saves through the per-toggle route and swaps this whole row, so the higher
-    roles that inherit the change light up at once."""
+    a cell saves through the per-toggle route and swaps this whole row, so only the
+    toggled role changes and every other role keeps the grant it already had."""
     from celerp.services.permissions import ROLES, role_has_permission
 
     reason = _FIXED_ROW_REASON.get(perm.key) if not perm.grantable else None
@@ -3141,8 +3117,9 @@ def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = 
             cls="data-table role-ref-table",
         ),
         P(
-            "Roles are hierarchical - each role inherits every permission from the roles below it. "
-            "There must always be at least one Owner.",
+            "Each role's permissions are set independently: granting or removing a "
+            "permission for one role never changes any other role. There must always "
+            "be at least one Owner.",
             cls="role-ref-note",
         ),
         cls="role-ref-details mt-lg",

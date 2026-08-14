@@ -746,6 +746,7 @@ def paired_display_cell(
     secondary_options: list[str] | None = None,
     format_fn=None,
     primary_editable: bool = True,
+    secondary_editable: bool = True,
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
@@ -756,9 +757,10 @@ def paired_display_cell(
     format_fn: optional callable(value) -> str for formatting the primary value.
     When provided, it is used instead of str(). Callers supply unit-aware formatters
     (e.g. format_qty) without coupling this generic component to inventory logic.
-    primary_editable: when False the primary (amount) value renders as a plain,
-    non-clickable span - no dblclick trigger, no edit affordance - while the
-    secondary unit stays editable. Used to honor the edit_inventory_amounts gate.
+    primary_editable / secondary_editable: when False the corresponding value renders
+    as a plain, non-clickable span - no dblclick trigger, no edit affordance. The
+    sell unit gates on the same edit_inventory_amounts permission as the amount it
+    pairs with, because changing the unit rewrites the amount.
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
@@ -780,9 +782,7 @@ def paired_display_cell(
         if primary_editable
         else Span(pri_disp, cls="paired-primary paired-primary--readonly")
     )
-    return Td(
-        pri_span,
-        Span(" ", cls="paired-sep"),
+    sec_span = (
         Span(
             sec_disp,
             cls="paired-secondary",
@@ -791,7 +791,14 @@ def paired_display_cell(
             hx_target="closest td",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-        ),
+        )
+        if secondary_editable
+        else Span(sec_disp, cls="paired-secondary paired-secondary--readonly")
+    )
+    return Td(
+        pri_span,
+        Span(" ", cls="paired-sep"),
+        sec_span,
         cls=f"cell cell--paired",
         data_col=primary_field,
     )
@@ -1457,13 +1464,15 @@ def data_table(
   function saveWidths() {{
     var w = {{}};
     ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
-    localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
+    try {{ localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); }} catch(e) {{}}
   }}
-  // Restore persisted widths on load — defer to rAF so HTMX-swapped DOM has committed layout
-  requestAnimationFrame(function() {{
+  // Restore persisted widths synchronously. A saved width is an explicit px value that needs no
+  // committed layout, and applying it before the sticky controller can pin the header is what keeps
+  // the frozen header's captured geometry in step with the body for a custom column layout.
+  (function() {{
     var saved = loadWidths();
     if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }});
+  }})();
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
@@ -1475,6 +1484,9 @@ def data_table(
       startW = th.offsetWidth;
       e.preventDefault();
       e.stopPropagation();
+      // Signal an in-progress resize so the sticky-header controller leaves the header alone while
+      // dragging (its per-mutation re-pin would otherwise recapture the pre-drag width every pixel).
+      document.body.classList.add('col-resizing');
       var scrollWrap = table.closest('.table-scroll-wrap');
       var autoScrollRaf = null;
       function onMove(e2) {{
@@ -1499,6 +1511,10 @@ def data_table(
         document.removeEventListener('mouseup', onUp);
         if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
         saveWidths();
+        document.body.classList.remove('col-resizing');
+        // Let the sticky controller recapture the new width once, now the drag is over, so a pinned
+        // header re-aligns its body to the dragged column instead of staying at the old geometry.
+        window.dispatchEvent(new Event('resize'));
       }}
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);

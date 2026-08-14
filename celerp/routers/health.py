@@ -171,16 +171,6 @@ async def backup_status() -> dict:
     }
 
 
-@router.get("/settings/email-status")
-async def email_status() -> dict:
-    """Return whether SMTP and/or gateway are configured for email sending."""
-    from celerp.config import settings
-    return {
-        "smtp_configured": bool(settings.smtp_host),
-        "gateway_connected": bool(settings.gateway_token),
-    }
-
-
 @router.post("/settings/cloud-disconnect", dependencies=[Depends(get_current_user)])
 async def cloud_disconnect() -> dict:
     """Stop the gateway WebSocket client and record a sticky Cloud disconnect.

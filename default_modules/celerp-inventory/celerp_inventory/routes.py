@@ -23,7 +23,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -602,6 +602,8 @@ async def list_items(
 async def get_valuation(
     category: str | None = None,
     status: str | None = None,
+    on_memo_to: str | None = None,
+    consigned_from: str | None = None,
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
@@ -610,14 +612,42 @@ async def get_valuation(
     """Aggregate inventory valuation from projections.
 
     Optional ?category= and ?status= filters scope totals + count_by_status to that slice.
-    category_counts is always global (all active items) — used by the category tab bar.
-    count_by_status is scoped to the current category/status filter — used by status cards.
+    on_memo_to: customer contact_id. Scope counts to items currently out on memo to that customer.
+    consigned_from: supplier contact_id. Scope counts to items currently held on consignment.
+    category_counts is always global (all active items) - used by the category tab bar.
+    count_by_status is scoped to the current category/status/holdings filter - used by status cards.
     """
     rows = (
         await session.execute(
             select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
         )
     ).scalars().all()
+
+    holding_scope: set[str] | None = None
+    if on_memo_to or consigned_from:
+        from celerp.services.holdings import consignment_holdings, memo_holdings
+        items_state = [(r.entity_id, r.state) for r in rows]
+        scope_doc_type = "memo" if on_memo_to else "consignment_in"
+        scope_contact = on_memo_to or consigned_from
+        scope_docs = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "doc",
+                    Projection.state["doc_type"].as_string() == scope_doc_type,
+                    Projection.state["contact_id"].as_string() == scope_contact,
+                )
+            )
+        ).scalars().all()
+        issued = [
+            (d.entity_id, d.state) for d in scope_docs
+            if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
+        ]
+        scope_value = (
+            memo_holdings(items_state, issued) if on_memo_to
+            else consignment_holdings(items_state, issued)
+        )
+        holding_scope = set(scope_value.keys())
 
     # Compute price totals dynamically per price list
     _price_config = await get_price_config(session, company_id)
@@ -642,6 +672,10 @@ async def get_valuation(
         # Exclude non-stocked and service items from valuation (only stocked items have physical value)
         inv_type = state.get("inventory_type") or "stocked"
         if inv_type != "stocked":
+            continue
+
+        # Holdings scope: when filtering by on_memo_to or consigned_from, include only matching items
+        if holding_scope is not None and row.entity_id not in holding_scope:
             continue
 
         # category_counts: scoped to the active status filter (or global non-hidden when no filter)
@@ -1093,11 +1127,13 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     restricted -= COST_ITEM_KEYS
     if not role_has_permission(settings, role, "set_inventory_prices"):
         restricted |= COST_ITEM_KEYS
-    # Amount fields (quantity/weight/pieces/gross_weight) are gated by
-    # edit_inventory_amounts, mirroring the cost gate above.
-    restricted -= AMOUNT_ITEM_KEYS
+    # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
+    # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
+    # included because changing it rewrites quantity, so it carries the same
+    # authority; the gate fires only on a real change (blocked = changed & restricted).
+    restricted -= AMOUNT_EDIT_GATED_KEYS
     if not role_has_permission(settings, role, "edit_inventory_amounts"):
-        restricted |= AMOUNT_ITEM_KEYS
+        restricted |= AMOUNT_EDIT_GATED_KEYS
     changed_keys = set(payload.fields_changed.keys())
     blocked = changed_keys & restricted
     if blocked:
@@ -2842,13 +2878,23 @@ async def batch_import_items(
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
             if body.upsert:
-                # Hand-editing an existing item's amount via CSV upsert is a genuine
-                # hand-edit surface, gated by edit_inventory_amounts. A create (below)
-                # defines the item and stays on edit_inventory.
-                if (AMOUNT_ITEM_KEYS & set(rec.data)) and not role_has_permission(settings, role, "edit_inventory_amounts"):
-                    errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing amount fields requires the edit_inventory_amounts permission")
-                    skipped += 1
-                    continue
+                # Hand-editing an existing item's amount or sell unit via CSV upsert is
+                # a genuine hand-edit surface, gated by edit_inventory_amounts. A create
+                # (below) defines the item and stays on edit_inventory. The amount keys
+                # are optional per row, so their presence already signals intent to
+                # change; sell_by is required on every row (validated above), so gating
+                # it on mere presence would block every upsert by an ungranted role.
+                # Gate sell_by on a real CHANGE against the stored value instead.
+                if not role_has_permission(settings, role, "edit_inventory_amounts"):
+                    gated = set(AMOUNT_ITEM_KEYS & set(rec.data))
+                    stored_proj = await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id})
+                    stored_sell_by = str((stored_proj.state.get("sell_by") if stored_proj else "") or "").strip()
+                    if sell_by != stored_sell_by:
+                        gated.add("sell_by")
+                    if gated:
+                        errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing {sorted(gated)} requires the edit_inventory_amounts permission")
+                        skipped += 1
+                        continue
                 # Emit patch event with a upsert-specific idempotency key
                 upsert_idem = f"{scoped_key}:upsert"
                 upsert_existing = set(

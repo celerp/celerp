@@ -49,9 +49,10 @@ def _run_migration(engine, module_name: str, fn: str) -> None:
                     getattr(mig, fn)()
 
 
-def run_migration_ops(engine, module_name: str) -> None:
-    """Run versions/<module_name>.upgrade() through a REAL alembic Operations
-    context, in its own transaction.
+def run_migration_ops(engine, module_name: str, direction: str = "upgrade") -> None:
+    """Run versions/<module_name>.<direction>() through a REAL alembic Operations
+    context, in its own transaction. `direction` is "upgrade" (default) or
+    "downgrade".
 
     Unlike `_run_migration`'s MagicMock op (which only records calls and suits a
     raw-SQL migration reached via op.get_bind()), this binds a live Operations
@@ -70,7 +71,7 @@ def run_migration_ops(engine, module_name: str) -> None:
                 del sys.modules[full]
             with Operations.context(ctx):
                 mig = importlib.import_module(full)
-                mig.upgrade()
+                getattr(mig, direction)()
 
 
 class MigDB:
