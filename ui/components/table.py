@@ -2175,7 +2175,8 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
     )
 
 
-def search_bar(placeholder: str = "Search...", target: str = "#data-table", url: str = "") -> FT:
+def search_bar(placeholder: str = "Search...", target: str = "#data-table", url: str = "",
+               help: FT | None = None) -> FT:
     # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
     # becoming a comma-separated OR query without submitting the form).
     enter_js = (
@@ -2186,7 +2187,7 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         "this.value=v+',';"
         "} }"
     )
-    return Input(
+    inp = Input(
         type="search",
         name="q",
         placeholder=placeholder,
@@ -2199,8 +2200,13 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         cls="search-input",
         id="search-input",
         onkeydown=enter_js,
-        title="Use a comma (or Enter) for OR — e.g. scan multiple barcodes one after another",
+        title="Use a comma (or Enter) for OR - e.g. scan multiple barcodes one after another",
     )
+    if help is None:
+        return inp
+    # Wrap only when a help affordance is attached (e.g. search_help from
+    # ui.components.shell) so pages without one keep their exact markup.
+    return Div(inp, help, cls="page-search-wrap")
 
 
 def table_search(table_id: str, placeholder: str = "Search…") -> FT:

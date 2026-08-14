@@ -31,3 +31,24 @@ def test_global_search_tooltip_present(page, ui_server, seeded_user):
     # ESC dismisses it (GDR 2j).
     page.keyboard.press("Escape")
     panel.wait_for(state="hidden", timeout=3000)
+
+
+def test_inventory_page_search_tooltip_present(page, ui_server, seeded_user):
+    """The in-page inventory search box carries its own (?) affordance with the
+    same syntax panel, alongside the global bar's instance.
+
+    Red at merge-base: only the top bar renders a help affordance, so the
+    .page-search-wrap .global-search-help selector never appears.
+    """
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+
+    help_btn = page.wait_for_selector(".page-search-wrap .global-search-help", timeout=5000)
+    panel = page.locator("#page-search-help-panel")
+
+    help_btn.click()
+    panel.wait_for(state="visible", timeout=3000)
+    assert "5-10" in panel.inner_text()
+
+    # ESC dismisses it (GDR 2j).
+    page.keyboard.press("Escape")
+    panel.wait_for(state="hidden", timeout=3000)

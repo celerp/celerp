@@ -1339,11 +1339,12 @@ def _bug_report_url() -> str:
     return _BUG_REPORT_URL
 
 
-def _search_help(lang: str = "en") -> FT:
-    """Reusable (?) help affordance for the global search bar: a keyboard-focusable
-    button that toggles a panel describing the query syntax with a worked example.
+def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") -> FT:
+    """Reusable (?) help affordance for a search box: a keyboard-focusable button
+    that toggles a panel describing the query syntax with a worked example.
     Opening/closing (click plus ESC) is handled by the delegated listeners in
-    _CLIENT_JS, so no per-instance script is emitted."""
+    _CLIENT_JS (class-based, so multiple instances coexist on one page);
+    panel_id keeps each instance's aria wiring unique."""
     op = lambda s: Span(s, cls="global-search-help-op")
     return Div(
         Button(
@@ -1352,7 +1353,7 @@ def _search_help(lang: str = "en") -> FT:
             cls="global-search-help",
             aria_label=t("msg.search_help", lang),
             aria_expanded="false",
-            aria_controls="global-search-help-panel",
+            aria_controls=panel_id,
         ),
         Div(
             Div(t("msg.search_help", lang), cls="global-search-help-title"),
@@ -1365,7 +1366,7 @@ def _search_help(lang: str = "en") -> FT:
             Div("Example: ", Code("bolt & 5-10"),
                 " finds bolts whose quantity, weight or pieces value is from 5 to 10.",
                 cls="global-search-help-example"),
-            id="global-search-help-panel",
+            id=panel_id,
             cls="global-search-help-panel",
             role="dialog",
         ),
@@ -1389,7 +1390,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 cls="global-search-input",
                 autocomplete="off",
             ),
-            _search_help(lang),
+            search_help(lang),
             Div(id="global-search-results", cls="global-search-results"),
             cls="global-search-wrap",
         ),
