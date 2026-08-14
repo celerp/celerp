@@ -122,20 +122,23 @@ def service_doc_id(api):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_no_fulfill_button_on_draft(page, ui_server, draft_doc_id):
-    """FULFILL-01: Draft docs must NOT show a Fulfill button."""
+    """FULFILL-01: Draft docs must NOT show a Set-as-sent (fulfil) button."""
     page.goto(f"{ui_server}/docs/{draft_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "draft doc detail")
     _save_screenshot(page, "01-draft-no-fulfill-button")
-    fulfill_btn = page.locator("button:has-text('Fulfill'), [hx-post*='/fulfill']").first
-    assert fulfill_btn.count() == 0, "Fulfill button should NOT appear on draft docs"
+    fulfill_btn = page.locator(
+        "button:has-text('Set as sent'), [hx-post*='/fulfill']"
+    ).first
+    assert fulfill_btn.count() == 0, "Set-as-sent button should NOT appear on draft docs"
 
 
 def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
-    """FULFILL-02: A finalized invoice exposes the per-line 'Fulfill Selected' action.
+    """FULFILL-02: A finalized invoice exposes the per-line 'Set as sent' action.
 
     Fulfillment moved from a doc-level "Fulfill / Deduct Inventory" button to a
     line-item bulk action: an option (value=li-fulfill) in the #li-bulk-select
-    dropdown above the line items.
+    dropdown above the line items. The internal option value stays li-fulfill;
+    only the display label is the customer-facing "Set as sent".
     """
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "final doc detail")
@@ -143,10 +146,10 @@ def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
 
     fulfill_opt = page.locator('#li-bulk-select option[value="li-fulfill"]')
     assert fulfill_opt.count() > 0, (
-        "Per-line 'Fulfill Selected' action missing on a finalized invoice with line items"
+        "Per-line 'Set as sent' action missing on a finalized invoice with line items"
     )
-    assert "Fulfill" in (fulfill_opt.first.text_content() or ""), (
-        f"Unexpected fulfill option label: {fulfill_opt.first.text_content()!r}"
+    assert "Set as sent" in (fulfill_opt.first.text_content() or ""), (
+        f"Unexpected fulfil option label: {fulfill_opt.first.text_content()!r}"
     )
 
 
@@ -366,3 +369,64 @@ def test_double_fulfill_returns_error(api):
     r4 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
     assert r4.status_code in {409, 400, 422}, \
         f"Double fulfill should return 4xx, got {r4.status_code}: {r4.text}"
+
+
+def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
+    """Set-as-available over a MIXED selection (one reserved line + one sold line)
+    returns BOTH to available. The client handler partitions the checked rows by
+    data-item-status and dispatches reserve-lines(release) + revert-lines together."""
+    sku_r = f"MIX-RES-{uuid.uuid4().hex[:6]}"
+    sku_s = f"MIX-SOLD-{uuid.uuid4().hex[:6]}"
+    item_r = _create_item(api, sku_r, qty=1)
+    item_s = _create_item(api, sku_s, qty=1)
+
+    r = api.post("/docs", json={
+        "doc_type": "invoice",
+        "ref_id": f"MIX-{uuid.uuid4().hex[:6]}",
+        "status": "draft",
+        "line_items": [
+            {"sku": sku_r, "name": sku_r, "quantity": 1, "unit_price": 100.0,
+             "line_total": 100.0, "entity_id": item_r},
+            {"sku": sku_s, "name": sku_s, "quantity": 1, "unit_price": 100.0,
+             "line_total": 100.0, "entity_id": item_s},
+        ],
+        "total": 200.0,
+        "amount_outstanding": 200.0,
+    })
+    assert r.status_code in {200, 201}, f"create doc failed: {r.text}"
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+
+    # One line reserved by this doc, one line sold by this doc.
+    rr = api.post(f"/docs/{doc_id}/reserve-lines",
+                  json={"line_entity_ids": [item_r], "new_status": "reserved"})
+    assert rr.status_code in {200, 201}, f"reserve failed: {rr.text}"
+    rf = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_s]})
+    assert rf.status_code in {200, 201}, f"fulfil failed: {rf.text}"
+    assert api.get(f"/items/{item_r}").json()["status"] == "reserved"
+    assert api.get(f"/items/{item_s}").json()["status"] == "sold"
+
+    page.on("dialog", lambda d: d.accept())
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "mixed-selection doc detail")
+
+    # Select both lines, pick Set as available, confirm.
+    boxes = page.locator(".li-select")
+    assert boxes.count() >= 2, "expected two selectable line checkboxes"
+    for i in range(boxes.count()):
+        boxes.nth(i).check()
+    page.locator("#li-bulk-select").select_option(value="li-revert")
+    page.locator("#li-bulk-revert-btn button[type='submit']").first.click()
+
+    # Both partitions land available: the reserved half released, the sold half reverted.
+    deadline_ok = False
+    for _ in range(30):
+        s_r = api.get(f"/items/{item_r}").json()["status"]
+        s_s = api.get(f"/items/{item_s}").json()["status"]
+        if s_r == "available" and s_s == "available":
+            deadline_ok = True
+            break
+        page.wait_for_timeout(200)
+    assert deadline_ok, (
+        f"mixed set-as-available did not route both: reserved-half={s_r}, sold-half={s_s}"
+    )

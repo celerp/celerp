@@ -8,6 +8,7 @@ import csv
 import io
 import uuid
 from datetime import datetime, timezone, date as _date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -34,11 +35,11 @@ from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequen
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, round_money, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
-from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT, SHIPPING_LIST_TYPE
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -261,6 +262,17 @@ class RevertLinesRequest(FulfillLinesRequest):
     quantities: dict[str, float] | None = None
     weights: dict[str, float] | None = None
     pieces: dict[str, int] | None = None
+
+
+class ReserveLinesRequest(FulfillLinesRequest):
+    """Set selected lines to a ledger-neutral stock status.
+
+    ``new_status`` is the target: ``reserved`` marks lines held for this document (stamps it as
+    owner); ``available`` releases lines this document reserved back to the pool. Neither draws
+    stock nor posts COGS - that is Set-as-sent (fulfill-lines). Inherits the strip-empty /
+    de-duplicate validator from FulfillLinesRequest.
+    """
+    new_status: Literal["reserved", "available"]
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -3561,6 +3573,25 @@ async def finalize_list(
     return {"event_id": entry.id, "status": FINALIZED}
 
 
+@lists_router.post("/{entity_id}/reserve-lines")
+async def reserve_list_lines(
+    entity_id: str,
+    body: ReserveLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set selected lines reserved/available on a finalized quotation or shipping list (ledger-neutral)."""
+    row = await _get_list(session, company_id, entity_id)
+    lt = row.state.get("list_type") or DEFAULT_LIST_TYPE
+    if lt not in RESERVABLE_LIST_TYPES:
+        raise HTTPException(status_code=422, detail=f"reserve-lines is not supported for list type: {lt}")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
+    return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
+
+
 @lists_router.post("/{entity_id}/revert-to-draft")
 async def revert_list_to_draft(
     entity_id: str,
@@ -3924,7 +3955,7 @@ def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict
         )
 
 
-async def _plan_span_draws(session, company_id, primary_proj, needed: float, exclude: set):
+async def _plan_span_draws(session, company_id, primary_proj, needed: float, exclude: set, owner_entity_id: str = ""):
     """Plan a cross-lot draw of ``needed`` units for a splittable SKU.
 
     Consumes the line's bound (primary) lot first - so the doc line's own parcel is
@@ -3932,6 +3963,10 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     lots in the effective pick order (FIFO/FEFO/LIFO, resolved from the item's
     pick_method / company inventory_method). COGS is each drawn lot's own cost
     (specific identification by lot), so the order yields FIFO-cost / LIFO-cost.
+
+    A lot reserved BY ``owner_entity_id`` is a candidate too: this document's own hold is
+    being converted to a real draw ("set as sent" on a reserved line). Lots reserved by
+    another document stay excluded - that is the fulfil-time exclusivity point.
 
     Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
     SKU's total available stock (minus already-committed lots) is still short.
@@ -3946,7 +3981,8 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
     lots = [r for r in rows
             if str(r.state.get("sku") or "").strip() == sku
-            and (r.state.get("status") or "available") == "available"
+            and ((r.state.get("status") or "available") == "available"
+                 or (r.state.get("status") == "reserved" and r.state.get("status_doc_id") == owner_entity_id))
             and float(r.state.get("quantity") or 0) > 1e-9
             and r.entity_id not in exclude]
     by_id = {l.entity_id: l for l in lots}
@@ -4032,10 +4068,14 @@ async def fulfill_lines(
             continue
         item_status = item_proj.state.get("status", "")
         if item_status != "available":
-            errors.append(
-                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
-            )
-            continue
+            # A line reserved BY THIS document may be set as sent directly - the reservation was
+            # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
+            # document is the exclusivity point and cannot be sent from here.
+            if not (item_status == "reserved" and item_proj.state.get("status_doc_id") == entity_id):
+                errors.append(
+                    f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
+                )
+                continue
         # Stock guard: the invoiced quantity must not exceed the parcel's stock,
         # and a partial draw is only allowed when the item permits splitting.
         sku = item_proj.state.get("sku", "")
@@ -4049,6 +4089,7 @@ async def fulfill_lines(
                 _draws = await _plan_span_draws(
                     session, company_id, item_proj, line_qty,
                     exclude=set(to_fulfill) | span_consumed,
+                    owner_entity_id=entity_id,
                 )
                 if _draws is not None:
                     for _lot, _take, _full in _draws:
@@ -4452,6 +4493,96 @@ async def revert_lines(
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
     }
+
+
+# List types that support the ledger-neutral reserve action. Quotations and shipping docs are
+# customer-facing outbound lists; transfer/audit are internal stock ops and never reserve.
+RESERVABLE_LIST_TYPES: frozenset[str] = frozenset({"quotation", SHIPPING_LIST_TYPE})
+
+
+async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session) -> dict:
+    """Set selected lines to ``reserved`` or ``available`` (ledger-neutral).
+
+    All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
+    request commits nothing and returns 422 with the full per-line error list (GDR 2e). A
+    ``reserved`` target requires the line ``available``; an ``available`` target requires the line
+    ``reserved`` and owned by this document. Reserve stamps this document as owner; release clears
+    the ownership stamp (emit without source_doc_id).
+
+    Shared by the docs-router and lists-router wrappers - both bind their lines by item_id, so
+    line resolution is uniform across surfaces.
+    """
+    state = row.state
+    _validate_line_entity_ids_subset(line_entity_ids, state)
+    if not line_entity_ids:
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+
+    errors: list[str] = []
+    projs: dict[str, Projection] = {}
+    for eid in line_entity_ids:
+        proj = await session.get(Projection, {"company_id": row.company_id, "entity_id": eid})
+        if proj is None:
+            errors.append(f"{eid}: item not found")
+            continue
+        if is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
+            errors.append(f"{eid} ({proj.state.get('sku', '')}): a non-stock line cannot be reserved")
+            continue
+        sku = proj.state.get("sku", "")
+        item_status = proj.state.get("status", "")
+        if new_status == "reserved":
+            if item_status != "available":
+                errors.append(f"{eid} ({sku}): must be 'available' to reserve, is '{item_status}'")
+                continue
+        else:  # available (release)
+            if item_status != "reserved":
+                errors.append(f"{eid} ({sku}): only a reserved line can be set available, is '{item_status}'")
+                continue
+            if proj.state.get("status_doc_id") != entity_id:
+                errors.append(f"{eid} ({sku}): reserved by another document")
+                continue
+        projs[eid] = proj
+
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    cid = uuid.UUID(str(row.company_id))
+    doc_number = state.get("doc_number") or state.get("ref_id") or ""
+    for eid in line_entity_ids:
+        # Reserve stamps this doc as owner (source_doc_id present); release omits it so
+        # _stamp_status_doc clears the ownership stamp - a true handoff back to the pool.
+        data: dict = {"new_status": new_status}
+        if new_status == "reserved":
+            data["source_doc_id"] = entity_id
+            data["doc_number"] = doc_number
+        await emit_event(
+            session, company_id=cid, entity_id=eid, entity_type="item",
+            event_type="item.status.set", data=data,
+            actor_id=user.id, location_id=None, source="reservation",
+            idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
+        )
+
+    await session.commit()
+    return {"new_status": new_status, "reserved": list(line_entity_ids)}
+
+
+@router.post("/{entity_id}/reserve-lines")
+async def reserve_lines(
+    entity_id: str,
+    body: ReserveLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set selected lines reserved/available on an invoice or memo (ledger-neutral)."""
+    row = await _get_doc(session, company_id, entity_id)
+    doc_type = row.state.get("doc_type", "")
+    allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
+    if allowed is None:
+        raise HTTPException(status_code=422, detail=f"reserve-lines is not supported for doc type: {doc_type}")
+    if row.state.get("status") not in allowed:
+        raise HTTPException(status_code=409, detail=f"Cannot reserve on a {doc_type} in status '{row.state.get('status')}'")
+    return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
 
 
 class ReturnReceivedItem(BaseModel):

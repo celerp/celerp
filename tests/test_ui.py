@@ -19073,3 +19073,13 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
     assert absent_payload["child_cost_total"] is None
     assert r_zero.status_code == 200
     assert zero_payload["child_cost_total"] == 0.0
+
+
+def test_reserved_badge_renders():
+    """A reserved item status maps to the Reserved badge, not the '-' fallthrough."""
+    from ui.routes.documents import _STATUS_BADGE
+
+    assert "reserved" in _STATUS_BADGE, "reserved status has no badge mapping (renders '-')"
+    label, badge_cls = _STATUS_BADGE["reserved"]
+    assert label == "Reserved"
+    assert badge_cls == "badge--reserved"

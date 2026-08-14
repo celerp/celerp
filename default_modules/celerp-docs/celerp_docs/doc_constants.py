@@ -13,6 +13,13 @@ FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
     "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
 }
 
+# Per-doc-type allowlist for the ledger-neutral reserve-lines action ("Set as reserved" and
+# "Set as available" on a reserved line). Reserve never draws stock or posts COGS, so it is
+# permitted on the same customer-facing outbound docs and live statuses as Set-as-sent - it is
+# a distinct named map (the reserve wrapper gates on it) that today mirrors the fulfillable set.
+# List docs reserve via a separate list-type predicate in routes.py, never through this map.
+RESERVABLE_DOC_STATUSES: dict[str, frozenset[str]] = dict(FULFILLABLE_STATUSES)
+
 # Item statuses that indicate a line item has been fulfilled.
 # Used by revert-to-draft guard (Fix 1) and line-delete guard (Fix 3).
 FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
