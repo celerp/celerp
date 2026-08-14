@@ -4588,9 +4588,10 @@ celerpUpdateBulkAlloc();
         dispatches on (list_type, status); here we only choose the response shape:
 
         - a finalized audit (the rapid check-off case): swap the re-rendered #line-body tbody for speed;
-        - everything else, including a DRAFT audit building its manifest: reload via HX-Refresh so the
-          correct (editable) column layout renders through the same detail renderer (no duplicated row
-          builder).
+        - everything else, including a DRAFT audit building its manifest: plain 204 - the client pulls
+          the fresh tbody out of a background page fetch, so the correct (editable) column layout still
+          renders through the same detail renderer (no duplicated row builder) without a page reload,
+          and the scan bar keeps focus between scans exactly like it does on invoices and memos.
         """
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
@@ -4613,7 +4614,7 @@ celerpUpdateBulkAlloc();
         # audit is editable, so it reloads like every other building list to keep its inputs.
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
             return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
-        return _R("", status_code=204, headers={"HX-Refresh": "true"})
+        return _R("", status_code=204)
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -6844,23 +6845,37 @@ function _celerpDocTypeParam() {{
         scanStatus.className = 'scan-bar-status';
         if (_CELERP_IS_LIST === 'true') {{
             // Every list type scans through ONE server endpoint that dispatches on (type, status).
-            // The response is either a re-rendered tbody (audit fast-path) or an HX-Refresh (reload
-            // so the correct columns render via the same detail renderer). No client fork.
+            // The response is either a re-rendered tbody (audit fast-path) or a plain 204; on 204
+            // the fresh tbody comes from a background fetch of this page, so the editable columns
+            // still render via the same detail renderer. Either way the swap is in place - never a
+            // reload - so the scan bar keeps focus and a run of scans flows like it does on
+            // invoices and memos. No client fork.
             try {{
                 const fd = new URLSearchParams({{barcode: code}});
                 const plSelect = document.getElementById('doc-price-list');
                 if (plSelect) fd.append('price_list', plSelect.value);
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
-                if (resp.headers.get('HX-Refresh')) {{ location.reload(); return; }}
                 if (!resp.ok) {{
                     const txt = await resp.text();
                     scanStatus.textContent = '✗ ' + (txt || 'Scan error');
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
                 }} else {{
-                    const html = await resp.text();
+                    let html = await resp.text();
+                    if (!html) {{
+                        const page = await fetch(location.href);
+                        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+                        const fresh = doc.getElementById('{line_body_id}');
+                        html = fresh ? fresh.outerHTML : '';
+                    }}
                     const tbody = document.getElementById('{line_body_id}');
-                    if (tbody && html) tbody.outerHTML = html;
-                    htmx.process(document.getElementById('{line_body_id}'));
+                    if (tbody && html) {{
+                        tbody.outerHTML = html;
+                        const swapped = document.getElementById('{line_body_id}');
+                        htmx.process(swapped);
+                        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                        celerpUpdateTotals();
+                        _celerpHadLines = true;
+                    }}
                     scanStatus.textContent = '✓ Scanned: ' + code;
                     scanStatus.className = 'scan-bar-status scan-bar-status--ok';
                 }}

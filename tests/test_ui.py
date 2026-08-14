@@ -10328,6 +10328,39 @@ class TestAuditHighlightScoping:
         assert "data-row--audited" not in r.text
 
 
+class TestListScanInPlace:
+    """Scanning into a building list must never reload the page: the endpoint answers a plain 204
+    (no HX-Refresh) and the page script pulls the fresh tbody out of a background page fetch, so the
+    scan bar keeps focus between scans exactly like it does on invoices and memos."""
+
+    _DRAFT = {
+        "entity_id": "list:1", "list_type": "quotation", "status": "draft",
+        "receiver_type": "location", "receiver": "Main", "currency": "USD",
+        "discount": 0, "tax": 0, "subtotal": 0, "total": 0,
+        "line_items": [{
+            "entity_id": "li:1", "item_id": "item:1", "sku": "A1", "name": "Widget",
+            "description": "Widget", "quantity": 5,
+        }],
+    }
+
+    @pytest.mark.asyncio
+    async def test_building_list_scan_answers_204_without_refresh(self, ui_client):
+        with patch("ui.api_client.scan_list", new=AsyncMock(return_value={"state": "added"})), \
+             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
+        assert r.status_code == 204
+        assert "HX-Refresh" not in r.headers
+
+    @pytest.mark.asyncio
+    async def test_list_page_scan_script_swaps_tbody_in_place(self, ui_client):
+        # The list scan branch refetches this page and swaps #line-body instead of reloading.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert "DOMParser" in r.text
+        assert "fetch(location.href)" in r.text
+
+
 class TestAuditColumnAlignment:
     """A draft audit is editable, but audits have no Unit column. Editable invoice rows otherwise emit
     a col-unit cell with no matching header, which on an audit would leak the unit label and shove
