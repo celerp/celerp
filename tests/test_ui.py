@@ -4047,7 +4047,12 @@ class TestSprint4DocActions:
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        assert b"showmodal" not in content
+        # Exactly one showModal call is legal on a draft: the reserved-conflict
+        # resolution dialog in the autosave error path. It is owner-directed
+        # error resolution (the save was rejected because a line is reserved
+        # elsewhere), not routine data entry, and it only opens on that API
+        # rejection. Anything beyond that one call is a popup regression.
+        assert content.count(b"showmodal") == 1
 
 
 class TestSprint4Payment:
@@ -16861,6 +16866,121 @@ class TestInboundReceiveToolbar:
         assert "Record Receipt" not in html, "Old Record Receipt button must be removed"
 
 
+class TestDraftStatusColumn:
+    """Drafts of outbound docs and lists (every list type) show the item Status column;
+    inbound drafts do not."""
+
+    def _draft_doc(self, doc_type: str, **extra) -> dict:
+        return {
+            "entity_id": "doc:draft-1",
+            "doc_type": doc_type,
+            "status": "draft",
+            "ref_id": "DRAFT-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": [
+                {"sku": "W-A", "name": "Widget A", "description": "Widget A", "quantity": 1,
+                 "unit_price": 100, "line_total": 100, "entity_id": "item:d1"},
+            ],
+            **extra,
+        }
+
+    def test_invoice_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("invoice")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+        assert "Reserved" in html
+
+    def test_memo_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("memo")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+        assert "col-item-status" in html
+        assert "badge--available" in html
+
+    def test_quotation_draft_shows_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("list", list_type="quotation")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+
+    def test_bill_draft_hides_status_column(self):
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("bill")
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "col-item-status" not in html
+        assert 'value="li-reserve"' not in html
+
+    def test_audit_draft_shows_status_column(self):
+        """Every list type reserves now, so every draft list shows the Status column."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("list", list_type="audit")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+
+    def test_draft_list_offers_bulk_reserve_actions(self):
+        """A draft list of any type carries Set as reserved / Set as available in the
+        bulk toolbar, wired to the draft-page handlers."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        for lt in ("quotation", "transfer", "audit", "shipping_doc"):
+            doc = self._draft_doc("list", list_type=lt)
+            html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+            assert 'value="li-reserve"' in html, lt
+            assert 'value="li-revert"' in html, lt
+            assert "liBulkReserveConfirmed" in html, lt
+            assert "liBulkAvailableConfirmed" in html, lt
+
+    def test_draft_status_column_header_matches_row_cells(self):
+        """Every draft body row must carry exactly as many cells as the header has columns."""
+        import re
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._draft_doc("invoice")
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+        thead = html.split("<thead")[1].split("</thead>")[0]
+        n_headers = len(re.findall(r"<th[ >]", thead))
+        first_row = html.split("</thead>")[1].split("<tr")[1].split("</tr>")[0]
+        n_cells = len(re.findall(r"<td[ >]", first_row))
+        assert n_cells == n_headers, f"draft row has {n_cells} cells for {n_headers} headers"
+
+    @pytest.mark.asyncio
+    async def test_finalized_list_status_badges_populated(self, ui_client):
+        """The list detail route must fetch item statuses so finalized quotation badges
+        show the real status, not '-'."""
+        lst = {
+            "entity_id": "list:q1", "doc_type": "list", "list_type": "quotation",
+            "status": "finalized", "ref_id": "QUO-001", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 100, "total": 100,
+            "line_items": [
+                # Scan-added list lines carry the item's id in item_id only (see
+                # _scan_line_from_item); editable-UI lines set entity_id to the same item id.
+                {"item_id": "item:q1", "sku": "Q-A", "name": "Widget",
+                 "description": "Widget", "quantity": 1, "unit_price": 100, "line_total": 100},
+            ],
+        }
+        item = {"entity_id": "item:q1", "sku": "Q-A", "name": "Widget", "status": "reserved",
+                "quantity": 1}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+        ):
+            r = await ui_client.get("/lists/list:q1", cookies=_authed())
+        assert r.status_code == 200
+        assert "badge--reserved" in r.text, "finalized list must show the item's real status"
+
+
 # ── Factory Reset danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:
@@ -19152,3 +19272,176 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
     assert absent_payload["child_cost_total"] is None
     assert r_zero.status_code == 200
     assert zero_payload["child_cost_total"] == 0.0
+
+
+def test_reserved_badge_renders():
+    """A reserved item status maps to the Reserved badge, not the '-' fallthrough."""
+    from ui.routes.documents import _STATUS_BADGE
+
+    assert "reserved" in _STATUS_BADGE, "reserved status has no badge mapping (renders '-')"
+    label, badge_cls = _STATUS_BADGE["reserved"]
+    assert label == "Reserved"
+    assert badge_cls == "badge--reserved"
+
+
+# ── Reservation UI corrections: structured conflicts, status in picker/badge ──
+
+
+class TestAPIErrorStructuredDetail:
+    """_raise unwraps message-keyed dict details onto APIError.data; other dict
+    details pass through unchanged."""
+
+    def _resp(self, detail):
+        import httpx as _httpx
+        req = _httpx.Request("PATCH", "http://api.test/docs/doc:1")
+        return _httpx.Response(422, json={"detail": detail}, request=req)
+
+    def test_apierror_unwraps_structured_detail(self):
+        from ui.api_client import APIError, _raise
+        conflicts = [{
+            "entity_id": "item:r1", "sku": "SKU-1", "doc_id": "doc:owner-1",
+            "doc_number": "INV-9",
+            "message": "SKU-1: reserved on INV-9 - release it there first",
+        }]
+        detail = {
+            "message": "SKU-1: reserved on INV-9 - release it there first",
+            "conflicts": conflicts,
+        }
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        e = exc.value
+        assert e.status == 422
+        assert e.detail == "SKU-1: reserved on INV-9 - release it there first"
+        assert isinstance(e.data, dict)
+        assert e.data["conflicts"] == conflicts
+
+    def test_apierror_message_less_dict_detail_passes_through(self):
+        """{"errors": [...]} details (fulfill/revert/reserve) must NOT be unwrapped:
+        their consumers json-dump the dict themselves."""
+        from ui.api_client import APIError, _raise
+        detail = {"errors": [{"entity_id": "item:x", "error": "not available"}]}
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        e = exc.value
+        assert e.detail == detail
+        assert e.data is None
+
+
+def test_picker_item_includes_status():
+    """Catalog picker payload carries the item status and its causing doc, so
+    celerpFillRow can populate the Status cell without a reload."""
+    from ui.routes.documents import _picker_item
+
+    item = {
+        "sku": "SKU-1", "name": "Widget", "entity_id": "item:r1",
+        "status": "reserved", "status_doc_id": "doc:owner-1",
+        "status_doc_number": "INV-9",
+    }
+    out = _picker_item(item, 100, {})
+    assert out["status"] == "reserved"
+    assert out["status_doc_id"] == "doc:owner-1"
+    assert out["status_doc_number"] == "INV-9"
+    # An item with no status keeps explicit None values, not missing keys
+    out2 = _picker_item({"sku": "SKU-2", "name": "Plain", "entity_id": "item:p1"}, 50, {})
+    assert out2["status"] is None
+    assert out2["status_doc_id"] is None
+    assert out2["status_doc_number"] is None
+
+
+class TestStatusBadgeReservingDoc:
+    """Status badge cell shows 'Label: DOC-NUM' linked to the causing document,
+    the same format the inventory page uses."""
+
+    def test_status_badge_cell_links_reserving_doc(self):
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _item_status_badge_cell
+
+        html = to_xml(_item_status_badge_cell(
+            "reserved", "item:r1", status_doc=("doc:owner-1", "INV-9")))
+        assert 'href="/docs/doc:owner-1"' in html
+        assert ">INV-9</a>" in html
+        assert 'href="/inventory/item:r1"' in html
+        assert 'class="badge__doc-link"' in html
+        assert "badge--reserved" in html
+
+    def test_status_badge_cell_without_doc_keeps_plain_badge(self):
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _item_status_badge_cell
+
+        html = to_xml(_item_status_badge_cell("reserved", "item:r1"))
+        assert "/docs/" not in html
+        assert "badge--reserved" in html
+        assert 'href="/inventory/item:r1"' in html
+
+    def test_status_badge_doc_number_falls_back_to_doc_id(self):
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _item_status_badge_cell
+
+        html = to_xml(_item_status_badge_cell(
+            "reserved", "item:r1", status_doc=("doc:owner-1", "")))
+        assert 'href="/docs/doc:owner-1"' in html
+        assert ">owner-1</a>" in html
+
+
+def test_doc_page_status_shows_reserving_doc_number():
+    """Draft doc line table renders the reserving doc number, linked, in the
+    status cell when item_status_doc_map names a causing document."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _doc_detail
+
+    doc = {
+        "entity_id": "doc:INV-2026-0002",
+        "ref_id": "INV-2026-0002",
+        "doc_type": "invoice",
+        "status": "draft",
+        "currency": "USD",
+        "subtotal": 100, "tax": 0, "total": 100,
+        "line_items": [
+            {"sku": "SKU-1", "description": "Widget", "quantity": 1,
+             "unit_price": 100, "line_total": 100, "entity_id": "item:r1"},
+        ],
+    }
+    html = to_xml(_doc_detail(
+        doc,
+        item_status_map={"item:r1": "reserved"},
+        item_status_doc_map={"item:r1": ("doc:owner-1", "INV-9")},
+    ))
+    assert 'href="/docs/doc:owner-1"' in html
+    assert ">INV-9</a>" in html
+    assert "badge--reserved" in html
+
+
+@pytest.mark.asyncio
+async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
+    """/docs/{id}/lines error response carries reserved_conflicts when the
+    backend 422 named conflicted lines, so the page opens the resolution modal."""
+    from ui.api_client import APIError
+
+    conflicts = [{
+        "entity_id": "item:r1", "sku": "SKU-1", "doc_id": "doc:owner-1",
+        "doc_number": "INV-9",
+        "message": "SKU-1: reserved on INV-9 - release it there first",
+    }]
+    err = APIError(422, "SKU-1: reserved on INV-9 - release it there first",
+                   data={"message": "SKU-1: reserved on INV-9 - release it there first",
+                         "conflicts": conflicts})
+    with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=err)):
+        r = await ui_client.post(
+            "/docs/doc:INV-2026-0001/lines",
+            json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+            cookies=_authed(),
+        )
+    assert r.status_code == 400
+    body = r.json()
+    assert "release it there first" in body["error"]
+    assert body["reserved_conflicts"] == conflicts
+
+    # A plain (non-conflict) APIError keeps the error-only payload
+    with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=APIError(400, "bad total"))):
+        r2 = await ui_client.post(
+            "/docs/doc:INV-2026-0001/lines",
+            json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+            cookies=_authed(),
+        )
+    assert r2.status_code == 400
+    assert "reserved_conflicts" not in r2.json()

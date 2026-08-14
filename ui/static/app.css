@@ -710,7 +710,7 @@ a:hover { text-decoration: underline; }
 .doc-lines th, .doc-lines td { padding-left: 4px; padding-right: 4px; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
-.doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 100px; }
+.doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 160px; }
 .doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 70px;  }
 .doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 300px; }
 .doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
@@ -746,6 +746,12 @@ a:hover { text-decoration: underline; }
 .doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
 .doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
 .doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
+/* Draft tables showing the item Status column: the badge column's width comes out of the
+   description column (the flexible one), so every other column keeps its usual width and
+   the proportional column-resize headroom is unchanged. Placed after the --invoice desc
+   rule above so it wins on source order at equal specificity. The status width itself is
+   the base .col-item-status rule: wide enough for STATUS: DOC-NUMBER badges. */
+.doc-lines--status th.col-desc, .doc-lines--status td.col-desc { width: 160px; }
 /* Inside the fixed-width description cell: description is fixed at 70% (no grow,
    no shrink) so every row's description is the same width and they all line up;
    pcs 10%, weight 20% take the rest (and may shrink to absorb the gaps). */
@@ -1267,7 +1273,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .badge--audit { background: rgba(217,119,6,0.15); color: var(--c-amber); border: 1px solid rgba(217,119,6,0.3); }
 .badge--purchase-order { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
 .badge--received { background: rgba(34,197,94,0.15); color: var(--c-green-dark); border: 1px solid rgba(34,197,94,0.3); }
-.badge--reserved { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--disposed { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
 
 /* ─── Inline form tweaks ───────────────────────────────────── */
