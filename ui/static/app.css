@@ -36,7 +36,6 @@
   --c-violet: #7c3aed;
   --c-amber: #d97706;
   --c-amber-dark: #92400e;
-  --c-drafts: #e6a817;
   /* Height of the phantom top-scrollbar; the frozen header offsets down by this so they stack. */
   --top-scroll-h: 16px;
   /* Recon-specific semantic colors */
@@ -1020,9 +1019,10 @@ a:hover { text-decoration: underline; }
 }
 .preset-btn:hover { color: var(--c-text); border-color: var(--c-text2); }
 .preset-btn--active { color: var(--c-accent); border-color: var(--c-accent); background: rgba(14,165,122,0.08); }
-.drafts-tab { padding: 4px 10px; font-size: 11px; border-radius: var(--radius); color: var(--c-text2); background: var(--c-bg2); border: 1px solid var(--c-border); text-decoration: none; white-space: nowrap; transition: all 0.1s; }
-.drafts-tab:hover { color: var(--c-text); border-color: var(--c-text2); }
-.drafts-tab--active { color: var(--c-drafts); border-color: var(--c-drafts); background: rgba(230,168,23,0.08); }
+/* On-page search scope: small centered label above the box naming what it
+   searches, so it reads differently from the global header search. */
+.search-scope { display: inline-flex; flex-direction: column; }
+.search-scope-label { text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
 .date-input {
   padding: 4px 8px; font-size: 11px; border-radius: var(--radius);

@@ -703,7 +703,8 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=f"Search {label.lower()}...", target="#contacts-content", url=search_url),
+            search_bar(placeholder=f"Search {label.lower()}...", target="#contacts-content", url=search_url,
+                       label=f"Search {label.lower()}"),
             Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
             A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _can_import_export else "",

@@ -1027,11 +1027,11 @@ def setup_routes(app):
         return await base_shell(
             page_header(
                 page_title,
-                _drafts_tab(draft_count, is_drafts_view, doc_type, status=status, lang=lang),
                 search_bar(
                     placeholder="Search doc number, contact...",
                     target="#doc-table",
                     url=search_url,
+                    label=f"Search {page_title.lower()}",
                 ),
                 Button(
                     new_label,
@@ -3830,12 +3830,11 @@ celerpUpdateBulkAlloc();
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
-            draft_count = (await api.list_lists(token, {"status": "draft", "limit": 1})).get("total", 0)
             summary = await api.get_list_summary(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            lists, summary, draft_count, filtered_total = [], {}, 0, 0
+            lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
         _lists_extra = f"q={quote_plus(q)}&type={quote_plus(list_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
         _role = _get_role(request)
@@ -3851,8 +3850,8 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                _list_drafts_tab(draft_count, is_drafts_view, list_type),
-                search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search"),
+                search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search",
+                           label="Search lists"),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
@@ -8515,30 +8514,6 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     )
 
 
-def _drafts_tab(draft_count: int, is_active: bool, doc_type: str = "", status: str = "", lang: str = "en") -> FT:
-    """Drafts pill - visible when drafts exist, active when in drafts view."""
-    # POs are always drafts; the tab is meaningless there.
-    if status == "draft" or doc_type == "purchase_order":
-        return Span()
-    type_param = f"&type={doc_type}" if doc_type else ""
-    href = f"/docs?view=drafts{type_param}"
-    # Invoice drafts are called "Pro Forma" since they use proforma numbering
-    label = t("status.pro_forma", lang) if doc_type == "invoice" else t("status.drafts", lang)
-    if is_active:
-        # On the drafts view the status cards already show the draft count and the sidebar
-        # leads back to issued documents, so any chip here is redundant. Render nothing.
-        return Span()
-    if draft_count == 0:
-        return Span()
-    return A(
-        f"{label} ({draft_count})",
-        href=href,
-        cls="drafts-tab",
-        title="Click to view draft documents",
-    )
-
-
-
 # ---------------------------------------------------------------------------
 # List listing-page helpers (kept for /lists table view)
 # ---------------------------------------------------------------------------
@@ -8623,13 +8598,3 @@ def _list_type_tabs(active: str) -> FT:
             cls=cls,
         ))
     return Div(*tabs, cls="category-tabs", id="type-tabs")
-
-
-def _list_drafts_tab(draft_count: int, is_active: bool, list_type: str = "") -> FT:
-    type_param = f"&type={list_type}" if list_type else ""
-    if is_active:
-        # Same rationale as _drafts_tab: any chip on the drafts view is redundant.
-        return Span()
-    if draft_count == 0:
-        return Span()
-    return A(f"Drafts ({draft_count})", href=f"/lists?view=drafts{type_param}", cls="drafts-tab")

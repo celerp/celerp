@@ -13766,19 +13766,16 @@ class TestProFormaLabel:
         assert "Overdue" in html
         assert ">Draft<" not in html  # raw "Draft" label not shown (it's "Pro Forma")
 
-    def test_drafts_tab_label_for_invoice(self):
-        """Drafts tab shows 'Pro Forma' for invoice doc type."""
-        from ui.routes.documents import _drafts_tab
+    def test_search_bar_scope_label(self):
+        """search_bar renders the centered scope label above the box when given one,
+        and keeps the bare input markup when not (no wrapper, no label)."""
+        from ui.components.table import search_bar
         from fasthtml.common import to_xml
-        html = to_xml(_drafts_tab(3, False, "invoice"))
-        assert "Pro Forma (3)" in html
-
-    def test_drafts_tab_label_for_other_types(self):
-        """Drafts tab is suppressed for purchase_order (POs are always drafts; tab is cruft)."""
-        from ui.routes.documents import _drafts_tab
-        from fasthtml.common import to_xml
-        html = to_xml(_drafts_tab(3, False, "purchase_order"))
-        assert "Drafts (3)" not in html
+        html = to_xml(search_bar(target="#doc-table", url="/docs/search", label="Search invoices"))
+        assert "search-scope-label" in html
+        assert "Search invoices" in html
+        bare = to_xml(search_bar(target="#doc-table", url="/docs/search"))
+        assert "search-scope" not in bare
 
 
 class TestFieldSchemaBarcode:

@@ -1093,6 +1093,7 @@ def setup_routes(app):
                     target="#inventory-content",
                     url=_search_url,
                     help=search_help(lang, panel_id="page-search-help-panel"),
+                    label=f"Search {(p.get('status') or 'available').replace('_', ' ')} inventory",
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
