@@ -1825,7 +1825,7 @@ async def test_reserve_lines_release_clears_owner(client, session, auth, _setup_
 
 
 @pytest.mark.asyncio
-async def test_set_as_sent_accepts_own_reserved_line(client, session, auth, _setup_ids):
+async def test_set_as_shipped_accepts_own_reserved_line(client, session, auth, _setup_ids):
     """A line reserved BY THIS doc can be sent: fulfil takes reserved -> sold."""
     sku = f"OWN-{uuid.uuid4().hex[:6]}"
     eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
@@ -1844,7 +1844,7 @@ async def test_set_as_sent_accepts_own_reserved_line(client, session, auth, _set
 
 
 @pytest.mark.asyncio
-async def test_set_as_sent_rejects_foreign_reserved_line(client, session, auth, _setup_ids):
+async def test_set_as_shipped_rejects_foreign_reserved_line(client, session, auth, _setup_ids):
     """A line reserved by ANOTHER doc cannot be sent from a second doc; it stays reserved to its owner."""
     sku = f"FGN-{uuid.uuid4().hex[:6]}"
     eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
@@ -1870,7 +1870,7 @@ async def test_set_as_sent_rejects_foreign_reserved_line(client, session, auth, 
 
 
 @pytest.mark.asyncio
-async def test_set_as_sent_spans_lots_for_own_reserved_line(client, session, auth, _setup_ids):
+async def test_set_as_shipped_spans_lots_for_own_reserved_line(client, session, auth, _setup_ids):
     """Sending an own-reserved line that needs a cross-lot span keeps the reserved primary in the candidate set."""
     h = auth["headers"]
     sku = f"RSPAN-{uuid.uuid4().hex[:6]}"

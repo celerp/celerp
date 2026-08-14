@@ -122,23 +122,23 @@ def service_doc_id(api):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 def test_no_fulfill_button_on_draft(page, ui_server, draft_doc_id):
-    """FULFILL-01: Draft docs must NOT show a Set-as-sent (fulfil) button."""
+    """FULFILL-01: Draft docs must NOT show a Set-as-shipped (fulfil) button."""
     page.goto(f"{ui_server}/docs/{draft_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "draft doc detail")
     _save_screenshot(page, "01-draft-no-fulfill-button")
     fulfill_btn = page.locator(
-        "button:has-text('Set as sent'), [hx-post*='/fulfill']"
+        "button:has-text('Set as shipped'), [hx-post*='/fulfill']"
     ).first
-    assert fulfill_btn.count() == 0, "Set-as-sent button should NOT appear on draft docs"
+    assert fulfill_btn.count() == 0, "Set-as-shipped button should NOT appear on draft docs"
 
 
 def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
-    """FULFILL-02: A finalized invoice exposes the per-line 'Set as sent' action.
+    """FULFILL-02: A finalized invoice exposes the per-line 'Set as shipped' action.
 
     Fulfillment moved from a doc-level "Fulfill / Deduct Inventory" button to a
     line-item bulk action: an option (value=li-fulfill) in the #li-bulk-select
     dropdown above the line items. The internal option value stays li-fulfill;
-    only the display label is the customer-facing "Set as sent".
+    only the display label is the customer-facing "Set as shipped".
     """
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "final doc detail")
@@ -146,9 +146,9 @@ def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
 
     fulfill_opt = page.locator('#li-bulk-select option[value="li-fulfill"]')
     assert fulfill_opt.count() > 0, (
-        "Per-line 'Set as sent' action missing on a finalized invoice with line items"
+        "Per-line 'Set as shipped' action missing on a finalized invoice with line items"
     )
-    assert "Set as sent" in (fulfill_opt.first.text_content() or ""), (
+    assert "Set as shipped" in (fulfill_opt.first.text_content() or ""), (
         f"Unexpected fulfil option label: {fulfill_opt.first.text_content()!r}"
     )
 

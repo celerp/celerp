@@ -269,7 +269,7 @@ class ReserveLinesRequest(FulfillLinesRequest):
 
     ``new_status`` is the target: ``reserved`` marks lines held for this document (stamps it as
     owner); ``available`` releases lines this document reserved back to the pool. Neither draws
-    stock nor posts COGS - that is Set-as-sent (fulfill-lines). Inherits the strip-empty /
+    stock nor posts COGS - that is Set-as-shipped (fulfill-lines). Inherits the strip-empty /
     de-duplicate validator from FulfillLinesRequest.
     """
     new_status: Literal["reserved", "available"]
@@ -3965,7 +3965,7 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     (specific identification by lot), so the order yields FIFO-cost / LIFO-cost.
 
     A lot reserved BY ``owner_entity_id`` is a candidate too: this document's own hold is
-    being converted to a real draw ("set as sent" on a reserved line). Lots reserved by
+    being converted to a real draw ("set as shipped" on a reserved line). Lots reserved by
     another document stay excluded - that is the fulfil-time exclusivity point.
 
     Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
@@ -4068,7 +4068,7 @@ async def fulfill_lines(
             continue
         item_status = item_proj.state.get("status", "")
         if item_status != "available":
-            # A line reserved BY THIS document may be set as sent directly - the reservation was
+            # A line reserved BY THIS document may be set as shipped directly - the reservation was
             # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
             # document is the exclusivity point and cannot be sent from here.
             if not (item_status == "reserved" and item_proj.state.get("status_doc_id") == entity_id):

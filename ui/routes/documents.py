@@ -5416,7 +5416,7 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
-    show_fulfill=True: add Set as sent / Set as available as dropdown options.
+    show_fulfill=True: add Set as shipped / Set as available as dropdown options.
     show_reserve=True: add Set as reserved (ledger-neutral) as a dropdown option.
     is_inbound=True: show Receive Goods / Return Goods targeting POST/DELETE /receive.
     Two-stage: select action → confirm button appears. Print Labels only shown when
@@ -5426,7 +5426,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
         None,
     )
-    _fulfill_label = "Receive Goods" if is_inbound else "Set as sent"
+    _fulfill_label = "Receive Goods" if is_inbound else "Set as shipped"
     _revert_label = "Return Goods" if is_inbound else "Set as available"
     _reserve_label = "Set as reserved"
     if not labels_only:
@@ -7653,7 +7653,7 @@ async function celerpCsvImport(input, entityId) {{
         _fin_show_fulfill = _fulfillable_status or _inbound_receivable
         # Reservable surface (manual reservation): an invoice/memo in a reservable status, OR a
         # finalized quotation/shipping list. Reserve/Release are ledger-neutral, so a list qualifies
-        # with no fulfil capability - unlike Set as sent, which stays invoice/memo only.
+        # with no fulfil capability - unlike Set as shipped, which stays invoice/memo only.
         _doc_reservable = (
             doc_type in _RESERVABLE_STATUSES_UI
             and status in _RESERVABLE_STATUSES_UI.get(doc_type, frozenset())
@@ -7885,35 +7885,33 @@ async function celerpCsvImport(input, entityId) {{
   function _liCheckedRows(){{
     return table?Array.prototype.slice.call(table.querySelectorAll('.li-select:checked')):[];
   }}
-  async function _liShowErr(resp,ctx,fallback){{
+  async function _liShowErr(resp,fallback){{
     var msg=fallback;
     try{{
       var trig=resp.headers.get('HX-Trigger');
       if(trig){{ var t=JSON.parse(trig); if(t&&t.celerpToast&&t.celerpToast.message) msg=t.celerpToast.message; }}
     }}catch(e){{}}
-    if(ctx){{ ctx.innerHTML='<span class="flash flash--danger"></span>'; ctx.firstChild.textContent=msg; }}
+    if(window.celerpToast) celerpToast(msg,'error');
   }}
   // "Set as reserved": ledger-neutral status change on the selected lines. Single fetch;
   // reload only on 204 (the proxy answers 200 with a toast header on failure).
   window.liBulkReserveConfirmed=async function(){{
-    var ctx=document.getElementById('li-bulk-context');
     var ids=_liCheckedRows().map(function(cb){{return cb.value;}}).filter(Boolean);
-    if(!ids.length){{ if(ctx)ctx.innerHTML='<span class="flash flash--warning">No lines selected.</span>'; return; }}
+    if(!ids.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
     if(!window.confirm('Set '+ids.length+' line'+(ids.length===1?'':'s')+' as reserved?')) return;
     var fd=new FormData();
     ids.forEach(function(id){{fd.append('selected',id);}});
     fd.append('new_status','reserved');
     var resp=await fetch(_liBase+_liEid+'/reserve-lines',{{method:'POST',body:fd}});
     if(resp.status===204){{ window.location.reload(); return; }}
-    await _liShowErr(resp,ctx,'Could not set the selected lines as reserved.');
+    await _liShowErr(resp,'Could not set the selected lines as reserved.');
   }};
   // "Set as available": a reserved line releases via reserve-lines; a sold/memo line reverts
   // via revert-lines. Partition the selection by data-item-status, issue both fetches, and only
   // refresh once both return 204. A single memo line can be part-returned (the rest stays out).
   window.liBulkAvailableConfirmed=async function(){{
-    var ctx=document.getElementById('li-bulk-context');
     var rows=_liCheckedRows();
-    if(!rows.length){{ if(ctx)ctx.innerHTML='<span class="flash flash--warning">No lines selected.</span>'; return; }}
+    if(!rows.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
     var releaseIds=[], revertRows=[];
     rows.forEach(function(cb){{
       if(!cb.value) return;
@@ -7923,7 +7921,7 @@ async function celerpCsvImport(input, entityId) {{
       // already-available (or otherwise non-actionable) lines are skipped.
     }});
     if(!releaseIds.length && !revertRows.length){{
-      if(ctx)ctx.innerHTML='<span class="flash flash--warning">None of the selected lines can be set as available.</span>';
+      if(window.celerpToast)celerpToast('None of the selected lines can be set as available.','error');
       return;
     }}
     var total=releaseIds.length+revertRows.length;
@@ -7954,7 +7952,7 @@ async function celerpCsvImport(input, entityId) {{
     var resps=await Promise.all(calls);
     if(resps.every(function(r){{return r.status===204;}})){{ window.location.reload(); return; }}
     var bad=resps.filter(function(r){{return r.status!==204;}})[0];
-    await _liShowErr(bad,ctx,'Could not set the selected lines as available.');
+    await _liShowErr(bad,'Could not set the selected lines as available.');
   }};
 }})();
 """) if _fin_show_bulk else None,
