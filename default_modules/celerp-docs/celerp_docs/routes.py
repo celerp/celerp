@@ -767,6 +767,28 @@ async def get_doc_pdf(
     )
 
 
+async def _assert_no_foreign_reserved(
+    session: AsyncSession, company_id, doc_type: str, entity_id: str | None, eids,
+) -> None:
+    """Reject putting items reserved by ANOTHER document onto an invoice or memo,
+    naming the owning document. Only invoices and memos claim stock, so quotations
+    and shipping lists keep listing reserved items freely. Function-level validation:
+    the picker never hides these items, the add is what fails with the reason."""
+    if doc_type not in RESERVABLE_DOC_STATUSES:
+        return
+    errors: list[str] = []
+    for eid in sorted({e for e in eids if e}):
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if not proj:
+            continue
+        st = proj.state
+        if st.get("status") == "reserved" and st.get("status_doc_id") != entity_id:
+            owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
+            errors.append(f"{st.get('sku') or eid}: reserved on {owner} - release it there first")
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+
+
 @router.post("")
 async def create_doc(
     payload: DocCreatePayload,
@@ -801,6 +823,12 @@ async def create_doc(
         for li in payload.line_items:
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
+
+        # A brand-new doc cannot own a reservation yet, so any reserved line is foreign.
+        await _assert_no_foreign_reserved(
+            session, company_id, payload.doc_type, None,
+            (li.entity_id or li.item_id for li in payload.line_items),
+        )
 
         # Price-override gate: a new line whose unit_price deviates from the item's
         # catalog price is a price override, rejected when the caller lacks
@@ -1018,6 +1046,13 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                     status_code=409,
                     detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
                 )
+
+        # Newly added lines must not be reserved by another document; lines already on
+        # the doc (including ones this doc reserved) pass untouched.
+        await _assert_no_foreign_reserved(
+            session, company_id, row.state.get("doc_type") or "", entity_id,
+            incoming_eids - existing_eids,
+        )
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
@@ -2799,6 +2834,12 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
+        # Quotation docs never own reservations, so any reserved line belongs to
+        # another document and must be released there before invoicing.
+        await _assert_no_foreign_reserved(
+            session, company_id, "invoice", None,
+            (li.get("entity_id") or li.get("item_id") or "" for li in state.get("line_items") or []),
+        )
         company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
@@ -3674,6 +3715,25 @@ async def convert_list(
     if state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
+    # Reservation ownership moves with the conversion: lines this list reserved are
+    # re-stamped to the new document below; lines reserved elsewhere block it here.
+    to_transfer: list[str] = []
+    _conflicts: list[str] = []
+    for li in state.get("line_items") or []:
+        li_eid = li.get("item_id") or li.get("entity_id") or ""
+        if not li_eid:
+            continue
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+        if not proj or proj.state.get("status") != "reserved":
+            continue
+        if proj.state.get("status_doc_id") == entity_id:
+            to_transfer.append(li_eid)
+        else:
+            owner = proj.state.get("status_doc_number") or proj.state.get("status_doc_id") or "another document"
+            _conflicts.append(f"{proj.state.get('sku') or li_eid}: reserved on {owner} - release it there first")
+    if _conflicts:
+        raise HTTPException(status_code=422, detail="; ".join(_conflicts))
+
     company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
@@ -3685,6 +3745,14 @@ async def convert_list(
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
         source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
+    for li_eid in to_transfer:
+        await emit_event(
+            session, company_id=company_id, entity_id=li_eid, entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref},
+            actor_id=user.id, location_id=None, source="reservation",
+            idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
+        )
     entry = await _emit_list(session, company_id, entity_id, "list.closed",
                              {"result": "converted", "converted_to": new_doc_id,
                               "converted_to_type": payload.target_type}, user)
