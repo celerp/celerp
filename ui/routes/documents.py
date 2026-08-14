@@ -7893,12 +7893,21 @@ async function celerpCsvImport(input, entityId) {{
     }}catch(e){{}}
     if(window.celerpToast) celerpToast(msg,'error');
   }}
-  // "Set as reserved": ledger-neutral status change on the selected lines. Single fetch;
-  // reload only on 204 (the proxy answers 200 with a toast header on failure).
+  // "Set as reserved": status change on the selected lines. Single fetch; reload only on
+  // 204 (the proxy answers 200 with a toast header on failure). A line this doc already
+  // shipped is taken back into stock first (sale reversed), so the confirm says exactly that.
   window.liBulkReserveConfirmed=async function(){{
-    var ids=_liCheckedRows().map(function(cb){{return cb.value;}}).filter(Boolean);
-    if(!ids.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
-    if(!window.confirm('Set '+ids.length+' line'+(ids.length===1?'':'s')+' as reserved?')) return;
+    var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
+    if(!rows.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
+    var ids=rows.map(function(cb){{return cb.value;}});
+    var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
+    var msg='Set '+ids.length+' line'+(ids.length===1?'':'s')+' as reserved?';
+    if(sold){{
+      msg=sold+' of the selected line'+(sold===1?' is':'s are')+' already shipped. Setting '
+        +(sold===1?'it':'them')+' as reserved takes the goods back into stock and reverses the '
+        +'sale posting on this document. Continue?';
+    }}
+    if(!window.confirm(msg)) return;
     var fd=new FormData();
     ids.forEach(function(id){{fd.append('selected',id);}});
     fd.append('new_status','reserved');

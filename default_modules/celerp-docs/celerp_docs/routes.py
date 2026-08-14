@@ -4296,6 +4296,109 @@ async def fulfill_lines(
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
 
 
+async def _reverse_whole_lines(
+    session,
+    *,
+    company_id,
+    cid,
+    uid,
+    entity_id: str,
+    state: dict,
+    doc_type: str,
+    to_revert: list[str],
+    fetched: dict[str, Projection],
+    returned_brief: list[dict] | None = None,
+) -> str:
+    """Reverse whole-line fulfillment: restore each lot to stock, recompute the doc's
+    fulfillment status, log the doc-level revert, and void the COGS JE when an invoice
+    lands fully unfulfilled. Emits events only - the caller owns the commit.
+
+    Shared by revert-lines (Set as available on sold/memo lines) and reserve-lines
+    (Set as reserved on a line this doc already shipped: reverse, then reserve).
+    """
+    for item_eid in to_revert:
+        item_proj = fetched[item_eid]
+        qty = float(item_proj.state.get("quantity", 0))
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=item_eid,
+            entity_type="item",
+            event_type="item.fulfillment_reversed",
+            data={
+                "source_doc_id": entity_id,
+                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
+                "quantity_restored": qty,
+                "reversed_by": str(uid),
+                "reason": "per_line_revert",
+                "doc_type": doc_type,
+            },
+            actor_id=uid,
+            location_id=None,
+            source="fulfillment",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"doc_id": entity_id},
+        )
+
+    # Optimistically compute doc fulfillment_status
+    newly_available = set(to_revert)
+    line_items = state.get("line_items", [])
+    all_statuses: list[str] = []
+    for li in line_items:
+        li_eid = li.get("entity_id") or li.get("item_id") or ""
+        if not li_eid:
+            continue
+        if li_eid in newly_available:
+            all_statuses.append("available")
+        else:
+            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
+
+    # A revert is logged as a revert (naming the reverted items), regardless of whether the
+    # doc lands fully unfulfilled or stays partially fulfilled. The doc status reflects what
+    # remains; the activity entry reflects the action taken.
+    reverted_brief = _line_item_brief(line_items, to_revert)
+    doc_event_data = {
+        "reversed_items": reverted_brief,
+        "reversed_by": str(uid),
+        "reason": "per_line_revert",
+    }
+    if returned_brief:
+        # Part-returned lots: named separately from whole-line reverts, because the line
+        # itself is still out (for the balance the customer kept).
+        doc_event_data["partially_returned_items"] = returned_brief
+    if any(s in ("memo_out", "sold") for s in all_statuses):
+        doc_fulfillment_status = "partial"
+        doc_event_type = "doc.partially_reverted"
+    else:
+        doc_fulfillment_status = "unfulfilled"
+        doc_event_type = "doc.fulfillment_reversed"
+
+    await emit_event(
+        session,
+        company_id=cid,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type=doc_event_type,
+        data=doc_event_data,
+        actor_id=uid,
+        location_id=None,
+        source="fulfillment",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # Void COGS JE for invoices when fulfillment is fully reversed.
+    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
+    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
+        await auto_je.void_for_doc_fulfilled(
+            session, company_id=cid, user_id=uid, doc_id=entity_id,
+            cycle=state.get("fulfill_cycle", 0),
+        )
+
+    return doc_fulfillment_status
+
+
 @router.post("/{entity_id}/revert-lines")
 async def revert_lines(
     entity_id: str,
@@ -4406,85 +4509,10 @@ async def revert_lines(
                 )
             returned_brief.append({"item_id": child_eid, "sku": _sku, "quantity": qty_back})
 
-    for item_eid in to_revert:
-        item_proj = fetched[item_eid]
-        qty = float(item_proj.state.get("quantity", 0))
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=item_eid,
-            entity_type="item",
-            event_type="item.fulfillment_reversed",
-            data={
-                "source_doc_id": entity_id,
-                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
-                "quantity_restored": qty,
-                "reversed_by": str(uid),
-                "reason": "per_line_revert",
-                "doc_type": doc_type,
-            },
-            actor_id=uid,
-            location_id=None,
-            source="fulfillment",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"doc_id": entity_id},
-        )
-
-    # Optimistically compute doc fulfillment_status
-    newly_available = set(to_revert)
-    line_items = state.get("line_items", [])
-    all_statuses: list[str] = []
-    for li in line_items:
-        li_eid = li.get("entity_id") or li.get("item_id") or ""
-        if not li_eid:
-            continue
-        if li_eid in newly_available:
-            all_statuses.append("available")
-        else:
-            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
-            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
-
-    # A revert is logged as a revert (naming the reverted items), regardless of whether the
-    # doc lands fully unfulfilled or stays partially fulfilled. The doc status reflects what
-    # remains; the activity entry reflects the action taken.
-    reverted_brief = _line_item_brief(line_items, to_revert)
-    doc_event_data = {
-        "reversed_items": reverted_brief,
-        "reversed_by": str(uid),
-        "reason": "per_line_revert",
-    }
-    if returned_brief:
-        # Part-returned lots: named separately from whole-line reverts, because the line
-        # itself is still out (for the balance the customer kept).
-        doc_event_data["partially_returned_items"] = returned_brief
-    if any(s in ("memo_out", "sold") for s in all_statuses):
-        doc_fulfillment_status = "partial"
-        doc_event_type = "doc.partially_reverted"
-    else:
-        doc_fulfillment_status = "unfulfilled"
-        doc_event_type = "doc.fulfillment_reversed"
-
-    await emit_event(
-        session,
-        company_id=cid,
-        entity_id=entity_id,
-        entity_type="doc",
-        event_type=doc_event_type,
-        data=doc_event_data,
-        actor_id=uid,
-        location_id=None,
-        source="fulfillment",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+    doc_fulfillment_status = await _reverse_whole_lines(
+        session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id, state=state,
+        doc_type=doc_type, to_revert=to_revert, fetched=fetched, returned_brief=returned_brief,
     )
-
-    # Void COGS JE for invoices when fulfillment is fully reversed.
-    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
-    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
-        await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id,
-            cycle=state.get("fulfill_cycle", 0),
-        )
 
     await session.commit()
     return {
@@ -4501,16 +4529,20 @@ RESERVABLE_LIST_TYPES: frozenset[str] = frozenset({"quotation", SHIPPING_LIST_TY
 
 
 async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session) -> dict:
-    """Set selected lines to ``reserved`` or ``available`` (ledger-neutral).
+    """Set selected lines to ``reserved`` or ``available`` (ledger-neutral for available lines).
 
     All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
     request commits nothing and returns 422 with the full per-line error list (GDR 2e). A
-    ``reserved`` target requires the line ``available``; an ``available`` target requires the line
-    ``reserved`` and owned by this document. Reserve stamps this document as owner; release clears
-    the ownership stamp (emit without source_doc_id).
+    ``reserved`` target requires the line ``available`` - or ``sold`` by THIS document, in which
+    case the sale is reversed first (stock restored, COGS voided when the invoice lands fully
+    unfulfilled - the same path Set as available uses) and the line is then reserved, atomically
+    in one request. An ``available`` target requires the line ``reserved`` and owned by this
+    document. Reserve stamps this document as owner; release clears the ownership stamp (emit
+    without source_doc_id).
 
     Shared by the docs-router and lists-router wrappers - both bind their lines by item_id, so
-    line resolution is uniform across surfaces.
+    line resolution is uniform across surfaces. A list can never own a sold line (only docs
+    fulfil), so the reverse-then-reserve branch is unreachable from the lists wrapper.
     """
     state = row.state
     _validate_line_entity_ids_subset(line_entity_ids, state)
@@ -4519,6 +4551,7 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
 
     errors: list[str] = []
     projs: dict[str, Projection] = {}
+    to_unship: dict[str, Projection] = {}  # sold by THIS doc: reverse the sale, then reserve
     for eid in line_entity_ids:
         proj = await session.get(Projection, {"company_id": row.company_id, "entity_id": eid})
         if proj is None:
@@ -4530,8 +4563,15 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
         sku = proj.state.get("sku", "")
         item_status = proj.state.get("status", "")
         if new_status == "reserved":
-            if item_status != "available":
-                errors.append(f"{eid} ({sku}): must be 'available' to reserve, is '{item_status}'")
+            if item_status == "sold" and proj.state.get("status_doc_id") == entity_id:
+                to_unship[eid] = proj
+            elif item_status == "memo_out":
+                errors.append(f"{eid} ({sku}): out on memo - use 'Set as available' to take it back first")
+                continue
+            elif item_status != "available":
+                _owner = proj.state.get("status_doc_number")
+                _where = f" by {_owner}" if _owner and proj.state.get("status_doc_id") != entity_id else ""
+                errors.append(f"{eid} ({sku}): must be 'available' to reserve, is '{item_status}'{_where}")
                 continue
         else:  # available (release)
             if item_status != "reserved":
@@ -4546,6 +4586,14 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     cid = uuid.UUID(str(row.company_id))
+    if to_unship:
+        # Take the shipped goods back into stock before reserving them - the reversal and the
+        # reserve share this transaction, so a failure commits neither.
+        await _reverse_whole_lines(
+            session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
+            state=state, doc_type=state.get("doc_type", ""), to_revert=list(to_unship),
+            fetched=to_unship,
+        )
     doc_number = state.get("doc_number") or state.get("ref_id") or ""
     for eid in line_entity_ids:
         # Reserve stamps this doc as owner (source_doc_id present); release omits it so

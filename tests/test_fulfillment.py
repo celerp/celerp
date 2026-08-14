@@ -1988,3 +1988,76 @@ async def test_reserve_lines_on_quotation_list(client, session, auth, _setup_ids
     status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
     assert status == "reserved"
     assert owner == list_id
+
+
+@pytest.mark.asyncio
+async def test_reserve_lines_accepts_sold_line_on_owning_doc(client, session, auth, _setup_ids):
+    """Set-as-reserved on a line THIS doc shipped reverses the sale (stock back, COGS voided)
+    and reserves the line, in one request."""
+    sku = f"UNSHIP-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 2, cost_price=50.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 2, "unit_price": 100.0, "entity_id": eid},
+    ])
+    rf = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert rf.status_code == 200, rf.text
+    assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "sold"
+
+    rr = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "reserved"})
+    assert rr.status_code == 200, rr.text
+
+    item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert item["status"] == "reserved"
+    assert item["quantity"] == 2.0, "the shipped goods must come back into stock"
+    status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
+    assert status == "reserved"
+    assert owner == doc_id
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") in (None, "", "unfulfilled"), \
+        "the sale posting must be reversed"
+
+
+@pytest.mark.asyncio
+async def test_reserve_lines_rejects_sold_line_from_another_doc(client, session, auth, _setup_ids):
+    """Set-as-reserved on a line sold by ANOTHER doc is rejected; the sale is untouched."""
+    sku = f"FGNSOLD-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    doc_a = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
+    ])
+    doc_b = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
+    ])
+    ra = await client.post(f"/docs/{doc_a}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert ra.status_code == 200, ra.text
+
+    rb = await client.post(f"/docs/{doc_b}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "reserved"})
+    assert rb.status_code == 422, rb.text
+
+    status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
+    assert status == "sold"
+    assert owner == doc_a
+
+
+@pytest.mark.asyncio
+async def test_reserve_lines_rejects_memo_out_line(client, session, auth, _setup_ids):
+    """Set-as-reserved on a memo_out line is rejected (memos can part-return, so the goods
+    come back via Set as available first)."""
+    sku = f"MEMORES-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 3, cost_price=10.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 20.0, "entity_id": eid},
+    ])
+    rf = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert rf.status_code == 200, rf.text
+
+    rr = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "reserved"})
+    assert rr.status_code == 422, rr.text
+    assert "Set as available" in rr.text
+    assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "memo_out"
