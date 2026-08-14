@@ -2261,3 +2261,55 @@ async def test_convert_quotation_doc_rejects_foreign_reserved_line(client, sessi
     status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
     assert status == "reserved"
     assert owner == owner_doc
+
+
+@pytest.mark.asyncio
+async def test_reserved_conflict_detail_structured(client, session, auth, _setup_ids):
+    """The foreign-reserved 422 carries a structured detail the UI can act on:
+    {message, conflicts:[{entity_id, sku, doc_id, doc_number, message}]}, with the
+    human message text unchanged. Same shape from the PATCH guard and from the
+    list-convert path, which raises its own 422 from the same scan."""
+    sku = f"FRS-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    owner_doc = await _reserve_on_new_invoice(client, auth, sku, eid)
+    owner_number = (await client.get(f"/docs/{owner_doc}", headers=auth["headers"])).json().get("ref_id")
+
+    def _check_detail(detail):
+        assert isinstance(detail, dict), detail
+        assert "release it there first" in detail["message"]
+        conflicts = detail["conflicts"]
+        assert len(conflicts) == 1
+        c = conflicts[0]
+        assert c["entity_id"] == eid
+        assert c["sku"] == sku
+        assert c["doc_id"] == owner_doc
+        assert c["doc_number"] == owner_number
+        assert "release it there first" in c["message"]
+
+    # PATCH guard (_assert_no_foreign_reserved).
+    rd = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "line_items": [],
+    })
+    assert rd.status_code == 200, rd.text
+    rp = await client.patch(f"/docs/{rd.json()['id']}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": [
+            {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
+        ]}},
+    })
+    assert rp.status_code == 422, rp.text
+    _check_detail(rp.json()["detail"])
+
+    # List-convert path (its own 422 raise from _scan_reserved_lines).
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation",
+        "customer_name": "Buyer",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                        "item_id": eid, "entity_id": eid}],
+    })
+    assert r.status_code == 200, r.text
+    list_id = r.json()["id"]
+    assert (await client.post(f"/lists/{list_id}/finalize", headers=auth["headers"])).status_code == 200
+    rc = await client.post(f"/lists/{list_id}/convert", headers=auth["headers"],
+                           json={"target_type": "invoice"})
+    assert rc.status_code == 422, rc.text
+    _check_detail(rc.json()["detail"])

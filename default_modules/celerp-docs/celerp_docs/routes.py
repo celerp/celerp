@@ -769,12 +769,12 @@ async def get_doc_pdf(
 
 async def _scan_reserved_lines(
     session: AsyncSession, company_id, entity_id: str | None, eids,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[dict]]:
     """Partition the reserved items among ``eids``: entity_ids reserved by THIS
-    document (``entity_id``) vs conflict messages for items reserved elsewhere,
+    document (``entity_id``) vs conflict records for items reserved elsewhere,
     each naming the owning document."""
     own: list[str] = []
-    conflicts: list[str] = []
+    conflicts: list[dict] = []
     for eid in sorted({e for e in eids if e}):
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
         if not proj:
@@ -786,7 +786,13 @@ async def _scan_reserved_lines(
             own.append(eid)
         else:
             owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
-            conflicts.append(f"{st.get('sku') or eid}: reserved on {owner} - release it there first")
+            conflicts.append({
+                "entity_id": eid,
+                "sku": st.get("sku") or eid,
+                "doc_id": st.get("status_doc_id"),
+                "doc_number": st.get("status_doc_number"),
+                "message": f"{st.get('sku') or eid}: reserved on {owner} - release it there first",
+            })
     return own, conflicts
 
 
@@ -801,7 +807,13 @@ async def _assert_no_foreign_reserved(
         return
     _, conflicts = await _scan_reserved_lines(session, company_id, entity_id, eids)
     if conflicts:
-        raise HTTPException(status_code=422, detail="; ".join(conflicts))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "; ".join(c["message"] for c in conflicts),
+                "conflicts": conflicts,
+            },
+        )
 
 
 @router.post("")
@@ -3737,7 +3749,13 @@ async def convert_list(
         [li.get("item_id") or li.get("entity_id") or "" for li in state.get("line_items") or []],
     )
     if _conflicts:
-        raise HTTPException(status_code=422, detail="; ".join(_conflicts))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "; ".join(c["message"] for c in _conflicts),
+                "conflicts": _conflicts,
+            },
+        )
 
     company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
