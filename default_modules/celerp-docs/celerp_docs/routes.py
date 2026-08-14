@@ -767,6 +767,29 @@ async def get_doc_pdf(
     )
 
 
+async def _scan_reserved_lines(
+    session: AsyncSession, company_id, entity_id: str | None, eids,
+) -> tuple[list[str], list[str]]:
+    """Partition the reserved items among ``eids``: entity_ids reserved by THIS
+    document (``entity_id``) vs conflict messages for items reserved elsewhere,
+    each naming the owning document."""
+    own: list[str] = []
+    conflicts: list[str] = []
+    for eid in sorted({e for e in eids if e}):
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if not proj:
+            continue
+        st = proj.state
+        if st.get("status") != "reserved":
+            continue
+        if st.get("status_doc_id") == entity_id:
+            own.append(eid)
+        else:
+            owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
+            conflicts.append(f"{st.get('sku') or eid}: reserved on {owner} - release it there first")
+    return own, conflicts
+
+
 async def _assert_no_foreign_reserved(
     session: AsyncSession, company_id, doc_type: str, entity_id: str | None, eids,
 ) -> None:
@@ -776,17 +799,9 @@ async def _assert_no_foreign_reserved(
     the picker never hides these items, the add is what fails with the reason."""
     if doc_type not in RESERVABLE_DOC_STATUSES:
         return
-    errors: list[str] = []
-    for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if not proj:
-            continue
-        st = proj.state
-        if st.get("status") == "reserved" and st.get("status_doc_id") != entity_id:
-            owner = st.get("status_doc_number") or st.get("status_doc_id") or "another document"
-            errors.append(f"{st.get('sku') or eid}: reserved on {owner} - release it there first")
-    if errors:
-        raise HTTPException(status_code=422, detail="; ".join(errors))
+    _, conflicts = await _scan_reserved_lines(session, company_id, entity_id, eids)
+    if conflicts:
+        raise HTTPException(status_code=422, detail="; ".join(conflicts))
 
 
 @router.post("")
@@ -3717,20 +3732,10 @@ async def convert_list(
 
     # Reservation ownership moves with the conversion: lines this list reserved are
     # re-stamped to the new document below; lines reserved elsewhere block it here.
-    to_transfer: list[str] = []
-    _conflicts: list[str] = []
-    for li in state.get("line_items") or []:
-        li_eid = li.get("item_id") or li.get("entity_id") or ""
-        if not li_eid:
-            continue
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
-        if not proj or proj.state.get("status") != "reserved":
-            continue
-        if proj.state.get("status_doc_id") == entity_id:
-            to_transfer.append(li_eid)
-        else:
-            owner = proj.state.get("status_doc_number") or proj.state.get("status_doc_id") or "another document"
-            _conflicts.append(f"{proj.state.get('sku') or li_eid}: reserved on {owner} - release it there first")
+    to_transfer, _conflicts = await _scan_reserved_lines(
+        session, company_id, entity_id,
+        [li.get("item_id") or li.get("entity_id") or "" for li in state.get("line_items") or []],
+    )
     if _conflicts:
         raise HTTPException(status_code=422, detail="; ".join(_conflicts))
 

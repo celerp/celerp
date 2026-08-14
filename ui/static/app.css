@@ -746,6 +746,12 @@ a:hover { text-decoration: underline; }
 .doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
 .doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
 .doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
+/* Draft tables showing the item Status column: the badge column's width comes out of the
+   description column (the flexible one), so every other column keeps its usual width and
+   the proportional column-resize headroom is unchanged. Placed after the --invoice desc
+   rule above so it wins on source order at equal specificity. */
+.doc-lines--status th.col-item-status, .doc-lines--status td.col-item-status { width: 64px; }
+.doc-lines--status th.col-desc, .doc-lines--status td.col-desc { width: 256px; }
 /* Inside the fixed-width description cell: description is fixed at 70% (no grow,
    no shrink) so every row's description is the same width and they all line up;
    pcs 10%, weight 20% take the rest (and may shrink to absorb the gaps). */

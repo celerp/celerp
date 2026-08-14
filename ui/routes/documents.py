@@ -6736,6 +6736,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
+                        + (" doc-lines--status" if _draft_show_item_status else "")
                         + (" doc-lines--no-money" if pol["no_money"] and not pol["customs"] else "")
                         + (" doc-lines--customs" if pol["customs"] else "")
                     + (" doc-lines--audit" if pol["audit"] else ""),
