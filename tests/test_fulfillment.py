@@ -1991,6 +1991,81 @@ async def test_reserve_lines_on_quotation_list(client, session, auth, _setup_ids
 
 
 @pytest.mark.asyncio
+async def test_reserve_lines_on_draft_quotation_list(client, session, auth, _setup_ids):
+    """reserve-lines works on a DRAFT quotation: reserving is a deliberate act while the
+    quote is still being built, not a finalize privilege. Release works there too."""
+    sku = f"DQUOT-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation",
+        "customer_name": "Buyer",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                        "item_id": eid, "entity_id": eid}],
+    })
+    assert r.status_code == 200, r.text
+    list_id = r.json()["id"]
+
+    rr = await client.post(f"/lists/{list_id}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "reserved"})
+    assert rr.status_code == 200, rr.text
+    assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "reserved"
+    status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
+    assert status == "reserved"
+    assert owner == list_id
+
+    ra = await client.post(f"/lists/{list_id}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "available"})
+    assert ra.status_code == 200, ra.text
+    assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_reserve_lines_on_every_list_type(client, session, auth, _setup_ids):
+    """Every list type reserves: transfer, audit, and shipping lists take the same
+    ledger-neutral reserve-lines as quotations (exercised on drafts)."""
+    for lt in ("transfer", "audit", "shipping_doc"):
+        sku = f"LT-{uuid.uuid4().hex[:6]}"
+        eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+        r = await client.post("/lists", headers=auth["headers"], json={
+            "list_type": lt,
+            "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                            "item_id": eid, "entity_id": eid}],
+        })
+        assert r.status_code == 200, f"{lt}: {r.text}"
+        list_id = r.json()["id"]
+
+        rr = await client.post(f"/lists/{list_id}/reserve-lines", headers=auth["headers"],
+                               json={"line_entity_ids": [eid], "new_status": "reserved"})
+        assert rr.status_code == 200, f"{lt}: {rr.text}"
+        assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "reserved", lt
+        status, owner = await _reserved_owner(session, _setup_ids["company_id"], eid)
+        assert status == "reserved" and owner == list_id, lt
+
+
+@pytest.mark.asyncio
+async def test_reserve_lines_rejects_voided_list(client, session, auth, _setup_ids):
+    """reserve-lines still 409s once a list leaves draft/finalized (void terminal state)."""
+    sku = f"VDQ-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation",
+        "customer_name": "Buyer",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                        "item_id": eid, "entity_id": eid}],
+    })
+    assert r.status_code == 200, r.text
+    list_id = r.json()["id"]
+    rv = await client.post(f"/lists/{list_id}/void", headers=auth["headers"])
+    assert rv.status_code == 200, rv.text
+
+    rr = await client.post(f"/lists/{list_id}/reserve-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid], "new_status": "reserved"})
+    assert rr.status_code == 409, rr.text
+    assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
 async def test_reserve_lines_accepts_sold_line_on_owning_doc(client, session, auth, _setup_ids):
     """Set-as-reserved on a line THIS doc shipped reverses the sale (stock back, COGS voided)
     and reserves the line, in one request."""

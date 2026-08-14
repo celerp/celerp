@@ -432,3 +432,42 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     assert deadline_ok, (
         f"mixed set-as-available did not route both: reserved-half={s_r}, sold-half={s_s}"
     )
+
+
+def test_draft_quotation_bulk_reserve(page, ui_server, api):
+    """A DRAFT quotation offers Set as reserved in the bulk toolbar; confirming it
+    reserves the selected line (list stamped as owner) and the refreshed status
+    column shows the Reserved badge linked to the quotation."""
+    sku = f"DQR-{uuid.uuid4().hex[:6]}"
+    item = _create_item(api, sku, qty=1)
+    r = api.post("/lists", json={
+        "list_type": "quotation",
+        "customer_name": "Buyer",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                        "item_id": item, "entity_id": item}],
+    })
+    assert r.status_code in {200, 201}, f"create list failed: {r.text}"
+    list_id = r.json()["id"]
+
+    page.on("dialog", lambda d: d.accept())
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "draft quotation detail")
+
+    box = page.locator(f'.li-select[value="{item}"]')
+    box.check()
+    reserve_opt = page.locator('#li-bulk-select option[value="li-reserve"]')
+    assert reserve_opt.count() == 1, "draft quotation must offer Set as reserved"
+    page.locator("#li-bulk-select").select_option(value="li-reserve")
+    page.locator("#li-bulk-reserve-btn").click()
+
+    reserved = False
+    for _ in range(30):
+        if api.get(f"/items/{item}").json()["status"] == "reserved":
+            reserved = True
+            break
+        page.wait_for_timeout(200)
+    assert reserved, "draft bulk reserve did not reserve the line"
+
+    # The handler reloads on success; the status column then reads Reserved with
+    # the quotation as the reserving document.
+    page.wait_for_selector(".col-item-status .badge--reserved", timeout=10000)

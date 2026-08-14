@@ -4047,7 +4047,12 @@ class TestSprint4DocActions:
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        assert b"showmodal" not in content
+        # Exactly one showModal call is legal on a draft: the reserved-conflict
+        # resolution dialog in the autosave error path. It is owner-directed
+        # error resolution (the save was rejected because a line is reserved
+        # elsewhere), not routine data entry, and it only opens on that API
+        # rejection. Anything beyond that one call is a popup regression.
+        assert content.count(b"showmodal") == 1
 
 
 class TestSprint4Payment:
@@ -16862,8 +16867,8 @@ class TestInboundReceiveToolbar:
 
 
 class TestDraftStatusColumn:
-    """Drafts of outbound docs and reservable lists show the item Status column; inbound
-    drafts and audits do not."""
+    """Drafts of outbound docs and lists (every list type) show the item Status column;
+    inbound drafts do not."""
 
     def _draft_doc(self, doc_type: str, **extra) -> dict:
         return {
@@ -16913,13 +16918,29 @@ class TestDraftStatusColumn:
         doc = self._draft_doc("bill")
         html = to_xml(_doc_detail(doc, item_status_map={}))
         assert "col-item-status" not in html
+        assert 'value="li-reserve"' not in html
 
-    def test_audit_draft_hides_status_column(self):
+    def test_audit_draft_shows_status_column(self):
+        """Every list type reserves now, so every draft list shows the Status column."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._draft_doc("list", list_type="audit")
-        html = to_xml(_doc_detail(doc, item_status_map={}))
-        assert "col-item-status" not in html
+        html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "reserved"}))
+        assert "col-item-status" in html
+        assert "badge--reserved" in html
+
+    def test_draft_list_offers_bulk_reserve_actions(self):
+        """A draft list of any type carries Set as reserved / Set as available in the
+        bulk toolbar, wired to the draft-page handlers."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        for lt in ("quotation", "transfer", "audit", "shipping_doc"):
+            doc = self._draft_doc("list", list_type=lt)
+            html = to_xml(_doc_detail(doc, item_status_map={"item:d1": "available"}))
+            assert 'value="li-reserve"' in html, lt
+            assert 'value="li-revert"' in html, lt
+            assert "liBulkReserveConfirmed" in html, lt
+            assert "liBulkAvailableConfirmed" in html, lt
 
     def test_draft_status_column_header_matches_row_cells(self):
         """Every draft body row must carry exactly as many cells as the header has columns."""

@@ -331,9 +331,6 @@ _RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
     "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
     "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
 }
-# Mirror of routes.RESERVABLE_LIST_TYPES - list docs whose finalized lines can be reserved.
-# Reserve is ledger-neutral, so a quotation/shipping list qualifies without any fulfil capability.
-_RESERVABLE_LIST_TYPES_UI: frozenset[str] = frozenset({"quotation", "shipping_doc"})
 # Item-status badges, module level so the mapping is importable and unit-testable. The "reserved"
 # row is the manual-reservation badge; without it a reserved line fell through to a bare "-".
 _STATUS_BADGE: dict[str, tuple[str, str]] = {
@@ -6345,13 +6342,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell--number col-counted",
             )
 
-        # Drafts of outbound docs and reservable lists show the item Status column, so the
-        # user sees each line's stock state while building the document. Inbound drafts
-        # (bill, consignment in) have no received items yet; audits and transfers track
-        # counts, not sale status.
-        _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or (
-            is_list and list_type in _RESERVABLE_LIST_TYPES_UI
-        )
+        # Drafts of outbound docs and lists show the item Status column, so the user sees
+        # each line's stock state while building the document. Every list type qualifies:
+        # reserve-lines accepts drafts of all list types, so the column is where the
+        # reservation state reads back. Inbound drafts (bill, consignment in) have no
+        # received items yet and stay without it.
+        _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or is_list
 
         def _li_editable_row(li: dict, idx: int) -> FT:
             qty = li.get("quantity", 0)
@@ -6759,7 +6755,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _pl_bar,
                 cls="line-toolbar",
             ),
-            _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF)),
+            _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
+                             show_reserve=is_list),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -6823,9 +6820,10 @@ function _celerpUnitFromTotal(total, qty) {{
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
 const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
+""" + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
-const _CELERP_STATUS_BADGE = {_json.dumps({k: {"label": v[0], "cls": v[1]} for k, v in _STATUS_BADGE.items()})};
+const _CELERP_STATUS_BADGE = {_json.dumps({k: {"label": v[0], "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -7024,14 +7022,15 @@ function celerpFillRow(row, data) {{
         if (!matched) taxSel.value = _CELERP_DEFAULT_TAX;
         celerpTaxChange(taxSel);
     }}
-    // Item status column: populate with the rest of the row, same markup as the
-    // server-rendered cell (see _item_status_badge_cell), so no reload is needed.
+""" + ("""    // Item status column (status-column pages only): populate with the rest of the
+    // row, same markup as the server-rendered cell (see _item_status_badge_cell),
+    // so no reload is needed.
     const statusCell = row.querySelector('.col-item-status');
-    if (statusCell) {{
+    if (statusCell) {
         const badge = data.status ? _CELERP_STATUS_BADGE[data.status] : null;
-        if (badge && data.entity_id) {{
+        if (badge && data.entity_id) {
             const invHref = '/inventory/' + data.entity_id;
-            if (data.status_doc_id) {{
+            if (data.status_doc_id) {
                 const docNum = data.status_doc_number || String(data.status_doc_id).replace(/^doc:/, '');
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls;
@@ -7043,7 +7042,7 @@ function celerpFillRow(row, data) {{
                 docA.className = 'badge__doc-link'; docA.textContent = docNum;
                 span.append(invA, ': ', docA);
                 statusCell.replaceChildren(span);
-            }} else {{
+            } else {
                 const invA = document.createElement('a');
                 invA.href = invHref; invA.title = 'View in catalog';
                 const span = document.createElement('span');
@@ -7051,16 +7050,21 @@ function celerpFillRow(row, data) {{
                 span.textContent = badge.label;
                 invA.appendChild(span);
                 statusCell.replaceChildren(invA);
-            }}
-        }} else {{
+            }
+        } else {
             const dash = document.createElement('span');
             dash.className = 'muted'; dash.textContent = '-';
             statusCell.replaceChildren(dash);
-        }}
+        }
         const cb = row.querySelector('.li-select');
-        if (cb) cb.dataset.itemStatus = data.status || '';
-    }}
-}}
+        if (cb) {
+            cb.dataset.itemStatus = data.status || '';
+            // Bind the checkbox to the item so bulk status actions work on a
+            // freshly added row without a reload.
+            cb.value = data.entity_id || '';
+        }
+    }
+""" if _draft_show_item_status else "") + f"""}}
 /* ── Catalog autocomplete ── */
 let _celerpAcTimer = null;
 async function celerpAcSearch(input, field) {{
@@ -7626,8 +7630,8 @@ async function _celerpPersist() {{
     }}
 }}
 /* Foreign-reserved save rejection: resolution dialog instead of the inline error.
-   Native <dialog> so ESC closes it; closing keeps the rows so the user can open
-   the reserving document (linked per line) to release the stock, then save again.
+   A native dialog element, so ESC closes it; closing keeps the rows so the user can
+   open the reserving document (linked per line) to release the stock, then save again.
    "Remove from draft" deletes the conflicted rows and re-saves clean. */
 function _celerpShowReservedConflicts(conflicts) {{
     document.getElementById('reserved-conflict-modal')?.remove();
@@ -7762,11 +7766,15 @@ async function celerpCsvImport(input, entityId) {{
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
   var markScanBtn=document.getElementById('li-bulk-markscan-btn');
   var clearScanBtn=document.getElementById('li-bulk-clearscan-btn');
+  var reserveBtn=document.getElementById('li-bulk-reserve-btn');
+  var revertBtn=document.getElementById('li-bulk-revert-btn');
   function _hideBtns(){{
     if(deleteBtn) deleteBtn.style.display='none';
     if(labelsBtn) labelsBtn.style.display='none';
     if(markScanBtn) markScanBtn.style.display='none';
     if(clearScanBtn) clearScanBtn.style.display='none';
+    if(reserveBtn) reserveBtn.style.display='none';
+    if(revertBtn) revertBtn.style.display='none';
   }}
   window.liBulkActionSelected=function(action){{
     _hideBtns();
@@ -7777,10 +7785,39 @@ async function celerpCsvImport(input, entityId) {{
       if(markScanBtn) markScanBtn.style.display='';
     }} else if(action==='li-clear-scanned'){{
       if(clearScanBtn) clearScanBtn.style.display='';
+    }} else if(action==='li-reserve'){{
+      if(reserveBtn) reserveBtn.style.display='';
+    }} else if(action==='li-revert'){{
+      if(revertBtn) revertBtn.style.display='';
     }} else if(action.startsWith('mod:')){{
       if(labelsBtn) labelsBtn.style.display='';
     }}
   }};
+  async function _liDraftSetStatus(target){{
+    var ids=[];
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
+    if(!ids.length){{
+      if(window.celerpToast)celerpToast('No inventory items selected. Status can only be set on lines linked to inventory records.','error');
+      return;
+    }}
+    var verb=target==='reserved'?'reserved':'available';
+    if(!window.confirm('Set '+ids.length+' line'+(ids.length===1?'':'s')+' as '+verb+'?')) return;
+    // Persist pending edits first so the server sees every selected line, then act.
+    await _celerpPersist();
+    var fd=new FormData();
+    ids.forEach(function(id){{fd.append('selected',id);}});
+    fd.append('new_status',target);
+    var resp=await fetch(_CELERP_BASE + _CELERP_EID + '/reserve-lines',{{method:'POST',body:fd}});
+    if(resp.status===204){{ window.location.reload(); return; }}
+    var msg='Could not set the selected lines as '+verb+'.';
+    try{{
+      var trig=resp.headers.get('HX-Trigger');
+      if(trig){{ var t=JSON.parse(trig); if(t&&t.celerpToast&&t.celerpToast.message) msg=t.celerpToast.message; }}
+    }}catch(e){{}}
+    if(window.celerpToast) celerpToast(msg,'error');
+  }}
+  window.liBulkReserveConfirmed=function(){{ _liDraftSetStatus('reserved'); }};
+  window.liBulkAvailableConfirmed=function(){{ _liDraftSetStatus('available'); }};
   window.liBulkSetScanned=async function(scanned){{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
@@ -7850,8 +7887,9 @@ async function celerpCsvImport(input, entityId) {{
         )
         _fin_show_fulfill = _fulfillable_status or _inbound_receivable
         # Reservable surface (manual reservation): an invoice/memo in a reservable status, OR a
-        # finalized quotation/shipping list. Reserve/Release are ledger-neutral, so a list qualifies
+        # finalized list of any type. Reserve/Release are ledger-neutral, so a list qualifies
         # with no fulfil capability - unlike Set as shipped, which stays invoice/memo only.
+        # (Draft lists reserve too - handled on the draft branch, not here.)
         _doc_reservable = (
             doc_type in _RESERVABLE_STATUSES_UI
             and status in _RESERVABLE_STATUSES_UI.get(doc_type, frozenset())
@@ -7859,7 +7897,6 @@ async function celerpCsvImport(input, entityId) {{
         )
         _list_reservable = (
             is_list
-            and list_type in _RESERVABLE_LIST_TYPES_UI
             and status == _LF
             and bool(line_items)
         )

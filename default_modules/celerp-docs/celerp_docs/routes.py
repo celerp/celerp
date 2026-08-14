@@ -39,7 +39,7 @@ from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, F
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
-from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT, SHIPPING_LIST_TYPE
+from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -3650,12 +3650,9 @@ async def reserve_list_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set selected lines reserved/available on a finalized quotation or shipping list (ledger-neutral)."""
+    """Set selected lines reserved/available on a draft or finalized list of any type (ledger-neutral)."""
     row = await _get_list(session, company_id, entity_id)
-    lt = row.state.get("list_type") or DEFAULT_LIST_TYPE
-    if lt not in RESERVABLE_LIST_TYPES:
-        raise HTTPException(status_code=422, detail=f"reserve-lines is not supported for list type: {lt}")
-    if row.state.get("status") != FINALIZED:
+    if row.state.get("status") not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
 
@@ -4612,11 +4609,6 @@ async def revert_lines(
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
     }
-
-
-# List types that support the ledger-neutral reserve action. Quotations and shipping docs are
-# customer-facing outbound lists; transfer/audit are internal stock ops and never reserve.
-RESERVABLE_LIST_TYPES: frozenset[str] = frozenset({"quotation", SHIPPING_LIST_TYPE})
 
 
 async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session) -> dict:
