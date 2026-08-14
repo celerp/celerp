@@ -412,7 +412,8 @@ def setup_routes(app):
             page_header(
                 "Demand Planning",
                 search_bar(placeholder="Search product / document...", target="#mfg-table",
-                           url=f"/manufacturing/to-make-search?type={dtype}"),
+                           url=f"/manufacturing/to-make-search?type={dtype}",
+                           label="Search demand planning"),
             ),
             *body,
             title="Demand Planning - Celerp",
@@ -476,7 +477,8 @@ def setup_routes(app):
             page_header(
                 "Work In Progress",
                 search_bar(placeholder="Search run / SKU...", target="#mfg-table",
-                           url="/manufacturing/search"),
+                           url="/manufacturing/search",
+                           label="Search work in progress"),
             ),
             *body,
             title="Work In Progress - Celerp",

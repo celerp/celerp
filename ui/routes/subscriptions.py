@@ -260,7 +260,8 @@ def setup_routes(app) -> None:
             page_header(
                 title,
                 search_bar(placeholder="Search name, contact...", target="#sub-table",
-                           url=f"/subscriptions/search?direction={direction}&status={status}"),
+                           url=f"/subscriptions/search?direction={direction}&status={status}",
+                           label=f"Search {title.lower()}"),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
             ),

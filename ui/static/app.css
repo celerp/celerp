@@ -36,7 +36,6 @@
   --c-violet: #7c3aed;
   --c-amber: #d97706;
   --c-amber-dark: #92400e;
-  --c-drafts: #e6a817;
   /* Height of the phantom top-scrollbar; the frozen header offsets down by this so they stack. */
   --top-scroll-h: 16px;
   /* Recon-specific semantic colors */
@@ -1026,9 +1025,12 @@ a:hover { text-decoration: underline; }
 }
 .preset-btn:hover { color: var(--c-text); border-color: var(--c-text2); }
 .preset-btn--active { color: var(--c-accent); border-color: var(--c-accent); background: rgba(14,165,122,0.08); }
-.drafts-tab { padding: 4px 10px; font-size: 11px; border-radius: var(--radius); color: var(--c-text2); background: var(--c-bg2); border: 1px solid var(--c-border); text-decoration: none; white-space: nowrap; transition: all 0.1s; }
-.drafts-tab:hover { color: var(--c-text); border-color: var(--c-text2); }
-.drafts-tab--active { color: var(--c-drafts); border-color: var(--c-drafts); background: rgba(230,168,23,0.08); }
+/* On-page search scope: small centered label above the box naming what it
+   searches, so it reads differently from the global header search. */
+/* The label is lifted out of the flow (absolute, on the row above) so the box
+   itself stays vertically aligned with the neighbouring header buttons. */
+.search-scope { position: relative; display: inline-block; }
+.search-scope-label { position: absolute; bottom: 100%; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--c-text2); margin-bottom: 2px; white-space: nowrap; }
 .date-custom-form { display: flex; align-items: center; gap: 6px; }
 .date-input {
   padding: 4px 8px; font-size: 11px; border-radius: var(--radius);
@@ -1059,7 +1061,7 @@ a:hover { text-decoration: underline; }
 /* Global search */
 .global-search-wrap { position: relative; flex: 1; max-width: 400px; margin: 0 16px; }
 .global-search-input {
-  width: 100%; padding: 6px 12px; font-size: 12px; border-radius: var(--radius);
+  width: 100%; padding: 6px 30px 6px 12px; font-size: 12px; border-radius: var(--radius);
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
 }
 .global-search-input:focus { outline: none; border-color: var(--c-accent); }
@@ -1078,10 +1080,46 @@ a:hover { text-decoration: underline; }
 .search-result-item:last-child { border-bottom: none; }
 .search-result-item:hover { background: var(--c-bg3); }
 .search-result-item small { color: var(--c-text2); }
+.search-result-status { color: var(--c-text2); }
+/* "- field: value" tag naming the hidden field a search hit matched; the matched
+   part of the value is bold so the reason for the result is instantly visible. */
+.search-result-match { color: var(--c-text2); }
+.search-result-match strong { color: var(--c-text); }
+/* Sold/archived items, voided documents, cancelled subscriptions/orders: greyed
+   so it is immediately clear the record is not active. */
+.search-result-item--inactive, .search-result-item--inactive small,
+.search-result-item--inactive .search-result-status { color: var(--c-text2); opacity: 0.75; }
 .search-empty { display: block; padding: 8px 12px; color: var(--c-text2); font-size: 12px; }
 .search-empty--table { text-align: center; padding: 32px 16px; color: var(--c-text2); font-style: italic; }
 .search-clear { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--c-text2); text-decoration: none; cursor: pointer; border: none; background: none; padding: 2px 6px; border-radius: 4px; }
 .search-clear:hover { background: var(--c-bg3); color: var(--c-text); }
+
+/* ─── Search help (?) tooltip (global bar + in-page search boxes) ─────── */
+.global-search-help-wrap { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); }
+/* In-page search box with an attached (?): same absolute-anchored affordance,
+   so the wrapper provides the positioning context and the input clears it. */
+.page-search-wrap { position: relative; display: inline-block; }
+.page-search-wrap .search-input { padding-right: 30px; }
+.global-search-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; font-size: 11px; font-weight: 600;
+  line-height: 1; color: var(--c-text2); background: var(--c-bg3);
+  border: 1px solid var(--c-border); border-radius: 50%; cursor: pointer;
+}
+.global-search-help:hover, .global-search-help:focus { color: var(--c-text); border-color: var(--c-accent); outline: none; }
+.global-search-help-panel {
+  display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
+  width: 320px; padding: 12px 14px; font-size: 12px; color: var(--c-text);
+  background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(26,29,46,0.1);
+}
+.global-search-help-panel.open { display: block; }
+.global-search-help-title { font-weight: 600; margin-bottom: 6px; }
+.global-search-help-panel ul { margin: 0 0 8px; padding-left: 16px; }
+.global-search-help-panel li { margin: 3px 0; }
+.global-search-help-op { font-family: monospace; font-weight: 600; color: var(--c-accent); }
+.global-search-help-example { color: var(--c-text2); border-top: 1px solid var(--c-border); padding-top: 8px; }
+.global-search-help-panel code { font-family: monospace; background: var(--c-bg3); padding: 1px 4px; border-radius: 3px; }
 
 /* ─── Column resize handle (T12) ──────────────────────────────────────── */
 .col-resize-handle {

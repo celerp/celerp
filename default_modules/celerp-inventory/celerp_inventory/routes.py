@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -300,6 +301,100 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
+
+# ── Search grammar ─────────────────────────────────────────────────────────────
+# The inventory (and global) search bar accepts: `,` = OR groups, `&` = AND terms,
+# `lo-hi` = numeric range over quantity/weight/pieces, a bare number = numeric-exact
+# OR text substring, anything else = text substring over the fields below.
+_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
+_NUMERIC_FIELDS = ("quantity", "weight", "pieces")
+# Keys excluded from the free-text substring loop (numeric columns are matched only
+# by the explicit numeric path, never by substring, so "5" never matches "50").
+_SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
+                        "weight", "pieces", "status", "created_at", "updated_at"})
+# A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
+_RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
+
+
+def _numeric_values(record: dict) -> list[tuple[str, float]]:
+    """The item's numeric column (field, value) pairs, skipping missing/unparseable ones."""
+    vals: list[tuple[str, float]] = []
+    for f in _NUMERIC_FIELDS:
+        v = record.get(f)
+        if v is None or v == "":
+            continue
+        try:
+            vals.append((f, float(v)))
+        except (TypeError, ValueError):
+            continue
+    return vals
+
+
+def _text_match(record: dict, term: str) -> str | None:
+    """The name of the first text field containing term, or None. Named search fields
+    first, then every other string field on the flattened record - which is where
+    attribute values live, since flatten_item lifts them to the top level."""
+    for field in _SEARCH_FIELDS:
+        if term in str(record.get(field, "")).lower():
+            return field
+    for k, v in record.items():
+        if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
+            continue
+        if isinstance(v, str) and term in v.lower():
+            return k
+    return None
+
+
+def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
+    """One AND-term: the (field, matched text) behind the hit, or None. The matched
+    text is the term itself for substring hits and the whole number for numeric
+    range/exact hits, so the UI can embolden exactly what matched."""
+    m = _RANGE_RE.match(term)
+    if m:
+        lo, hi = float(m.group(1)), float(m.group(2))
+        if lo <= hi:
+            for f, n in _numeric_values(record):
+                if lo <= n <= hi:
+                    return f, format(n, "g")
+            return None
+        # lo > hi is not a usable range; fall through and treat the term as literal text.
+    field = _text_match(record, term)
+    if field is not None:
+        return field, term
+    try:
+        num = float(term)
+    except (TypeError, ValueError):
+        return None
+    for f, n in _numeric_values(record):
+        if n == num:
+            return f, format(n, "g")
+    return None
+
+
+def query_match_reasons(record: dict, q: str) -> list[tuple[str, str]] | None:
+    """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
+    ANDs the terms within a group; empty terms and empty groups are dropped.
+    Returns the first matching group's (field, matched text) pairs - one per
+    AND-term, deduped, order preserved - or None when no group matches."""
+    for group in q.split(","):
+        terms = [t.strip().lower() for t in group.split("&") if t.strip()]
+        if not terms:
+            continue
+        reasons = [_term_match_reason(record, term) for term in terms]
+        if all(r is not None for r in reasons):
+            deduped: list[tuple[str, str]] = []
+            for r in reasons:
+                if r not in deduped:
+                    deduped.append(r)
+            return deduped
+    return None
+
+
+def item_matches_query(record: dict, q: str) -> bool:
+    """Boolean view of query_match_reasons (the grammar is documented there)."""
+    return query_match_reasons(record, q) is not None
+
+
 @router.get("")
 async def list_items(
     request: Request,
@@ -461,28 +556,17 @@ async def list_items(
     if filter == "low_stock":
         result = [r for r in result if is_below_reorder(r)]
 
+    q_reasons: dict = {}
     if q:
-        # Support comma-separated OR queries (e.g. from barcode scanner multi-scan)
-        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
-        _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
-        _SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                                 "weight", "pieces", "status", "created_at", "updated_at"})
-        def _item_matches_term(r: dict, term: str) -> bool:
-            for field in _SEARCH_FIELDS:
-                if term in str(r.get(field, "")).lower():
-                    return True
-            for v in (r.get("attributes") or {}).values():
-                if term in str(v).lower():
-                    return True
-            for k, v in r.items():
-                if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
-                    continue
-                if isinstance(v, str) and term in v.lower():
-                    return True
-            return False
-        def _item_matches(r: dict) -> bool:
-            return any(_item_matches_term(r, term) for term in terms)
-        result = [r for r in result if _item_matches(r)]
+        # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
+        # number = numeric-exact OR text, else text substring (query_match_reasons).
+        matched = []
+        for r in result:
+            reasons = query_match_reasons(r, q)
+            if reasons is not None:
+                q_reasons[r.get("id")] = reasons
+                matched.append(r)
+        result = matched
 
     # Apply visible_to_roles filtering from company field schema
     field_schema = await get_effective_field_schema(session, company_id, category=None)
@@ -490,6 +574,13 @@ async def list_items(
     settings = (company.settings if company else {}) or {}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     result = apply_field_visibility(result, role, field_schema, can_see_costs)
+
+    # Attach search-match reasons AFTER visibility (so they survive the dict
+    # rebuild). The UI reads each reason's value from the visibility-filtered
+    # record itself, so a role-hidden field never leaks its value through a tag.
+    if q:
+        for r in result:
+            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])]
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like

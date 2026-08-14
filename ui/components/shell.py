@@ -135,6 +135,11 @@ document.addEventListener('keydown', function(e) {
     }
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
+    document.querySelectorAll('.global-search-help-panel.open').forEach(function(p) {
+      p.classList.remove('open');
+      var b = p.parentElement.querySelector('.global-search-help');
+      if (b) b.setAttribute('aria-expanded', 'false');
+    });
   }
 });
 /* Select-based edit cells revert on blur via their own onblur handler (blur_restore_js in
@@ -175,6 +180,21 @@ function toggleRowMenu(id) {
   }
 }
 document.addEventListener('click', function(e) {
+  // Global search help (?) toggle: open its panel; a click elsewhere closes any open one.
+  var helpBtn = e.target.closest('.global-search-help');
+  if (helpBtn) {
+    var panel = helpBtn.parentElement.querySelector('.global-search-help-panel');
+    if (panel) {
+      var isOpen = panel.classList.toggle('open');
+      helpBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    }
+  } else if (!e.target.closest('.global-search-help-panel')) {
+    document.querySelectorAll('.global-search-help-panel.open').forEach(function(p) {
+      p.classList.remove('open');
+      var b = p.parentElement.querySelector('.global-search-help');
+      if (b) b.setAttribute('aria-expanded', 'false');
+    });
+  }
   // data-copy button: copy sibling/target text to clipboard with "Copied!" feedback
   var copyBtn = e.target.closest('[data-copy]');
   if (copyBtn) {
@@ -1336,6 +1356,41 @@ def _bug_report_url() -> str:
     return _BUG_REPORT_URL
 
 
+def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") -> FT:
+    """Reusable (?) help affordance for a search box: a keyboard-focusable button
+    that toggles a panel describing the query syntax with a worked example.
+    Opening/closing (click plus ESC) is handled by the delegated listeners in
+    _CLIENT_JS (class-based, so multiple instances coexist on one page);
+    panel_id keeps each instance's aria wiring unique."""
+    op = lambda s: Span(s, cls="global-search-help-op")
+    return Div(
+        Button(
+            "?",
+            type="button",
+            cls="global-search-help",
+            aria_label=t("msg.search_help", lang),
+            aria_expanded="false",
+            aria_controls=panel_id,
+        ),
+        Div(
+            Div(t("msg.search_help", lang), cls="global-search-help-title"),
+            Ul(
+                Li("Plain text matches name, SKU, barcode, description, category and attributes."),
+                Li(op(","), " is OR: ", Code("bolt, nut"), " finds either term."),
+                Li(op("&"), " is AND: ", Code("bolt & steel"), " finds rows matching both."),
+                Li(op("5-10"), " is a numeric range: matches any of quantity, weight or pieces between 5 and 10."),
+            ),
+            Div("Example: ", Code("bolt & 5-10"),
+                " finds bolts whose quantity, weight or pieces value is from 5 to 10.",
+                cls="global-search-help-example"),
+            id=panel_id,
+            cls="global-search-help-panel",
+            role="dialog",
+        ),
+        cls="global-search-help-wrap",
+    )
+
+
 def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
@@ -1352,6 +1407,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 cls="global-search-input",
                 autocomplete="off",
             ),
+            search_help(lang),
             Div(id="global-search-results", cls="global-search-results"),
             cls="global-search-wrap",
         ),

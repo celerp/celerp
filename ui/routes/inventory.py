@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, page_header, toast_header
+from ui.components.shell import base_shell, page_header, search_help, toast_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
@@ -1092,6 +1092,8 @@ def setup_routes(app):
                     placeholder=t("msg.search_inventory_placeholder", lang),
                     target="#inventory-content",
                     url=_search_url,
+                    help=search_help(lang, panel_id="page-search-help-panel"),
+                    label=f"Search {(p.get('status') or 'available').replace('_', ' ')} inventory",
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",

@@ -117,6 +117,26 @@ async def test_list_subscription_templates_purchasing(client):
 
 
 # ---------------------------------------------------------------------------
+# 4b. List subscription templates - q filter (global search reuse)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_subscriptions_q_filters(client):
+    """The list endpoint filters by q against the stored template fields, so the
+    global search bar can reach subscriptions. Red at merge-base: the endpoint has
+    no q param, FastAPI drops the unknown query value, and both templates return."""
+    tok = await _register(client)
+    h = _h(tok)
+    await _create_sub_template(client, h, name="Alpha Retainer Plan")
+    await _create_sub_template(client, h, name="Beta Cleaning Service")
+    r = await client.get("/subscriptions?q=retainer", headers=h)
+    assert r.status_code == 200
+    names = [i.get("name") for i in r.json()["items"]]
+    assert "Alpha Retainer Plan" in names
+    assert "Beta Cleaning Service" not in names
+
+
+# ---------------------------------------------------------------------------
 # 5. Status filter
 # ---------------------------------------------------------------------------
 
