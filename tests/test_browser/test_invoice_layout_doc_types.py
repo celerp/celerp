@@ -66,7 +66,7 @@ def test_print_view_preserves_weight_unit(page, ui_server, api, doc_type):
     """The /print view must show the weight WITH its unit (sourced from the parcel),
     for every invoice-layout doc type — previously only invoices were enriched, so a
     memo printed the weight value with no unit."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": f"RZ-WU-{doc_type}", "name": "Weighted Widget", "quantity": 5,
         "sell_by": "piece", "weight": 4.5, "weight_unit": "carat",
     })
@@ -168,7 +168,7 @@ def test_doc_lines_inputs_fill_their_cells(page, ui_server, api):
 def test_doc_lines_headers_centered_and_qty_inputs_uniform(page, ui_server, api):
     """All line-table headers are centre-aligned, and the quantity input is the same width on
     every row (the unit slot is reserved even when a row has no unit)."""
-    g = api.post("/items", json={"sku": "HQ-G", "name": "Gold", "quantity": 10, "sell_by": "carat",
+    g = api.post("/items", json={"status": "available", "sku": "HQ-G", "name": "Gold", "quantity": 10, "sell_by": "carat",
                                  "weight": 2, "weight_unit": "carat"}).json()["id"]
     r = api.post("/docs", json={"doc_type": "invoice", "status": "draft", "line_items": [
         {"sku": "HQ-G", "entity_id": g, "name": "Gold", "quantity": 2, "unit_price": 500, "line_total": 1000},

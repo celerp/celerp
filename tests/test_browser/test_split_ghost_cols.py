@@ -39,7 +39,7 @@ def _assert_no_crash(page, ctx: str = "") -> None:
 @pytest.fixture(scope="module")
 def splittable_piece_item(api):
     """Item with sell_by=piece, quantity > 1 so it can be split."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "GHOST-PIECE-001",
         "name": "Ghost Col Piece Item",
         "sell_by": "piece",
@@ -61,7 +61,7 @@ def splittable_piece_item(api):
 @pytest.fixture(scope="module")
 def splittable_weight_item(api):
     """Item with sell_by=gram, quantity > 1 so it can be split or transformed."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "GHOST-WEIGHT-001",
         "name": "Ghost Col Weight Item",
         "sell_by": "gram",
@@ -200,7 +200,7 @@ def test_piece_sync_01_qty_mirrors_to_pieces(page, ui_server, api):
     Seeds its own item — the module fixture's item is mutated by the earlier
     split test, so its qty is no longer 10.
     """
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "GHOST-PIECEMIRROR-001",
         "name": "Ghost Col Piece Mirror Item",
         "sell_by": "piece",
@@ -254,7 +254,7 @@ def test_piece_sync_02_editable_pieces_updates_mother(page, ui_server, api):
     """PIECE-SYNC-02: When pieces is independent of qty (weight-unit parcel),
     child_pieces is editable and editing it must recalc the mother pieces display.
     """
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "GHOST-GRAMPC-001",
         "name": "Ghost Col Gram Parcel",
         "sell_by": "gram",
@@ -294,7 +294,7 @@ def test_piece_sync_03_no_pieces_column_without_weight(page, ui_server, api):
     Without a weight column, pieces would just duplicate QTY — the split panel
     must render neither a pieces input nor pieces displays.
     """
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "GHOST-PIECEONLY-001",
         "name": "Ghost Col Piece Only Item",
         "sell_by": "piece",
@@ -331,7 +331,7 @@ def _detail_delta(page) -> str:
 def test_item_detail_delta_balanced_zero(page, ui_server, api):
     """J1: carving a child from the mother on item-detail keeps the delta at 0.00; the
     mother auto-derives to the remainder (mother_post + child = parcel)."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-WEIGHT-001",
         "name": "Split Delta Weight Item",
         "sell_by": "gram",
@@ -361,7 +361,7 @@ def test_item_detail_delta_balanced_zero(page, ui_server, api):
 def test_item_detail_delta_nonzero_when_mother_edited(page, ui_server, api):
     """J3: editing the Mother row on item-detail breaks the balance so the delta shows the
     net gain/loss, not 0."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-MOTHER-001",
         "name": "Split Delta Mother Item",
         "sell_by": "gram",
@@ -393,7 +393,7 @@ def test_item_detail_delta_nonzero_when_mother_edited(page, ui_server, api):
 def test_item_detail_add_second_child_updates_totals(page, ui_server, api):
     """J2: the + button appends a second child row; the QTY total footer equals the mother
     plus the sum of children."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-ADD-CHILD-001",
         "name": "Split Add Child Item",
         "sell_by": "gram",
@@ -428,7 +428,7 @@ def test_item_detail_add_second_child_updates_totals(page, ui_server, api):
 def test_split_delta_empty_marker_before_input(page, ui_server, api):
     """J1: the item-detail delta badge shows a live 0.00 before any child qty is entered
     (the gated '--' marker is gone; the card opens with a prefilled child qty 0)."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-EMPTY-001",
         "name": "Split Delta Empty Marker Item",
         "sell_by": "gram",
@@ -449,7 +449,7 @@ def test_split_delta_empty_marker_before_input(page, ui_server, api):
 def test_preview_delta_badge(page, ui_server, api):
     """J3/J4: a Δ badge with a live numeric value renders next to Confirm on both
     the bulk-split preview and the transform preview."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-BADGE-001",
         "name": "Split Delta Badge Item",
         "sell_by": "gram",
@@ -494,7 +494,7 @@ def test_preview_delta_badge(page, ui_server, api):
 def test_bulk_split_delta_zero_on_balanced_split(page, ui_server, api):
     """Carving a child from the mother keeps the bulk-split Delta at 0: the
     mother auto-derives to the remainder, so mother_post + child = parcel."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-BALANCED-001",
         "name": "Split Delta Balanced Item",
         "sell_by": "gram",
@@ -529,7 +529,7 @@ def test_bulk_split_delta_zero_on_balanced_split(page, ui_server, api):
 def test_bulk_split_delta_nonzero_when_mother_modified(page, ui_server, api):
     """Overriding the mother weight after carving a child breaks the balance:
     Delta shows the net gain/loss, not 0, once mother_post + child != parcel."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-DELTA-MOTHER-MOD-001",
         "name": "Split Delta Mother Modified Item",
         "sell_by": "gram",
@@ -568,7 +568,7 @@ def test_bulk_split_delta_nonzero_when_mother_modified(page, ui_server, api):
 def test_split_esc_exits_input(page, ui_server, api):
     """GDR 2j: Esc exits every split-table field. Focusing the Mother qty input and
     pressing Escape must blur it (the shared onkeydown handler calls this.blur())."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-ESC-001",
         "name": "Split Esc Item",
         "sell_by": "gram",
@@ -598,7 +598,7 @@ def test_split_esc_exits_input(page, ui_server, api):
 def test_split_numeric_headers_right_aligned(page, ui_server, api):
     """HTML/CSS 4a: numeric column headers (QTY/Weight/Pieces) are right-aligned over
     their figures, while the text SKU header stays centered."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-HDR-ALIGN-001",
         "name": "Split Header Align Item",
         "sell_by": "gram",
@@ -636,7 +636,7 @@ def test_split_numeric_headers_right_aligned(page, ui_server, api):
 # ---------------------------------------------------------------------------
 
 def _splittable_gram_item(api, sku: str) -> str:
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": sku,
         "name": "Split Card Item",
         "sell_by": "gram",
@@ -743,7 +743,7 @@ def test_split_table_indented_with_add_child(page, ui_server, api):
 def test_toggle_allow_splitting_shows_card_no_reload(page, ui_server, api):
     """Fix 1: toggling allow_splitting true on the item-detail page refreshes the Split card to
     show the split table in place, with no page navigation."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-TOGGLE-001",
         "name": "Split Toggle Item",
         "sell_by": "gram",

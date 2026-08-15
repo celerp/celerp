@@ -17,9 +17,9 @@ MFG_SHOTS = Path("context/reviews/manufacturing")
 def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
-    item = api.post("/items", json={"sku": "PL-RAW", "name": "Raw", "quantity": 10, "sell_by": "piece"}).json()["id"]
+    item = api.post("/items", json={"status": "available", "sku": "PL-RAW", "name": "Raw", "quantity": 10, "sell_by": "piece"}).json()["id"]
     # A user can classify an item as a component (item 3).
-    comp = api.post("/items", json={"sku": "PL-COMP", "name": "Brass rod", "quantity": 50, "sell_by": "piece", "inventory_type": "component"})
+    comp = api.post("/items", json={"status": "available", "sku": "PL-COMP", "name": "Brass rod", "quantity": 50, "sell_by": "piece", "inventory_type": "component"})
     assert comp.status_code == 200, comp.text
 
     # Item 3: a "Component" filter tab exists, between Stocked Inventory and Service.
@@ -40,9 +40,9 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     assert page.locator("tr.data-row--component").count() >= 1
 
     # /manufacturing: the Demand Planning board (lead column = item + qty to make).
-    gold = api.post("/items", json={"sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
+    gold = api.post("/items", json={"status": "available", "sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
                                     "cost_total": 500, "inventory_type": "component"}).json()["id"]
-    fg = api.post("/items", json={"sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    fg = api.post("/items", json={"status": "available", "sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{fg}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
     # Finalize the invoice so it counts as committed demand (draft/pro-forma invoices are excluded
@@ -107,11 +107,11 @@ def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1000})
 
     # Seed: gold component + ring product with a recipe.
-    gold = api.post("/items", json={
+    gold = api.post("/items", json={"status": "available", 
         "sku": "ESC-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
         "cost_total": 800, "inventory_type": "component",
     }).json()["id"]
-    ring = api.post("/items", json={
+    ring = api.post("/items", json={"status": "available", 
         "sku": "ESC-RING", "name": "Ring (ESC test)", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
     r = api.put(f"/manufacturing/items/{ring}/recipe",
@@ -191,11 +191,11 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     )
 
     # 4. To-Make board with units visible (need a finalized invoice with a manufacturable item).
-    unit_gold = api.post("/items", json={
+    unit_gold = api.post("/items", json={"status": "available", 
         "sku": "SS-GOLD", "name": "Silver", "quantity": 100, "sell_by": "gram",
         "cost_total": 200, "inventory_type": "component",
     }).json()["id"]
-    unit_fg = api.post("/items", json={
+    unit_fg = api.post("/items", json={"status": "available", 
         "sku": "SS-BANGLE", "name": "Bangle", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
     api.put(f"/manufacturing/items/{unit_fg}/recipe",

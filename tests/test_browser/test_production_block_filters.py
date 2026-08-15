@@ -21,9 +21,9 @@ def _poll(fn, timeout=6.0):
 
 
 def test_production_block_date_filters_and_no_toggle(page, ui_server, api):
-    gold = api.post("/items", json={"sku": "PBF-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
+    gold = api.post("/items", json={"status": "available", "sku": "PBF-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
                                     "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "PBF-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "PBF-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
     inv = api.post("/docs", json={"doc_type": "invoice", "due_date": "2030-06-15", "line_items": [

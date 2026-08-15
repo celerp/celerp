@@ -25,9 +25,9 @@ def _seed_audit(api):
     loc = api.post("/companies/me/locations", json={"name": f"Aud-{tag}", "type": "warehouse"})
     loc_id = loc.json()["id"]
     bc_a, bc_b = str(uuid.uuid4().int)[:12], str(uuid.uuid4().int)[:12]
-    a = api.post("/items", json={"sku": f"AUD-{tag}-A", "name": "Widget A", "sell_by": "piece",
+    a = api.post("/items", json={"status": "available", "sku": f"AUD-{tag}-A", "name": "Widget A", "sell_by": "piece",
                  "quantity": 10, "barcode": bc_a, "location_id": str(loc_id)})
-    api.post("/items", json={"sku": f"AUD-{tag}-B", "name": "Widget B", "sell_by": "piece",
+    api.post("/items", json={"status": "available", "sku": f"AUD-{tag}-B", "name": "Widget B", "sell_by": "piece",
              "quantity": 4, "barcode": bc_b, "location_id": str(loc_id)})
     a_id = a.json()["id"]
     audit = api.post("/lists/audit", json={"location_id": str(loc_id)})
@@ -101,7 +101,7 @@ def test_new_audit_flow_and_old_urls_gone(page, ui_server, api):
     """`/lists/new-audit` renders the location picker; the removed `/audits` route 404s."""
     tag = uuid.uuid4().hex[:6]
     loc = api.post("/companies/me/locations", json={"name": f"New-{tag}", "type": "warehouse"})
-    api.post("/items", json={"sku": f"NEW-{tag}", "name": "Thing", "sell_by": "piece",
+    api.post("/items", json={"status": "available", "sku": f"NEW-{tag}", "name": "Thing", "sell_by": "piece",
              "quantity": 3, "barcode": str(uuid.uuid4().int)[:12], "location_id": str(loc.json()["id"])})
     page.goto(f"{ui_server}/lists/new-audit", wait_until="domcontentloaded")
     assert page.locator("form").count() >= 1  # location picker form renders

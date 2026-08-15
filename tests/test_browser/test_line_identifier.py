@@ -25,9 +25,9 @@ def _seed_two_lots_one_sku(api):
     tag = uuid.uuid4().hex[:6]
     sku = f"LOT-{tag}"
     bc_a, bc_b = str(uuid.uuid4().int)[:12], str(uuid.uuid4().int)[:12]
-    api.post("/items", json={"sku": sku, "name": "Piece A", "sell_by": "piece",
+    api.post("/items", json={"status": "available", "sku": sku, "name": "Piece A", "sell_by": "piece",
                              "quantity": 1, "barcode": bc_a})
-    api.post("/items", json={"sku": sku, "name": "Piece B", "sell_by": "piece",
+    api.post("/items", json={"status": "available", "sku": sku, "name": "Piece B", "sell_by": "piece",
                              "quantity": 1, "barcode": bc_b})
     return sku, bc_a, bc_b
 

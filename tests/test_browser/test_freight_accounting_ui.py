@@ -31,8 +31,8 @@ def test_freight_accounting_pages_render(page, ui_server, api):
     loc = api.post("/companies/me/locations", json={"name": f"WH-{tag}", "type": "warehouse"})
     assert loc.status_code in {200, 201}, loc.text
     loc_id = loc.json()["id"]
-    goods = api.post("/items", json={"sku": f"GD-{tag}", "name": "Goods", "quantity": 0, "sell_by": "piece"}).json()["id"]
-    frt = api.post("/items", json={"sku": f"FR-{tag}", "name": "Sea Freight", "quantity": 0, "sell_by": "piece",
+    goods = api.post("/items", json={"status": "available", "sku": f"GD-{tag}", "name": "Goods", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    frt = api.post("/items", json={"status": "available", "sku": f"FR-{tag}", "name": "Sea Freight", "quantity": 0, "sell_by": "piece",
                                    "inventory_type": "freight", "landed_cost_kind": "freight"}).json()["id"]
 
     bill = api.post("/docs", json={"doc_type": "bill", "line_items": [

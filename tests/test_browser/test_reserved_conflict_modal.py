@@ -19,7 +19,7 @@ pytestmark = pytest.mark.browser
 
 
 def _create_item(api, sku, qty=1):
-    r = api.post("/items", json={"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
     assert r.status_code in {200, 201}, f"create item failed: {r.text}"
     return r.json()["id"]
 

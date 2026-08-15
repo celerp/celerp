@@ -20,9 +20,9 @@ def test_production_order_interface_hides_money(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    gold = api.post("/items", json={"sku": "POB-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram",
+    gold = api.post("/items", json={"status": "available", "sku": "POB-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram",
                                     "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "POB-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "POB-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
     po = api.post("/docs", json={"doc_type": "production_order", "line_items": [

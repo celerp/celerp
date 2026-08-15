@@ -29,9 +29,9 @@ def _poll_run_status(api, run_id: str, want: str, timeout: float = 45.0) -> dict
 
 def test_product_hub_work_orders_and_action_dropdown(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
-    gold = api.post("/items", json={"sku": "HUB-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram",
+    gold = api.post("/items", json={"status": "available", "sku": "HUB-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram",
                                     "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "HUB-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "HUB-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
     # Finalize the invoice so it counts as demand (a draft invoice is a pro-forma, excluded).
@@ -94,9 +94,9 @@ def test_product_hub_work_orders_and_action_dropdown(page, ui_server, api):
 def test_hub_work_orders_sort_filter_coverage(page, ui_server, api):
     """The hub Work orders + Open demand tables: sortable headers, Excel funnels, and a Coverage
     column on demand."""
-    gold = api.post("/items", json={"sku": "HF-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
+    gold = api.post("/items", json={"status": "available", "sku": "HF-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
                                     "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "HF-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "HF-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
     for q in (1, 2):  # two orders -> two demand lines -> two work orders (qty 1 and 2)
