@@ -252,6 +252,49 @@ def test_with_draft_cost_list_noop_when_not_draft_or_cost_hidden():
     assert _with_draft_cost_list(stripped, {"status": "draft"}, settings) == stripped
 
 
+def test_with_draft_cost_schema_reinjects_editable_for_visible_draft():
+    """/me/item-schema strips cost_price/cost_price_total for a role without
+    view_inventory_costs (it is company-scoped, not item-scoped). Re-add them as
+    EDITABLE schema entries for a draft whose cost is visible to this caller, so the
+    pricing tab renders an editable cost input instead of a read-only span."""
+    from ui.routes.inventory import _with_draft_cost_schema
+    settings = {"price_lists": [{"name": "Retail"}, {"name": "Cost"}]}
+    stripped = [{"key": "retail_price", "editable": True}]  # as /me/item-schema returns
+    out = _with_draft_cost_schema(stripped, {"status": "draft", "cost_total": 40.0}, settings)
+    cost = next(f for f in out if f["key"] == "cost_price")
+    assert cost["editable"] is True
+
+
+def test_with_draft_cost_schema_noop_when_not_draft_or_cost_hidden():
+    """No re-injection for a committed item, a draft whose cost this caller cannot see
+    (no cost key on the item dict), or when cost is already present: schema unchanged."""
+    from ui.routes.inventory import _with_draft_cost_schema
+    settings = {"price_lists": [{"name": "Cost"}]}
+    stripped = [{"key": "retail_price", "editable": True}]
+    assert _with_draft_cost_schema(stripped, {"status": "available"}, settings) == stripped
+    assert _with_draft_cost_schema(stripped, {"status": "draft"}, settings) == stripped
+    present = stripped + [{"key": "cost_price", "editable": False}]
+    assert _with_draft_cost_schema(present, {"status": "draft", "cost_total": 1.0}, settings) == present
+
+
+def test_draft_cost_renders_editable_input_for_visible_draft():
+    """End to end: a draft whose cost this caller can see renders an EDITABLE cost input
+    on the pricing tab, not a read-only span. Regression for the third strip surface
+    (item-schema), beyond the write guard and the price-list definition. Both mirrors
+    must agree - the cost list makes the card render, the schema entry makes it editable."""
+    from ui.routes.inventory import _pricing_form, _with_draft_cost_list, _with_draft_cost_schema
+    settings = {"price_lists": [{"name": "Cost"}, {"name": "Retail"}]}
+    item = {"status": "draft", "cost_price": 33.0, "cost_total": 33.0, "quantity": 1, "sell_by": "piece"}
+    schema = [{"key": "retail_price", "editable": True}]  # cost stripped by /me/item-schema
+    schema = _with_draft_cost_schema(schema, item, settings)
+    price_lists = _with_draft_cost_list([{"name": "Retail"}], item, settings)
+    pricing_fields = [f for f in schema if f["key"] in {"cost_price", "retail_price"}]
+    html = str(_pricing_form("item:1", item, price_lists, "USD", pricing_fields, "Retail"))
+    assert 'name="cost_price"' in html          # editable input rendered
+    assert 'id="unit_cost_price"' in html
+    assert 'id="derived_unit_cost_price"' not in html  # not the read-only span
+
+
 # ── Status value validation ───────────────────────────────────────────────────
 
 async def test_unknown_status_rejected(client, session):

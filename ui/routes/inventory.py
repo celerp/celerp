@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, page_header, search_help, toast_head
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
@@ -1867,6 +1867,9 @@ def setup_routes(app):
         # role, so the pricing tab's Cost card would have no row to render. Re-add the cost
         # list from company config for a draft whose cost is visible to this caller.
         price_lists = _with_draft_cost_list(price_lists, item, company.get("settings") or {})
+        # The parallel strip on /me/item-schema: re-add the cost columns (editable) so the
+        # pricing tab renders an editable cost input for that draft, not a read-only span.
+        schema = _with_draft_cost_schema(schema, item, company.get("settings") or {})
         # Build pricing_keys dynamically from company price lists
         pl_names = {pl.get("name", "") for pl in price_lists}
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
@@ -6985,6 +6988,25 @@ def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings:
         return price_lists
     cost_defs = [pl for pl in (company_settings.get("price_lists") or []) if is_cost_list_name(pl.get("name", ""))]
     return price_lists + cost_defs if cost_defs else price_lists
+
+
+def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: dict) -> list[dict]:
+    """Re-add the cost schema columns for a draft item whose cost is visible to this caller.
+    /me/item-schema strips cost_price/cost_price_total for a role without view_inventory_costs,
+    and it is company-scoped, so it cannot make the draft exception _with_draft_cost_list makes
+    for the price-list definition. Without the schema column _pricing_form marks the cost row
+    read-only (its editable flag is schema-driven), so a draft's cost input would be uneditable
+    even though the write guard allows an edit_inventory caller to set it. Re-inject the columns,
+    editable, from company config - the same source and draft/visibility test as its sibling, so
+    the card and its editable input always agree. No-op for a committed item, a caller who cannot
+    see the cost value, or when the columns are already present."""
+    if str(item.get("status") or "").lower() != "draft":
+        return schema
+    if "cost_total" not in item and "cost_price" not in item:
+        return schema
+    if any(f.get("key") in COST_SCHEMA_KEYS for f in schema):
+        return schema
+    return schema + cost_columns(company_settings.get("price_lists") or [])
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,

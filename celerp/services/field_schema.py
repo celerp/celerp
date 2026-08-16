@@ -31,6 +31,11 @@ AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "g
 # and import - sell_by is a unit string and must never reach that float() path.
 AMOUNT_EDIT_GATED_KEYS: frozenset[str] = AMOUNT_ITEM_KEYS | {"sell_by"}
 
+# Schema-field keys for the canonical cost price list, stripped from /me/item-schema
+# for callers without view_inventory_costs. Distinct from cost_visibility.COST_ITEM_KEYS,
+# which names the item-DATA keys (cost_total, not the virtual schema key cost_price_total).
+COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
+
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Wholesale"},
@@ -119,6 +124,14 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
                 "paired_with": key,        # always moves with this field
             })
     return sorted(base + price_cols, key=lambda f: f.get("position", 999))
+
+
+def cost_columns(price_lists: list[dict]) -> list[dict]:
+    """The cost schema columns (cost_price and its virtual total) generated for the given
+    price lists, empty if none is a cost list. Used to re-inject the cost fields that the
+    company-scoped /me/item-schema strips, for a draft whose cost is item-visible - the
+    single source the schema endpoint would have produced, never a hand-built copy."""
+    return [f for f in _inject_price_columns([], price_lists) if f.get("key") in COST_SCHEMA_KEYS]
 
 
 # Backward-compatible constant: base fields + default price columns
