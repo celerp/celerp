@@ -29,7 +29,7 @@ async def _location(client, t, name="Warehouse A") -> str:
 
 
 async def _item(client, t, sku, *, loc, qty, barcode=None, cost_total=None, inventory_type="stocked") -> str:
-    body = {"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "location_id": loc,
+    body = {"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "location_id": loc,
             "inventory_type": inventory_type}
     if barcode:
         body["barcode"] = barcode

@@ -26,9 +26,9 @@ async def test_fulfill_mixed_stock_and_freight(client):
     charge is marked done without a stock check and is itself untouched."""
     t = await _register(client)
     stock = (await client.post("/items", headers=_h(t), json={
-        "sku": "STK-F1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": "STK-F1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
     frt = (await client.post("/items", headers=_h(t), json={
-        "sku": "FRT-L1", "name": "Sea freight", "quantity": 0, "sell_by": "piece",
+        "status": "available", "sku": "FRT-L1", "name": "Sea freight", "quantity": 0, "sell_by": "piece",
         "inventory_type": "freight", "landed_cost_kind": "freight"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": "invoice", "line_items": [
         {"entity_id": stock, "sku": "STK-F1", "name": "Widget", "quantity": 5, "unit_price": 10, "sell_by": "piece"},

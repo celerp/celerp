@@ -25,8 +25,8 @@ def _open_merge_modal(page, ui_server, tag):
 
 
 def _seed_pair(api, tag):
-    a = api.post("/items", json={"sku": f"NSK-{tag}-A", "name": "Widget A", "quantity": 5, "sell_by": "piece"})
-    b = api.post("/items", json={"sku": f"NSK-{tag}-B", "name": "Widget B", "quantity": 3, "sell_by": "piece"})
+    a = api.post("/items", json={"status": "available", "sku": f"NSK-{tag}-A", "name": "Widget A", "quantity": 5, "sell_by": "piece"})
+    b = api.post("/items", json={"status": "available", "sku": f"NSK-{tag}-B", "name": "Widget B", "quantity": 3, "sell_by": "piece"})
     assert a.status_code in {200, 201} and b.status_code in {200, 201}
     return a.json()["id"], b.json()["id"]
 

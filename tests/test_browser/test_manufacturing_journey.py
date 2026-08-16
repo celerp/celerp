@@ -30,8 +30,8 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1100})
 
     # 1. Stock a raw material + an empty finished good.
-    gold = api.post("/items", json={"sku": "JNY-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "JNY-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    gold = api.post("/items", json={"status": "available", "sku": "JNY-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "JNY-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
 
     # 2. Define the recipe on the item (Phase 1).
     page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")

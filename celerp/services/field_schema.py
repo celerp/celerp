@@ -31,6 +31,11 @@ AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "g
 # and import - sell_by is a unit string and must never reach that float() path.
 AMOUNT_EDIT_GATED_KEYS: frozenset[str] = AMOUNT_ITEM_KEYS | {"sell_by"}
 
+# Schema-field keys for the canonical cost price list, stripped from /me/item-schema
+# for callers without view_inventory_costs. Distinct from cost_visibility.COST_ITEM_KEYS,
+# which names the item-DATA keys (cost_total, not the virtual schema key cost_price_total).
+COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
+
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Wholesale"},
@@ -56,7 +61,9 @@ _BASE_FIELDS: list[dict] = [
     {"key": "pick_method",       "label": "Stock Cutting",     "type": "select", "editable": True,  "required": False, "options": ["default", "fifo", "fefo", "lifo"], "visible_to_roles": [],               "position": 4.6, "show_in_table": False, "tooltip_key": "field.tooltip.pick_method"},
     {"key": "location_name",     "label": "Location",          "type": "text",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 5,  "show_in_table": True,  "tooltip_key": "field.tooltip.location_name"},
     # Price columns are injected dynamically at position 6+ by _inject_price_columns()
-    {"key": "status",            "label": "Status",            "type": "status", "editable": True,  "required": False, "options": ["available", "reserved", "sold"], "visible_to_roles": [],               "position": 100, "show_in_table": True},
+    # Read-only: status changes only through dedicated actions (Make Available, Revert
+    # to Draft), never a free-form dropdown edit - same convention as document status.
+    {"key": "status",            "label": "Status",            "type": "status", "editable": False, "required": False, "options": [], "visible_to_roles": [],               "position": 100, "show_in_table": True},
     {"key": "short_description", "label": "Short Description", "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 101, "show_in_table": False},
     {"key": "description",       "label": "Description",       "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 102, "show_in_table": False},
     {"key": "notes",             "label": "Notes",             "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 103, "show_in_table": False},
@@ -119,6 +126,14 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
     return sorted(base + price_cols, key=lambda f: f.get("position", 999))
 
 
+def cost_columns(price_lists: list[dict]) -> list[dict]:
+    """The cost schema columns (cost_price and its virtual total) generated for the given
+    price lists, empty if none is a cost list. Used to re-inject the cost fields that the
+    company-scoped /me/item-schema strips, for a draft whose cost is item-visible - the
+    single source the schema endpoint would have produced, never a hand-built copy."""
+    return [f for f in _inject_price_columns([], price_lists) if f.get("key") in COST_SCHEMA_KEYS]
+
+
 # Backward-compatible constant: base fields + default price columns
 DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, _DEFAULT_PRICE_LISTS)
 
@@ -158,6 +173,13 @@ async def get_effective_field_schema(
     editable_by_key = {price_key(pl.get("name", "")): not is_derived(pl) for pl in price_lists}
     base_schema = [
         {**f, "editable": editable_by_key[f["key"]]} if f["key"] in editable_by_key else f
+        for f in base_schema
+    ]
+
+    # Status is never a free-form dropdown, regardless of a stored schema round-trip
+    # captured before this became a hard rule.
+    base_schema = [
+        {**f, "editable": False, "options": []} if f["key"] == "status" else f
         for f in base_schema
     ]
 

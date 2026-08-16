@@ -685,18 +685,16 @@ async def patch_user(
 # Item schema configuration
 # ---------------------------------------------------------------------------
 
+from celerp.services.field_schema import COST_SCHEMA_KEYS  # noqa: F401 re-export
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-export
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
-
-
-_COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
 
 
 @router.get("/me/item-schema")
 async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> list[dict]:
     schema = await get_effective_field_schema(session, company_id)
     if not role_has_permission(settings, role, "view_inventory_costs"):
-        schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
+        schema = [f for f in schema if f.get("key") not in COST_SCHEMA_KEYS]
     return schema
 
 

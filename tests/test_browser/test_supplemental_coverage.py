@@ -149,6 +149,7 @@ def test_manufacturing_order_issue_complete(page, ui_server, api):
         "name": "Lifecycle Input",
         "quantity": 50,
         "category": "Raw Material",
+        "status": "available",
     })
     assert item_r.status_code in {200, 201}, f"POST /items failed: {item_r.text}"
     item_id = item_r.json().get("id", item_r.json().get("entity_id", ""))

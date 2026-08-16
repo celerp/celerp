@@ -40,7 +40,7 @@ async def _set_mode(client, t, mode: str) -> None:
 
 async def _item_with_barcode(client, t) -> str:
     r = await client.post("/items", headers=_h(t), json={
-        "sku": "GEM-001", "name": "Tourmaline Parcel", "quantity": 5,
+        "status": "available", "sku": "GEM-001", "name": "Tourmaline Parcel", "quantity": 5,
         "sell_by": "piece", "barcode": BARCODE})
     assert r.status_code == 200, r.text
     return r.json()["id"]

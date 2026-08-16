@@ -607,12 +607,12 @@ async def test_opening_inventory_je_excludes_inactive_items(client):
     auth = _h(tok)
 
     r1 = await client.post("/items", headers=auth, json={
-        "sku": "OB-ACTIVE", "name": "Active Item", "quantity": 1,
+        "status": "available", "sku": "OB-ACTIVE", "name": "Active Item", "quantity": 1,
         "sell_by": "piece", "cost_price": 100.0,
     })
     assert r1.status_code == 200
     r2 = await client.post("/items", headers=auth, json={
-        "sku": "OB-SOLD", "name": "Sold Item", "quantity": 1,
+        "status": "available", "sku": "OB-SOLD", "name": "Sold Item", "quantity": 1,
         "sell_by": "piece", "cost_price": 200.0,
     })
     assert r2.status_code == 200

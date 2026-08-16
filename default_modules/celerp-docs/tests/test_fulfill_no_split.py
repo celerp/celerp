@@ -34,7 +34,7 @@ async def test_partial_fulfillment_blocked_when_allow_splitting_missing(client, 
 
     # Parcel with 10 in stock.
     item = (await client.post("/items", headers=h, json={
-        "sku": "PARCEL-NS", "name": "Parcel", "quantity": 10, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": "PARCEL-NS", "name": "Parcel", "quantity": 10, "sell_by": "piece"})).json()["id"]
 
     # Remove allow_splitting from the parcel's projection state (as older imports left it).
     row = (await session.execute(select(Projection).where(Projection.entity_id == item))).scalar_one()

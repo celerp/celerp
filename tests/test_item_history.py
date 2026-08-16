@@ -32,7 +32,7 @@ async def _token(client) -> str:
 
 
 async def _seed(client, headers, **over) -> str:
-    body = {"sku": "MUM", "name": "Mother", "quantity": 10.0, "sell_by": "piece",
+    body = {"sku": "MUM", "name": "Mother", "quantity": 10.0, "sell_by": "piece", "status": "available",
             "cost_price": 100.0, "allow_splitting": True}
     body.update(over)
     r = await client.post("/items", json=body, headers=headers)
@@ -292,7 +292,7 @@ async def test_transfer_records_from_to_with_names(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}
     loc1 = (await client.post("/companies/me/locations", json={"name": "Vault", "type": "warehouse"}, headers=h)).json()
     loc2 = (await client.post("/companies/me/locations", json={"name": "Showroom", "type": "warehouse"}, headers=h)).json()
-    item_id = (await client.post("/items", json={"sku": "TR-1", "name": "x", "quantity": 1.0,
+    item_id = (await client.post("/items", json={"status": "available", "sku": "TR-1", "name": "x", "quantity": 1.0,
                                                  "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
     await client.post(f"/items/{item_id}/transfer", json={"to_location_id": loc2["id"]}, headers=h)
 
@@ -309,7 +309,7 @@ async def test_bulk_transfer_records_from_to(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}
     loc1 = (await client.post("/companies/me/locations", json={"name": "A", "type": "warehouse"}, headers=h)).json()
     loc2 = (await client.post("/companies/me/locations", json={"name": "B", "type": "warehouse"}, headers=h)).json()
-    i1 = (await client.post("/items", json={"sku": "BT1", "name": "x", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    i1 = (await client.post("/items", json={"status": "available", "sku": "BT1", "name": "x", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
     await client.post("/items/bulk/transfer", json={"entity_ids": [i1], "to_location_id": loc2["id"]}, headers=h)
     ev = [e for e in await _events(client, h, i1) if e["event_type"] == "item.transferred"][0]
     assert ev["data"]["from_location_name"] == "A" and ev["data"]["to_location_name"] == "B"

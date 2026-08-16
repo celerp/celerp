@@ -5095,6 +5095,7 @@ class TestSplitCardLiveRefresh:
         splittable item it contains the split table."""
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLITTABLE_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
             patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)),
         ):
             r = await ui_client.get("/api/items/gc:123/advanced-panel", cookies=_authed())
@@ -5129,7 +5130,10 @@ class TestSplitCardLiveRefresh:
     async def test_advanced_panel_endpoint_get_item_failure(self, ui_client):
         """When api.get_item raises, the endpoint returns 500 carrying the error detail."""
         from ui.api_client import APIError
-        with patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "no such item"))):
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "no such item"))),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+        ):
             r = await ui_client.get("/api/items/gc:404/advanced-panel", cookies=_authed())
         assert r.status_code == 500
         assert "no such item" in r.text

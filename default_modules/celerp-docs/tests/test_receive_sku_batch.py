@@ -32,7 +32,7 @@ async def _location(client, t) -> str:
 
 
 async def _catalog_item(client, t, sku) -> str:
-    r = await client.post("/items", headers=_h(t), json={"sku": sku, "name": sku, "quantity": 0, "sell_by": "piece"})
+    r = await client.post("/items", headers=_h(t), json={"status": "available", "sku": sku, "name": sku, "quantity": 0, "sell_by": "piece"})
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

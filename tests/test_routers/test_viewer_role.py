@@ -57,7 +57,7 @@ async def test_viewer_reads_allowed_writes_forbidden_across_modules(client, sess
 
     # Seed one of everything as admin.
     item = (await client.post("/items", headers=_h(admin), json={
-        "sku": "VR-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": "VR-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(admin), json={
         "doc_type": "invoice", "line_items": [
             {"entity_id": item, "sku": "VR-1", "name": "Widget", "quantity": 1,
@@ -76,7 +76,7 @@ async def test_viewer_reads_allowed_writes_forbidden_across_modules(client, sess
     # WRITES: representative mutation per module, all 403 for the viewer.
     denied = [
         client.post("/items", headers=_h(viewer), json={
-            "sku": "VR-X", "name": "Nope", "quantity": 1, "sell_by": "piece"}),
+            "status": "available", "sku": "VR-X", "name": "Nope", "quantity": 1, "sell_by": "piece"}),
         client.patch(f"/items/{item}", headers=_h(viewer), json={
             "fields_changed": {"name": {"old": "Widget", "new": "Hacked"}}}),
         client.post("/docs", headers=_h(viewer), json={"doc_type": "invoice", "line_items": []}),
@@ -102,7 +102,7 @@ async def test_operator_writes_still_allowed(client, session):
     operator = await _user_with_role(client, session, admin, "operator")
 
     r_item = await client.post("/items", headers=_h(operator), json={
-        "sku": "OP-1", "name": "OpWidget", "quantity": 2, "sell_by": "piece"})
+        "status": "available", "sku": "OP-1", "name": "OpWidget", "quantity": 2, "sell_by": "piece"})
     assert r_item.status_code == 200, r_item.text
     r_doc = await client.post("/docs", headers=_h(operator), json={
         "doc_type": "invoice", "line_items": []})

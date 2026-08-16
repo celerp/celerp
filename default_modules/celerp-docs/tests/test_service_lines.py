@@ -25,7 +25,7 @@ async def test_fulfill_service_line_not_blocked_by_stock(client):
     """A service line (sell_by not a service unit, e.g. 'piece') with zero stock must still fulfill."""
     token = await _register(client)
     svc = (await client.post("/items", headers=_h(token), json={
-        "sku": "SVC-1", "name": "Consulting", "quantity": 0, "sell_by": "piece",
+        "status": "available", "sku": "SVC-1", "name": "Consulting", "quantity": 0, "sell_by": "piece",
         "inventory_type": "service"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
         {"entity_id": svc, "sku": "SVC-1", "name": "Consulting", "quantity": 2, "unit_price": 100, "sell_by": "piece"}],
@@ -50,9 +50,9 @@ async def test_fulfill_mixed_service_and_stock(client):
     done without a stock check."""
     token = await _register(client)
     stock = (await client.post("/items", headers=_h(token), json={
-        "sku": "STK-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        "status": "available", "sku": "STK-1", "name": "Widget", "quantity": 5, "sell_by": "piece"})).json()["id"]
     svc = (await client.post("/items", headers=_h(token), json={
-        "sku": "SVC-2", "name": "Install", "quantity": 0, "sell_by": "piece", "inventory_type": "service"})).json()["id"]
+        "status": "available", "sku": "SVC-2", "name": "Install", "quantity": 0, "sell_by": "piece", "inventory_type": "service"})).json()["id"]
     doc = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
         {"entity_id": stock, "sku": "STK-1", "name": "Widget", "quantity": 5, "unit_price": 10, "sell_by": "piece"},
         {"entity_id": svc, "sku": "SVC-2", "name": "Install", "quantity": 1, "unit_price": 50, "sell_by": "piece"}],

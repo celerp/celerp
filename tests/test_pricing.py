@@ -232,7 +232,7 @@ async def _set_config(client, headers, price_lists=None, base=None):
 
 
 async def _create_item(client, headers, **fields) -> str:
-    payload = {"sku": f"PRC-{uuid.uuid4().hex[:6]}", "name": "Widget", "quantity": 1, "sell_by": "piece"}
+    payload = {"status": "available", "sku": f"PRC-{uuid.uuid4().hex[:6]}", "name": "Widget", "quantity": 1, "sell_by": "piece"}
     payload.update(fields)
     r = await client.post("/items", json=payload, headers=headers)
     assert r.status_code == 200, r.text

@@ -63,8 +63,8 @@ async def test_manufacturing_boms_endpoints_gone_404(client) -> None:
 @pytest.mark.asyncio
 async def test_bom_migration_converts_to_recipe(client, session) -> None:
     token = await _register(client)
-    raw = (await client.post("/items", headers=_h(token), json={"sku": "RAW", "name": "Raw", "quantity": 10, "sell_by": "piece", "cost_total": 50})).json()["id"]
-    fg = (await client.post("/items", headers=_h(token), json={"sku": "FG", "name": "FG", "sell_by": "piece"})).json()["id"]
+    raw = (await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW", "name": "Raw", "quantity": 10, "sell_by": "piece", "cost_total": 50})).json()["id"]
+    fg = (await client.post("/items", headers=_h(token), json={"status": "available", "sku": "FG", "name": "FG", "sell_by": "piece"})).json()["id"]
 
     company = (await session.execute(select(Company))).scalars().first()
     user = (await session.execute(select(User))).scalars().first()

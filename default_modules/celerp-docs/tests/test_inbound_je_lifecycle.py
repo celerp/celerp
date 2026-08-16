@@ -49,7 +49,7 @@ async def test_stock_bill_recognises_goods_and_ap_once(client):
     """Finalize + receive a plain stock bill: inventory and AP are recognised once, not doubled."""
     t = await _register(client)
     loc = await _location(client, t)
-    goods = (await client.post("/items", headers=_h(t), json={"sku": "G1", "name": "G1", "quantity": 0, "sell_by": "piece"})).json()["id"]
+    goods = (await client.post("/items", headers=_h(t), json={"status": "available", "sku": "G1", "name": "G1", "quantity": 0, "sell_by": "piece"})).json()["id"]
     bill = (await client.post("/docs", headers=_h(t), json={"doc_type": "bill",
             "line_items": [_line(goods, "G1", 10, 10)], "total": 100})).json()["id"]
     assert (await client.post(f"/docs/{bill}/finalize", headers=_h(t))).status_code == 200
@@ -65,8 +65,8 @@ async def test_bill_with_freight_capitalises_landed_then_cogs_reconciles(client)
     relieves 1130-P at the full landed cost, netting inventory to zero."""
     t = await _register(client)
     loc = await _location(client, t)
-    goods = (await client.post("/items", headers=_h(t), json={"sku": "G2", "name": "G2", "quantity": 0, "sell_by": "piece"})).json()["id"]
-    frt = (await client.post("/items", headers=_h(t), json={"sku": "FR", "name": "FR", "quantity": 0, "sell_by": "piece", "inventory_type": "freight", "landed_cost_kind": "freight"})).json()["id"]
+    goods = (await client.post("/items", headers=_h(t), json={"status": "available", "sku": "G2", "name": "G2", "quantity": 0, "sell_by": "piece"})).json()["id"]
+    frt = (await client.post("/items", headers=_h(t), json={"status": "available", "sku": "FR", "name": "FR", "quantity": 0, "sell_by": "piece", "inventory_type": "freight", "landed_cost_kind": "freight"})).json()["id"]
     bill = (await client.post("/docs", headers=_h(t), json={"doc_type": "bill", "line_items": [
             _line(goods, "G2", 10, 10), _line(frt, "FR", 1, 40)], "total": 140})).json()["id"]
     assert (await client.post(f"/docs/{bill}/finalize", headers=_h(t))).status_code == 200

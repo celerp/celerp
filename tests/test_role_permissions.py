@@ -65,6 +65,7 @@ EXPECTED_CATALOGUE = {
     "set_inventory_prices": ("manager", True, "viewer"),
     "delete_documents": ("manager", True, "viewer"),
     "adjust_inventory": ("manager", True, "viewer"),
+    "revert_items_to_draft": ("manager", True, "viewer"),
     "import_export_data": ("manager", True, "viewer"),
     "view_payments": ("manager", True, "viewer"),
     "view_financial_reports": ("manager", True, "viewer"),
@@ -571,7 +572,7 @@ async def test_operator_granted_create_with_costs(client, session):
     await grant_permission(client, ctx["admin_h"], "set_inventory_prices", "operator")
     r = await client.post(
         "/items",
-        json={"sku": "OP-COST", "name": "Op Cost Item", "quantity": 1,
+        json={"status": "available", "sku": "OP-COST", "name": "Op Cost Item", "quantity": 1,
               "location_id": ctx["location_id"], "cost_price": 42.0, "sell_by": "piece"},
         headers=ctx["operator_h"],
     )
@@ -914,7 +915,7 @@ async def test_viewer_granted_write_can_act(client, session):
     viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
     r2 = await client.post(
         "/items",
-        json={"sku": "VW-1", "name": "Viewer Item", "quantity": 1,
+        json={"status": "available", "sku": "VW-1", "name": "Viewer Item", "quantity": 1,
               "location_id": ctx["location_id"], "sell_by": "piece"},
         headers=viewer_h,
     )
@@ -1136,7 +1137,7 @@ async def test_default_parity_matrix(client, session):
     viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
 
     def _item(sku):
-        return {"sku": sku, "name": "Par", "quantity": 1,
+        return {"sku": sku, "name": "Par", "quantity": 1, "status": "available",
                 "location_id": ctx["location_id"], "sell_by": "piece"}
 
     # operator tier: edit_inventory (POST /items). viewer denied, operator allowed.
@@ -1175,7 +1176,7 @@ async def test_override_revoke_flips_gate(client, session):
     ctx = await perm_setup(client, session)
 
     def _item(sku):
-        return {"sku": sku, "name": "Rev", "quantity": 1,
+        return {"sku": sku, "name": "Rev", "quantity": 1, "status": "available",
                 "location_id": ctx["location_id"], "sell_by": "piece"}
 
     # operator holds edit_inventory (operator default) today.
@@ -1529,7 +1530,7 @@ async def test_nonamount_edit_allowed_without_amount_permission(client, session)
 async def _mergeable_pair(client, headers, location_id):
     """Create two same-category, same-unit items; return (id_a, id_b)."""
     def _body(sku, qty):
-        return {"sku": sku, "name": sku, "quantity": qty, "category": "Raw",
+        return {"sku": sku, "name": sku, "quantity": qty, "category": "Raw", "status": "available",
                 "location_id": location_id, "sell_by": "piece"}
     a = (await client.post("/items", json=_body("MRG-A", 5), headers=headers)).json()["id"]
     b = (await client.post("/items", json=_body("MRG-B", 3), headers=headers)).json()["id"]
@@ -1540,7 +1541,7 @@ async def _splittable_item(client, headers, location_id, sku="SPL-1", weight=10.
     """Create a splittable weight-bearing item; return its entity_id."""
     r = await client.post(
         "/items",
-        json={"sku": sku, "name": sku, "quantity": 10, "location_id": location_id,
+        json={"status": "available", "sku": sku, "name": sku, "quantity": 10, "location_id": location_id,
               "sell_by": "piece", "weight": weight, "allow_splitting": True},
         headers=headers,
     )

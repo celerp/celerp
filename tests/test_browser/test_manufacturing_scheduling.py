@@ -21,8 +21,9 @@ def test_in_production_scheduling(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1000})
 
     gold = api.post("/items", json={"sku": "SCH-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
-                                    "cost_total": 8000, "inventory_type": "component"}).json()["id"]
-    ring = api.post("/items", json={"sku": "SCH-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+                                    "cost_total": 8000, "inventory_type": "component", "status": "available"}).json()["id"]
+    ring = api.post("/items", json={"sku": "SCH-RING", "name": "Ring", "quantity": 0, "sell_by": "piece",
+                                    "status": "available"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
 

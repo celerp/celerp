@@ -70,6 +70,7 @@ PERMISSIONS: list[Permission] = [
     Permission("set_sales_doc_prices", "Set sales document prices", "operator", True, "viewer"),
     Permission("delete_documents", "Delete documents", "manager", True, "viewer"),
     Permission("adjust_inventory", "Adjust stock & bulk operations", "manager", True, "viewer"),
+    Permission("revert_items_to_draft", "Revert items to draft", "manager", True, "viewer"),
     Permission("import_export_data", "Import / export data", "manager", True, "viewer"),
     Permission("view_payments", "View payments", "manager", True, "viewer"),
     Permission("view_financial_reports", "View financial reports", "manager", True, "viewer"),

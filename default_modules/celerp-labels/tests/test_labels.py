@@ -950,7 +950,7 @@ async def test_print_pdf_contains_derived_weight_for_carat_item(client: AsyncCli
     headers = await _headers(client)
     r_item = await client.post(
         "/items",
-        json={"sku": "CT-LBL", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6},
+        json={"status": "available", "sku": "CT-LBL", "name": "Carat Parcel", "sell_by": "carat", "quantity": 38.6},
         headers=headers,
     )
     assert r_item.status_code == 200, r_item.text
@@ -1222,7 +1222,7 @@ async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, 
     )
     r = await client.post(
         "/items",
-        json={"sku": "COSTLBL", "name": "Cost Label Item", "quantity": 1,
+        json={"status": "available", "sku": "COSTLBL", "name": "Cost Label Item", "quantity": 1,
               "location_id": loc.json()["id"], "cost_price": 123.45,
               "retail_price": 500.0, "sell_by": "piece"},
         headers=headers,

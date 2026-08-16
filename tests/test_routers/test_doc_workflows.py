@@ -329,7 +329,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     token = await _register(client)
 
     # PO receive adjusts existing + creates new item + JE
-    existing = await client.post("/items", headers=_h(token), json={"sku": "EXIST", "name": "Existing", "quantity": 1, "sell_by": "piece"})
+    existing = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "EXIST", "name": "Existing", "quantity": 1, "sell_by": "piece"})
     item_id = existing.json()["id"]
     po = await client.post(
         "/docs",
@@ -989,7 +989,7 @@ async def test_receive_return_on_credit_note(client, session):
     h = _h(token)
 
     # Create a sold inventory item with qty 2 (simulates goods sold to the customer)
-    item1 = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0, "unit_price": 50.0, "sell_by": "piece"})
+    item1 = await client.post("/items", headers=h, json={"status": "available", "sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item1.status_code == 200
     item1_id = item1.json()["id"]
     # Mark as sold
@@ -1077,7 +1077,7 @@ async def test_doc_return_received_projection(client, session):
     h = _h(token)
 
     # Create a sold inventory item for the SKU being returned
-    item = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 50.0, "sell_by": "piece"})
+    item = await client.post("/items", headers=h, json={"status": "available", "sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item.status_code == 200
     await client.post(f"/items/{item.json()['id']}/status", headers=h, json={"new_status": "sold"})
 
@@ -1213,7 +1213,7 @@ async def test_undo_receive_return_removes_items_from_inventory(client, session)
     h = _h(token)
 
     # Create sold inventory item
-    item_r = await client.post("/items", headers=h, json={"sku": "RR-001", "name": "Returnable Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 60.0, "sell_by": "piece"})
+    item_r = await client.post("/items", headers=h, json={"status": "available", "sku": "RR-001", "name": "Returnable Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 60.0, "sell_by": "piece"})
     assert item_r.status_code == 200
     await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
 
@@ -1263,7 +1263,7 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     h = _h(token)
 
     # Create sold inventory item
-    item_r = await client.post("/items", headers=h, json={"sku": "RR-002", "name": "Resold Widget", "quantity": 1, "cost_price": 25.0, "unit_price": 50.0, "sell_by": "piece"})
+    item_r = await client.post("/items", headers=h, json={"status": "available", "sku": "RR-002", "name": "Resold Widget", "quantity": 1, "cost_price": 25.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item_r.status_code == 200
     await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
 
@@ -1419,7 +1419,7 @@ async def test_receive_goods_inherits_sku_attributes(client, session):
 
     # Create a master item with rich attributes including dynamic category-specific ones
     item_r = await client.post("/items", headers=h, json={
-        "sku": "MASTER-001", "name": "Master Widget",
+        "status": "available", "sku": "MASTER-001", "name": "Master Widget",
         "sell_by": "piece", "category": "Electronics",
         "retail_price": 99.0, "wholesale_price": 60.0, "cost_price": 40.0,
         "barcode": "1234567890",
@@ -1941,7 +1941,7 @@ async def test_memo_fulfill_sets_memo_out_status(client, session):
     h = _h(token)
 
     # Create an item
-    item_r = await client.post("/items", headers=h, json={"name": "Gem A", "quantity": 1, "sku": "GEM-MEMO-001", "sell_by": "piece"})
+    item_r = await client.post("/items", headers=h, json={"status": "available", "name": "Gem A", "quantity": 1, "sku": "GEM-MEMO-001", "sell_by": "piece"})
     assert item_r.status_code == 200
     item_id = item_r.json()["id"]
 
@@ -2248,7 +2248,7 @@ async def test_bill_receive_known_sku_creates_new_parcel_not_adjust(client, sess
     # Create a catalog template item for the known SKU
     template_r = await client.post(
         "/items", headers=_h(token),
-        json={"sku": "KNOWN-SKU-001", "name": "Known Widget", "quantity": 5, "sell_by": "piece"},
+        json={"status": "available", "sku": "KNOWN-SKU-001", "name": "Known Widget", "quantity": 5, "sell_by": "piece"},
     )
     assert template_r.status_code == 200
     template_id = template_r.json()["id"]
@@ -2305,7 +2305,7 @@ async def test_consignment_in_receive_known_sku_creates_new_parcel(client, sessi
 
     template_r = await client.post(
         "/items", headers=_h(token),
-        json={"sku": "CONS-SKU-001", "name": "Consigned Widget", "quantity": 4, "sell_by": "piece"},
+        json={"status": "available", "sku": "CONS-SKU-001", "name": "Consigned Widget", "quantity": 4, "sell_by": "piece"},
     )
     template_id = template_r.json()["id"]
 
@@ -2355,7 +2355,7 @@ async def test_po_receive_known_item_still_adjusts_qty(client, session):
 
     existing_r = await client.post(
         "/items", headers=_h(token),
-        json={"sku": "PO-EXIST-001", "name": "PO Existing", "quantity": 10, "sell_by": "piece"},
+        json={"status": "available", "sku": "PO-EXIST-001", "name": "PO Existing", "quantity": 10, "sell_by": "piece"},
     )
     item_id = existing_r.json()["id"]
 

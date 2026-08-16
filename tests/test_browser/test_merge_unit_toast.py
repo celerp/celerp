@@ -12,8 +12,8 @@ pytestmark = pytest.mark.browser
 
 def test_merge_different_units_shows_error_toast(page, ui_server, api):
     tag = uuid.uuid4().hex[:6].upper()
-    a = api.post("/items", json={"sku": f"TWU-{tag}-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"})
-    b = api.post("/items", json={"sku": f"TWU-{tag}-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"})
+    a = api.post("/items", json={"status": "available", "sku": f"TWU-{tag}-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"})
+    b = api.post("/items", json={"status": "available", "sku": f"TWU-{tag}-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"})
     assert a.status_code in {200, 201} and b.status_code in {200, 201}
     a_id = a.json()["id"]
 

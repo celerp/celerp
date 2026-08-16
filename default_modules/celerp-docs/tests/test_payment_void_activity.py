@@ -30,7 +30,7 @@ async def _doc_events(client, h, doc_id):
 async def test_void_payment_tracked_in_history(client):
     token = await _register(client)
     h = _h(token)
-    item = (await client.post("/items", headers=h, json={"sku": "PV-ITEM", "name": "Item", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    item = (await client.post("/items", headers=h, json={"status": "available", "sku": "PV-ITEM", "name": "Item", "quantity": 1, "sell_by": "piece"})).json()["id"]
     doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": item, "sku": "PV-ITEM", "name": "Item", "quantity": 1, "unit_price": 500, "sell_by": "piece"}],
         "total": 500,

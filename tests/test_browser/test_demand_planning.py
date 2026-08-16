@@ -48,13 +48,13 @@ def test_demand_planning_interactions(page, ui_server, api):
     # ── Seed raw materials + finished goods ───────────────────────────────────
 
     # copper: a component used in wire and make-complete recipes
-    copper = api.post("/items", json={
+    copper = api.post("/items", json={"status": "available", 
         "sku": "DP-COPPER", "name": "Copper rod", "quantity": 100,
         "sell_by": "piece", "inventory_type": "component",
     }).json()["id"]
 
     # wire: stock=0, demand=4 -> Needed (short). Used for Make + requirements test.
-    wire = api.post("/items", json={
+    wire = api.post("/items", json={"status": "available", 
         "sku": "DP-WIRE", "name": "Copper wire", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
     r = api.put(f"/manufacturing/items/{wire}/recipe",
@@ -63,7 +63,7 @@ def test_demand_planning_interactions(page, ui_server, api):
     assert r.status_code == 200, r.text
 
     # bead: stock=20 >= demand=3 -> Covered.
-    bead = api.post("/items", json={
+    bead = api.post("/items", json={"status": "available", 
         "sku": "DP-BEAD", "name": "Glass bead", "quantity": 20, "sell_by": "piece",
     }).json()["id"]
     api.put(f"/manufacturing/items/{bead}/recipe",
@@ -71,11 +71,11 @@ def test_demand_planning_interactions(page, ui_server, api):
                   "labor": [], "overhead": []})
 
     # pendant: stock=0, demand=2 -> Needed. Used for Make & complete.
-    silver = api.post("/items", json={
+    silver = api.post("/items", json={"status": "available", 
         "sku": "DP-SILVER", "name": "Silver rod", "quantity": 100,
         "sell_by": "piece", "inventory_type": "component",
     }).json()["id"]
-    pendant = api.post("/items", json={
+    pendant = api.post("/items", json={"status": "available", 
         "sku": "DP-PENDANT", "name": "Silver pendant", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
     r2 = api.put(f"/manufacturing/items/{pendant}/recipe",
@@ -374,11 +374,11 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    tin = api.post("/items", json={
+    tin = api.post("/items", json={"status": "available", 
         "sku": "WIP-TIN", "name": "Tin", "quantity": 50,
         "sell_by": "piece", "inventory_type": "component",
     }).json()["id"]
-    can = api.post("/items", json={
+    can = api.post("/items", json={"status": "available", 
         "sku": "WIP-CAN", "name": "Tin can", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
     r = api.put(f"/manufacturing/items/{can}/recipe",

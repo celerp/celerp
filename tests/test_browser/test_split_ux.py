@@ -33,7 +33,7 @@ def _assert_no_crash(page, ctx: str = "") -> None:
 @pytest.fixture(scope="module")
 def split_item_piece(api):
     """Create a sell_by=piece item with weight and pieces for split tests."""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-UX-PIECE-001",
         "name": "Split UX Piece Item",
         "sell_by": "piece",
@@ -57,7 +57,7 @@ def split_item_gram_pieces(api):
     """sell_by=gram parcel with an independent pieces attribute (10 pieces
     weighed as 10g) — the shape where child_pieces renders as an editable input.
     (For sell_by=piece items the pieces column is hidden: redundant with QTY.)"""
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-UX-GRAM-001",
         "name": "Split UX Gram Parcel",
         "sell_by": "gram",
@@ -79,7 +79,7 @@ def split_item_ct(api):
     New format: a carat item tracks its weight *as* the quantity (in carats) —
     there's no separate weight/weight_unit, and the quantity accepts fractions.
     """
-    r = api.post("/items", json={
+    r = api.post("/items", json={"status": "available", 
         "sku": "SPLIT-UX-CT-001",
         "name": "Split UX CT Item",
         "sell_by": "carat",

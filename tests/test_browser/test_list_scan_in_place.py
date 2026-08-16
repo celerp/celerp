@@ -15,7 +15,7 @@ pytestmark = pytest.mark.browser
 def test_building_list_scan_appends_without_reload(page, ui_server, api):
     tag = uuid.uuid4().hex[:6]
     barcode = str(uuid.uuid4().int)[:12]
-    api.post("/items", json={"sku": f"SCN-{tag}", "name": "Scan Widget", "sell_by": "piece",
+    api.post("/items", json={"status": "available", "sku": f"SCN-{tag}", "name": "Scan Widget", "sell_by": "piece",
              "quantity": 10, "barcode": barcode})
     list_id = api.post("/lists", json={"list_type": "quotation"}).json()["id"]
 

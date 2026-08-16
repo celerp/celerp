@@ -118,7 +118,7 @@ async def create_item(client, headers: dict, location_id: str, sku: str = "SKU-P
     """Create an item as admin and return its entity_id."""
     r = await client.post(
         "/items",
-        json={"sku": sku, "name": "Perm Item", "quantity": 5, "location_id": location_id, "cost_price": 100.0, "sell_by": "piece"},
+        json={"sku": sku, "name": "Perm Item", "quantity": 5, "location_id": location_id, "cost_price": 100.0, "sell_by": "piece", "status": "available"},
         headers=headers,
     )
     assert r.status_code == 200, r.text

@@ -28,7 +28,8 @@ async def _token(client) -> str:
 async def _seed(client, headers, sku: str) -> str:
     r = await client.post(
         "/items",
-        json={"sku": sku, "name": sku, "quantity": 5.0, "sell_by": "piece", "category": "widgets"},
+        json={"sku": sku, "name": sku, "quantity": 5.0, "sell_by": "piece", "category": "widgets",
+              "status": "available"},
         headers=headers,
     )
     assert r.status_code == 200, r.text

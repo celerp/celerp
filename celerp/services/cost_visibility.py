@@ -18,7 +18,8 @@ COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 
 
 def apply_field_visibility(
-    items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool
+    items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool,
+    can_author_drafts: bool = False,
 ) -> list[dict]:
     """Strip fields from item dicts that the caller is not allowed to see.
 
@@ -30,6 +31,11 @@ def apply_field_visibility(
     Cost keys are governed only by the permission, so the cost column's own
     visible_to_roles floor never double-gates them: a granted operator sees cost,
     an ungranted manager does not.
+
+    Draft carve-out: cost stripping attaches when an item is committed to
+    available, not at creation. When ``can_author_drafts`` (the caller holds
+    edit_inventory), a DRAFT item keeps its cost keys so its creator can finish
+    authoring it; every non-draft item is stripped as before.
     """
     caller_level = ROLE_LEVELS.get(role, 0)
     restricted = {
@@ -40,8 +46,15 @@ def apply_field_visibility(
         )
     }
     restricted -= COST_ITEM_KEYS
-    if not can_see_costs:
-        restricted |= COST_ITEM_KEYS
-    if not restricted:
+    cost_hidden = not can_see_costs
+    if not restricted and not cost_hidden:
         return items
-    return [{k: v for k, v in item.items() if k not in restricted} for item in items]
+    out = []
+    for item in items:
+        drop = set(restricted)
+        if cost_hidden and not (
+            can_author_drafts and str(item.get("status") or "").lower() == "draft"
+        ):
+            drop |= COST_ITEM_KEYS
+        out.append({k: v for k, v in item.items() if k not in drop} if drop else item)
+    return out

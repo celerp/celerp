@@ -21,10 +21,10 @@ def _h(token: str) -> dict:
 
 async def _ring(client, token, *, ring_qty=0):
     gold = (await client.post("/items", headers=_h(token),
-                              json={"sku": f"G-{uuid.uuid4().hex[:6]}", "name": "Gold", "quantity": 100,
+                              json={"status": "available", "sku": f"G-{uuid.uuid4().hex[:6]}", "name": "Gold", "quantity": 100,
                                     "sell_by": "gram", "cost_total": 8000})).json()["id"]
     ring = (await client.post("/items", headers=_h(token),
-                              json={"sku": f"R-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": ring_qty,
+                              json={"status": "available", "sku": f"R-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": ring_qty,
                                     "sell_by": "piece"})).json()["id"]
     await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})

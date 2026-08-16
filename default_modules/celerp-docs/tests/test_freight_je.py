@@ -22,7 +22,7 @@ def _h(t):
 
 
 async def _item(client, t, sku, *, inv="stocked", kind=None, recoverable=None, qty=0):
-    body = {"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "inventory_type": inv}
+    body = {"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "inventory_type": inv}
     if kind:
         body["landed_cost_kind"] = kind
     if recoverable is not None:

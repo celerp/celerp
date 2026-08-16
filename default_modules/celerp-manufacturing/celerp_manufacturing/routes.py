@@ -350,6 +350,8 @@ async def build_item(
         raise HTTPException(status_code=404, detail="Item not found")
     if not is_manufacturable(item.state):
         raise HTTPException(status_code=422, detail="Item has no recipe to build from")
+    if str((item.state or {}).get("status") or "").lower() == "draft":
+        raise HTTPException(status_code=422, detail="Cannot build into a draft item; make it available first.")
     if payload.quantity <= 0:
         raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
     inputs, outputs = expand_recipe(item.state, payload.quantity)
@@ -1300,8 +1302,20 @@ async def delete_work_center(
 # Production-run execution (issue components / receive finished goods)
 # ---------------------------------------------------------------------------
 
-# Item statuses whose stock no longer counts toward a product's on-hand (sold/consumed/etc.).
-_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired"})
+# Item statuses whose stock does not count toward a product's on-hand:
+# sold/consumed/etc., plus draft (created but not yet committed to stock).
+_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft"})
+
+
+async def _reject_draft_item(session: AsyncSession, company_id, item_id: str, action: str) -> dict:
+    """A draft isn't stock yet, so it cannot be consumed or produced into. Returns the
+    item's state so the caller can reuse it instead of fetching twice."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if row is None or row.entity_type != "item":
+        raise HTTPException(status_code=404, detail=f"Item not found: {item_id}")
+    if str((row.state or {}).get("status") or "").lower() == "draft":
+        raise HTTPException(status_code=422, detail=f"Cannot {action} a draft item ({item_id}); make it available first.")
+    return row.state
 
 
 def _component_unit_cost(state: dict | None) -> float:
@@ -1349,9 +1363,7 @@ async def _consume_components(session: AsyncSession, company_id, user, order_id:
         qty = float(it.get("quantity") or 0)
         if not item_id or qty <= 0:
             continue
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
-        if row is None or row.entity_type != "item":
-            raise HTTPException(status_code=404, detail=f"Component not found: {item_id}")
+        await _reject_draft_item(session, company_id, item_id, "consume")
         await emit_event(
             session, company_id=company_id, entity_id=item_id, entity_type="item",
             event_type="item.consumed", data={"quantity_consumed": qty}, actor_id=user.id,
@@ -1390,6 +1402,8 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
 
     lot_id: str | None = None
     if out_id and product is not None:
+        if str(product.get("status") or "").lower() == "draft":
+            raise HTTPException(status_code=422, detail=f"Cannot produce into a draft item ({out_id}); make it available first.")
         loc = product.get("location_id")
         if bool(product.get("allow_splitting", True)):
             # Fungible / bulk: add to the existing product's pile.

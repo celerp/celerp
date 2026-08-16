@@ -53,7 +53,8 @@ async def _mk_item_then_edit_grade(client, headers, sku: str, grade: str) -> str
     (state['grade']), exactly like normal UI usage — not nested under attributes."""
     r = await client.post(
         "/items",
-        json={"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece", "category": "DD"},
+        json={"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece", "category": "DD",
+              "status": "available"},
         headers=headers,
     )
     assert r.status_code == 200, r.text

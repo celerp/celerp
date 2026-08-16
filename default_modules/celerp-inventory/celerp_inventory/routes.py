@@ -301,6 +301,154 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
+# Every status an item can legally hold. The status write paths (single, bulk,
+# patch) validate against this set; projection replay stays permissive so
+# historic events are never rejected.
+ITEM_STATUSES: frozenset[str] = frozenset({
+    "draft", "available", "active", "reserved", "sold", "archived",
+    "merged", "expired", "memo_out", "returned",
+})
+
+# Authoring-only event types: none of these mean the item has circulated.
+# Any other ledger event on the item (adjust, transfer, fulfill, reserve,
+# split, receive, ...) counts as circulation and blocks a revert to draft.
+# item.file.* is matched by prefix below.
+_AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
+    "item.created", "item.updated", "item.patched", "item.pricing.set",
+    "item.status.set", "item.recipe.set", "item.workflow.set",
+    "shop.sync.enabled", "shop.sync.disabled",
+})
+
+
+async def assert_status_change_allowed(
+    session: AsyncSession, company_id, entity_id: str, new_status: str,
+    role: str, settings: dict,
+) -> None:
+    """Function-level validation shared by every item-status write path (single,
+    bulk, and PATCH). Unknown values are rejected with the allowed list. A draft
+    item's amounts and costs are freely editable, so an item that has circulated
+    must never quietly become one again: reverting a committed item to draft
+    requires the revert_items_to_draft permission AND a clean history, and every
+    rejection names its reason instead of hiding the control.
+    """
+    ns = str(new_status or "").lower()
+    if ns not in ITEM_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown status '{new_status}'; allowed: {', '.join(sorted(ITEM_STATUSES))}",
+        )
+    if ns != "draft":
+        return
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    state = (row.state if row else {}) or {}
+    current = str(state.get("status") or "").lower()
+    if current in ("", "draft"):
+        return  # creating as draft / already draft: harmless no-op
+    if not role_has_permission(settings, role, "revert_items_to_draft"):
+        raise HTTPException(
+            status_code=403,
+            detail="Reverting an item to draft requires the 'Revert items to draft' permission (revert_items_to_draft)",
+        )
+    if current != "available":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only an available item can be reverted to draft; this item is {current}",
+        )
+    if state.get("status_doc_id"):
+        holder = state.get("status_doc_number") or state.get("status_doc_id")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot revert to draft: the item's status is held by document {holder}",
+        )
+    from celerp.models.ledger import LedgerEntry
+    event_types = set((await session.execute(
+        select(LedgerEntry.event_type).distinct().where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == entity_id,
+        )
+    )).scalars().all())
+    circulated = sorted(
+        e for e in event_types
+        if e not in _AUTHORING_EVENT_TYPES and not e.startswith("item.file.")
+    )
+    if circulated:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot revert to draft: the item has circulation history ({', '.join(circulated)})",
+        )
+    from sqlalchemy import cast, or_
+    from sqlalchemy.dialects.postgresql import JSONB
+    # Doc lines are item_id-keyed via POST /docs (LineItem normalizes entity_id)
+    # but entity_id-keyed via the patch path and receiving/fulfillment writes, so
+    # membership must match either key.
+    _lines = cast(Projection.state["line_items"], JSONB)
+    doc_ref = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type.in_(("doc", "list")),
+            or_(
+                _lines.contains([{"item_id": entity_id}]),
+                _lines.contains([{"entity_id": entity_id}]),
+            ),
+        ).limit(1)
+    )).scalars().first()
+    if doc_ref:
+        ref_state = (doc_ref.state or {})
+        ref = ref_state.get("ref_id") or ref_state.get("doc_number") or doc_ref.entity_id
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot revert to draft: the item is on document {ref}",
+        )
+
+
+async def reject_draft_status_change_via_generic_path(
+    session: AsyncSession, company_id, entity_id: str, new_status: str,
+) -> None:
+    """Draft's only way out is Make Available, and the only way in is Revert to Draft -
+    both dedicated actions, never a generic status write. Blocks every draft-origin
+    transition (not just to "available" - a draft going to sold/reserved/archived/expired
+    makes no more sense, since it isn't stock yet), independent of permission: a generic
+    write must never touch draft in either direction. Every non-draft-origin transition
+    (e.g. Restore, archived -> available) is untouched."""
+    ns = str(new_status or "").lower()
+    if ns == "draft":
+        raise HTTPException(
+            status_code=422,
+            detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
+        )
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    if current == "draft":
+        raise HTTPException(
+            status_code=422,
+            detail="A draft item can only become available through the 'Make Available' action, not a direct status edit.",
+        )
+
+
+async def assert_make_available_allowed(session: AsyncSession, company_id, entity_id: str) -> None:
+    """Already-available is a harmless no-op (mirrors the revert guard's own
+    already-draft no-op), so a mixed bulk selection doesn't hard-fail."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    if current in ("draft", "available"):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=f"Only a draft item can be made available; this item is {current}",
+    )
+
+
+async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
+    """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
+    make no sense on it until it is committed via Make Available."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    if current == "draft":
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot {action} a draft item; make it available first.",
+        )
+
 
 # ── Search grammar ─────────────────────────────────────────────────────────────
 # The inventory (and global) search bar accepts: `,` = OR groups, `&` = AND terms,
@@ -554,7 +702,9 @@ async def list_items(
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
     if filter == "low_stock":
-        result = [r for r in result if is_below_reorder(r)]
+        # Drafts are not stock: an unfinished item must not raise a reorder alarm.
+        result = [r for r in result
+                  if is_below_reorder(r) and str(r.get("status") or "").lower() != "draft"]
 
     q_reasons: dict = {}
     if q:
@@ -573,7 +723,10 @@ async def list_items(
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    result = apply_field_visibility(result, role, field_schema, can_see_costs)
+    result = apply_field_visibility(
+        result, role, field_schema, can_see_costs,
+        can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
+    )
 
     # Attach search-match reasons AFTER visibility (so they survive the dict
     # rebuild). The UI reads each reason's value from the visibility-filtered
@@ -691,6 +844,7 @@ async def get_valuation(
     for pl in _price_lists:
         price_totals[pl.get("name", "")] = Decimal(0)
     active_item_count = 0
+    draft_count = 0
     category_counts: dict[str, int] = {}
     count_by_status: dict[str, int] = {}
 
@@ -746,6 +900,12 @@ async def get_valuation(
         # count_by_status: scoped to the same category+status slice as active_item_count
         count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
 
+        # Drafts are not stock yet: counted for the status card above, excluded
+        # from the active count and every value total until committed to available.
+        if row_status == "draft":
+            draft_count += 1
+            continue
+
         active_item_count += 1
         qty = float(state.get("quantity") or 0)
         # Value from the flattened item so cost (recipe standard / lot total) and derived
@@ -783,9 +943,10 @@ async def get_valuation(
         "wholesale_total": float(price_totals.get("Wholesale", 0)),
         "retail_total": float(price_totals.get("Retail", 0)),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
-        # total_scoped_count is always active_item_count - used for the "All" tab
+        # total_scoped_count backs the "All" tab: everything the scoped list shows,
+        # which includes drafts even though they carry no stock value yet
         # (some items may have no category and won't appear in category_counts)
-        "total_scoped_count": active_item_count,
+        "total_scoped_count": active_item_count + draft_count,
         "count_by_status": count_by_status,
     }
     if show_cost:
@@ -909,7 +1070,10 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          price_config=await get_price_config(session, company_id))
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    filtered = apply_field_visibility([flat], role, field_schema, can_see_costs)
+    filtered = apply_field_visibility(
+        [flat], role, field_schema, can_see_costs,
+        can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
+    )
     return filtered[0]
 
 
@@ -1009,9 +1173,13 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
 
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: setting cost fields on creation requires the set_inventory_prices permission.
+    # Guard: setting cost fields on creation requires set_inventory_prices, except that a
+    # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
+    # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
     if payload.cost_price is not None or payload.cost_total is not None:
-        assert_role_permission(settings, role, "set_inventory_prices")
+        _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+        if not draft_cost_carveout(_create_draft, role, settings):
+            assert_role_permission(settings, role, "set_inventory_prices")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
@@ -1099,8 +1267,12 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         except ImportError:
             pass
 
-    # Ensure status is set (not part of ItemCreate model but required for projections)
-    data.setdefault("status", "available")
+    # Ensure status is set (not part of ItemCreate model but required for projections).
+    # Manual creation starts as draft: the item stays authorable (amounts and costs
+    # editable by anyone with edit_inventory) until "Make available" commits it into
+    # circulating stock. System flows (split, merge, import, receive) pass status
+    # explicitly and stay available - they derive from stock already in circulation.
+    data.setdefault("status", "draft")
 
     # Strip price fields from create event data - they go via pricing events.
     # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
@@ -1150,25 +1322,53 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
+def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
+    """While an item is draft, its creator authors cost with edit_inventory alone;
+    the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
+    (post_item at creation, patch_item, set_item_price) so they cannot drift out of sync."""
+    return is_draft and role_has_permission(settings, role, "edit_inventory")
+
+
+def is_cost_price_type(price_type: str) -> bool:
+    """True when a set_item_price price_type addresses the cost list, in either the
+    primitive-key form (cost_price/cost_total) or a list-name-derived key (e.g.
+    landed_price for a 'Landed' cost list)."""
+    if price_type in COST_ITEM_KEYS:
+        return True
+    name = price_type[:-len("_price")] if price_type.endswith("_price") else price_type
+    return is_cost_list_name(name)
+
+
 @router.patch("/{entity_id}")
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: restricted fields require a role at the schema-configured floor.
     from celerp.services.field_schema import get_effective_field_schema
     field_schema = await get_effective_field_schema(session, company_id)
     restricted = {f["key"] for f in field_schema if f.get("visible_to_roles") and ROLE_LEVELS.get(role, 0) < min(ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"])}
+    # Draft carve-out: the circulating-stock gates (cost + amount permissions)
+    # attach when the item is committed to available, not at creation. While the
+    # CURRENT status is draft, anyone with edit_inventory finishes authoring the
+    # item freely; the status is re-read here on every patch, so an edit landing
+    # after another user commits the item is gated like any available item.
+    _proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    _is_draft = str(((_proj.state if _proj else {}) or {}).get("status") or "").lower() == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
-    if not role_has_permission(settings, role, "set_inventory_prices"):
+    if not draft_cost_carveout(_is_draft, role, settings) and not role_has_permission(settings, role, "set_inventory_prices"):
         restricted |= COST_ITEM_KEYS
     # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
     # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
     # included because changing it rewrites quantity, so it carries the same
     # authority; the gate fires only on a real change (blocked = changed & restricted).
     restricted -= AMOUNT_EDIT_GATED_KEYS
-    if not role_has_permission(settings, role, "edit_inventory_amounts"):
+    if not _is_draft and not role_has_permission(settings, role, "edit_inventory_amounts"):
         restricted |= AMOUNT_EDIT_GATED_KEYS
     changed_keys = set(payload.fields_changed.keys())
+    if "status" in changed_keys:
+        _new_status = (payload.fields_changed["status"] or {}).get("new")
+        await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
+        await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
     if blocked:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
@@ -1336,9 +1536,14 @@ class BulkDeleteBody(BaseModel):
 
 
 @router.post("/bulk/status")
-async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    # Validated per item BEFORE any event is emitted: one blocked item rejects the
+    # whole bulk with the reason, nothing is half-applied (the session never commits).
+    for entity_id in payload.entity_ids:
+        await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.status)
+        await assert_status_change_allowed(session, company_id, entity_id, payload.status, role, settings)
     event_ids = []
     for entity_id in payload.entity_ids:
         entry = await emit_event(
@@ -1348,6 +1553,69 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
             entity_type="item",
             event_type="item.status.set",
             data={"new_status": payload.status},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+        event_ids.append(entry.id)
+    await session.commit()
+    return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+class MakeAvailableBody(BaseModel):
+    entity_ids: list[str]
+
+
+class RevertToDraftBody(BaseModel):
+    entity_ids: list[str]
+    reason: str | None = None
+
+
+@router.post("/bulk/make-available")
+async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    for entity_id in payload.entity_ids:
+        await assert_make_available_allowed(session, company_id, entity_id)
+    event_ids = []
+    for entity_id in payload.entity_ids:
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "available"},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+        event_ids.append(entry.id)
+    await session.commit()
+    return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+@router.post("/bulk/revert-to-draft")
+async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history)."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    for entity_id in payload.entity_ids:
+        await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
+    event_ids = []
+    for entity_id in payload.entity_ids:
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "draft", "reason": payload.reason},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -1474,6 +1742,8 @@ class BulkExpireBody(BaseModel):
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    for eid in payload.entity_ids:
+        await assert_not_draft(session, company_id, eid, "expire")
     for eid in payload.entity_ids:
         await emit_event(
             session,
@@ -2331,6 +2601,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
+        if str((proj.state or {}).get("status") or "").lower() == "draft":
+            raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         source_projections.append(proj)
 
     # Validate: all items must share the same category.
@@ -2365,6 +2637,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
     if target_proj is None:
         raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
+    if str((target_proj.state or {}).get("status") or "").lower() == "draft":
+        raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({payload.target_sku_from}); make it available first.")
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")
@@ -2695,7 +2969,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 
 @router.post("/{entity_id}/price")
-async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = require_permission("set_inventory_prices"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.
@@ -2705,6 +2979,18 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
             detail=f"'{payload.price_type}' is computed from the '{_base_name}' price list; "
                    f"edit the base price, or change the factor in Settings",
         )
+    # Setting a price requires set_inventory_prices, except that a draft's creator
+    # (edit_inventory) authors its cost while it is still a draft - the same carve-out
+    # patch_item applies, so the pricing tab's Cost card works for the person entering
+    # the item. Sell prices stay gated, and the gate re-arms once the item is available.
+    _proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    _is_draft = str(((_proj.state if _proj else {}) or {}).get("status") or "").lower() == "draft"
+    if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
+        if not role_has_permission(settings, role, "set_inventory_prices"):
+            raise HTTPException(
+                status_code=403,
+                detail="Setting inventory prices requires the 'set_inventory_prices' permission",
+            )
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2723,7 +3009,9 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
 
 
 @router.post("/{entity_id}/status")
-async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.new_status)
+    await assert_status_change_allowed(session, company_id, entity_id, payload.new_status, role, settings)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2743,6 +3031,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
 
 @router.post("/{entity_id}/reserve")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_not_draft(session, company_id, entity_id, "reserve")
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -2781,6 +3070,7 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
 
 @router.post("/{entity_id}/expire")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_not_draft(session, company_id, entity_id, "expire")
     entry = await emit_event(
         session,
         company_id=company_id,

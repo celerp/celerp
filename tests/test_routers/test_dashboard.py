@@ -22,7 +22,7 @@ def _h(token: str) -> dict:
 @pytest.mark.asyncio
 async def test_dashboard_kpis_shape(client):
     token = await _register(client)
-    await client.post("/items", headers=_h(token), json={"sku": "D-1", "name": "Item", "quantity": 1, "sell_by": "piece"})
+    await client.post("/items", headers=_h(token), json={"status": "available", "sku": "D-1", "name": "Item", "quantity": 1, "sell_by": "piece"})
 
     r = await client.get("/dashboard/kpis", headers=_h(token))
     assert r.status_code == 200
@@ -62,12 +62,12 @@ async def test_dashboard_kpis_inventory_values_computed_correctly(client):
     assert base_retail > 0, "demo item retail should be non-zero after seeder fix"
 
     r1 = await client.post("/items", headers=_h(token), json={
-        "sku": "VAL-A", "name": "Priced Item A", "quantity": 5,
+        "status": "available", "sku": "VAL-A", "name": "Priced Item A", "quantity": 5,
         "sell_by": "piece", "cost_price": 10.0, "retail_price": 20.0,
     })
     assert r1.status_code == 200
     r2 = await client.post("/items", headers=_h(token), json={
-        "sku": "VAL-B", "name": "Priced Item B", "quantity": 3,
+        "status": "available", "sku": "VAL-B", "name": "Priced Item B", "quantity": 3,
         "sell_by": "piece", "cost_price": 5.0, "retail_price": 15.0,
     })
     assert r2.status_code == 200
@@ -98,12 +98,12 @@ async def test_dashboard_inventory_valuation_non_zero_with_priced_items(client):
     base_retail = r0.json()["retail_total"]
 
     r1 = await client.post("/items", headers=_h(token), json={
-        "sku": "VAL-C", "name": "Priced Item C", "quantity": 5,
+        "status": "available", "sku": "VAL-C", "name": "Priced Item C", "quantity": 5,
         "sell_by": "piece", "cost_price": 10.0, "retail_price": 20.0,
     })
     assert r1.status_code == 200
     r2 = await client.post("/items", headers=_h(token), json={
-        "sku": "VAL-D", "name": "Priced Item D", "quantity": 3,
+        "status": "available", "sku": "VAL-D", "name": "Priced Item D", "quantity": 3,
         "sell_by": "piece", "cost_price": 5.0, "retail_price": 15.0,
     })
     assert r2.status_code == 200
@@ -123,7 +123,7 @@ async def test_dashboard_inventory_valuation_non_zero_with_priced_items(client):
 @pytest.mark.asyncio
 async def test_dashboard_activity_recent_events(client):
     token = await _register(client)
-    created = await client.post("/items", headers=_h(token), json={"sku": "ACT-1", "name": "Activity Item", "quantity": 2, "sell_by": "piece"})
+    created = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "ACT-1", "name": "Activity Item", "quantity": 2, "sell_by": "piece"})
     assert created.status_code == 200
     entity_id = created.json()["id"]
 

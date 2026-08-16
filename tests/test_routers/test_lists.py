@@ -779,7 +779,7 @@ async def test_transfer_move_relocates_items_and_stays_finalized(client):
     loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "A", "type": "warehouse"})).json()["id"]
     loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "B", "type": "warehouse"})).json()["id"]
     it = (await client.post("/items", headers=h, json={
-        "sku": "MV1", "name": "Mover", "sell_by": "piece", "quantity": 5, "location_id": loc_a})).json()["id"]
+        "status": "available", "sku": "MV1", "name": "Mover", "sell_by": "piece", "quantity": 5, "location_id": loc_a})).json()["id"]
     eid = (await client.post("/lists", headers=h, json={
         "list_type": "transfer", "line_items": [{"item_id": it, "sku": "MV1", "name": "Mover", "quantity": 5}]})).json()["id"]
 
@@ -813,7 +813,7 @@ async def test_change_type_while_issued(client):
     token = await _register(client)
     h = _h(token)
     loc = (await client.post("/companies/me/locations", headers=h, json={"name": "WH", "type": "warehouse"})).json()["id"]
-    it = (await client.post("/items", headers=h, json={"sku": "CT1", "name": "W", "sell_by": "piece", "quantity": 12, "location_id": loc})).json()["id"]
+    it = (await client.post("/items", headers=h, json={"status": "available", "sku": "CT1", "name": "W", "sell_by": "piece", "quantity": 12, "location_id": loc})).json()["id"]
 
     eid = (await client.post("/lists", headers=h, json={
         "list_type": "transfer", "line_items": [{"item_id": it, "sku": "CT1", "name": "W", "quantity": 3}]})).json()["id"]

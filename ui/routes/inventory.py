@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, page_header, search_help, toast_head
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
@@ -925,6 +925,16 @@ async def _inventory_content(
         for f in eff_schema
     ]
     eff_schema = _apply_amount_edit_permission(eff_schema, role, company.get("settings") or {})
+    # Draft rows stay authorable: when the transform above locked the amount fields
+    # for this role, mark each DRAFT row so the table renders those cells
+    # click-to-edit anyway - the edit endpoints re-check status + permission
+    # server-side, so this is presentation only.
+    _cs = company.get("settings") or {}
+    if (role_has_permission(_cs, role, "edit_inventory")
+            and not role_has_permission(_cs, role, "edit_inventory_amounts")):
+        for _it in items:
+            if str(_it.get("status") or "").lower() == "draft":
+                _it["_row_editable_keys"] = sorted(AMOUNT_EDIT_GATED_KEYS)
     # Under a contact holdings scope the meaningful per-row value is the scope value the
     # total is summed from (quoted memo price / consignment cost), not the catalog price.
     # Surface it as a read-only column so the rows visibly add up to the banner figure.
@@ -1852,6 +1862,13 @@ def setup_routes(app):
             extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
             schema = schema + extra
 
+        # A draft's creator may set its cost even without view_inventory_costs, but
+        # /me/price-lists strips the cost definition for that role, so the pricing tab's
+        # Cost card would have no row to render. Re-add it for a draft this caller can author.
+        price_lists = _with_draft_cost_list(price_lists, item, company.get("settings") or {}, _get_role(request))
+        # The parallel strip on /me/item-schema: re-add the cost columns (editable) so the
+        # pricing tab renders an editable cost input for that draft, not a read-only span.
+        schema = _with_draft_cost_schema(schema, item, company.get("settings") or {}, _get_role(request))
         # Build pricing_keys dynamically from company price lists
         pl_names = {pl.get("name", "") for pl in price_lists}
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
@@ -1869,21 +1886,38 @@ def setup_routes(app):
         await _inject_reorder_hints(token, item)
         detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
+        _item_role = _get_role(request)
+        _item_settings = company.get("settings") or {}
+        _make_available_btn = (
+            Button(
+                "Make Available",
+                onclick=f"event.preventDefault();htmx.ajax('POST','/api/items/{entity_id}/make-available',{{target:'#item-header-error',swap:'outerHTML'}});",
+                cls="btn btn--primary",
+            )
+            if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
+            else ""
+        )
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
-            page_header(
-                item.get("name") or item.get("sku") or entity_id,
+            page_header(item.get("name") or item.get("sku") or entity_id),
+            Div(
+                Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
-                    A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
-                      cls="btn btn--ghost btn--icon", title="Print production worksheet"),
-                    _print_label_dropdown(entity_id),
-                    A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
-                    cls="header-actions",
+                    Div(
+                        A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                          cls="btn btn--ghost btn--icon", title="Print production worksheet"),
+                        _print_label_dropdown(entity_id),
+                        A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
+                        cls="doc-actions-print",
+                    ),
+                    cls="doc-actions-right-group",
                 ),
+                cls="doc-actions",
             ),
+            Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -2332,10 +2366,14 @@ function celerpPrintLabel(entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False)
-        if field in AMOUNT_EDIT_GATED_KEYS and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts"):
+        if (field in AMOUNT_EDIT_GATED_KEYS
+                and str(item.get("status") or "").lower() != "draft"
+                and not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory_amounts")):
             # Amount fields (quantity/weight/pieces/gross_weight) and sell_by are gated
             # by edit_inventory_amounts: this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
+            # Draft items are exempt - the lock attaches when the item is committed to
+            # available, so its creator can finish authoring it (status re-read per edit).
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -2987,7 +3025,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return Response("", status_code=401)
         try:
-            item = await api.get_item(token, entity_id)
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         except APIError as e:
             return Response(str(e.detail), status_code=500)
         # Fresh split preview in its own try/except so a non-splittable item (or any preview
@@ -2996,7 +3034,7 @@ function celerpPrintLabel(entityId, templateId) {
             split_preview = await api.split_preview(token, entity_id)
         except APIError:
             split_preview = None
-        return _advanced_panel(entity_id, item, split_preview)
+        return _advanced_panel(entity_id, item, split_preview, role=_get_role(request), settings=company.get("settings") or {})
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
@@ -3072,6 +3110,7 @@ function celerpPrintLabel(entityId, templateId) {
                   data_weight=str(flat.get("weight", "") or ""),
                   data_weight_unit=flat.get("weight_unit", ""),
                   data_sell_by=flat.get("sell_by", ""),
+                  data_status=str(flat.get("status", "") or "").lower(),
             ),
             cls="col-checkbox",
         )
@@ -3151,12 +3190,12 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
-        if field in AMOUNT_EDIT_GATED_KEYS:
+        if field in AMOUNT_EDIT_GATED_KEYS and str(item.get("status") or "").lower() != "draft":
             # The paired cell is a second inline-edit entry point for amount fields
             # (quantity/weight/gross_weight) and the sell unit; gate it exactly like
             # field_edit_cell so nothing gated can be hand-set without
-            # edit_inventory_amounts. Restore the read-only paired cell rather than an
-            # editable input.
+            # edit_inventory_amounts (draft items exempt, same as field_edit_cell).
+            # Restore the read-only paired cell rather than an editable input.
             try:
                 _pe_company = await api.get_company(token)
             except Exception:
@@ -3266,6 +3305,38 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
         return _bulk_destructive_success(f"{updated} item(s) updated to '{status}'.")
+
+    @app.post("/api/items/bulk/make-available")
+    async def bulk_item_make_available(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.make_items_available(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        updated = result.get("updated", len(entity_ids))
+        return _bulk_destructive_success(f"{updated} item(s) made available.")
+
+    @app.post("/api/items/bulk/revert-to-draft")
+    async def bulk_item_revert_to_draft(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.revert_items_to_draft(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        updated = result.get("updated", len(entity_ids))
+        return _bulk_destructive_success(f"{updated} item(s) reverted to draft.")
 
     @app.post("/api/items/bulk/shopify-sync/{action}")
     async def bulk_item_shopify_sync(request: Request, action: str):
@@ -4077,6 +4148,13 @@ function celerpPrintLabel(entityId, templateId) {
             # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
             item_qty = float(item_for_price.get("quantity") or 0)
+            # Same re-injection as the Cost card and its input: without it, a draft's cost
+            # field is never recognized below and a submitted cost is silently dropped.
+            try:
+                company_for_price = await api.get_company(token)
+            except APIError:
+                company_for_price = {}
+            price_lists = _with_draft_cost_list(price_lists, item_for_price, company_for_price.get("settings") or {}, _get_role(request))
             cost_changed = False
             for pl in price_lists:
                 pl_name = pl.get("name", "")
@@ -4192,6 +4270,30 @@ function celerpPrintLabel(entityId, templateId) {
         reason = str(form.get("reason", "")).strip() or None
         try:
             await api.set_item_status(token, entity_id, "available", reason=reason)
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
+    @app.post("/api/items/{entity_id}/make-available")
+    async def item_make_available(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.make_items_available(token, [entity_id])
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
+    @app.post("/api/items/{entity_id}/revert-to-draft")
+    async def item_revert_to_draft(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            await api.revert_items_to_draft(token, [entity_id], reason)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
@@ -4711,6 +4813,11 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
         action_options.append(Option(t("btn.delete"), value="delete"))
+    # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
+    if role_has_permission(settings or {}, role, "edit_inventory"):
+        action_options.append(Option("Make Available", value="make_available"))
+    if role_has_permission(settings or {}, role, "revert_items_to_draft"):
+        action_options.append(Option("Revert to Draft", value="revert_to_draft"))
 
     return Div(
         Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count"),
@@ -4952,40 +5059,48 @@ _VERTICAL_STATUS_CARDS: dict[str, list[tuple[str, str, str]]] = {
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "wine_spirits": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("draft", "Drafts", "gray"),
     ],
     "food_beverage": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("expired", "Expired", "red"),
+        ("draft", "Drafts", "gray"),
     ],
     "agricultural": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("expired", "Expired", "red"),
+        ("draft", "Drafts", "gray"),
     ],
     "watches_accessories": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "artwork": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
     "coins_precious_metals": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
         ("memo_out", "On Memo", "yellow"),
+        ("draft", "Drafts", "gray"),
     ],
 }
 _DEFAULT_STATUS_CARDS: list[tuple[str, str, str]] = [
     ("available", "Available", "green"),
     ("reserved", "Reserved", "blue"),
+    ("draft", "Drafts", "gray"),
 ]
 
 
@@ -5072,6 +5187,11 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
 def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en", status: str = "") -> FT:
     from ui.components.table import fmt_money
     active_count = valuation.get('active_item_count', valuation.get('item_count', 0))
+    # On a status-filtered view the chip counts that slice, not the committed-stock
+    # count: count_by_status is scoped server-side, and drafts sit outside
+    # active_item_count by design, which would show "Draft: 0" above a listed draft.
+    if status and status != "all" and valuation.get("count_by_status"):
+        active_count = sum(valuation["count_by_status"].values())
     # Label reflects the active status filter
     if status == "sold":
         count_label = t("chip.sold", lang)
@@ -5238,14 +5358,17 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     raw_pri = row.get(pri, "")
                     unit_for_pri = row.get(sec, "") if pri in ("quantity", "weight") else None
                     fmt_pri = format_qty(raw_pri, unit_for_pri, _umap) if pt == "number" else raw_pri
+                    # Same per-row escape as data_table._row: draft rows keep their
+                    # amount cells click-to-edit despite the schema-level lock.
+                    _rek = set(row.get("_row_editable_keys") or ())
                     return paired_display_cell(
                         entity_id=entity_id,
                         primary_field=pri, primary_value=fmt_pri,
                         secondary_field=sec, secondary_value=row.get(sec, ""),
                         primary_type=pt, secondary_type=st,
                         primary_options=po, secondary_options=so,
-                        primary_editable=ped,
-                        secondary_editable=sed,
+                        primary_editable=ped or pri in _rek,
+                        secondary_editable=sed or sec in _rek,
                     )
                 return renderer
             renderers[primary] = _make()
@@ -6760,6 +6883,8 @@ def _item_detail_tabs(
     cell_renderers: dict | None = None,
     base_price_list: str = "",
     split_preview: dict | None = None,
+    role: str = "owner",
+    settings: dict | None = None,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
@@ -6822,7 +6947,7 @@ def _item_detail_tabs(
         )
     # Files + item operations belong with the item's core details — keep them off the
     # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
-    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview)) if active_tab == "details" else ()
+    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview, role=role, settings=settings)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
@@ -6852,6 +6977,44 @@ def _readonly_price_cells(conventional_key: str, price_val: float, qty: float,
     total = Span(total_val or EMPTY, cls="form-input form-input--readonly",
                  id=f"derived_total_{conventional_key}", **oob_kw)
     return unit, total
+
+
+def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings: dict, role: str) -> list[dict]:
+    """Re-add the cost price-list definition for a draft this caller can author. /me/price-lists
+    strips cost lists for a role without view_inventory_costs, but a draft's creator
+    (edit_inventory) still authors its cost - including entering one for the first time, before
+    any cost_price/cost_total key exists on the item - so this checks the same edit_inventory
+    permission the write path checks, not whether a value happens to be present already. The real
+    name is taken from company config so a renamed cost list keeps its label. No-op for committed
+    items, for a caller without edit_inventory, or when the cost list is already present."""
+    if str(item.get("status") or "").lower() != "draft":
+        return price_lists
+    if not role_has_permission(company_settings, role, "edit_inventory"):
+        return price_lists
+    if any(is_cost_list_name(pl.get("name", "")) for pl in price_lists):
+        return price_lists
+    cost_defs = [pl for pl in (company_settings.get("price_lists") or []) if is_cost_list_name(pl.get("name", ""))]
+    return price_lists + cost_defs if cost_defs else price_lists
+
+
+def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: dict, role: str) -> list[dict]:
+    """Re-add the cost schema columns for a draft this caller can author. /me/item-schema strips
+    cost_price/cost_price_total for a role without view_inventory_costs, and it is company-scoped,
+    so it cannot make the draft exception _with_draft_cost_list makes for the price-list
+    definition. Without the schema column _pricing_form marks the cost row read-only (its editable
+    flag is schema-driven), so a draft's cost input would be uneditable even though the write
+    guard allows an edit_inventory caller to set it - including entering a first value, before any
+    cost_price/cost_total key exists on the item. Re-inject the columns, editable, from company
+    config - the same source and permission test as its sibling, so the card and its editable
+    input always agree. No-op for a committed item, a caller without edit_inventory, or when the
+    columns are already present."""
+    if str(item.get("status") or "").lower() != "draft":
+        return schema
+    if not role_has_permission(company_settings, role, "edit_inventory"):
+        return schema
+    if any(f.get("key") in COST_SCHEMA_KEYS for f in schema):
+        return schema
+    return schema + cost_columns(company_settings.get("price_lists") or [])
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
@@ -7359,7 +7522,7 @@ def _resolve_visible_cols(
 # T3: Advanced operations panel (non-inline-editable actions only)
 # ---------------------------------------------------------------------------
 
-def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None) -> FT:
+def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
     current_qty = float(item.get("quantity", 0) or 0)
 
@@ -7548,10 +7711,29 @@ function batchSplitSubmit_{safe_id}(form) {{
     # Items already in a terminal/hidden state: show restore instead of expire/archive
     item_status = item.get("status", "available")
     _RESTORABLE = {"archived", "expired"}
-    if item_status in _RESTORABLE:
+    if item_status == "draft":
+        lifecycle_cards = []
+    elif item_status in _RESTORABLE:
         lifecycle_cards = [restore_card]
     else:
         lifecycle_cards = [expire_card, archive_card]
+        if role_has_permission(settings or {}, role, "revert_items_to_draft"):
+            revert_to_draft_card = Div(
+                Form(
+                    Strong("Revert to Draft", cls="action-card-title"),
+                    Div(
+                        Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                        Button(t("btn.go"), type="submit", cls="btn btn--secondary btn--xs"),
+                        cls="action-card-row",
+                    ),
+                    P("Only an item with no circulation history can revert.", cls="action-card-hint"),
+                    hx_post=f"/api/items/{entity_id}/revert-to-draft",
+                    hx_target="#item-action-error",
+                    hx_swap="outerHTML",
+                ),
+                cls="action-card",
+            )
+            lifecycle_cards.append(revert_to_draft_card)
 
     # Return to Vendor (conditional)
     rtv_card = ""

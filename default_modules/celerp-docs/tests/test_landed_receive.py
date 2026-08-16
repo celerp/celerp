@@ -27,7 +27,7 @@ async def _location(client, t) -> str:
 
 
 async def _item(client, t, sku, *, inv="stocked", kind=None):
-    body = {"sku": sku, "name": sku, "quantity": 0, "sell_by": "piece", "inventory_type": inv}
+    body = {"status": "available", "sku": sku, "name": sku, "quantity": 0, "sell_by": "piece", "inventory_type": inv}
     if kind:
         body["landed_cost_kind"] = kind
     r = await client.post("/items", headers=_h(t), json=body)

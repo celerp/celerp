@@ -22,14 +22,14 @@ async def test_items_happy_path(client):
 
     loc = await client.post(
         "/companies/me/locations",
-        json={"name": "Main", "type": "warehouse", "address": None, "is_default": True},
+        json={"status": "available", "name": "Main", "type": "warehouse", "address": None, "is_default": True},
         headers=headers,
     )
     location_id = loc.json()["id"]
 
     r = await client.post(
         "/items",
-        json={"sku": "SKU1", "name": "Thing", "quantity": 2, "location_id": location_id, "sell_by": "piece"},
+        json={"status": "available", "sku": "SKU1", "name": "Thing", "quantity": 2, "location_id": location_id, "sell_by": "piece"},
         headers=headers,
     )
     assert r.status_code == 200
@@ -78,7 +78,7 @@ async def test_items_happy_path(client):
     # Create a second item so merge has 2 real sources
     r2 = await client.post(
         "/items",
-        json={"sku": "SKU-MERGE", "name": "MergePeer", "quantity": 1, "location_id": location_id, "sell_by": "piece"},
+        json={"status": "available", "sku": "SKU-MERGE", "name": "MergePeer", "quantity": 1, "location_id": location_id, "sell_by": "piece"},
         headers=headers,
     )
     merge_peer_id = r2.json()["id"]
@@ -103,7 +103,7 @@ async def test_items_split_accepts_single_child(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r = await client.post("/items", json={"sku": "SKU1", "name": "Thing", "quantity": 2, "sell_by": "piece"}, headers=headers)
+    r = await client.post("/items", json={"status": "available", "sku": "SKU1", "name": "Thing", "quantity": 2, "sell_by": "piece"}, headers=headers)
     id = r.json()["id"]
 
     r = await client.post(
@@ -127,9 +127,9 @@ async def test_list_items_default_excludes_sold_and_archived(client):
     headers = {"Authorization": f"Bearer {token}"}
 
     # Create three items
-    r1 = await client.post("/items", json={"sku": "AVAIL-1", "name": "Available Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "SOLD-1", "name": "Sold Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r3 = await client.post("/items", json={"sku": "ARCH-1", "name": "Archived Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "AVAIL-1", "name": "Available Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "SOLD-1", "name": "Sold Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r3 = await client.post("/items", json={"status": "available", "sku": "ARCH-1", "name": "Archived Item", "quantity": 1, "sell_by": "piece"}, headers=headers)
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r3.status_code == 200
@@ -157,8 +157,8 @@ async def test_list_items_status_filter_sold(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "AVAIL-2", "name": "Available", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "SOLD-2", "name": "Sold", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "AVAIL-2", "name": "Available", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "SOLD-2", "name": "Sold", "quantity": 1, "sell_by": "piece"}, headers=headers)
     avail_id = r1.json()["id"]
     sold_id = r2.json()["id"]
 
@@ -177,9 +177,9 @@ async def test_list_items_status_all_shows_everything(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "AVAIL-3", "name": "Available3", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "SOLD-3", "name": "Sold3", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r3 = await client.post("/items", json={"sku": "ARCH-3", "name": "Archived3", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "AVAIL-3", "name": "Available3", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "SOLD-3", "name": "Sold3", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r3 = await client.post("/items", json={"status": "available", "sku": "ARCH-3", "name": "Archived3", "quantity": 1, "sell_by": "piece"}, headers=headers)
     avail_id = r1.json()["id"]
     sold_id = r2.json()["id"]
     arch_id = r3.json()["id"]
@@ -201,9 +201,9 @@ async def test_valuation_excludes_sold_and_archived(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "VAL-AVAIL", "name": "ValAvail", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "VAL-SOLD", "name": "ValSold", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r3 = await client.post("/items", json={"sku": "VAL-ARCH", "name": "ValArch", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "VAL-AVAIL", "name": "ValAvail", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "VAL-SOLD", "name": "ValSold", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r3 = await client.post("/items", json={"status": "available", "sku": "VAL-ARCH", "name": "ValArch", "quantity": 1, "sell_by": "piece"}, headers=headers)
     assert r1.status_code == 200 and r2.status_code == 200 and r3.status_code == 200
 
     sold_id = r2.json()["id"]
@@ -231,8 +231,8 @@ async def test_bulk_archive(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "BULK-A", "name": "BulkA", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "BULK-B", "name": "BulkB", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "BULK-A", "name": "BulkA", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "BULK-B", "name": "BulkB", "quantity": 1, "sell_by": "piece"}, headers=headers)
     id1 = r1.json()["id"]
     id2 = r2.json()["id"]
 
@@ -266,8 +266,8 @@ async def test_valuation_category_filter(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "VCAT-A", "name": "VCatA", "quantity": 1, "category": "Rubies", "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "VCAT-B", "name": "VCatB", "quantity": 1, "category": "Sapphires", "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "VCAT-A", "name": "VCatA", "quantity": 1, "category": "Rubies", "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "VCAT-B", "name": "VCatB", "quantity": 1, "category": "Sapphires", "sell_by": "piece"}, headers=headers)
     assert r1.status_code == 200 and r2.status_code == 200
     id1 = r1.json()["id"]
 
@@ -292,8 +292,8 @@ async def test_valuation_count_by_status(client):
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    r1 = await client.post("/items", json={"sku": "VCS-A", "name": "VcsA", "quantity": 1, "sell_by": "piece"}, headers=headers)
-    r2 = await client.post("/items", json={"sku": "VCS-B", "name": "VcsB", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r1 = await client.post("/items", json={"status": "available", "sku": "VCS-A", "name": "VcsA", "quantity": 1, "sell_by": "piece"}, headers=headers)
+    r2 = await client.post("/items", json={"status": "available", "sku": "VCS-B", "name": "VcsB", "quantity": 1, "sell_by": "piece"}, headers=headers)
     assert r1.status_code == 200 and r2.status_code == 200
     id2 = r2.json()["id"]
 
@@ -318,7 +318,7 @@ async def test_create_item_requires_sell_by(client):
     """POST /items without sell_by must return 422."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "NO-SB", "name": "Widget", "quantity": 1}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "NO-SB", "name": "Widget", "quantity": 1}, headers=h)
     assert r.status_code == 422
     assert "sell_by" in r.text.lower() or "field required" in r.text.lower()
 
@@ -328,7 +328,7 @@ async def test_create_item_validates_sell_by_unit(client):
     """sell_by must be a valid unit name from company units."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "BAD-U", "name": "Widget", "quantity": 1, "sell_by": "bushel"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "BAD-U", "name": "Widget", "quantity": 1, "sell_by": "bushel"}, headers=h)
     assert r.status_code == 422
     assert "bushel" in r.text
 
@@ -338,7 +338,7 @@ async def test_piece_rejects_fractional_qty(client):
     """sell_by=piece (decimals=0) must reject fractional quantity."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "FRAC-1", "name": "Widget", "quantity": 2.5, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "FRAC-1", "name": "Widget", "quantity": 2.5, "sell_by": "piece"}, headers=h)
     assert r.status_code == 422
     assert "precision" in r.text.lower() or "decimal" in r.text.lower()
 
@@ -348,7 +348,7 @@ async def test_carat_allows_fractional_qty(client):
     """sell_by=carat (decimals=2) allows 2dp quantity."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "CT-1", "name": "Emerald", "quantity": 2.55, "sell_by": "carat"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "CT-1", "name": "Emerald", "quantity": 2.55, "sell_by": "carat"}, headers=h)
     assert r.status_code == 200
 
 
@@ -357,7 +357,7 @@ async def test_carat_rejects_excess_decimals(client):
     """sell_by=carat (decimals=2) rejects 3dp quantity."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "CT-2", "name": "Emerald", "quantity": 2.555, "sell_by": "carat"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "CT-2", "name": "Emerald", "quantity": 2.555, "sell_by": "carat"}, headers=h)
     assert r.status_code == 422
 
 
@@ -368,9 +368,9 @@ async def test_duplicate_sku_allowed(client):
     SUCCEEDS; lot identity is carried by entity_id/barcode instead."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r1 = await client.post("/items", json={"sku": "DUP-1", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r1 = await client.post("/items", json={"status": "available", "sku": "DUP-1", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r1.status_code == 200
-    r2 = await client.post("/items", json={"sku": "DUP-1", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r2 = await client.post("/items", json={"status": "available", "sku": "DUP-1", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r2.status_code == 200
     # Two distinct physical lots, same sku, distinct entity ids.
     assert r1.json()["id"] != r2.json()["id"]
@@ -381,9 +381,9 @@ async def test_duplicate_barcode_rejected(client):
     """Creating two items with the same barcode must return 409."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r1 = await client.post("/items", json={"sku": "BC-1", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "123456"}, headers=h)
+    r1 = await client.post("/items", json={"status": "available", "sku": "BC-1", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "123456"}, headers=h)
     assert r1.status_code == 200
-    r2 = await client.post("/items", json={"sku": "BC-2", "name": "B", "quantity": 1, "sell_by": "piece", "barcode": "123456"}, headers=h)
+    r2 = await client.post("/items", json={"status": "available", "sku": "BC-2", "name": "B", "quantity": 1, "sell_by": "piece", "barcode": "123456"}, headers=h)
     assert r2.status_code == 409
     assert "123456" in r2.text
 
@@ -393,7 +393,7 @@ async def test_barcode_must_be_digits(client):
     """Barcode with non-digit characters must be rejected."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "BC-3", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "ABC-123"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "BC-3", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "ABC-123"}, headers=h)
     assert r.status_code == 422
     assert "digits" in r.text.lower()
 
@@ -408,7 +408,7 @@ async def test_split_single_child_keeps_parent_remainder(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     # qty=20, cost_price=10 => parent_cost_total=200
-    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem", "cost_price": 10.0}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem", "cost_price": 10.0}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -447,7 +447,7 @@ async def test_split_creates_children(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     # Create parent
-    r = await client.post("/items", json={"sku": "PARENT-1", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "PARENT-1", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -490,7 +490,7 @@ async def test_split_qty_exceeds_parent_rejected(client):
     """Split with child qty > parent qty must be rejected."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "SP-OVER", "name": "Small", "quantity": 5, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SP-OVER", "name": "Small", "quantity": 5, "sell_by": "piece"}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "C1", "quantity": 3}, {"sku": "C2", "quantity": 3}]
@@ -507,7 +507,7 @@ async def test_split_child_omitted_sku_keeps_parent_sku(client):
     fulfillment path, test_fulfillment: "child keeps the parent SKU (no '.1')")."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "1000", "name": "Parcel", "quantity": 10,
+    r = await client.post("/items", json={"status": "available", "sku": "1000", "name": "Parcel", "quantity": 10,
                                           "sell_by": "piece", "category": "gem"}, headers=h)
     parent_id = r.json()["id"]
 
@@ -529,7 +529,7 @@ async def test_split_child_explicit_sku_is_honored(client):
     caller may name the child differently)."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "2000", "name": "Parcel", "quantity": 10,
+    r = await client.post("/items", json={"status": "available", "sku": "2000", "name": "Parcel", "quantity": 10,
                                           "sell_by": "piece", "category": "gem"}, headers=h)
     parent_id = r.json()["id"]
 
@@ -548,8 +548,8 @@ async def test_split_child_sku_may_reuse_existing(client):
     lots); each child still gets its own unique barcode from the sequence."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "EXISTING-SKU", "name": "X", "quantity": 1, "sell_by": "piece"}, headers=h)
-    r = await client.post("/items", json={"sku": "SP-EXIST", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "EXISTING-SKU", "name": "X", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SP-EXIST", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "EXISTING-SKU", "quantity": 4}, {"sku": "NEW-SKU", "quantity": 4}]
@@ -564,7 +564,7 @@ async def test_split_children_keep_parent_sku(client):
     was forbidden (422); the '.N' suffix is gone."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "PARENT-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "PARENT-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "PARENT-SKU", "quantity": 4}, {"sku": "PARENT-SKU", "quantity": 4}]
@@ -583,7 +583,7 @@ async def test_split_preview_suggests_parent_sku(client):
     """The split preview pre-fills the child SKU as the parent SKU (no '.N' suffix)."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "PREV-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "PREV-SKU", "name": "Y", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     parent_id = r.json()["id"]
     prev = await client.get(f"/items/{parent_id}/split-preview", headers=h)
     assert prev.status_code == 200, prev.text
@@ -595,7 +595,7 @@ async def test_split_respects_unit_decimals(client):
     """Split of piece item must reject fractional child qty."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "SP-DEC", "name": "Z", "quantity": 10, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SP-DEC", "name": "Z", "quantity": 10, "sell_by": "piece"}, headers=h)
     parent_id = r.json()["id"]
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "SD-1", "quantity": 3.5}, {"sku": "SD-2", "quantity": 3.5}]
@@ -609,9 +609,9 @@ async def test_patch_sku_to_existing_allowed(client):
     repeat); but changing barcode to an existing barcode still 409s."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    ra = await client.post("/items", json={"sku": "ORIG-A", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "700001"}, headers=h)
+    ra = await client.post("/items", json={"status": "available", "sku": "ORIG-A", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "700001"}, headers=h)
     item_a_id = ra.json()["id"]
-    r = await client.post("/items", json={"sku": "ORIG-B", "name": "B", "quantity": 1, "sell_by": "piece", "barcode": "700002"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "ORIG-B", "name": "B", "quantity": 1, "sell_by": "piece", "barcode": "700002"}, headers=h)
     item_b_id = r.json()["id"]
     r = await client.patch(f"/items/{item_b_id}", json={"fields_changed": {"sku": {"new": "ORIG-A"}}}, headers=h)
     assert r.status_code == 200
@@ -625,7 +625,7 @@ async def test_split_blocked_when_allow_splitting_false(client):
     """Split must be rejected (422) when allow_splitting is False."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "NO-SPLIT", "name": "No-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": False}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "NO-SPLIT", "name": "No-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": False}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -651,7 +651,7 @@ async def test_split_blocked_when_allow_splitting_field_missing(client, session)
 
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "MISSING-SPLIT", "name": "Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "MISSING-SPLIT", "name": "Item", "quantity": 10, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
 
@@ -713,7 +713,7 @@ async def test_split_allowed_when_allow_splitting_true(client):
     """Split must succeed when allow_splitting is explicitly True."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "YES-SPLIT", "name": "Yes-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "YES-SPLIT", "name": "Yes-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -731,7 +731,7 @@ async def test_item_create_default_allow_splitting_is_true(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "LEGACY-SPLIT", "name": "Legacy Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "LEGACY-SPLIT", "name": "Legacy Item", "quantity": 10, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -749,7 +749,7 @@ async def test_split_blocked_after_patch_to_false(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "PATCH-NO-SPLIT", "name": "Patchable Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "PATCH-NO-SPLIT", "name": "Patchable Item", "quantity": 10, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -772,11 +772,11 @@ async def test_merge_preserves_allow_splitting_true(client):
     """Merged item must carry allow_splitting=True from the target source item."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "MERGE-AS-A", "name": "Stone A", "quantity": 5, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "MERGE-AS-A", "name": "Stone A", "quantity": 5, "sell_by": "piece", "allow_splitting": True}, headers=h)
     assert r.status_code == 200
     id_a = r.json()["id"]
 
-    r = await client.post("/items", json={"sku": "MERGE-AS-B", "name": "Stone B", "quantity": 3, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "MERGE-AS-B", "name": "Stone B", "quantity": 3, "sell_by": "piece", "allow_splitting": True}, headers=h)
     assert r.status_code == 200
     id_b = r.json()["id"]
 
@@ -797,8 +797,8 @@ async def test_merge_qty_truncated_to_unit_decimals(client):
     Regression: 0.1 + 0.2 summed to 0.30000000000000004 instead of 0.3 (carat = 2 dp)."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    a = (await client.post("/items", json={"sku": "MQ-A", "name": "A", "quantity": 0.1, "sell_by": "carat"}, headers=h)).json()["id"]
-    b = (await client.post("/items", json={"sku": "MQ-B", "name": "B", "quantity": 0.2, "sell_by": "carat"}, headers=h)).json()["id"]
+    a = (await client.post("/items", json={"status": "available", "sku": "MQ-A", "name": "A", "quantity": 0.1, "sell_by": "carat"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"status": "available", "sku": "MQ-B", "name": "B", "quantity": 0.2, "sell_by": "carat"}, headers=h)).json()["id"]
     merged_id = (await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)).json()["id"]
     qty = (await client.get(f"/items/{merged_id}", headers=h)).json()["quantity"]
     assert qty == 0.3, f"merged qty must be truncated to unit precision; got {qty!r}"
@@ -809,8 +809,8 @@ async def test_merge_carries_attached_files(client):
     """Files attached to source items must survive onto the merged item, not be dropped."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    a = (await client.post("/items", json={"sku": "MF-A", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
-    b = (await client.post("/items", json={"sku": "MF-B", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
+    a = (await client.post("/items", json={"status": "available", "sku": "MF-A", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"status": "available", "sku": "MF-B", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)).json()["id"]
     ra = await client.post(f"/items/{a}/files", files={"file": ("a.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers=h)
     assert ra.status_code == 200, ra.text
     rb = await client.post(f"/items/{b}/files", files={"file": ("b.png", b"\x89PNG\r\n\x1a\n", "image/png")}, headers=h)
@@ -829,11 +829,11 @@ async def test_merge_preserves_allow_splitting_false(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "MERGE-NO-A", "name": "Stone No-A", "quantity": 5, "sell_by": "piece", "allow_splitting": False}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "MERGE-NO-A", "name": "Stone No-A", "quantity": 5, "sell_by": "piece", "allow_splitting": False}, headers=h)
     assert r.status_code == 200
     id_a = r.json()["id"]
 
-    r = await client.post("/items", json={"sku": "MERGE-NO-B", "name": "Stone No-B", "quantity": 3, "sell_by": "piece", "allow_splitting": False}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "MERGE-NO-B", "name": "Stone No-B", "quantity": 3, "sell_by": "piece", "allow_splitting": False}, headers=h)
     assert r.status_code == 200
     id_b = r.json()["id"]
 
@@ -858,10 +858,10 @@ async def test_list_items_location_filter(client):
     """GET /items?location_id= returns only items at that location."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc A", "type": "warehouse"})).json()["id"]
-    loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc B", "type": "warehouse"})).json()["id"]
-    await client.post("/items", headers=h, json={"sku": "LOC-A1", "name": "A1", "quantity": 1, "sell_by": "piece", "location_id": loc_a})
-    await client.post("/items", headers=h, json={"sku": "LOC-B1", "name": "B1", "quantity": 1, "sell_by": "piece", "location_id": loc_b})
+    loc_a = (await client.post("/companies/me/locations", headers=h, json={"status": "available", "name": "Loc A", "type": "warehouse"})).json()["id"]
+    loc_b = (await client.post("/companies/me/locations", headers=h, json={"status": "available", "name": "Loc B", "type": "warehouse"})).json()["id"]
+    await client.post("/items", headers=h, json={"status": "available", "sku": "LOC-A1", "name": "A1", "quantity": 1, "sell_by": "piece", "location_id": loc_a})
+    await client.post("/items", headers=h, json={"status": "available", "sku": "LOC-B1", "name": "B1", "quantity": 1, "sell_by": "piece", "location_id": loc_b})
     items = (await client.get(f"/items?location_id={loc_a}", headers=h)).json()["items"]
     skus = {i["sku"] for i in items}
     assert "LOC-A1" in skus and "LOC-B1" not in skus
@@ -873,8 +873,8 @@ async def test_merge_rejects_different_sell_units(client):
     rejected - otherwise 5 g + 3 ct would silently become 8 of nothing."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    a = (await client.post("/items", json={"sku": "WU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
-    b = (await client.post("/items", json={"sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
+    a = (await client.post("/items", json={"status": "available", "sku": "WU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"status": "available", "sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
     r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
     assert "unit" in r.json()["detail"].lower()
@@ -886,9 +886,9 @@ async def test_merge_rejects_different_net_weight_units(client):
     """Merging sums net weight too, so a differing weight_unit must also be rejected."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    a = (await client.post("/items", json={"sku": "NWU-A", "name": "A", "quantity": 1, "sell_by": "piece",
+    a = (await client.post("/items", json={"status": "available", "sku": "NWU-A", "name": "A", "quantity": 1, "sell_by": "piece",
                                            "weight": 2, "weight_unit": "gram"}, headers=h)).json()["id"]
-    b = (await client.post("/items", json={"sku": "NWU-B", "name": "B", "quantity": 1, "sell_by": "piece",
+    b = (await client.post("/items", json={"status": "available", "sku": "NWU-B", "name": "B", "quantity": 1, "sell_by": "piece",
                                            "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
     r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
@@ -900,8 +900,8 @@ async def test_merge_allows_same_weight_unit(client):
     """Same sell unit (and weight unit) still merges fine."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    a = (await client.post("/items", json={"sku": "SU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
-    b = (await client.post("/items", json={"sku": "SU-B", "name": "Gold B", "quantity": 3, "sell_by": "gram"}, headers=h)).json()["id"]
+    a = (await client.post("/items", json={"status": "available", "sku": "SU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"status": "available", "sku": "SU-B", "name": "Gold B", "quantity": 3, "sell_by": "gram"}, headers=h)).json()["id"]
     r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 200
 
@@ -913,7 +913,7 @@ async def test_split_children_inherit_allow_splitting_from_parent(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "SPLIT-INHERIT-P", "name": "Parent Stone", "quantity": 20, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SPLIT-INHERIT-P", "name": "Parent Stone", "quantity": 20, "sell_by": "piece", "allow_splitting": True}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -933,7 +933,7 @@ async def test_split_children_inherit_allow_splitting_false(client):
     """Split children inherit allow_splitting=False from parent - they should also be non-splittable."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "SPLIT-NO-P", "name": "No-Split Parent", "quantity": 20, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "SPLIT-NO-P", "name": "No-Split Parent", "quantity": 20, "sell_by": "piece", "allow_splitting": True}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -990,7 +990,7 @@ async def test_list_item_categories_union_of_schema_and_items(client):
 
     # Create an item with a different category (not in schema)
     await client.post("/items", headers=h, json={
-        "sku": "CAT-TEST-001", "name": "Widget", "sell_by": "piece", "category": "Item Cat",
+        "status": "available", "sku": "CAT-TEST-001", "name": "Widget", "sell_by": "piece", "category": "Item Cat",
     })
 
     cats = (await client.get("/items/categories", headers=h)).json()
@@ -1007,7 +1007,7 @@ async def test_list_items_sort_by_name_asc(client):
     h = {"Authorization": f"Bearer {token}"}
 
     for name in ("Zebra", "Apple", "Mango"):
-        await client.post("/items", headers=h, json={"sku": f"SRT-{name[:3]}", "name": name, "sell_by": "piece"})
+        await client.post("/items", headers=h, json={"status": "available", "sku": f"SRT-{name[:3]}", "name": name, "sell_by": "piece"})
 
     r = await client.get("/items?sort=name&dir=asc&status=all", headers=h)
     assert r.status_code == 200, r.text
@@ -1022,7 +1022,7 @@ async def test_list_items_sort_by_name_desc(client):
     h = {"Authorization": f"Bearer {token}"}
 
     for name in ("Alpha", "Gamma", "Beta"):
-        await client.post("/items", headers=h, json={"sku": f"DSC-{name[:3]}", "name": name, "sell_by": "piece"})
+        await client.post("/items", headers=h, json={"status": "available", "sku": f"DSC-{name[:3]}", "name": name, "sell_by": "piece"})
 
     r = await client.get("/items?sort=name&dir=desc&status=all", headers=h)
     assert r.status_code == 200, r.text
@@ -1036,7 +1036,7 @@ async def test_list_items_sort_unknown_key_no_crash(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
 
-    await client.post("/items", headers=h, json={"sku": "UNK-001", "name": "Item", "sell_by": "piece"})
+    await client.post("/items", headers=h, json={"status": "available", "sku": "UNK-001", "name": "Item", "sell_by": "piece"})
 
     r = await client.get("/items?sort=nonexistent_field&dir=desc&status=all", headers=h)
     assert r.status_code == 200, r.text
@@ -1052,7 +1052,7 @@ async def test_list_items_sort_is_global_before_pagination(client):
     # would produce wrong results on page 2.
     names = ["F", "A", "E", "B", "D", "C"]
     for n in names:
-        await client.post("/items", headers=h, json={"sku": f"PAG-{n}", "name": f"Item {n}", "sell_by": "piece"})
+        await client.post("/items", headers=h, json={"status": "available", "sku": f"PAG-{n}", "name": f"Item {n}", "sell_by": "piece"})
 
     # Page 1 (first 4), page 2 (next 2) - globally sorted asc
     r1 = await client.get("/items?sort=name&dir=asc&limit=4&offset=0&status=all", headers=h)
@@ -1085,7 +1085,7 @@ async def _reg_items(client, company="ItemTypeCo"):
 async def test_inventory_type_defaults_stocked(client):
     """Item created without inventory_type must default to stocked."""
     _, h = await _reg_items(client, "DefaultStockedCo2")
-    r = await client.post("/items", headers=h, json={"name": "Widget", "sku": "W-001", "sell_by": "piece", "quantity": 1})
+    r = await client.post("/items", headers=h, json={"status": "available", "name": "Widget", "sku": "W-001", "sell_by": "piece", "quantity": 1})
     assert r.status_code == 200
     eid = r.json()["id"]
     item = (await client.get(f"/items/{eid}", headers=h)).json()
@@ -1096,7 +1096,7 @@ async def test_inventory_type_defaults_stocked(client):
 async def test_inventory_type_service_stored(client):
     """Item created with inventory_type=service must store that value."""
     _, h = await _reg_items(client, "ServiceItemCo2")
-    r = await client.post("/items", headers=h, json={"name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    r = await client.post("/items", headers=h, json={"status": "available", "name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
     assert r.status_code == 200
     eid = r.json()["id"]
     item = (await client.get(f"/items/{eid}", headers=h)).json()
@@ -1107,7 +1107,7 @@ async def test_inventory_type_service_stored(client):
 async def test_inventory_type_invalid_rejected(client):
     """Item created with invalid inventory_type must return 422."""
     _, h = await _reg_items(client, "InvalidTypeCo2")
-    r = await client.post("/items", headers=h, json={"name": "Bad Item", "sku": "BAD-001", "sell_by": "piece", "quantity": 1, "inventory_type": "warehouse"})
+    r = await client.post("/items", headers=h, json={"status": "available", "name": "Bad Item", "sku": "BAD-001", "sell_by": "piece", "quantity": 1, "inventory_type": "warehouse"})
     assert r.status_code == 422
 
 
@@ -1118,9 +1118,9 @@ async def test_valuation_excludes_service_items(client):
     # Get baseline cost_total before adding our items
     baseline = (await client.get("/items/valuation", headers=h)).json().get("cost_total", 0)
     # Add a stocked item: qty=1, cost_price=100
-    await client.post("/items", headers=h, json={"name": "Stocked Widget", "sku": "ST-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked", "cost_price": 100})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Stocked Widget", "sku": "ST-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked", "cost_price": 100})
     # Add a service item: cost_price=200 - should NOT add to valuation
-    await client.post("/items", headers=h, json={"name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service", "cost_price": 200})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service", "cost_price": 200})
     val = (await client.get("/items/valuation", headers=h)).json()
     # cost_total must have increased by exactly 100 (the stocked item), not 300 (both)
     assert abs(val.get("cost_total", 0) - (baseline + 100)) < 0.01, f"Expected {baseline + 100}, got {val.get('cost_total')}"
@@ -1130,9 +1130,9 @@ async def test_valuation_excludes_service_items(client):
 async def test_inventory_list_filter_by_inventory_type(client):
     """GET /items?inventory_type=service must return only service items."""
     _, h = await _reg_items(client, "FilterTypeCo2")
-    await client.post("/items", headers=h, json={"name": "Physical", "sku": "PHY-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked"})
-    await client.post("/items", headers=h, json={"name": "Plan A", "sku": "SVC-002", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
-    await client.post("/items", headers=h, json={"name": "Plan B", "sku": "SVC-003", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Physical", "sku": "PHY-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked"})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Plan A", "sku": "SVC-002", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Plan B", "sku": "SVC-003", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
     r = await client.get("/items?inventory_type=service", headers=h)
     assert r.status_code == 200
     items = r.json()["items"]
@@ -1147,7 +1147,7 @@ async def test_split_child_pieces_attribute_stored(client):
     h = {"Authorization": f"Bearer {token}"}
     # Parent: sell_by=carat (weight unit) with 3 pieces
     r = await client.post("/items", json={
-        "sku": "GEM-W-001", "name": "Rough Stone", "quantity": 10.0,
+        "status": "available", "sku": "GEM-W-001", "name": "Rough Stone", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 3},
     }, headers=h)
     assert r.status_code == 200
@@ -1175,7 +1175,7 @@ async def test_split_child_weight_stored(client):
     h = {"Authorization": f"Bearer {token}"}
     # Parent: sell_by=piece (pieces unit) with a physical weight
     r = await client.post("/items", json={
-        "sku": "GEM-P-001", "name": "Cut Stones", "quantity": 5.0,
+        "status": "available", "sku": "GEM-P-001", "name": "Cut Stones", "quantity": 5.0,
         "sell_by": "piece", "weight": 25.0,
     }, headers=h)
     assert r.status_code == 200
@@ -1199,9 +1199,9 @@ async def test_split_child_weight_stored(client):
 async def test_inventory_list_filter_by_skus(client):
     """GET /items?skus=A,B must return exactly those two items by exact SKU match."""
     _, h = await _reg_items(client, "SkusFilterCo")
-    await client.post("/items", headers=h, json={"name": "Alpha", "sku": "SKUS-A", "sell_by": "piece", "quantity": 1})
-    await client.post("/items", headers=h, json={"name": "Beta", "sku": "SKUS-B", "sell_by": "piece", "quantity": 1})
-    await client.post("/items", headers=h, json={"name": "Gamma", "sku": "SKUS-C", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Alpha", "sku": "SKUS-A", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Beta", "sku": "SKUS-B", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"status": "available", "name": "Gamma", "sku": "SKUS-C", "sell_by": "piece", "quantity": 1})
     r = await client.get("/items?skus=SKUS-A,SKUS-B", headers=h)
     assert r.status_code == 200
     items = r.json()["items"]
@@ -1220,7 +1220,7 @@ async def test_split_preview_reads_pieces_from_top_level_state(client):
     h = {"Authorization": f"Bearer {token}"}
     # Create item with pieces stored in attributes (will be flattened to top-level by projection)
     r = await client.post("/items", json={
-        "sku": "PREV-PIECES-001", "name": "Gem", "quantity": 10.0,
+        "status": "available", "sku": "PREV-PIECES-001", "name": "Gem", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 5},
     }, headers=h)
     assert r.status_code == 200
@@ -1244,7 +1244,7 @@ async def test_split_preview_weight_uses_weight_unit_decimals(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "PREV-WDEC-001", "name": "Cut Stones", "quantity": 4.0,
+        "status": "available", "sku": "PREV-WDEC-001", "name": "Cut Stones", "quantity": 4.0,
         "sell_by": "piece", "weight": 2.0, "weight_unit": "gram",
     }, headers=h)
     assert r.status_code == 200
@@ -1267,14 +1267,14 @@ async def test_merge_sums_weight(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     ra = await client.post("/items", json={
-        "sku": "WGT-MERGE-A", "name": "Stone A", "quantity": 2, "sell_by": "gram",
+        "status": "available", "sku": "WGT-MERGE-A", "name": "Stone A", "quantity": 2, "sell_by": "gram",
         "weight": 3.0, "weight_unit": "gram",
     }, headers=h)
     assert ra.status_code == 200
     id_a = ra.json()["id"]
 
     rb = await client.post("/items", json={
-        "sku": "WGT-MERGE-B", "name": "Stone B", "quantity": 3, "sell_by": "gram",
+        "status": "available", "sku": "WGT-MERGE-B", "name": "Stone B", "quantity": 3, "sell_by": "gram",
         "weight": 2.0, "weight_unit": "gram",
     }, headers=h)
     assert rb.status_code == 200
@@ -1303,7 +1303,7 @@ async def test_attachment_stored_under_data_dir(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "ATT-DATADIR-001", "name": "Cert Item", "quantity": 1, "sell_by": "piece",
+        "status": "available", "sku": "ATT-DATADIR-001", "name": "Cert Item", "quantity": 1, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
@@ -1334,7 +1334,7 @@ async def test_split_preview_clamps_qty(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "CLAMP-001", "name": "Clamp Stone", "quantity": 5.0, "sell_by": "carat",
+        "status": "available", "sku": "CLAMP-001", "name": "Clamp Stone", "quantity": 5.0, "sell_by": "carat",
     }, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
@@ -1355,7 +1355,7 @@ async def test_split_item_pieces_conservation(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"PIECE-CONS-{_ts}", "name": "Multi-stone", "quantity": 10.0,
+        "status": "available", "sku": f"PIECE-CONS-{_ts}", "name": "Multi-stone", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 5},
     }, headers=h)
     assert r.status_code == 200
@@ -1367,7 +1367,7 @@ async def test_split_item_pieces_conservation(client):
     assert rs_eq.status_code == 200, f"Expected 200 for child_pieces == parent_pieces (full consumption), got {rs_eq.status_code}"
     # child_pieces > parent_pieces should still be rejected
     r3 = await client.post("/items", json={
-        "sku": f"PIECE-CONS-P2-{_ts}", "name": "Over-piece parent", "quantity": 5.0,
+        "status": "available", "sku": f"PIECE-CONS-P2-{_ts}", "name": "Over-piece parent", "quantity": 5.0,
         "sell_by": "carat", "attributes": {"pieces": 5},
     }, headers=h)
     parent_id2 = r3.json()["id"]
@@ -1383,7 +1383,7 @@ async def test_split_item_mother_pieces_computed(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "MPIECE-001", "name": "Multi-pc", "quantity": 10.0,
+        "status": "available", "sku": "MPIECE-001", "name": "Multi-pc", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 6},
     }, headers=h)
     assert r.status_code == 200
@@ -1410,7 +1410,7 @@ async def test_patch_item_negative_weight_rejected(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "NEG-W-001", "name": "Test", "quantity": 1.0, "sell_by": "piece",
+        "status": "available", "sku": "NEG-W-001", "name": "Test", "quantity": 1.0, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
@@ -1426,7 +1426,7 @@ async def test_split_negative_child_weight_rejected(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "NEG-CW-001", "name": "Parent", "quantity": 10.0, "sell_by": "piece", "weight": 100.0,
+        "status": "available", "sku": "NEG-CW-001", "name": "Parent", "quantity": 10.0, "sell_by": "piece", "weight": 100.0,
     }, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
@@ -1446,7 +1446,7 @@ async def test_split_mother_weight_computed_server_side(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "MW-CS-001", "name": "Gem", "quantity": 10.0,
+        "status": "available", "sku": "MW-CS-001", "name": "Gem", "quantity": 10.0,
         "sell_by": "carat", "weight": 50.0,
     }, headers=h)
     assert r.status_code == 200
@@ -1467,7 +1467,7 @@ async def test_split_preview_no_proportional_defaults(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "PREV-STATIC-001", "name": "Test", "quantity": 10, "sell_by": "piece",
+        "status": "available", "sku": "PREV-STATIC-001", "name": "Test", "quantity": 10, "sell_by": "piece",
         "weight": 5.0, "weight_unit": "gram",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -1497,7 +1497,7 @@ async def test_split_omitting_child_weight_gives_child_no_weight(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "NO-CW-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "status": "available", "sku": "NO-CW-PARENT-001", "name": "Parent", "quantity": 10.0,
         "sell_by": "piece", "weight": 100.0, "weight_unit": "gram",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -1527,7 +1527,7 @@ async def test_split_child_inherits_weight_unit(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "WU-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "status": "available", "sku": "WU-PARENT-001", "name": "Parent", "quantity": 10.0,
         "sell_by": "piece", "weight": 50.0, "weight_unit": "carat",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -1553,7 +1553,7 @@ async def test_patch_item_updates_updated_at(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "UPD-AT-001", "name": "Timestamp Test", "quantity": 5.0, "sell_by": "piece",
+        "status": "available", "sku": "UPD-AT-001", "name": "Timestamp Test", "quantity": 5.0, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
@@ -1579,11 +1579,11 @@ async def test_transfer_item_updates_updated_at(client):
     import time
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc1 = (await client.post("/companies/me/locations", json={"name": "Warehouse A", "type": "warehouse"}, headers=h)).json()
-    loc2 = (await client.post("/companies/me/locations", json={"name": "Warehouse B", "type": "warehouse"}, headers=h)).json()
+    loc1 = (await client.post("/companies/me/locations", json={"status": "available", "name": "Warehouse A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"status": "available", "name": "Warehouse B", "type": "warehouse"}, headers=h)).json()
 
     r = await client.post("/items", json={
-        "sku": "TR-AT-001", "name": "Transfer Timestamp", "quantity": 3.0,
+        "status": "available", "sku": "TR-AT-001", "name": "Transfer Timestamp", "quantity": 3.0,
         "sell_by": "piece", "location_id": loc1["id"],
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -1607,11 +1607,11 @@ async def test_bulk_transfer_updates_projection(client):
     """Bulk transfer must update location_id on all selected items' projections."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc1 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-A", "type": "warehouse"}, headers=h)).json()
-    loc2 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-B", "type": "warehouse"}, headers=h)).json()
+    loc1 = (await client.post("/companies/me/locations", json={"status": "available", "name": "BT-Warehouse-A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"status": "available", "name": "BT-Warehouse-B", "type": "warehouse"}, headers=h)).json()
 
-    item1_id = (await client.post("/items", json={"sku": "BT-001", "name": "Bulk A", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
-    item2_id = (await client.post("/items", json={"sku": "BT-002", "name": "Bulk B", "quantity": 2.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    item1_id = (await client.post("/items", json={"status": "available", "sku": "BT-001", "name": "Bulk A", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    item2_id = (await client.post("/items", json={"status": "available", "sku": "BT-002", "name": "Bulk B", "quantity": 2.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
 
     r = await client.post("/items/bulk/transfer", json={"entity_ids": [item1_id, item2_id], "to_location_id": loc2["id"]}, headers=h)
     assert r.status_code == 200, r.text
@@ -1629,8 +1629,8 @@ async def test_auto_sku_fresh_company(client):
     """Blank SKU on fresh company (no items) assigns '000001'."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc = (await client.post("/companies/me/locations", json={"name": "WH", "type": "warehouse"}, headers=h)).json()
-    r = await client.post("/items", json={"name": "Auto SKU Item", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    loc = (await client.post("/companies/me/locations", json={"status": "available", "name": "WH", "type": "warehouse"}, headers=h)).json()
+    r = await client.post("/items", json={"status": "available", "name": "Auto SKU Item", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -1642,11 +1642,11 @@ async def test_auto_sku_after_existing_items(client):
     """Blank SKU when numeric SKUs exist assigns max+1."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc = (await client.post("/companies/me/locations", json={"name": "WH-AS", "type": "warehouse"}, headers=h)).json()
+    loc = (await client.post("/companies/me/locations", json={"status": "available", "name": "WH-AS", "type": "warehouse"}, headers=h)).json()
     # Create items with explicit numeric SKUs
     for sku in ("000005", "000012", "ALPHA"):
-        await client.post("/items", json={"sku": sku, "name": f"Item {sku}", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
-    r = await client.post("/items", json={"name": "Auto next", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+        await client.post("/items", json={"status": "available", "sku": sku, "name": f"Item {sku}", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "Auto next", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -1679,9 +1679,9 @@ async def test_merge_then_split_does_not_500(client):
     """After merge, split of merged item must not 500 due to float-string pieces."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc = (await client.post("/companies/me/locations", json={"name": "WH-MTS", "type": "warehouse"}, headers=h)).json()
-    r1 = await client.post("/items", json={"sku": "MTS-A", "name": "Parcel A", "quantity": 10.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 10}}, headers=h)
-    r2 = await client.post("/items", json={"sku": "MTS-B", "name": "Parcel B", "quantity": 15.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 15}}, headers=h)
+    loc = (await client.post("/companies/me/locations", json={"status": "available", "name": "WH-MTS", "type": "warehouse"}, headers=h)).json()
+    r1 = await client.post("/items", json={"status": "available", "sku": "MTS-A", "name": "Parcel A", "quantity": 10.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 10}}, headers=h)
+    r2 = await client.post("/items", json={"status": "available", "sku": "MTS-B", "name": "Parcel B", "quantity": 15.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 15}}, headers=h)
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 200, r2.text
     id1, id2 = r1.json()["id"], r2.json()["id"]
@@ -1703,9 +1703,9 @@ async def test_merge_numeric_attrs_stored_as_numbers(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    loc = (await client.post("/companies/me/locations", json={"name": "WH-MNA", "type": "warehouse"}, headers=h)).json()
-    r1 = await client.post("/items", json={"sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
-    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
+    loc = (await client.post("/companies/me/locations", json={"status": "available", "name": "WH-MNA", "type": "warehouse"}, headers=h)).json()
+    r1 = await client.post("/items", json={"status": "available", "sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
+    r2 = await client.post("/items", json={"status": "available", "sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"size": 8}}, headers=h)
     assert r1.status_code == 200
     assert r2.status_code == 200
     id1, id2 = r1.json()["id"], r2.json()["id"]
@@ -1730,7 +1730,7 @@ async def test_new_item_barcode_copies_sku(client):
     """New item with auto-assigned numeric SKU gets barcode == SKU."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"name": "AutoBarcode", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "AutoBarcode", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -1749,9 +1749,9 @@ async def test_numeric_duplicate_sku_gets_distinct_barcode(client):
     NOT 409 on the auto-copied barcode; it gets a distinct sequential barcode."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r1 = await client.post("/items", json={"sku": "5000", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r1 = await client.post("/items", json={"status": "available", "sku": "5000", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r1.status_code == 200
-    r2 = await client.post("/items", json={"sku": "5000", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r2 = await client.post("/items", json={"status": "available", "sku": "5000", "name": "B", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r2.status_code == 200, r2.text
     i1 = (await client.get(f"/items/{r1.json()['id']}", headers=h)).json()
     i2 = (await client.get(f"/items/{r2.json()['id']}", headers=h)).json()
@@ -1766,7 +1766,7 @@ async def test_batch_no_and_reorder_fields_round_trip(client):
     absent is accepted, and set values round-trip via patch."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "RT-1", "name": "A", "quantity": 3, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "RT-1", "name": "A", "quantity": 3, "sell_by": "piece"}, headers=h)
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert item.get("batch_no") in (None, "")
@@ -1794,7 +1794,7 @@ async def test_new_item_explicit_barcode_not_overridden(client):
     """When caller supplies a barcode, it must not be overridden by auto-copy."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"name": "ExplicitBC", "quantity": 1, "sell_by": "piece", "barcode": "9999999999"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "ExplicitBC", "quantity": 1, "sell_by": "piece", "barcode": "9999999999"}, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -1806,7 +1806,7 @@ async def test_new_item_non_numeric_sku_no_barcode(client):
     """Non-numeric SKU with no barcode supplied → barcode stays null (no auto-copy would 422)."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "GOLD-001", "name": "Gold Bar", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "GOLD-001", "name": "Gold Bar", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     item = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -1819,7 +1819,7 @@ async def test_split_children_get_unique_barcodes(client):
     """Each split child must receive a unique auto-assigned barcode from the shared sequence."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"name": "SplitParent", "quantity": 30, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "SplitParent", "quantity": 30, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200, r.text
     parent_id = r.json()["id"]
     parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
@@ -1854,7 +1854,7 @@ async def test_split_barcode_no_overlap_with_sku_sequence(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
 
-    r = await client.post("/items", json={"name": "SeqParent", "quantity": 20, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "SeqParent", "quantity": 20, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
     parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
@@ -1869,7 +1869,7 @@ async def test_split_barcode_no_overlap_with_sku_sequence(client):
     child_barcode = (await client.get(f"/items/{child_id}", headers=h)).json()["barcode"]
     assert int(child_barcode) == parent_sku_int + 1
 
-    r = await client.post("/items", json={"name": "NextItem", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "NextItem", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     next_id = r.json()["id"]
     next_item = (await client.get(f"/items/{next_id}", headers=h)).json()
@@ -1883,7 +1883,7 @@ async def test_split_child_explicit_barcode_not_overridden(client):
     """If a split child explicitly provides a barcode, it must not be auto-assigned."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"name": "ExplicitBCParent", "quantity": 20, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "name": "ExplicitBCParent", "quantity": 20, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
     parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
@@ -1914,7 +1914,7 @@ async def test_bulk_attach_bare_image_is_hero(client):
     """Bare SKU.jpg → product_images tag, is_hero=True."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "BULK-HERO-001", "name": "Img Item", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "BULK-HERO-001", "name": "Img Item", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
 
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10  # minimal JPEG header
@@ -1938,7 +1938,7 @@ async def test_bulk_attach_does_not_duplicate_files(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "BULK-DUP-001", "name": "Dup", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "BULK-DUP-001", "name": "Dup", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
 
@@ -1966,7 +1966,7 @@ async def test_bulk_attach_skips_nested_dotfiles(client):
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "F5-ITEM-001", "name": "F5", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "F5-ITEM-001", "name": "F5", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
     zdata = _make_zip({
@@ -1987,7 +1987,7 @@ async def test_bulk_attach_multi_image_only_first_hero(client):
     """First alphabetical bare image gets hero; second does not."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-MULTI-001", "name": "Multi", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-MULTI-001", "name": "Multi", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
     zdata = _make_zip({"BULK-MULTI-001.jpg": fake_jpg, "BULK-MULTI-001-img-2.jpg": fake_jpg})
@@ -2002,7 +2002,7 @@ async def test_bulk_attach_multi_image_only_first_hero(client):
 async def test_bulk_attach_cert_tag(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-CERT-001", "name": "Cert", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-CERT-001", "name": "Cert", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     zdata = _make_zip({"BULK-CERT-001-cert-grs.pdf": b"%PDF-1.4"})
     result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
@@ -2014,7 +2014,7 @@ async def test_bulk_attach_cert_tag(client):
 async def test_bulk_attach_spec_tag(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-SPEC-001", "name": "Spec", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-SPEC-001", "name": "Spec", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     zdata = _make_zip({"BULK-SPEC-001-spec-tech.pdf": b"%PDF-1.4"})
     result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
@@ -2026,7 +2026,7 @@ async def test_bulk_attach_spec_tag(client):
 async def test_bulk_attach_safety_tag(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-SAFE-001", "name": "Safe", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-SAFE-001", "name": "Safe", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     zdata = _make_zip({"BULK-SAFE-001-safety-msds.pdf": b"%PDF-1.4"})
     result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
@@ -2038,7 +2038,7 @@ async def test_bulk_attach_safety_tag(client):
 async def test_bulk_attach_360_tag(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-360-001", "name": "360", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-360-001", "name": "360", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     zdata = _make_zip({"BULK-360-001-360-exterior.mp4": b"\x00" * 20})
     result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
@@ -2051,7 +2051,7 @@ async def test_bulk_attach_doc_alias_backward_compat(client):
     """-doc- marker still maps to certificates."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-DOC-001", "name": "Doc", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-DOC-001", "name": "Doc", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     zdata = _make_zip({"BULK-DOC-001-doc-warranty.pdf": b"%PDF-1.4"})
     result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
@@ -2063,7 +2063,7 @@ async def test_bulk_attach_doc_alias_backward_compat(client):
 async def test_bulk_attach_report_includes_tag_and_hero(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-RPT-001", "name": "Report", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-RPT-001", "name": "Report", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
     zdata = _make_zip({"BULK-RPT-001.jpg": fake_jpg})
@@ -2079,7 +2079,7 @@ async def test_bulk_attach_override_hero_false(client):
     """Without override_hero, existing hero is not replaced."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "BULK-OH-001", "name": "OH", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "BULK-OH-001", "name": "OH", "quantity": 1, "sell_by": "piece"}, headers=h)
     item_id = r.json()["id"]
     # Upload first hero via file event
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
@@ -2100,7 +2100,7 @@ async def test_bulk_attach_override_hero_true(client):
     """With override_hero=1, new bare image becomes hero."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    await client.post("/items", json={"sku": "BULK-OHT-001", "name": "OHT", "quantity": 1, "sell_by": "piece"}, headers=h)
+    await client.post("/items", json={"status": "available", "sku": "BULK-OHT-001", "name": "OHT", "quantity": 1, "sell_by": "piece"}, headers=h)
 
     fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
     first_zip = _make_zip({"BULK-OHT-001.jpg": fake_jpg})
@@ -2126,7 +2126,7 @@ async def test_download_item_file_route_exists(client):
     h = {"Authorization": f"Bearer {token}"}
 
     # Create item and upload a file via the new /files endpoint
-    r = await client.post("/items", json={"sku": "DL-TEST-001", "name": "Download Test", "quantity": 1, "sell_by": "piece"}, headers=h)
+    r = await client.post("/items", json={"status": "available", "sku": "DL-TEST-001", "name": "Download Test", "quantity": 1, "sell_by": "piece"}, headers=h)
     assert r.status_code == 200
     item_id = r.json()["id"]
 
@@ -2157,7 +2157,7 @@ async def test_patch_qty_syncs_weight_for_weight_sell_by(client):
     h = {"Authorization": f"Bearer {token}"}
     # Create item with sell_by=ct (weight unit from DEFAULT_UNITS)
     r = await client.post("/items", json={
-        "sku": "QTY-SYNC-W-001", "name": "Weight sync test",
+        "status": "available", "sku": "QTY-SYNC-W-001", "name": "Weight sync test",
         "quantity": 5.0, "sell_by": "carat", "weight": 5.0, "weight_unit": "carat",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2184,7 +2184,7 @@ async def test_patch_qty_syncs_pieces_for_pieces_sell_by(client):
     h = {"Authorization": f"Bearer {token}"}
     # Create item with sell_by=piece
     r = await client.post("/items", json={
-        "sku": "QTY-SYNC-P-001", "name": "Pieces sync test",
+        "status": "available", "sku": "QTY-SYNC-P-001", "name": "Pieces sync test",
         "quantity": 3, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2215,7 +2215,7 @@ async def test_split_children_inherit_purchase_fields(client):
 
     sku = f"SPL-PURCH-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "status": "available", "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
         "purchase_unit": "kg", "purchase_conversion_factor": 1000.0,
         "purchase_sku": "V-SKU", "purchase_name": "Vendor Material",
     }, headers=h)
@@ -2242,7 +2242,7 @@ async def test_split_children_inherit_inventory_type(client):
 
     sku = f"SPL-INVT-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+        "status": "available", "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
         "inventory_type": "non_stocked",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2266,7 +2266,7 @@ async def test_split_children_inherit_custom_attributes(client):
 
     sku = f"SPL-ATTR-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "status": "available", "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
         "attributes": {"beauty_grade": "A+", "cut": "oval"},
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2293,7 +2293,7 @@ async def test_split_children_start_available(client):
 
     sku = f"SPL-STATUS-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+        "status": "available", "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
     parent_id = r.json()["id"]
@@ -2316,7 +2316,7 @@ async def test_split_children_get_distinct_barcodes(client):
 
     sku = f"SPL-BAR-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", json={
-        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+        "status": "available", "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
     parent_id = r.json()["id"]
@@ -2344,7 +2344,7 @@ async def test_created_at_set_by_engine_not_client(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"CA-{uuid.uuid4().hex[:6]}",
+        "status": "available", "sku": f"CA-{uuid.uuid4().hex[:6]}",
         "name": "Timestamp Guard",
         "quantity": 1,
         "sell_by": "piece",
@@ -2367,7 +2367,7 @@ async def test_created_at_immutable_after_patch(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"CA-IMM-{uuid.uuid4().hex[:6]}",
+        "status": "available", "sku": f"CA-IMM-{uuid.uuid4().hex[:6]}",
         "name": "Immutable TS",
         "quantity": 1,
         "sell_by": "piece",
@@ -2381,7 +2381,7 @@ async def test_created_at_immutable_after_patch(client):
     assert created_before is not None
 
     # Patch the item name
-    pr = await client.patch(f"/items/{item_id}", json={"name": "Renamed"}, headers=h)
+    pr = await client.patch(f"/items/{item_id}", json={"status": "available", "name": "Renamed"}, headers=h)
     assert pr.status_code == 200, pr.text
 
     after = (await client.get(f"/items/{item_id}", headers=h)).json()
@@ -2404,7 +2404,7 @@ async def test_split_child_top_level_pieces_field(client):
     h = {"Authorization": f"Bearer {token}"}
     # Parent: sell_by=carat (weight unit), 70 carat, 100 pieces
     r = await client.post("/items", json={
-        "sku": f"TLP-{_ts}", "name": "Batch Split Stone",
+        "status": "available", "sku": f"TLP-{_ts}", "name": "Batch Split Stone",
         "quantity": 70.0, "sell_by": "carat", "attributes": {"pieces": 100},
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2438,7 +2438,7 @@ async def test_sell_by_change_piece_to_weight_pulls_weight_into_qty(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"SBP2C-{_ts}", "name": "Stone", "quantity": 100.0,
+        "status": "available", "sku": f"SBP2C-{_ts}", "name": "Stone", "quantity": 100.0,
         "sell_by": "piece", "weight": 50.0,
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2466,7 +2466,7 @@ async def test_sell_by_change_weight_to_piece_pulls_pieces_into_qty(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"SBC2P-{_ts}", "name": "Parcel", "quantity": 50.0,
+        "status": "available", "sku": f"SBC2P-{_ts}", "name": "Parcel", "quantity": 50.0,
         "sell_by": "carat", "attributes": {"pieces": 100},
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2490,7 +2490,7 @@ async def test_sell_by_change_piece_to_weight_no_weight_gives_none_qty(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": f"SBPN-{_ts}", "name": "Unweighed Stone", "quantity": 5.0,
+        "status": "available", "sku": f"SBPN-{_ts}", "name": "Unweighed Stone", "quantity": 5.0,
         "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2526,7 +2526,7 @@ async def test_cost_price_edit_after_cost_total_edit(client):
 
     # Create item: qty=10, no cost set
     r = await client.post("/items", json={
-        "sku": f"CP-{_ts}", "name": "Cost Test Stone",
+        "status": "available", "sku": f"CP-{_ts}", "name": "Cost Test Stone",
         "quantity": 10.0, "sell_by": "piece",
     }, headers=h)
     assert r.status_code == 200, r.text
@@ -2578,10 +2578,10 @@ async def test_recipe_backed_cost_reads_at_standard_not_lot_total(client):
     base_cost = float((await client.get("/items/valuation", headers=h)).json()["cost_total"])
 
     gold = (await client.post("/items", json={
-        "sku": f"GOLD-{_ts}", "name": "Gold", "quantity": 1.0, "sell_by": "piece", "cost_total": 80.0,
+        "status": "available", "sku": f"GOLD-{_ts}", "name": "Gold", "quantity": 1.0, "sell_by": "piece", "cost_total": 80.0,
     }, headers=h)).json()["id"]
     ring = (await client.post("/items", json={
-        "sku": f"RING-{_ts}", "name": "Ring", "quantity": 2.0, "sell_by": "piece",
+        "status": "available", "sku": f"RING-{_ts}", "name": "Ring", "quantity": 2.0, "sell_by": "piece",
     }, headers=h)).json()["id"]
 
     # Recipe: 5 gold per ring → rolled standard unit cost 400.
@@ -2633,7 +2633,7 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
         return (item.get("attributes") or {}).get(key, item.get(key))
 
     async def _mk(sku, attrs):
-        rr = await client.post("/items", json={"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece",
+        rr = await client.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": 1, "sell_by": "piece",
                                                "category": "DD", "attributes": attrs}, headers=h)
         assert rr.status_code == 200, rr.text
         return rr.json()["id"]
@@ -2671,7 +2671,7 @@ async def test_transform_drops_sell_prices_keeps_cost(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "TX-PARENT", "name": "Parent", "quantity": 20, "sell_by": "piece",
+        "status": "available", "sku": "TX-PARENT", "name": "Parent", "quantity": 20, "sell_by": "piece",
         "retail_price": 38.0, "wholesale_price": 24.0, "cost_total": 260.0,
     }, headers=h)
     assert r.status_code == 200, r.text

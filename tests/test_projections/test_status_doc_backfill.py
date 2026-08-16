@@ -6,11 +6,22 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import text
 
 from celerp.events.engine import emit_event
+from celerp.migrations._data_reconcile import get_meta
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.services.status_doc_backfill import run_status_doc_backfill
+from celerp.services.status_doc_backfill import STATUS_DOC_BACKFILL_KEY, run_status_doc_backfill
+
+
+async def _clear_marker(session) -> None:
+    """The backfill is once-per-database: any app boot against this DB sets the
+    marker, so each test resets it to the unset state its scenario assumes."""
+    conn = await session.connection()
+    await conn.run_sync(lambda c: get_meta(c, STATUS_DOC_BACKFILL_KEY))
+    await session.execute(
+        text("DELETE FROM instance_meta WHERE key = :k"), {"k": STATUS_DOC_BACKFILL_KEY})
 
 
 async def _seed_company(session) -> uuid.UUID:
@@ -50,6 +61,7 @@ async def _strip_status_doc(session, company_id, entity_id):
 async def test_backfill_stamps_pre_existing_sold_item(session):
     """A sold item whose projection predates the pairing gets its document link
     back, derived by replaying its own events through the live handler."""
+    await _clear_marker(session)
     company_id = await _seed_company(session)
     eid = "item:sold1"
     await _emit(session, company_id, eid, "item.created", {"sku": "S1", "name": "Ring", "quantity": 1})
@@ -81,6 +93,7 @@ async def test_backfill_stamps_pre_existing_sold_item(session):
 async def test_backfill_does_not_fabricate_for_undocumented_item(session):
     """An item with no source document behind its status is left untouched: the
     backfill degrades honestly and never invents a link."""
+    await _clear_marker(session)
     company_id = await _seed_company(session)
     eid = "item:avail1"
     await _emit(session, company_id, eid, "item.created", {"sku": "A1", "name": "Loose stone", "quantity": 1})
@@ -98,6 +111,7 @@ async def test_backfill_does_not_fabricate_for_undocumented_item(session):
 async def test_backfill_marker_gates_second_run(session):
     """The backfill runs once per database: a second run is a no-op even when a
     fresh gap appears, so it never rescans the whole catalog on every boot."""
+    await _clear_marker(session)
     company_id = await _seed_company(session)
     eid = "item:sold2"
     await _emit(session, company_id, eid, "item.created", {"sku": "S2", "name": "Pendant", "quantity": 1})
