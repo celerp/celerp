@@ -1158,9 +1158,13 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
 
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: setting cost fields on creation requires the set_inventory_prices permission.
+    # Guard: setting cost fields on creation requires set_inventory_prices, except that a
+    # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
+    # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
     if payload.cost_price is not None or payload.cost_total is not None:
-        assert_role_permission(settings, role, "set_inventory_prices")
+        _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+        if not draft_cost_carveout(_create_draft, role, settings):
+            assert_role_permission(settings, role, "set_inventory_prices")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
@@ -1303,6 +1307,23 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
+def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
+    """While an item is draft, its creator authors cost with edit_inventory alone;
+    the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
+    (post_item at creation, patch_item, set_item_price) so they cannot drift out of sync."""
+    return is_draft and role_has_permission(settings, role, "edit_inventory")
+
+
+def is_cost_price_type(price_type: str) -> bool:
+    """True when a set_item_price price_type addresses the cost list, in either the
+    primitive-key form (cost_price/cost_total) or a list-name-derived key (e.g.
+    landed_price for a 'Landed' cost list)."""
+    if price_type in COST_ITEM_KEYS:
+        return True
+    name = price_type[:-len("_price")] if price_type.endswith("_price") else price_type
+    return is_cost_list_name(name)
+
+
 @router.patch("/{entity_id}")
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: restricted fields require a role at the schema-configured floor.
@@ -1319,7 +1340,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
-    if not _is_draft and not role_has_permission(settings, role, "set_inventory_prices"):
+    if not draft_cost_carveout(_is_draft, role, settings) and not role_has_permission(settings, role, "set_inventory_prices"):
         restricted |= COST_ITEM_KEYS
     # Amount fields (quantity/weight/pieces/gross_weight) and the sell unit are
     # gated by edit_inventory_amounts, mirroring the cost gate above. sell_by is
@@ -2927,7 +2948,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
 
 
 @router.post("/{entity_id}/price")
-async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), _: None = require_permission("set_inventory_prices"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
     # resolve_price honors a direct-name key first, so storing one would shadow the formula.
@@ -2937,6 +2958,18 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
             detail=f"'{payload.price_type}' is computed from the '{_base_name}' price list; "
                    f"edit the base price, or change the factor in Settings",
         )
+    # Setting a price requires set_inventory_prices, except that a draft's creator
+    # (edit_inventory) authors its cost while it is still a draft - the same carve-out
+    # patch_item applies, so the pricing tab's Cost card works for the person entering
+    # the item. Sell prices stay gated, and the gate re-arms once the item is available.
+    _proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    _is_draft = str(((_proj.state if _proj else {}) or {}).get("status") or "").lower() == "draft"
+    if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
+        if not role_has_permission(settings, role, "set_inventory_prices"):
+            raise HTTPException(
+                status_code=403,
+                detail="Setting inventory prices requires the 'set_inventory_prices' permission",
+            )
     entry = await emit_event(
         session,
         company_id=company_id,

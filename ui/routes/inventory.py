@@ -1862,6 +1862,11 @@ def setup_routes(app):
             extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
             schema = schema + extra
 
+        # A draft's creator may set its cost even without view_inventory_costs (the item
+        # keeps its cost value), but /me/price-lists strips the cost definition for that
+        # role, so the pricing tab's Cost card would have no row to render. Re-add the cost
+        # list from company config for a draft whose cost is visible to this caller.
+        price_lists = _with_draft_cost_list(price_lists, item, company.get("settings") or {})
         # Build pricing_keys dynamically from company price lists
         pl_names = {pl.get("name", "") for pl in price_lists}
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
@@ -6963,6 +6968,23 @@ def _readonly_price_cells(conventional_key: str, price_val: float, qty: float,
     total = Span(total_val or EMPTY, cls="form-input form-input--readonly",
                  id=f"derived_total_{conventional_key}", **oob_kw)
     return unit, total
+
+
+def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings: dict) -> list[dict]:
+    """Re-add the cost price-list definition for a draft item whose cost is visible to
+    this caller. /me/price-lists strips cost lists for a role without view_inventory_costs,
+    but a draft's creator (edit_inventory) still authors its cost and the item keeps the
+    value; without the definition the Cost card would not render. The real name is taken
+    from company config so a renamed cost list keeps its label. No-op for committed items,
+    for a caller who cannot see the cost value, or when the cost list is already present."""
+    if str(item.get("status") or "").lower() != "draft":
+        return price_lists
+    if "cost_total" not in item and "cost_price" not in item:
+        return price_lists
+    if any(is_cost_list_name(pl.get("name", "")) for pl in price_lists):
+        return price_lists
+    cost_defs = [pl for pl in (company_settings.get("price_lists") or []) if is_cost_list_name(pl.get("name", ""))]
+    return price_lists + cost_defs if cost_defs else price_lists
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,

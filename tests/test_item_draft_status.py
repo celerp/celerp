@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from celerp.services.pricing import is_cost_list_name  # noqa: E402
 from test_helpers import create_item, grant_permission, perm_setup  # noqa: E402
 
 
@@ -165,6 +166,90 @@ async def test_draft_cost_edit_allowed_without_price_permission(client, session)
         json={"fields_changed": {"cost_price": {"old": 55.0, "new": 60.0}}},
         headers=ctx["operator_h"])
     assert patch2.status_code == 403, patch2.text
+
+
+async def test_draft_cost_set_via_price_endpoint_without_price_permission(client, session):
+    """The pricing tab saves cost through POST /items/{id}/price (set_item_price),
+    a separate endpoint from patch_item. While draft, edit_inventory alone may set
+    cost there; the set_inventory_prices gate re-arms once the item is available."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "DFT-PEP"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+
+    # Draft: the operator (edit_inventory only) sets cost through the price endpoint.
+    setc = await client.post(f"/items/{item_id}/price",
+                             json={"price_type": "cost_price", "new_price": 42.0},
+                             headers=ctx["operator_h"])
+    assert setc.status_code == 200, setc.text
+
+    # Committing re-arms the gate: the same operator is now blocked on cost.
+    mk = await _make_available(client, ctx["admin_h"], item_id)
+    assert mk.status_code == 200, mk.text
+    blocked = await client.post(f"/items/{item_id}/price",
+                                json={"price_type": "cost_price", "new_price": 50.0},
+                                headers=ctx["operator_h"])
+    assert blocked.status_code == 403, blocked.text
+
+
+async def test_draft_sell_price_still_gated_via_price_endpoint(client, session):
+    """The draft carve-out covers cost only. A sell price on a draft still requires
+    set_inventory_prices, so an operator is rejected - the boundary did not widen."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "DFT-SELL"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    sell = await client.post(f"/items/{item_id}/price",
+                             json={"price_type": "retail_price", "new_price": 99.0},
+                             headers=ctx["operator_h"])
+    assert sell.status_code == 403, sell.text
+
+
+async def test_draft_cost_set_at_creation_without_price_permission(client, session):
+    """The creation gate honors the same draft carve-out as the pricing surfaces: an
+    operator (edit_inventory only) may create a draft carrying cost, since a manual
+    create defaults to draft and stays authorable until commit. The cost is stored and
+    visible to its creator class."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "DFT-CCREATE"),
+                          headers=ctx["operator_h"])
+    assert r.status_code == 200, r.text
+    state = await _item_state(client, ctx["operator_h"], r.json()["id"])
+    assert state.get("status") == "draft"
+    assert state.get("cost_price") == 40.0, "draft cost not stored at creation"
+
+
+async def test_cost_at_creation_still_gated_for_available_item(client, session):
+    """The creation carve-out is draft-scoped: an operator creating an item already
+    marked available AND carrying cost is rejected, exactly as set_inventory_prices gates
+    any committed-stock cost write - the boundary did not widen."""
+    ctx = await perm_setup(client, session)
+    body = _draft_item_body(ctx["location_id"], "AVL-CCREATE")
+    body["status"] = "available"
+    r = await client.post("/items", json=body, headers=ctx["operator_h"])
+    assert r.status_code == 403, r.text
+    assert "set_inventory_prices" in r.json()["detail"]
+
+
+def test_with_draft_cost_list_reinjects_for_visible_draft():
+    """The item-detail page re-adds the stripped cost list for a draft whose cost is
+    visible to this caller, using the real name from company config."""
+    from ui.routes.inventory import _with_draft_cost_list
+    settings = {"price_lists": [{"name": "Retail"}, {"name": "Cost", "description": "Landed cost"}]}
+    stripped = [{"name": "Retail"}]  # as /me/price-lists returns without view_inventory_costs
+    out = _with_draft_cost_list(stripped, {"status": "draft", "cost_total": 40.0}, settings)
+    assert any(is_cost_list_name(pl.get("name", "")) for pl in out)
+    assert any(pl.get("name") == "Cost" for pl in out)  # real name preserved
+
+
+def test_with_draft_cost_list_noop_when_not_draft_or_cost_hidden():
+    """No re-injection for a committed item, or a draft whose cost this caller cannot
+    see (no cost key on the item dict): cost stays stripped exactly as today."""
+    from ui.routes.inventory import _with_draft_cost_list
+    settings = {"price_lists": [{"name": "Cost"}]}
+    stripped = [{"name": "Retail"}]
+    assert _with_draft_cost_list(stripped, {"status": "available"}, settings) == stripped
+    assert _with_draft_cost_list(stripped, {"status": "draft"}, settings) == stripped
 
 
 # ── Status value validation ───────────────────────────────────────────────────

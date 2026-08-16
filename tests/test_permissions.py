@@ -77,11 +77,16 @@ class TestFieldVisibility:
 class TestCostPriceWriteGuard:
 
     async def test_staff_cannot_set_cost_price_on_create(self, client, session):
+        # Cost is manager-gated on a committed item. A draft is exempt by design (its
+        # edit_inventory author sets cost while drafting; the gate re-arms at
+        # make-available), so this guard is asserted on an item created as available.
+        # The draft-allowed path is covered in test_item_draft_status.py.
         ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU", "name": "Staff Item", "quantity": 1,
-                  "location_id": ctx["location_id"], "cost_price": 50.0, "sell_by": "piece"},
+                  "location_id": ctx["location_id"], "cost_price": 50.0, "sell_by": "piece",
+                  "status": "available"},
             headers=ctx["staff_h"],
         )
         assert r.status_code == 403
@@ -652,7 +657,9 @@ class TestLegacyRoleMigration:
         assert r.status_code == 403
 
     async def test_salesperson_token_blocked_from_cost_price(self, client, session):
-        """Legacy salesperson JWT cannot set cost_price (manager field)."""
+        """Legacy salesperson JWT (migrates to operator) cannot set cost_price on a
+        committed item (manager field). A draft is exempt by design, so the guard is
+        asserted on an item created as available."""
         admin_h, legacy_tok = await self._make_salesperson_token(client)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
         loc_r = await client.post(
@@ -664,7 +671,8 @@ class TestLegacyRoleMigration:
         r = await client.post(
             "/items",
             json={"sku": "LEG-COST", "name": "Legacy Cost", "quantity": 1,
-                  "location_id": location_id, "cost_price": 50.0, "sell_by": "piece"},
+                  "location_id": location_id, "cost_price": 50.0, "sell_by": "piece",
+                  "status": "available"},
             headers=legacy_h,
         )
         assert r.status_code == 403
@@ -744,11 +752,16 @@ class TestFieldVisibility:
 class TestCostPriceWriteGuard:
 
     async def test_staff_cannot_set_cost_price_on_create(self, client, session):
+        # Cost is manager-gated on a committed item. A draft is exempt by design (its
+        # edit_inventory author sets cost while drafting; the gate re-arms at
+        # make-available), so this guard is asserted on an item created as available.
+        # The draft-allowed path is covered in test_item_draft_status.py.
         ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU", "name": "Staff Item", "quantity": 1,
-                  "location_id": ctx["location_id"], "cost_price": 50.0, "sell_by": "piece"},
+                  "location_id": ctx["location_id"], "cost_price": 50.0, "sell_by": "piece",
+                  "status": "available"},
             headers=ctx["staff_h"],
         )
         assert r.status_code == 403
