@@ -61,6 +61,8 @@ class ItemPricingSet(BaseModel):
 
 class ItemStatusSet(BaseModel):
     new_status: str
+    # Set by revert-to-draft only.
+    reason: str | None = None
 
 
 class ItemTransferred(BaseModel):

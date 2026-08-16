@@ -1319,6 +1319,7 @@ def data_table(
                 cls="col-actions",
             )
         ]
+        status_val = str(row.get("status", "") or "").lower()
         checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
                      data_entity_id=entity_id,
                      data_sku=row.get("sku", ""),
@@ -1327,8 +1328,8 @@ def data_table(
                      data_weight=str(row.get("weight", "") or ""),
                      data_weight_unit=row.get("weight_unit", ""),
                      data_sell_by=row.get("sell_by", ""),
+                     data_status=status_val,
                ), cls="col-checkbox")] if show_checkboxes else []
-        status_val = str(row.get("status", "") or "").lower()
         row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         if str(row.get("inventory_type") or "") == "component":
             row_cls += " data-row--component"  # visual cue for component (raw-material) items
@@ -1681,6 +1682,14 @@ function bulkActionChanged(action){
   if(action==='expire'){
     _bulkImmediate('/api/items/bulk/expire',null,null);return;
   }
+  if(action==='make_available'){
+    if(!confirm('Make selected draft items available? They will count as real stock.')) return;
+    _bulkImmediate('/api/items/bulk/make-available',null,null);return;
+  }
+  if(action==='revert_to_draft'){
+    if(!confirm('Revert selected items to draft? Only items with no circulation history can revert.')) return;
+    _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
+  }
   if(action==='delete'){
     if(!confirm('Delete selected items? This cannot be undone.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
@@ -1861,7 +1870,7 @@ function sendToTypeChanged(docType, docLabel){
     }).catch(function(){});
 }
 (function(){
-  function _meta(cb){return {sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||''};}
+  function _meta(cb){return {sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||'',status:cb.dataset.status||''};}
   function updateBulkToolbar(){
     var n=CelerpSelection.count();
     var toolbar=document.getElementById('bulk-toolbar');
@@ -1870,6 +1879,15 @@ function sendToTypeChanged(docType, docLabel){
     if(countEl) countEl.textContent=n+' selected';
     if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
     if(clearBtn){clearBtn.style.display=n>0?'':'none'}
+    var all=CelerpSelection.all();
+    var hasDraft=false,hasNonDraft=false;
+    Object.keys(all).forEach(function(id){
+      if((all[id].status||'')==='draft'){hasDraft=true}else{hasNonDraft=true}
+    });
+    var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
+    var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
+    if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
+    if(revertOpt) revertOpt.hidden=!hasNonDraft;
   }
   var table=document.getElementById('data-table');
   if(!table) return;

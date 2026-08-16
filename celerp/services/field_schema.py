@@ -56,7 +56,9 @@ _BASE_FIELDS: list[dict] = [
     {"key": "pick_method",       "label": "Stock Cutting",     "type": "select", "editable": True,  "required": False, "options": ["default", "fifo", "fefo", "lifo"], "visible_to_roles": [],               "position": 4.6, "show_in_table": False, "tooltip_key": "field.tooltip.pick_method"},
     {"key": "location_name",     "label": "Location",          "type": "text",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 5,  "show_in_table": True,  "tooltip_key": "field.tooltip.location_name"},
     # Price columns are injected dynamically at position 6+ by _inject_price_columns()
-    {"key": "status",            "label": "Status",            "type": "status", "editable": True,  "required": False, "options": ["draft", "available", "reserved", "sold"], "visible_to_roles": [],               "position": 100, "show_in_table": True},
+    # Read-only: status changes only through dedicated actions (Make Available, Revert
+    # to Draft), never a free-form dropdown edit - same convention as document status.
+    {"key": "status",            "label": "Status",            "type": "status", "editable": False, "required": False, "options": [], "visible_to_roles": [],               "position": 100, "show_in_table": True},
     {"key": "short_description", "label": "Short Description", "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 101, "show_in_table": False},
     {"key": "description",       "label": "Description",       "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 102, "show_in_table": False},
     {"key": "notes",             "label": "Notes",             "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 103, "show_in_table": False},
@@ -158,6 +160,13 @@ async def get_effective_field_schema(
     editable_by_key = {price_key(pl.get("name", "")): not is_derived(pl) for pl in price_lists}
     base_schema = [
         {**f, "editable": editable_by_key[f["key"]]} if f["key"] in editable_by_key else f
+        for f in base_schema
+    ]
+
+    # Status is never a free-form dropdown, regardless of a stored schema round-trip
+    # captured before this became a hard rule.
+    base_schema = [
+        {**f, "editable": False, "options": []} if f["key"] == "status" else f
         for f in base_schema
     ]
 

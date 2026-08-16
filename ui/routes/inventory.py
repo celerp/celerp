@@ -1879,21 +1879,38 @@ def setup_routes(app):
         await _inject_reorder_hints(token, item)
         detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
+        _item_role = _get_role(request)
+        _item_settings = company.get("settings") or {}
+        _make_available_btn = (
+            Button(
+                "Make Available",
+                onclick=f"event.preventDefault();htmx.ajax('POST','/api/items/{entity_id}/make-available',{{target:'#item-header-error',swap:'outerHTML'}});",
+                cls="btn btn--primary",
+            )
+            if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
+            else ""
+        )
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
-            page_header(
-                item.get("name") or item.get("sku") or entity_id,
+            page_header(item.get("name") or item.get("sku") or entity_id),
+            Div(
+                Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
-                    A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
-                      cls="btn btn--ghost btn--icon", title="Print production worksheet"),
-                    _print_label_dropdown(entity_id),
-                    A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
-                    cls="header-actions",
+                    Div(
+                        A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                          cls="btn btn--ghost btn--icon", title="Print production worksheet"),
+                        _print_label_dropdown(entity_id),
+                        A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
+                        cls="doc-actions-print",
+                    ),
+                    cls="doc-actions-right-group",
                 ),
+                cls="doc-actions",
             ),
+            Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -3001,7 +3018,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return Response("", status_code=401)
         try:
-            item = await api.get_item(token, entity_id)
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         except APIError as e:
             return Response(str(e.detail), status_code=500)
         # Fresh split preview in its own try/except so a non-splittable item (or any preview
@@ -3010,7 +3027,7 @@ function celerpPrintLabel(entityId, templateId) {
             split_preview = await api.split_preview(token, entity_id)
         except APIError:
             split_preview = None
-        return _advanced_panel(entity_id, item, split_preview)
+        return _advanced_panel(entity_id, item, split_preview, role=_get_role(request), settings=company.get("settings") or {})
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
@@ -3086,6 +3103,7 @@ function celerpPrintLabel(entityId, templateId) {
                   data_weight=str(flat.get("weight", "") or ""),
                   data_weight_unit=flat.get("weight_unit", ""),
                   data_sell_by=flat.get("sell_by", ""),
+                  data_status=str(flat.get("status", "") or "").lower(),
             ),
             cls="col-checkbox",
         )
@@ -3280,6 +3298,38 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
         return _bulk_destructive_success(f"{updated} item(s) updated to '{status}'.")
+
+    @app.post("/api/items/bulk/make-available")
+    async def bulk_item_make_available(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.make_items_available(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        updated = result.get("updated", len(entity_ids))
+        return _bulk_destructive_success(f"{updated} item(s) made available.")
+
+    @app.post("/api/items/bulk/revert-to-draft")
+    async def bulk_item_revert_to_draft(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.revert_items_to_draft(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        updated = result.get("updated", len(entity_ids))
+        return _bulk_destructive_success(f"{updated} item(s) reverted to draft.")
 
     @app.post("/api/items/bulk/shopify-sync/{action}")
     async def bulk_item_shopify_sync(request: Request, action: str):
@@ -4210,6 +4260,30 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
+    @app.post("/api/items/{entity_id}/make-available")
+    async def item_make_available(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.make_items_available(token, [entity_id])
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
+    @app.post("/api/items/{entity_id}/revert-to-draft")
+    async def item_revert_to_draft(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            await api.revert_items_to_draft(token, [entity_id], reason)
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
     @app.post("/api/items/{entity_id}/return-to-vendor")
     async def item_return_to_vendor(request: Request, entity_id: str):
         """Return an item received from a bill/PO back to the vendor."""
@@ -4725,6 +4799,11 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
         action_options.append(Option(t("btn.delete"), value="delete"))
+    # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
+    if role_has_permission(settings or {}, role, "edit_inventory"):
+        action_options.append(Option("Make Available", value="make_available"))
+    if role_has_permission(settings or {}, role, "revert_items_to_draft"):
+        action_options.append(Option("Revert to Draft", value="revert_to_draft"))
 
     return Div(
         Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count"),
@@ -6790,6 +6869,8 @@ def _item_detail_tabs(
     cell_renderers: dict | None = None,
     base_price_list: str = "",
     split_preview: dict | None = None,
+    role: str = "owner",
+    settings: dict | None = None,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
@@ -6852,7 +6933,7 @@ def _item_detail_tabs(
         )
     # Files + item operations belong with the item's core details — keep them off the
     # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
-    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview)) if active_tab == "details" else ()
+    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview, role=role, settings=settings)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
@@ -7389,7 +7470,7 @@ def _resolve_visible_cols(
 # T3: Advanced operations panel (non-inline-editable actions only)
 # ---------------------------------------------------------------------------
 
-def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None) -> FT:
+def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
     current_qty = float(item.get("quantity", 0) or 0)
 
@@ -7578,10 +7659,29 @@ function batchSplitSubmit_{safe_id}(form) {{
     # Items already in a terminal/hidden state: show restore instead of expire/archive
     item_status = item.get("status", "available")
     _RESTORABLE = {"archived", "expired"}
-    if item_status in _RESTORABLE:
+    if item_status == "draft":
+        lifecycle_cards = []
+    elif item_status in _RESTORABLE:
         lifecycle_cards = [restore_card]
     else:
         lifecycle_cards = [expire_card, archive_card]
+        if role_has_permission(settings or {}, role, "revert_items_to_draft"):
+            revert_to_draft_card = Div(
+                Form(
+                    Strong("Revert to Draft", cls="action-card-title"),
+                    Div(
+                        Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                        Button(t("btn.go"), type="submit", cls="btn btn--secondary btn--xs"),
+                        cls="action-card-row",
+                    ),
+                    P("Only an item with no circulation history can revert.", cls="action-card-hint"),
+                    hx_post=f"/api/items/{entity_id}/revert-to-draft",
+                    hx_target="#item-action-error",
+                    hx_swap="outerHTML",
+                ),
+                cls="action-card",
+            )
+            lifecycle_cards.append(revert_to_draft_card)
 
     # Return to Vendor (conditional)
     rtv_card = ""

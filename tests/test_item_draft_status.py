@@ -22,6 +22,16 @@ async def _set_status(client, headers: dict, item_id: str, status: str):
                              json={"new_status": status}, headers=headers)
 
 
+async def _make_available(client, headers: dict, item_id: str):
+    return await client.post("/items/bulk/make-available",
+                             json={"entity_ids": [item_id]}, headers=headers)
+
+
+async def _revert_to_draft(client, headers: dict, item_id: str):
+    return await client.post("/items/bulk/revert-to-draft",
+                             json={"entity_ids": [item_id]}, headers=headers)
+
+
 def _draft_item_body(location_id: str, sku: str = "DFT-1") -> dict:
     return {"sku": sku, "name": "Draft Widget", "quantity": 5,
             "location_id": location_id, "cost_price": 40.0, "sell_by": "piece"}
@@ -104,7 +114,7 @@ async def test_available_amount_edit_still_gated(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "AVL-AMT"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    mk = await _set_status(client, ctx["admin_h"], item_id, "available")
+    mk = await _make_available(client, ctx["admin_h"], item_id)
     assert mk.status_code == 200, mk.text
 
     patch = await client.patch(
@@ -128,7 +138,7 @@ async def test_draft_cost_visible_without_costs_permission(client, session):
     state = await _item_state(client, ctx["operator_h"], draft_id)
     assert state.get("cost_price") == 40.0, "draft cost hidden from its creator class"
 
-    mk = await _set_status(client, ctx["admin_h"], draft_id, "available")
+    mk = await _make_available(client, ctx["admin_h"], draft_id)
     assert mk.status_code == 200, mk.text
     committed = await _item_state(client, ctx["operator_h"], draft_id)
     assert "cost_price" not in committed, "committed cost leaked without view_inventory_costs"
@@ -148,7 +158,7 @@ async def test_draft_cost_edit_allowed_without_price_permission(client, session)
         headers=ctx["operator_h"])
     assert patch.status_code == 200, patch.text
 
-    mk = await _set_status(client, ctx["admin_h"], item_id, "available")
+    mk = await _make_available(client, ctx["admin_h"], item_id)
     assert mk.status_code == 200, mk.text
     patch2 = await client.patch(
         f"/items/{item_id}",
@@ -178,9 +188,9 @@ async def test_revert_requires_permission(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVP-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
 
-    denied = await _set_status(client, ctx["operator_h"], item_id, "draft")
+    denied = await _revert_to_draft(client, ctx["operator_h"], item_id)
     assert denied.status_code == 403, denied.text
     assert "revert_items_to_draft" in denied.json()["detail"]
 
@@ -192,9 +202,9 @@ async def test_clean_revert_succeeds(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVC-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
 
-    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 200, rv.text
     assert (await _item_state(client, ctx["admin_h"], item_id)).get("status") == "draft"
 
@@ -207,13 +217,13 @@ async def test_revert_blocked_by_circulation_event(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVE-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
     adj = await client.post(f"/items/{item_id}/adjust",
                             json={"new_qty": 7, "reason": "count correction"},
                             headers=ctx["admin_h"])
     assert adj.status_code == 200, adj.text
 
-    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
     assert "history" in rv.json()["detail"].lower() or "circulat" in rv.json()["detail"].lower()
 
@@ -224,7 +234,7 @@ async def test_revert_blocked_when_on_document(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVD-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
     doc = await client.post(
         "/docs",
         json={"doc_type": "invoice",
@@ -233,7 +243,7 @@ async def test_revert_blocked_when_on_document(client, session):
         headers=ctx["admin_h"])
     assert doc.status_code == 200, doc.text
 
-    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
     assert "document" in rv.json()["detail"].lower()
 
@@ -246,7 +256,7 @@ async def test_revert_blocked_when_on_document_via_patch_path(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVDP-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
 
     doc = await client.post(
         "/docs",
@@ -267,7 +277,7 @@ async def test_revert_blocked_when_on_document_via_patch_path(client, session):
         headers=ctx["admin_h"])
     assert patch.status_code == 200, patch.text
 
-    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
     assert "document" in rv.json()["detail"].lower()
 
@@ -279,35 +289,36 @@ async def test_revert_of_reserved_item_rejected(client, session):
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVR-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
     assert (await _set_status(client, ctx["admin_h"], item_id, "reserved")).status_code == 200
 
-    rv = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
     assert "available" in rv.json()["detail"].lower()
     assert "reserved" in rv.json()["detail"].lower()
 
 
-async def test_revert_via_item_patch_requires_permission(client, session):
-    """The revert guard also covers PATCH /items status changes: an operator
-    patching status back to draft gets the same 403 as on the status endpoint."""
+async def test_revert_via_item_patch_rejected_regardless_of_permission(client, session):
+    """PATCH /items can no longer set status to draft at all - even a permitted
+    role gets the hard-reject naming the dedicated action, not a permission check."""
     ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "revert_items_to_draft", "operator")
     r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "RVPP-1"),
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
 
     denied = await client.patch(
         f"/items/{item_id}",
         json={"fields_changed": {"status": {"old": "available", "new": "draft"}}},
         headers=ctx["operator_h"])
-    assert denied.status_code == 403, denied.text
-    assert "revert_items_to_draft" in denied.json()["detail"]
+    assert denied.status_code == 422, denied.text
+    assert "revert to draft" in denied.json()["detail"].lower()
 
 
 async def test_bulk_revert_validates_all_before_any(client, session):
-    """POST /items/bulk/status validates every item before emitting anything: one
-    circulated item rejects the whole batch and the clean item keeps its status."""
+    """POST /items/bulk/revert-to-draft validates every item before emitting anything:
+    one circulated item rejects the whole batch and the clean item keeps its status."""
     ctx = await perm_setup(client, session)
     clean = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BLK-C"),
                               headers=ctx["admin_h"])
@@ -316,14 +327,14 @@ async def test_bulk_revert_validates_all_before_any(client, session):
                               headers=ctx["admin_h"])
     dirty_id = dirty.json()["id"]
     for iid in (clean_id, dirty_id):
-        assert (await _set_status(client, ctx["admin_h"], iid, "available")).status_code == 200
+        assert (await _make_available(client, ctx["admin_h"], iid)).status_code == 200
     adj = await client.post(f"/items/{dirty_id}/adjust",
                             json={"new_qty": 9, "reason": "count correction"},
                             headers=ctx["admin_h"])
     assert adj.status_code == 200, adj.text
 
-    bulk = await client.post("/items/bulk/status",
-                             json={"entity_ids": [clean_id, dirty_id], "status": "draft"},
+    bulk = await client.post("/items/bulk/revert-to-draft",
+                             json={"entity_ids": [clean_id, dirty_id]},
                              headers=ctx["admin_h"])
     assert bulk.status_code == 409, bulk.text
     assert (await _item_state(client, ctx["admin_h"], clean_id)).get("status") == "available"
@@ -337,10 +348,10 @@ async def test_status_noop_transitions_are_harmless(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
 
-    again = await _set_status(client, ctx["admin_h"], item_id, "draft")
+    again = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert again.status_code == 200, again.text
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
-    again2 = await _set_status(client, ctx["admin_h"], item_id, "available")
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
+    again2 = await _make_available(client, ctx["admin_h"], item_id)
     assert again2.status_code == 200, again2.text
 
 
@@ -361,7 +372,7 @@ async def test_draft_excluded_from_valuation_totals_but_counted(client, session)
     assert val["count_by_status"].get("draft", 0) >= 1
     # 5 pcs at cost 40 = 200 must NOT be in the cost total while draft.
 
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
     val2 = (await client.get("/items/valuation", headers=ctx["admin_h"])).json()
     assert val2["active_item_count"] == base_count + 1
     assert val2.get("cost_total", 0.0) == pytest.approx(base_cost + 200.0)
@@ -380,7 +391,7 @@ async def test_low_stock_filter_excludes_draft(client, session):
     rows = low if isinstance(low, list) else low.get("items", [])
     assert all(x.get("sku") != "LOW-DFT" for x in rows), "draft surfaced as low stock"
 
-    assert (await _set_status(client, ctx["admin_h"], r.json()["id"], "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], r.json()["id"])).status_code == 200
     low2 = (await client.get("/items", params={"filter": "low_stock"},
                              headers=ctx["admin_h"])).json()
     rows2 = low2 if isinstance(low2, list) else low2.get("items", [])
@@ -400,7 +411,7 @@ async def test_dashboard_kpis_exclude_draft(client, session):
     with_draft = (await client.get("/dashboard/kpis", headers=ctx["admin_h"])).json()
     assert with_draft["inventory"]["low_stock_items"] == base_low
 
-    assert (await _set_status(client, ctx["admin_h"], r.json()["id"], "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], r.json()["id"])).status_code == 200
     committed = (await client.get("/dashboard/kpis", headers=ctx["admin_h"])).json()
     assert committed["inventory"]["low_stock_items"] == base_low + 1
 
@@ -419,7 +430,7 @@ async def test_opening_inventory_je_excludes_draft(client, session):
     assert led1.status_code == 200, led1.text
     ob_before = sum(float(ln.get("debit", 0) or 0) for ln in led1.json()["lines"])
 
-    assert (await _set_status(client, ctx["admin_h"], item_id, "available")).status_code == 200
+    assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
     assert (await client.get("/accounting/balance-sheet", headers=ctx["admin_h"])).status_code == 200
     led2 = await client.get("/accounting/ledger/1130-OB", headers=ctx["admin_h"])
     ob_after = sum(float(ln.get("debit", 0) or 0) for ln in led2.json()["lines"])
@@ -491,13 +502,15 @@ def test_inventory_draft_card_renders():
     assert "2" in html
 
 
-def test_field_schema_status_options_include_draft():
-    """The status field's option list carries draft so the click-to-edit status
-    cell can set and display it."""
+def test_field_schema_status_options_exclude_draft_and_available():
+    """draft/available are deliberately absent from the pickable options: those two
+    only change through Make Available / Revert to Draft, never a free-form status
+    edit. The status cell still displays either value as a read-only badge."""
     from celerp.services.field_schema import _BASE_FIELDS
 
     status_field = next(f for f in _BASE_FIELDS if f["key"] == "status")
-    assert "draft" in status_field["options"]
+    assert "draft" not in status_field["options"]
+    assert "available" not in status_field["options"]
 
 
 # ── Registry row ──────────────────────────────────────────────────────────────

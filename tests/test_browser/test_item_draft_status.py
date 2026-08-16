@@ -52,7 +52,7 @@ def test_draft_lifecycle_in_ui(page, ui_server, api):
     card.wait_for(timeout=8000)
     assert card.inner_text().strip() != ""
 
-    r = api.post(f"/items/{item_id}/status", json={"new_status": "available"})
+    r = api.post("/items/bulk/make-available", json={"entity_ids": [item_id]})
     assert r.status_code == 200, r.text
     page.goto(f"{ui_server}/inventory?q={sku}", wait_until="domcontentloaded")
     page.wait_for_selector(".badge--available", timeout=8000)
@@ -80,7 +80,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
                                      "quantity": 4, "cost_price": 15.0})
         assert r.status_code == 200, r.text
         if make_available:
-            r2 = api.post(f"/items/{r.json()['id']}/status", json={"new_status": "available"})
+            r2 = api.post("/items/bulk/make-available", json={"entity_ids": [r.json()["id"]]})
             assert r2.status_code == 200, r2.text
 
     _clear_session_registry()
