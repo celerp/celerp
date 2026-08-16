@@ -39,7 +39,7 @@ async def test_invoice_lifecycle_with_payment_and_je(client):
 @pytest.mark.asyncio
 async def test_manufacturing_flow_and_dashboard(client):
     token = await _register(client)
-    item = await client.post("/items", headers=_auth(token), json={"sku": "RAW-1", "name": "Raw", "quantity": 5, "sell_by": "piece"})
+    item = await client.post("/items", headers=_auth(token), json={"sku": "RAW-1", "name": "Raw", "quantity": 5, "sell_by": "piece", "status": "available"})
     item_id = item.json()["id"]
 
     order = await client.post(

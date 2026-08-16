@@ -54,10 +54,11 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     # ── Seed a manufacturable product with a recipe, then build two PLANNED runs ──
     steel = api.post("/items", json={
         "sku": "WIP-STEEL", "name": "Steel bar", "quantity": 1000,
-        "sell_by": "piece", "inventory_type": "component",
+        "sell_by": "piece", "inventory_type": "component", "status": "available",
     }).json()["id"]
     widget = api.post("/items", json={
         "sku": "WIP-WIDGET", "name": "Steel widget", "quantity": 0, "sell_by": "piece",
+        "status": "available",
     }).json()["id"]
     r = api.put(f"/manufacturing/items/{widget}/recipe",
                 json={"output_qty": 1, "components": [{"item_id": steel, "quantity": 2}],

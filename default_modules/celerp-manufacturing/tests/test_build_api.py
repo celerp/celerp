@@ -20,7 +20,8 @@ def _h(t):
 
 
 async def _item(client, token, sku, **kw):
-    body = {"sku": sku, "name": sku, "quantity": kw.pop("quantity", 1), "sell_by": "piece", **kw}
+    body = {"sku": sku, "name": sku, "quantity": kw.pop("quantity", 1), "sell_by": "piece",
+            "status": kw.pop("status", "available"), **kw}
     return (await client.post("/items", headers=_h(token), json=body)).json()["id"]
 
 
@@ -90,6 +91,49 @@ async def test_build_zero_qty_422(client) -> None:
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
     r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 0})
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_issue_rejects_draft_component_and_leaves_quantity_untouched(client) -> None:
+    """A draft component isn't stock yet: issuing it must fail, and its quantity
+    (which is authoring data on a draft, not committed inventory) must not move."""
+    token = await _register(client)
+    comp = await _item(client, token, "DFTCOMP", quantity=5, status="draft")
+    order = await client.post("/manufacturing", headers=_h(token), json={
+        "description": "Order with a draft component",
+        "inputs": [{"item_id": comp, "quantity": 2}],
+        "expected_outputs": [{"sku": "OUT1", "name": "Output", "quantity": 1}],
+    })
+    assert order.status_code == 200, order.text
+    order_id = order.json()["id"]
+
+    r = await client.post(f"/manufacturing/{order_id}/issue", headers=_h(token),
+                          json={"items": [{"item_id": comp, "quantity": 2}]})
+    assert r.status_code == 422, r.text
+    assert (await client.get(f"/items/{comp}", headers=_h(token))).json()["quantity"] == 5
+
+
+@pytest.mark.asyncio
+async def test_receive_rejects_draft_output_even_if_status_changed_after_order_creation(client) -> None:
+    """A build into a draft output is rejected up front by /build. But status can also
+    change AFTER the order already exists (the item is reverted to draft before it has
+    circulated) - /receive must revalidate at execution time, not trust order creation."""
+    token = await _register(client)
+    gold = await _item(client, token, "G3", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "R3", quantity=4)
+    await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
+                     json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})
+    assert r.status_code == 200, r.text
+    order_id = r.json()["id"]
+
+    revert = await client.post("/items/bulk/revert-to-draft", headers=_h(token), json={"entity_ids": [ring]})
+    assert revert.status_code == 200, revert.text
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["status"] == "draft"
+
+    recv = await client.post(f"/manufacturing/{order_id}/receive", headers=_h(token), json={"quantity": 2})
+    assert recv.status_code == 422, recv.text
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 4
 
 
 @pytest.mark.asyncio

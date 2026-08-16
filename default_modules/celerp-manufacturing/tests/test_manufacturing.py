@@ -28,7 +28,8 @@ def _h(token: str) -> dict:
 
 
 async def _item(client, token, sku, **kw) -> str:
-    body = {"sku": sku, "name": sku, "quantity": kw.pop("quantity", 0), "sell_by": "piece", **kw}
+    body = {"sku": sku, "name": sku, "quantity": kw.pop("quantity", 0), "sell_by": "piece",
+            "status": kw.pop("status", "available"), **kw}
     r = await client.post("/items", headers=_h(token), json=body)
     assert r.status_code == 200, r.text
     return r.json()["id"]
