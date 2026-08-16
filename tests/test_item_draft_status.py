@@ -310,6 +310,62 @@ async def test_unknown_status_rejected(client, session):
     assert "banana" in r.json()["detail"] or "status" in r.json()["detail"].lower()
 
 
+@pytest.mark.parametrize("target", ["sold", "reserved", "archived", "expired"])
+async def test_draft_cannot_reach_other_statuses_via_generic_status(client, session, target):
+    """A draft's only way out is Make Available - to every status, not just
+    'available'. Going straight from draft to sold/reserved/archived/expired through
+    the single-item status endpoint is rejected, not silently applied."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], f"BYP-{target}"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    r2 = await _set_status(client, ctx["admin_h"], item_id, target)
+    assert r2.status_code == 422, r2.text
+    assert (await _item_state(client, ctx["admin_h"], item_id)).get("status") == "draft"
+
+
+@pytest.mark.parametrize("target", ["sold", "reserved", "archived", "expired"])
+async def test_draft_cannot_reach_other_statuses_via_bulk_status(client, session, target):
+    """Same rule through the bulk status endpoint (adjust_inventory, admin holds it)."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], f"BYPB-{target}"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    r2 = await client.post("/items/bulk/status", json={"entity_ids": [item_id], "status": target},
+                           headers=ctx["admin_h"])
+    assert r2.status_code == 422, r2.text
+    assert (await _item_state(client, ctx["admin_h"], item_id)).get("status") == "draft"
+
+
+async def test_reserve_rejected_on_draft(client, session):
+    """A draft isn't stock yet, so it cannot be reserved - reserved_quantity must
+    never move on an item that was never committed."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BYP-RESERVE"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    r2 = await client.post(f"/items/{item_id}/reserve", json={"quantity": 1}, headers=ctx["admin_h"])
+    assert r2.status_code == 422, r2.text
+
+
+async def test_expire_rejected_on_draft_single_and_bulk(client, session):
+    """A draft cannot be expired, single-item or bulk: it was never stock to begin
+    with, so there is nothing to expire."""
+    ctx = await perm_setup(client, session)
+    r = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BYP-EXPIRE"),
+                          headers=ctx["admin_h"])
+    item_id = r.json()["id"]
+    r2 = await client.post(f"/items/{item_id}/expire", headers=ctx["admin_h"])
+    assert r2.status_code == 422, r2.text
+
+    r3 = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BYP-BEXPIRE"),
+                           headers=ctx["admin_h"])
+    item_id2 = r3.json()["id"]
+    r4 = await client.post("/items/bulk/expire", json={"entity_ids": [item_id2]}, headers=ctx["admin_h"])
+    assert r4.status_code == 422, r4.text
+    assert (await _item_state(client, ctx["admin_h"], item_id2)).get("status") == "draft"
+
+
 # ── Revert: permissioned and guarded ──────────────────────────────────────────
 
 async def test_revert_requires_permission(client, session):

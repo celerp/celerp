@@ -401,6 +401,30 @@ async def assert_status_change_allowed(
         )
 
 
+async def reject_draft_status_change_via_generic_path(
+    session: AsyncSession, company_id, entity_id: str, new_status: str,
+) -> None:
+    """Draft's only way out is Make Available, and the only way in is Revert to Draft -
+    both dedicated actions, never a generic status write. Blocks every draft-origin
+    transition (not just to "available" - a draft going to sold/reserved/archived/expired
+    makes no more sense, since it isn't stock yet), independent of permission: a generic
+    write must never touch draft in either direction. Every non-draft-origin transition
+    (e.g. Restore, archived -> available) is untouched."""
+    ns = str(new_status or "").lower()
+    if ns == "draft":
+        raise HTTPException(
+            status_code=422,
+            detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
+        )
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    if current == "draft":
+        raise HTTPException(
+            status_code=422,
+            detail="A draft item can only become available through the 'Make Available' action, not a direct status edit.",
+        )
+
+
 async def assert_make_available_allowed(session: AsyncSession, company_id, entity_id: str) -> None:
     """Already-available is a harmless no-op (mirrors the revert guard's own
     already-draft no-op), so a mixed bulk selection doesn't hard-fail."""
@@ -414,25 +438,16 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
     )
 
 
-async def reject_draft_commit_via_generic_status(
-    session: AsyncSession, company_id, entity_id: str, new_status: str,
-) -> None:
-    """Draft <-> Available goes through Make Available / Revert to Draft, not a plain
-    status write. Every other transition (e.g. Restore, archived -> available) is untouched."""
-    ns = str(new_status or "").lower()
-    if ns == "draft":
+async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
+    """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
+    make no sense on it until it is committed via Make Available."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    current = str(((row.state if row else {}) or {}).get("status") or "").lower()
+    if current == "draft":
         raise HTTPException(
             status_code=422,
-            detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
+            detail=f"Cannot {action} a draft item; make it available first.",
         )
-    if ns == "available":
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        current = str(((row.state if row else {}) or {}).get("status") or "").lower()
-        if current == "draft":
-            raise HTTPException(
-                status_code=422,
-                detail="Use the item's 'Make Available' action, not a direct status edit.",
-            )
 
 
 # ── Search grammar ─────────────────────────────────────────────────────────────
@@ -1352,7 +1367,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     changed_keys = set(payload.fields_changed.keys())
     if "status" in changed_keys:
         _new_status = (payload.fields_changed["status"] or {}).get("new")
-        await reject_draft_commit_via_generic_status(session, company_id, entity_id, _new_status)
+        await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
         await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
     if blocked:
@@ -1527,7 +1542,7 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
     # Validated per item BEFORE any event is emitted: one blocked item rejects the
     # whole bulk with the reason, nothing is half-applied (the session never commits).
     for entity_id in payload.entity_ids:
-        await reject_draft_commit_via_generic_status(session, company_id, entity_id, payload.status)
+        await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.status)
         await assert_status_change_allowed(session, company_id, entity_id, payload.status, role, settings)
     event_ids = []
     for entity_id in payload.entity_ids:
@@ -1727,6 +1742,8 @@ class BulkExpireBody(BaseModel):
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    for eid in payload.entity_ids:
+        await assert_not_draft(session, company_id, eid, "expire")
     for eid in payload.entity_ids:
         await emit_event(
             session,
@@ -2989,7 +3006,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
 
 @router.post("/{entity_id}/status")
 async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    await reject_draft_commit_via_generic_status(session, company_id, entity_id, payload.new_status)
+    await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.new_status)
     await assert_status_change_allowed(session, company_id, entity_id, payload.new_status, role, settings)
     entry = await emit_event(
         session,
@@ -3010,6 +3027,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
 
 @router.post("/{entity_id}/reserve")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_not_draft(session, company_id, entity_id, "reserve")
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -3048,6 +3066,7 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
 
 @router.post("/{entity_id}/expire")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_not_draft(session, company_id, entity_id, "expire")
     entry = await emit_event(
         session,
         company_id=company_id,
