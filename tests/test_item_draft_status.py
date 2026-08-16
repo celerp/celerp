@@ -231,63 +231,67 @@ async def test_cost_at_creation_still_gated_for_available_item(client, session):
     assert "set_inventory_prices" in r.json()["detail"]
 
 
-def test_with_draft_cost_list_reinjects_for_visible_draft():
-    """The item-detail page re-adds the stripped cost list for a draft whose cost is
-    visible to this caller, using the real name from company config."""
+def test_with_draft_cost_list_reinjects_for_authorable_draft():
+    """The item-detail page re-adds the stripped cost list for a draft this caller can
+    author (edit_inventory), using the real name from company config. Fires even before
+    any cost has ever been set - entering a first value is exactly the point."""
     from ui.routes.inventory import _with_draft_cost_list
     settings = {"price_lists": [{"name": "Retail"}, {"name": "Cost", "description": "Landed cost"}]}
     stripped = [{"name": "Retail"}]  # as /me/price-lists returns without view_inventory_costs
-    out = _with_draft_cost_list(stripped, {"status": "draft", "cost_total": 40.0}, settings)
+    out = _with_draft_cost_list(stripped, {"status": "draft"}, settings, "operator")
     assert any(is_cost_list_name(pl.get("name", "")) for pl in out)
     assert any(pl.get("name") == "Cost" for pl in out)  # real name preserved
 
 
-def test_with_draft_cost_list_noop_when_not_draft_or_cost_hidden():
-    """No re-injection for a committed item, or a draft whose cost this caller cannot
-    see (no cost key on the item dict): cost stays stripped exactly as today."""
+def test_with_draft_cost_list_noop_when_not_draft_or_no_permission():
+    """No re-injection for a committed item, or a draft the caller cannot author
+    (no edit_inventory): cost stays stripped exactly as today."""
     from ui.routes.inventory import _with_draft_cost_list
     settings = {"price_lists": [{"name": "Cost"}]}
     stripped = [{"name": "Retail"}]
-    assert _with_draft_cost_list(stripped, {"status": "available"}, settings) == stripped
-    assert _with_draft_cost_list(stripped, {"status": "draft"}, settings) == stripped
+    assert _with_draft_cost_list(stripped, {"status": "available"}, settings, "operator") == stripped
+    assert _with_draft_cost_list(stripped, {"status": "draft"}, settings, "viewer") == stripped
 
 
-def test_with_draft_cost_schema_reinjects_editable_for_visible_draft():
+def test_with_draft_cost_schema_reinjects_editable_for_authorable_draft():
     """/me/item-schema strips cost_price/cost_price_total for a role without
     view_inventory_costs (it is company-scoped, not item-scoped). Re-add them as
-    EDITABLE schema entries for a draft whose cost is visible to this caller, so the
-    pricing tab renders an editable cost input instead of a read-only span."""
+    EDITABLE schema entries for a draft this caller can author, so the pricing tab
+    renders an editable cost input instead of a read-only span - even before any
+    cost has ever been set."""
     from ui.routes.inventory import _with_draft_cost_schema
     settings = {"price_lists": [{"name": "Retail"}, {"name": "Cost"}]}
     stripped = [{"key": "retail_price", "editable": True}]  # as /me/item-schema returns
-    out = _with_draft_cost_schema(stripped, {"status": "draft", "cost_total": 40.0}, settings)
+    out = _with_draft_cost_schema(stripped, {"status": "draft"}, settings, "operator")
     cost = next(f for f in out if f["key"] == "cost_price")
     assert cost["editable"] is True
 
 
-def test_with_draft_cost_schema_noop_when_not_draft_or_cost_hidden():
-    """No re-injection for a committed item, a draft whose cost this caller cannot see
-    (no cost key on the item dict), or when cost is already present: schema unchanged."""
+def test_with_draft_cost_schema_noop_when_not_draft_or_no_permission():
+    """No re-injection for a committed item, a draft the caller cannot author (no
+    edit_inventory), or when cost is already present: schema unchanged."""
     from ui.routes.inventory import _with_draft_cost_schema
     settings = {"price_lists": [{"name": "Cost"}]}
     stripped = [{"key": "retail_price", "editable": True}]
-    assert _with_draft_cost_schema(stripped, {"status": "available"}, settings) == stripped
-    assert _with_draft_cost_schema(stripped, {"status": "draft"}, settings) == stripped
+    assert _with_draft_cost_schema(stripped, {"status": "available"}, settings, "operator") == stripped
+    assert _with_draft_cost_schema(stripped, {"status": "draft"}, settings, "viewer") == stripped
     present = stripped + [{"key": "cost_price", "editable": False}]
-    assert _with_draft_cost_schema(present, {"status": "draft", "cost_total": 1.0}, settings) == present
+    assert _with_draft_cost_schema(present, {"status": "draft"}, settings, "operator") == present
 
 
-def test_draft_cost_renders_editable_input_for_visible_draft():
-    """End to end: a draft whose cost this caller can see renders an EDITABLE cost input
-    on the pricing tab, not a read-only span. Regression for the third strip surface
-    (item-schema), beyond the write guard and the price-list definition. Both mirrors
-    must agree - the cost list makes the card render, the schema entry makes it editable."""
+def test_draft_cost_renders_editable_input_before_any_value_set():
+    """End to end: a brand-new draft with no cost yet - the real "operator creates a
+    draft and enters its cost" scenario - renders an EDITABLE cost input on the
+    pricing tab, not a read-only span and not a missing card. Regression for gating
+    the re-injection on the item already carrying a cost_price/cost_total key, which
+    only a role with view_inventory_costs (or one who already set a value) triggers -
+    silently leaving a fresh draft with no way to enter a cost at all."""
     from ui.routes.inventory import _pricing_form, _with_draft_cost_list, _with_draft_cost_schema
     settings = {"price_lists": [{"name": "Cost"}, {"name": "Retail"}]}
-    item = {"status": "draft", "cost_price": 33.0, "cost_total": 33.0, "quantity": 1, "sell_by": "piece"}
+    item = {"status": "draft", "quantity": 1, "sell_by": "piece"}
     schema = [{"key": "retail_price", "editable": True}]  # cost stripped by /me/item-schema
-    schema = _with_draft_cost_schema(schema, item, settings)
-    price_lists = _with_draft_cost_list([{"name": "Retail"}], item, settings)
+    schema = _with_draft_cost_schema(schema, item, settings, "operator")
+    price_lists = _with_draft_cost_list([{"name": "Retail"}], item, settings, "operator")
     pricing_fields = [f for f in schema if f["key"] in {"cost_price", "retail_price"}]
     html = str(_pricing_form("item:1", item, price_lists, "USD", pricing_fields, "Retail"))
     assert 'name="cost_price"' in html          # editable input rendered

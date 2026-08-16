@@ -108,3 +108,75 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
         api.patch("/companies/me/role-permissions",
                   json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
                         "granted": True})
+
+
+def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_server,
+                                                  browser_context, seeded_user):
+    """An operator (edit_inventory only) sees an editable cost input on a draft's
+    pricing tab, and saving it actually persists - not just renders as editable.
+    The pricing tab's own save handler re-fetches price lists independently of the
+    card/schema renderers, so it needs the same draft carve-out or a submitted cost
+    is silently dropped even though the input looks writable."""
+    tag = uuid.uuid4().hex[:6]
+    sku = f"COSTSV-{tag}"
+    r = api.post("/companies/me/users",
+                 json={"email": f"op-{tag}@celerp.test", "name": "Operator",
+                       "role": "operator", "password": "pw12345"})
+    assert r.status_code == 200, r.text
+    created = api.post("/items", json={"sku": sku, "name": "Cost Save Item", "sell_by": "piece",
+                                       "quantity": 1, "cost_price": 33.0})
+    assert created.status_code == 200, created.text
+    item_id = created.json()["id"]
+
+    _clear_session_registry()
+    lr = httpx.post(f"{api_server}/auth/login",
+                    json={"email": f"op-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+    assert lr.status_code == 200, lr.text
+    try:
+        _set_cookie(browser_context, lr.json()["access_token"])
+        page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
+        cost_input = page.locator('input[name="cost_price"]')
+        cost_input.wait_for(timeout=8000)
+        cost_input.first.fill("88")
+        cost_input.first.press("Tab")
+        page.wait_for_timeout(800)
+        check = api.get(f"/items/{item_id}")
+        assert check.json().get("cost_price") == 88.0, "cost edit did not persist"
+    finally:
+        _set_cookie(browser_context, seeded_user["access_token"])
+
+
+def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_server,
+                                                    browser_context, seeded_user):
+    """The real scenario: an operator creates a draft with no cost yet and opens the
+    pricing tab to enter one for the first time. The re-injection that makes the cost
+    card/input appear was keyed off the item already carrying a cost_price/cost_total
+    key, which is only true once a cost exists - leaving a fresh draft with nowhere to
+    type a cost at all. Fixed to key off edit_inventory + draft status instead."""
+    tag = uuid.uuid4().hex[:6]
+    sku = f"FRESHCOST-{tag}"
+    r = api.post("/companies/me/users",
+                 json={"email": f"op2-{tag}@celerp.test", "name": "Operator",
+                       "role": "operator", "password": "pw12345"})
+    assert r.status_code == 200, r.text
+    created = api.post("/items", json={"sku": sku, "name": "Fresh Draft", "sell_by": "piece",
+                                       "quantity": 1})
+    assert created.status_code == 200, created.text
+    item_id = created.json()["id"]
+
+    _clear_session_registry()
+    lr = httpx.post(f"{api_server}/auth/login",
+                    json={"email": f"op2-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+    assert lr.status_code == 200, lr.text
+    try:
+        _set_cookie(browser_context, lr.json()["access_token"])
+        page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
+        cost_input = page.locator('input[name="cost_price"]')
+        cost_input.wait_for(timeout=8000)
+        cost_input.first.fill("120")
+        cost_input.first.press("Tab")
+        page.wait_for_timeout(800)
+        check = api.get(f"/items/{item_id}")
+        assert check.json().get("cost_price") == 120.0, "first-time cost entry did not persist"
+    finally:
+        _set_cookie(browser_context, seeded_user["access_token"])

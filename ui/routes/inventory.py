@@ -1862,14 +1862,13 @@ def setup_routes(app):
             extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
             schema = schema + extra
 
-        # A draft's creator may set its cost even without view_inventory_costs (the item
-        # keeps its cost value), but /me/price-lists strips the cost definition for that
-        # role, so the pricing tab's Cost card would have no row to render. Re-add the cost
-        # list from company config for a draft whose cost is visible to this caller.
-        price_lists = _with_draft_cost_list(price_lists, item, company.get("settings") or {})
+        # A draft's creator may set its cost even without view_inventory_costs, but
+        # /me/price-lists strips the cost definition for that role, so the pricing tab's
+        # Cost card would have no row to render. Re-add it for a draft this caller can author.
+        price_lists = _with_draft_cost_list(price_lists, item, company.get("settings") or {}, _get_role(request))
         # The parallel strip on /me/item-schema: re-add the cost columns (editable) so the
         # pricing tab renders an editable cost input for that draft, not a read-only span.
-        schema = _with_draft_cost_schema(schema, item, company.get("settings") or {})
+        schema = _with_draft_cost_schema(schema, item, company.get("settings") or {}, _get_role(request))
         # Build pricing_keys dynamically from company price lists
         pl_names = {pl.get("name", "") for pl in price_lists}
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
@@ -4149,6 +4148,13 @@ function celerpPrintLabel(entityId, templateId) {
             # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
             item_qty = float(item_for_price.get("quantity") or 0)
+            # Same re-injection as the Cost card and its input: without it, a draft's cost
+            # field is never recognized below and a submitted cost is silently dropped.
+            try:
+                company_for_price = await api.get_company(token)
+            except APIError:
+                company_for_price = {}
+            price_lists = _with_draft_cost_list(price_lists, item_for_price, company_for_price.get("settings") or {}, _get_role(request))
             cost_changed = False
             for pl in price_lists:
                 pl_name = pl.get("name", "")
@@ -6973,16 +6979,17 @@ def _readonly_price_cells(conventional_key: str, price_val: float, qty: float,
     return unit, total
 
 
-def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings: dict) -> list[dict]:
-    """Re-add the cost price-list definition for a draft item whose cost is visible to
-    this caller. /me/price-lists strips cost lists for a role without view_inventory_costs,
-    but a draft's creator (edit_inventory) still authors its cost and the item keeps the
-    value; without the definition the Cost card would not render. The real name is taken
-    from company config so a renamed cost list keeps its label. No-op for committed items,
-    for a caller who cannot see the cost value, or when the cost list is already present."""
+def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings: dict, role: str) -> list[dict]:
+    """Re-add the cost price-list definition for a draft this caller can author. /me/price-lists
+    strips cost lists for a role without view_inventory_costs, but a draft's creator
+    (edit_inventory) still authors its cost - including entering one for the first time, before
+    any cost_price/cost_total key exists on the item - so this checks the same edit_inventory
+    permission the write path checks, not whether a value happens to be present already. The real
+    name is taken from company config so a renamed cost list keeps its label. No-op for committed
+    items, for a caller without edit_inventory, or when the cost list is already present."""
     if str(item.get("status") or "").lower() != "draft":
         return price_lists
-    if "cost_total" not in item and "cost_price" not in item:
+    if not role_has_permission(company_settings, role, "edit_inventory"):
         return price_lists
     if any(is_cost_list_name(pl.get("name", "")) for pl in price_lists):
         return price_lists
@@ -6990,19 +6997,20 @@ def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings:
     return price_lists + cost_defs if cost_defs else price_lists
 
 
-def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: dict) -> list[dict]:
-    """Re-add the cost schema columns for a draft item whose cost is visible to this caller.
-    /me/item-schema strips cost_price/cost_price_total for a role without view_inventory_costs,
-    and it is company-scoped, so it cannot make the draft exception _with_draft_cost_list makes
-    for the price-list definition. Without the schema column _pricing_form marks the cost row
-    read-only (its editable flag is schema-driven), so a draft's cost input would be uneditable
-    even though the write guard allows an edit_inventory caller to set it. Re-inject the columns,
-    editable, from company config - the same source and draft/visibility test as its sibling, so
-    the card and its editable input always agree. No-op for a committed item, a caller who cannot
-    see the cost value, or when the columns are already present."""
+def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: dict, role: str) -> list[dict]:
+    """Re-add the cost schema columns for a draft this caller can author. /me/item-schema strips
+    cost_price/cost_price_total for a role without view_inventory_costs, and it is company-scoped,
+    so it cannot make the draft exception _with_draft_cost_list makes for the price-list
+    definition. Without the schema column _pricing_form marks the cost row read-only (its editable
+    flag is schema-driven), so a draft's cost input would be uneditable even though the write
+    guard allows an edit_inventory caller to set it - including entering a first value, before any
+    cost_price/cost_total key exists on the item. Re-inject the columns, editable, from company
+    config - the same source and permission test as its sibling, so the card and its editable
+    input always agree. No-op for a committed item, a caller without edit_inventory, or when the
+    columns are already present."""
     if str(item.get("status") or "").lower() != "draft":
         return schema
-    if "cost_total" not in item and "cost_price" not in item:
+    if not role_has_permission(company_settings, role, "edit_inventory"):
         return schema
     if any(f.get("key") in COST_SCHEMA_KEYS for f in schema):
         return schema
