@@ -677,6 +677,62 @@ async def test_list_scan_rejects_draft_item(client, session):
     assert "draft" in str(scan.json()["detail"]).lower()
 
 
+# ── Merge rejects draft sources ────────────────────────────────────────────────
+
+async def _merge_item(client, headers, location_id, sku, status=None):
+    body = _draft_item_body(location_id, sku)
+    if status:
+        body["status"] = status
+    r = await client.post("/items", json=body, headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def test_merge_rejects_two_draft_sources(client, session):
+    """Merging turns quantity/cost into a real available item - the same commit the
+    dedicated action performs. Two drafts must not slip through it."""
+    ctx = await perm_setup(client, session)
+    a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-A")
+    b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-B")
+
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+                          headers=ctx["admin_h"])
+    assert r.status_code == 422, r.text
+
+    sa = await _item_state(client, ctx["admin_h"], a)
+    sb = await _item_state(client, ctx["admin_h"], b)
+    assert sa["status"] == "draft" and sa["quantity"] == 5
+    assert sb["status"] == "draft" and sb["quantity"] == 5
+
+
+async def test_merge_rejects_available_plus_draft_source(client, session):
+    """One committed source is not enough - any draft in the mix blocks the merge."""
+    ctx = await perm_setup(client, session)
+    a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-A", status="available")
+    b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-B")
+
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+                          headers=ctx["admin_h"])
+    assert r.status_code == 422, r.text
+
+    sa = await _item_state(client, ctx["admin_h"], a)
+    sb = await _item_state(client, ctx["admin_h"], b)
+    assert sa["status"] == "available" and sa["quantity"] == 5
+    assert sb["status"] == "draft" and sb["quantity"] == 5
+
+
+async def test_merge_rejects_draft_target_sku_from(client, session):
+    """target_sku_from is resolved separately from source_entity_ids - a draft there
+    must be caught even though it's also one of the sources here."""
+    ctx = await perm_setup(client, session)
+    a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-A", status="available")
+    b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-B")
+
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": b},
+                          headers=ctx["admin_h"])
+    assert r.status_code == 422, r.text
+
+
 # ── UI surfaces ───────────────────────────────────────────────────────────────
 
 def test_inventory_draft_card_renders():

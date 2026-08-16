@@ -45,6 +45,7 @@ async def _seed(client, headers, sku: str, pieces, *, qty: float = 32.0) -> str:
         "quantity": qty,
         "sell_by": "carat",
         "category": "colored_stone",
+        "status": "available",
     }
     if pieces is not _UNSET:
         payload["attributes"] = {"pieces": pieces}

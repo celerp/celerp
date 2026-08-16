@@ -46,7 +46,8 @@ async def _seed(client, headers, sku: str, *, qty: float,
 
     retail/wholesale are stored per-unit, so we convert: unit = total / qty. cost_total is a total.
     """
-    payload: dict = {"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "category": "book"}
+    payload: dict = {"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "category": "book",
+                     "status": "available"}
     if retail_total is not None:
         payload["retail_price"] = retail_total / qty
     if wholesale_total is not None:

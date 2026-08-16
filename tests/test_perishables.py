@@ -28,7 +28,7 @@ def _auth(token: str) -> dict:
 
 async def _create_item(client: AsyncClient, token: str, sku: str, name: str,
                        qty: float = 100, attrs: dict | None = None) -> str:
-    payload: dict = {"sku": sku, "name": name, "quantity": qty, "sell_by": "piece"}
+    payload: dict = {"sku": sku, "name": name, "quantity": qty, "sell_by": "piece", "status": "available"}
     if attrs:
         payload["attributes"] = attrs
     r = await client.post("/items", json=payload, headers=_auth(token))

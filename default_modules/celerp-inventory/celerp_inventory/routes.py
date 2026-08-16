@@ -2601,6 +2601,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
+        if str((proj.state or {}).get("status") or "").lower() == "draft":
+            raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         source_projections.append(proj)
 
     # Validate: all items must share the same category.
@@ -2635,6 +2637,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
     if target_proj is None:
         raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
+    if str((target_proj.state or {}).get("status") or "").lower() == "draft":
+        raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({payload.target_sku_from}); make it available first.")
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")

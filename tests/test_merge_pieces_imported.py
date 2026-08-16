@@ -39,6 +39,7 @@ async def _seed_imported(client, headers, sku: str, pieces, *, qty: float) -> st
         json={
             "sku": sku, "name": sku, "quantity": qty, "sell_by": "carat",
             "category": "colored_stone", "pieces": pieces,   # top-level, exactly like an import
+            "status": "available",
         },
         headers=headers,
     )
