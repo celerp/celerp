@@ -2540,12 +2540,16 @@ celerpUpdateBulkAlloc();
                         repriced = 0
                         for line in lines:
                             sku = (line.get("sku") or "").strip()
-                            if sku:
+                            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
+                            if sku or eid:
                                 try:
-                                    resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                                    items = resp.get("items", []) if isinstance(resp, dict) else resp
-                                    if items:
-                                        new_price = resolve_price(items[0], new_pl)
+                                    item = await api.get_item(token, eid) if eid else None
+                                    if item is None and sku:
+                                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
+                                        items = resp.get("items", []) if isinstance(resp, dict) else resp
+                                        item = items[0] if items else None
+                                    if item is not None:
+                                        new_price = resolve_price(item, new_pl)
                                         line = {**line, "unit_price": new_price, "price_list": new_pl}
                                         repriced += 1
                                 except Exception:
@@ -2900,13 +2904,16 @@ celerpUpdateBulkAlloc();
         updated_lines = []
         for line in existing_lines:
             sku = (line.get("sku") or "").strip()
-            if sku:
-                # Look up current item price via catalog endpoint (SKU lookup)
+            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
+            if sku or eid:
                 try:
-                    resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                    items = resp.get("items", []) if isinstance(resp, dict) else resp
-                    if items:
-                        new_price = resolve_price(items[0], price_list)
+                    item = await api.get_item(token, eid) if eid else None
+                    if item is None and sku:
+                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
+                        items = resp.get("items", []) if isinstance(resp, dict) else resp
+                        item = items[0] if items else None
+                    if item is not None:
+                        new_price = resolve_price(item, price_list)
                         line = {**line, "unit_price": new_price, "price_list": price_list}
                         repriced += 1
                 except APIError:
