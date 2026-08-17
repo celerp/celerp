@@ -12,6 +12,7 @@ from fasthtml.common import *
 
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
+from ui.components.table import searchable_select
 from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
@@ -24,6 +25,18 @@ def _css_version() -> str:
         return "1"
 
 _CSS_VER = _css_version()
+
+# Native display name per language code, for the topbar switcher. Which languages
+# exist is decided by available_langs() (disk catalogs plus any a module contributes);
+# this map only supplies the human-readable label, falling back to the uppercased code
+# for a language with no entry here (e.g. one contributed by a module).
+_LANG_NATIVE_LABELS: dict[str, str] = {
+    "en": "English", "am": "አማርኛ", "th": "ไทย", "zh": "中文", "ja": "日本語",
+    "ko": "한국어", "es": "Español", "fr": "Français", "de": "Deutsch",
+    "pt": "Português", "it": "Italiano", "nl": "Nederlands", "ru": "Русский",
+    "ar": "العربية", "hi": "हिन्दी", "vi": "Tiếng Việt", "id": "Bahasa Indonesia",
+    "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
+}
 
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. Uniform
 # across direct and relay access (no token-TTL surgery), and it implements "15 minutes of inactivity"
@@ -755,10 +768,10 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Language switcher ────────────────────────────────────────────── */
-  var sel = document.getElementById('lang-switcher');
-  if (sel) {
-    sel.addEventListener('change', function() {
-      document.cookie = 'celerp_lang=' + sel.value + ';path=/;max-age=' + (86400 * 365) + ';samesite=lax';
+  var langHidden = document.querySelector('.lang-switcher-wrap input[type="hidden"][name="lang"]');
+  if (langHidden) {
+    langHidden.addEventListener('change', function() {
+      document.cookie = 'celerp_lang=' + langHidden.value + ';path=/;max-age=' + (86400 * 365) + ';samesite=lax';
       window.location.reload();
     });
   }
@@ -1412,15 +1425,15 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             hx_swap="outerHTML",
         ),
     )
-    # Language switcher
+    # Language switcher: searchable combobox showing each locale's native name.
     parts.append(
         Div(
             Span("🌐", cls="lang-switcher__globe"),
-            Select(
-                *[Option(code.upper(), value=code, selected=(code == lang)) for code in available_langs()],
-                id="lang-switcher",
-                cls="lang-switcher",
-                title="Language",
+            searchable_select(
+                "lang",
+                [(code, _LANG_NATIVE_LABELS.get(code, code.upper())) for code in available_langs()],
+                value=lang,
+                aria_label=t("label.language", lang),
             ),
             cls="lang-switcher-wrap",
         ),
