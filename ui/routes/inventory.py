@@ -1855,6 +1855,9 @@ def setup_routes(app):
             for f in schema
         ]
         schema = _apply_amount_edit_permission(schema, _get_role(request), company.get("settings") or {})
+        if (str(item.get("status") or "").lower() == "draft"
+                and role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory")):
+            schema = [{**f, "editable": True} if f.get("key") in AMOUNT_EDIT_GATED_KEYS else f for f in schema]
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
         if item_cat and item_cat in cat_schemas:
@@ -5438,7 +5441,8 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     data_col="pieces",
                     data_decimals=str(decimals),
                 )
-            return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=_ed)
+            _rek = set(row.get("_row_editable_keys") or ())
+            return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=_ed or "pieces" in _rek)
         renderers["pieces"] = _pieces_renderer
 
     # Status renderer: a doc-driven status (sold, memo_out, consigned-in stock) carries

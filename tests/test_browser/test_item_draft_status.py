@@ -110,6 +110,106 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
                         "granted": True})
 
 
+def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api, api_server,
+                                                            browser_context, seeded_user):
+    """The pieces column has its own dedicated renderer (not a paired cell like
+    quantity/weight/gross_weight), so it needs the same per-row draft carve-out
+    separately: an operator holding edit_inventory but not edit_inventory_amounts
+    should still see a draft row's pieces value as editable on the list page."""
+    tag = uuid.uuid4().hex[:6]
+    draft_sku, avail_sku = f"PCD-{tag}", f"PCA-{tag}"
+    r = api.patch("/companies/me/role-permissions",
+                  json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
+                        "granted": False})
+    assert r.status_code == 200, r.text
+    r = api.post("/companies/me/users",
+                 json={"email": f"opp-{tag}@celerp.test", "name": "Operator",
+                       "role": "operator", "password": "pw12345"})
+    assert r.status_code == 200, r.text
+
+    for sku, make_available in ((draft_sku, False), (avail_sku, True)):
+        r = api.post("/items", json={"sku": sku, "name": "Pieces Widget", "sell_by": "carat",
+                                     "quantity": 2.5, "pieces": 3, "cost_price": 15.0})
+        assert r.status_code == 200, r.text
+        if make_available:
+            r2 = api.post("/items/bulk/make-available", json={"entity_ids": [r.json()["id"]]})
+            assert r2.status_code == 200, r2.text
+
+    _clear_session_registry()
+    lr = httpx.post(f"{api_server}/auth/login",
+                    json={"email": f"opp-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+    assert lr.status_code == 200, lr.text
+    try:
+        _set_cookie(browser_context, lr.json()["access_token"])
+
+        page.goto(f"{ui_server}/inventory?q={draft_sku}", wait_until="domcontentloaded")
+        page.wait_for_selector(".badge--draft", timeout=8000)
+        pcs = page.locator(f'tr:has-text("{draft_sku}") td[data-col="pieces"]').first
+        pcs.wait_for(timeout=8000)
+        assert pcs.get_attribute("title") == "Double-click to edit"
+        assert "cell--clickable" in (pcs.get_attribute("class") or "")
+
+        page.goto(f"{ui_server}/inventory?q={avail_sku}", wait_until="domcontentloaded")
+        page.wait_for_selector(".badge--available", timeout=8000)
+        pcs2 = page.locator(f'tr:has-text("{avail_sku}") td[data-col="pieces"]').first
+        pcs2.wait_for(timeout=8000)
+        assert pcs2.get_attribute("title") is None
+        assert "cell--clickable" not in (pcs2.get_attribute("class") or "")
+    finally:
+        _set_cookie(browser_context, seeded_user["access_token"])
+        api.patch("/companies/me/role-permissions",
+                  json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
+                        "granted": True})
+
+
+def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_server, api, api_server,
+                                                                    browser_context, seeded_user):
+    tag = uuid.uuid4().hex[:6]
+    draft_sku, avail_sku = f"DPD-{tag}", f"DPA-{tag}"
+    r = api.patch("/companies/me/role-permissions",
+                  json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
+                        "granted": False})
+    assert r.status_code == 200, r.text
+    r = api.post("/companies/me/users",
+                 json={"email": f"opd-{tag}@celerp.test", "name": "Operator",
+                       "role": "operator", "password": "pw12345"})
+    assert r.status_code == 200, r.text
+
+    item_ids = {}
+    for sku, make_available in ((draft_sku, False), (avail_sku, True)):
+        r = api.post("/items", json={"sku": sku, "name": "Detail Widget", "sell_by": "piece",
+                                     "quantity": 4, "cost_price": 15.0})
+        assert r.status_code == 200, r.text
+        item_ids[sku] = r.json()["id"]
+        if make_available:
+            r2 = api.post("/items/bulk/make-available", json={"entity_ids": [item_ids[sku]]})
+            assert r2.status_code == 200, r2.text
+
+    _clear_session_registry()
+    lr = httpx.post(f"{api_server}/auth/login",
+                    json={"email": f"opd-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+    assert lr.status_code == 200, lr.text
+    try:
+        _set_cookie(browser_context, lr.json()["access_token"])
+
+        page.goto(f"{ui_server}/inventory/{item_ids[draft_sku]}", wait_until="domcontentloaded")
+        qty = page.locator('tr:has-text("Qty") .paired-primary').first
+        qty.wait_for(timeout=8000)
+        assert qty.get_attribute("title") == "Double-click to edit"
+        assert "paired-primary--readonly" not in (qty.get_attribute("class") or "")
+
+        page.goto(f"{ui_server}/inventory/{item_ids[avail_sku]}", wait_until="domcontentloaded")
+        qty2 = page.locator('tr:has-text("Qty") .paired-primary').first
+        qty2.wait_for(timeout=8000)
+        assert "paired-primary--readonly" in (qty2.get_attribute("class") or "")
+        assert qty2.get_attribute("title") is None
+    finally:
+        _set_cookie(browser_context, seeded_user["access_token"])
+        api.patch("/companies/me/role-permissions",
+                  json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
+                        "granted": True})
+
+
 def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_server,
                                                   browser_context, seeded_user):
     """An operator (edit_inventory only) sees an editable cost input on a draft's
