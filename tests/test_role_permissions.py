@@ -1685,6 +1685,34 @@ async def test_split_negative_reweigh_rejected(client, session):
     assert r.status_code == 422, r.text
 
 
+async def test_split_allowed_without_amount_permission_when_weight_missing_but_pieces_tracked(client, session):
+    """A weight-sell-by item whose weight was never recorded (e.g. a CSV import that
+    never synced weight from quantity) but which tracks pieces makes the item-detail
+    split card show a weight column, whose hidden mother_weight field is always
+    submitted at the preview's fallback-derived value (== remaining qty, since raw
+    weight is null). That echoed-back fallback value is not a hand re-weigh and must
+    not require edit_inventory_amounts."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.post(
+        "/items",
+        json={"status": "available", "sku": "SPLW-1", "name": "SPLW-1", "quantity": 10,
+              "location_id": ctx["location_id"], "sell_by": "carat", "allow_splitting": True,
+              "attributes": {"pieces": 8}},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    # derived remainder = 10 - 3 = 7 (weight falls back to qty since raw weight is unset)
+    r = await client.post(
+        f"/items/{item_id}/split",
+        json={"children": [{"sku": "SPLW-1.1", "quantity": 3, "pieces": 3}],
+              "mother_weight": 7.0},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+
+
 def _import_record(entity_id: str, data: dict, key: str, event_type: str = "item.created") -> dict:
     return {"entity_id": entity_id, "event_type": event_type, "data": data,
             "source": "csv", "idempotency_key": key}
