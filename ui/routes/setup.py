@@ -204,12 +204,12 @@ def setup_routes(app):
             # Store the vertical name in company settings so the dashboard can use it
             try:
                 async with api._client(token) as c:
-                    raw = _raise(await c.get("/companies/me")).json()
+                    raw = api._raise(await c.get("/companies/me")).json()
                     settings = dict(raw.get("settings") or {})
                     settings["vertical"] = vertical
-                    await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings})
-            except Exception:
-                pass
+                    api._raise(await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings}))
+            except Exception as exc:
+                logger.warning("storing vertical failed during setup wizard: %s", exc)
             # Re-seed demo items with vertical-aware examples now that vertical is set
             try:
                 async with api._client(token) as c:

@@ -5,29 +5,26 @@ from __future__ import annotations
 
 import os
 
+from conftest_support import is_own_test_config, resolve_worker_config
+
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
-# Point config.toml at a per-worker temp file. Otherwise every xdist worker
-# shares ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes
-# on the cloud-relay endpoints — concurrent access across workers (and leakage
-# of one test's instance_id/token into the next) made those tests flaky.
-import tempfile as _tempfile
+# Point config.toml at a per-worker temp file. Otherwise every xdist worker shares
+# ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes on the
+# cloud-relay endpoints: concurrent access across workers corrupts the file
+# mid-write (a torn read raises tomllib.TOMLDecodeError) and leaks one test's
+# instance_id/token into the next. resolve_worker_config is the shared rule (see
+# its docstring for why a plain setdefault does not achieve this under xdist).
 _worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-os.environ.setdefault(
-    "CELERP_CONFIG",
-    os.path.join(_tempfile.gettempdir(), f"celerp-test-config-{_worker}.toml"),
-)
+os.environ["CELERP_CONFIG"] = resolve_worker_config(os.environ.get("CELERP_CONFIG"), _worker)
+
 # Start from a clean config: a temp file left by a previous local run (e.g. a
 # persisted [cloud] disconnected = true from the disconnect endpoint) must not
 # leak into this session. Scoped to our own temp path so a real CELERP_CONFIG
 # passed in by CI is never touched.
 _cfg_start = os.environ["CELERP_CONFIG"]
-if (
-    os.path.dirname(_cfg_start) == _tempfile.gettempdir()
-    and os.path.basename(_cfg_start).startswith("celerp-test-config-")
-    and os.path.exists(_cfg_start)
-):
+if is_own_test_config(_cfg_start) and os.path.exists(_cfg_start):
     os.remove(_cfg_start)
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
