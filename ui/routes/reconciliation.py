@@ -204,7 +204,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
             Div(
                 Label(t("acct.je_line_party"), cls="form-label"),
                 searchable_select("contact", contact_opts, placeholder=t("acct.je_line_party"),
-                                  cls_extra="form-input", search_url=_PARTY_SEARCH_URL),
+                                  cls_extra="form-input", search_url=PARTY_SEARCH_URL),
                 cls="form-field",
             ),
             Div(
@@ -260,7 +260,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                               step="0.01", cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
                                           placeholder=t("acct.je_line_party"),
-                                          cls_extra="form-input", search_url=_PARTY_SEARCH_URL),
+                                          cls_extra="form-input", search_url=PARTY_SEARCH_URL),
                         Input(type="text", name="memo_0", placeholder="Memo", cls="form-input"),
                         cls="split-entry-row flex-row gap-sm mb-sm",
                     )

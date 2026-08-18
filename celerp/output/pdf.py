@@ -349,7 +349,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         if li_taxes:
             tax_str = " + ".join(
                 f"{t.get('label') or t.get('code') or 'Tax'} {float(t.get('rate', 0)):.1f}%"
-                for item in li_taxes
+                for t in li_taxes
             )
         else:
             tax_str = f"{float(li.get('tax_rate') or 0):.1f}%"
