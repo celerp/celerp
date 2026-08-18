@@ -206,6 +206,50 @@ async def test_split_weight_parcel_with_child_pieces_conserves(client):
 
 
 @pytest.mark.asyncio
+async def test_split_derived_weight_history_matches_mother_state(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, sell_by="carat", attributes={"pieces": 8})
+    r = await client.post(f"/items/{parent_id}/split",
+                          json={"children": [{"sku": "MUM.1", "quantity": 3.0, "pieces": 3}]}, headers=h)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["children"][0]["id"]
+
+    mother = await _item(client, h, parent_id)
+    assert mother["quantity"] == pytest.approx(7.0)
+    assert mother["weight"] == pytest.approx(7.0)
+
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"][0]
+    c0 = split["data"]["children_detail"][0]
+    assert (c0["qty_before"], c0["qty_after"]) == (pytest.approx(10.0), pytest.approx(7.0))
+    assert (c0["weight_before"], c0["weight_after"]) == (pytest.approx(10.0), pytest.approx(7.0))
+
+    origin = [e for e in await _events(client, h, child_id) if e["event_type"] == "item.split_from"][0]
+    assert origin["data"]["qty"] == pytest.approx(3.0)
+    assert origin["data"]["weight"] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_split_derived_weight_history_sequential_two_children(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, sell_by="carat", attributes={"pieces": 8})
+    r = await client.post(
+        f"/items/{parent_id}/split",
+        json={"children": [{"sku": "MUM.1", "quantity": 3.0, "pieces": 3},
+                           {"sku": "MUM.2", "quantity": 2.0, "pieces": 2}]},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"][0]
+    cd = split["data"]["children_detail"]
+    assert (cd[0]["weight_before"], cd[0]["weight_after"]) == (pytest.approx(10.0), pytest.approx(7.0))
+    assert (cd[1]["weight_before"], cd[1]["weight_after"]) == (pytest.approx(7.0), pytest.approx(5.0))
+
+    mother = await _item(client, h, parent_id)
+    assert mother["weight"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
 async def test_split_piece_unit_pieces_track_quantity(client):
     """For a piece-unit item, pieces track quantity: children get their own
     quantity, the mother keeps what remains - never the full inherited count."""

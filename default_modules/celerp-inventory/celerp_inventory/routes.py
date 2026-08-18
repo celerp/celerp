@@ -1888,7 +1888,16 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_attrs_wo_pieces = {k: v for k, v in parent_attrs.items() if k != "pieces"}
 
     parent_weight: float | None = _read_float(parent.state, "weight")
-    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    parent_is_weight_unit = is_weight_unit(parent_sell_by, unit_map)
+    # No weight was ever recorded (e.g. a CSV import that never synced it from
+    # quantity): fall back to qty, same as split_preview, so the mother-weight
+    # column the preview showed doesn't demand edit_inventory_amounts to confirm
+    # the exact value it already displayed. A genuinely stored weight (which may
+    # legitimately differ from qty) is never overridden.
+    parent_weight_is_derived = parent_weight is None and parent_is_weight_unit
+    if parent_weight_is_derived:
+        parent_weight = parent_qty
+    parent_weight_unit = parent.state.get("weight_unit") or (parent_sell_by if parent_is_weight_unit else "gram")
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
 
@@ -1952,6 +1961,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     else:
         _child_cost_totals = [None] * len(children)
 
+    def _child_weight(c) -> float | None:
+        if c.weight is not None:
+            return c.weight
+        return c.quantity if parent_is_weight_unit else None
+
     # Per-child history descriptors with sequential mother deltas (one row per child).
     children_detail: list[dict] = []
     running_qty = parent_qty
@@ -2000,7 +2014,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
         # Origin marker on the child: "Split from <mother>" — the child's first history entry.
         ch_pieces = _to_int_pieces(child.attributes.get("pieces", 0)) if parent_pieces is not None else None
-        ch_weight = child.weight if (parent_weight is not None and child.weight is not None) else None
+        ch_weight = _child_weight(child) if parent_weight is not None else None
         origin = await emit_event(
             session,
             company_id=company_id,
@@ -2075,8 +2089,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 metadata_={"reason": "from_split"},
             )
 
-    # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
-    total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
+    total_child_weight = sum(w for c in payload.children if (w := _child_weight(c)) is not None)
     derived_parent_qty = round(parent_qty - total_child_qty, 10)
     derived_mother_weight = (
         round(parent_weight - total_child_weight, weight_decimals) if parent_weight is not None else None
