@@ -1961,6 +1961,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     else:
         _child_cost_totals = [None] * len(children)
 
+    def _child_weight(c) -> float | None:
+        if c.weight is not None:
+            return c.weight
+        return c.quantity if parent_is_weight_unit else None
+
     # Per-child history descriptors with sequential mother deltas (one row per child).
     children_detail: list[dict] = []
     running_qty = parent_qty
@@ -2009,7 +2014,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
         # Origin marker on the child: "Split from <mother>" — the child's first history entry.
         ch_pieces = _to_int_pieces(child.attributes.get("pieces", 0)) if parent_pieces is not None else None
-        ch_weight = child.weight if (parent_weight is not None and child.weight is not None) else None
+        ch_weight = _child_weight(child) if parent_weight is not None else None
         origin = await emit_event(
             session,
             company_id=company_id,
@@ -2084,15 +2089,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 metadata_={"reason": "from_split"},
             )
 
-    # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
-    # For a weight-unit parent, a child's own quantity IS its weight unless it explicitly
-    # names a distinct one (the UI never sends one - qty is the only field it submits for
-    # these children - but a direct API caller may still hand-set a child weight that
-    # diverges from its quantity, same as test_split_mother_weight_computed_server_side).
-    def _child_weight(c) -> float | None:
-        if c.weight is not None:
-            return c.weight
-        return c.quantity if parent_is_weight_unit else None
     total_child_weight = sum(w for c in payload.children if (w := _child_weight(c)) is not None)
     derived_parent_qty = round(parent_qty - total_child_qty, 10)
     derived_mother_weight = (
