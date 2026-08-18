@@ -54,6 +54,8 @@ class Scope:
         self.parent = parent      # lexical parent Scope or None
         self.kind = kind          # 'module' | 'function' | 'class' | 'comp'
         self.names: set[str] = set()
+        self.global_names: set[str] = set()    # `global x` declared here
+        self.nonlocal_names: set[str] = set()  # `nonlocal x` declared here
         self.star = False         # saw an `import *` whose source could not resolve
 
 
@@ -85,12 +87,14 @@ class ScopeBuilder(ast.NodeVisitor):
             self.scope.names.add(node.id)
 
     def visit_Global(self, node):
+        # A global name is NOT a local binding: it resolves against module
+        # scope, so record it separately rather than as a local name.
         for n in node.names:
-            self.scope.names.add(n)
+            self.scope.global_names.add(n)
 
     def visit_Nonlocal(self, node):
         for n in node.names:
-            self.scope.names.add(n)
+            self.scope.nonlocal_names.add(n)
 
     def visit_Import(self, node):
         for a in node.names:
@@ -139,19 +143,48 @@ class Checker:
         self.path = path
         self.errors: list[tuple[int, str]] = []
 
+    @staticmethod
+    def _module(scope: Scope) -> Scope:
+        s = scope
+        while s.parent is not None:
+            s = s.parent
+        return s
+
     def resolve(self, name: str, scope: Scope) -> bool:
+        # A `global` declaration in this scope forces module-level resolution,
+        # ignoring any enclosing function or class binding.
+        if name in scope.global_names:
+            mod = self._module(scope)
+            return name in mod.names or mod.star or name in BUILTINS
+        # A `nonlocal` declaration binds to an enclosing FUNCTION scope only.
+        if name in scope.nonlocal_names:
+            s = scope.parent
+            while s is not None:
+                if s.kind == "function" and name in s.names:
+                    return True
+                s = s.parent
+            return False
+        # Ordinary lexical lookup. A class scope is visible only to code
+        # directly in the class body, never to a nested function/comprehension
+        # scope, so skip any class scope that is not the starting scope.
         s = scope
         saw_star = False
         while s is not None:
             if s.star:
                 saw_star = True
-            if name in s.names:
+            if name in s.names and not (s.kind == "class" and s is not scope):
                 return True
             s = s.parent
         return name in BUILTINS or saw_star
 
     def check_body(self, body, scope: Scope):
         build_scope_names(body, scope)
+        # A name declared `global` AND assigned in this scope binds a module
+        # global at runtime; surface it at module scope so later loads resolve.
+        if scope.global_names:
+            mod = self._module(scope)
+            for g in scope.global_names & scope.names:
+                mod.names.add(g)
         for stmt in body:
             self.visit(stmt, scope)
 
@@ -239,6 +272,17 @@ class Checker:
             self.visit(node.elt, cscope)
 
 
+def check_source(src: str, filename: str = "<string>") -> list[tuple[int, str]]:
+    """Return (lineno, name) for every undefined load in a source string."""
+    tree = ast.parse(src, filename=filename)
+    mscope = Scope(None, "module")
+    mscope.names |= {"__file__", "__name__", "__doc__", "__package__",
+                     "__spec__", "__loader__", "__builtins__"}
+    c = Checker(Path(filename))
+    c.check_body(tree.body, mscope)
+    return list(c.errors)
+
+
 def find_undefined(roots) -> list[tuple[Path, int, str]]:
     """Return (path, lineno, name) for every undefined load under the given roots."""
     findings: list[tuple[Path, int, str]] = []
@@ -247,17 +291,10 @@ def find_undefined(roots) -> list[tuple[Path, int, str]]:
         for path in sorted(root.rglob("*.py")):
             src = path.read_text(encoding="utf-8")
             try:
-                tree = ast.parse(src, filename=str(path))
+                for lineno, name in check_source(src, str(path)):
+                    findings.append((path, lineno, name))
             except SyntaxError as e:
                 findings.append((path, getattr(e, "lineno", 0) or 0, f"SYNTAX ERROR {e}"))
-                continue
-            mscope = Scope(None, "module")
-            mscope.names |= {"__file__", "__name__", "__doc__", "__package__",
-                             "__spec__", "__loader__", "__builtins__"}
-            c = Checker(path)
-            c.check_body(tree.body, mscope)
-            for lineno, name in c.errors:
-                findings.append((path, lineno, name))
     return findings
 
 

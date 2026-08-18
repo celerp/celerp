@@ -207,7 +207,7 @@ def setup_routes(app):
                     raw = api._raise(await c.get("/companies/me")).json()
                     settings = dict(raw.get("settings") or {})
                     settings["vertical"] = vertical
-                    await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings})
+                    api._raise(await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings}))
             except Exception:
                 pass
             # Re-seed demo items with vertical-aware examples now that vertical is set
