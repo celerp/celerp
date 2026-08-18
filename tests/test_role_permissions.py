@@ -1713,6 +1713,34 @@ async def test_split_allowed_without_amount_permission_when_weight_missing_but_p
     assert r.status_code == 200, r.text
 
 
+async def test_split_allowed_without_amount_permission_when_parent_has_real_weight(client, session):
+    """A weight-sell-by item that DOES carry a real, stored weight (equal to qty, as
+    normal for these items): a child submits only quantity + a pieces complement, no
+    explicit weight, exactly what the UI sends for weight-unit sell_by children. The
+    mother's derived remainder must still fall back to qty for that child - not treat
+    the child as contributing zero weight - so the permission check doesn't fire for
+    a value nobody hand-set."""
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    r = await client.post(
+        "/items",
+        json={"status": "available", "sku": "SPLW-2", "name": "SPLW-2", "quantity": 147.0,
+              "weight": 147.0, "location_id": ctx["location_id"], "sell_by": "gram",
+              "allow_splitting": True, "attributes": {"pieces": 5}},
+        headers=ctx["admin_h"],
+    )
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    # derived remainder = 147 - 22.99 = 124.01 (child weight falls back to its own qty)
+    r = await client.post(
+        f"/items/{item_id}/split",
+        json={"children": [{"sku": "SPLW-2.1", "quantity": 22.99, "pieces": 1}],
+              "mother_weight": 124.01},
+        headers=ctx["operator_h"],
+    )
+    assert r.status_code == 200, r.text
+
+
 def _import_record(entity_id: str, data: dict, key: str, event_type: str = "item.created") -> dict:
     return {"entity_id": entity_id, "event_type": event_type, "data": data,
             "source": "csv", "idempotency_key": key}

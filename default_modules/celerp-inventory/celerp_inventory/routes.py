@@ -2085,13 +2085,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             )
 
     # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
-    # When the parent weight was derived from qty (no weight was ever recorded), children
-    # never carry their own weight field either (mirrors split_preview) - the weight
-    # consumed is the same qty already summed above, not a sum of (absent) child weights.
-    total_child_weight = (
-        total_child_qty if parent_weight_is_derived
-        else sum(c.weight for c in payload.children if c.weight is not None)
-    )
+    # For a weight-unit parent, a child's own quantity IS its weight unless it explicitly
+    # names a distinct one (the UI never sends one - qty is the only field it submits for
+    # these children - but a direct API caller may still hand-set a child weight that
+    # diverges from its quantity, same as test_split_mother_weight_computed_server_side).
+    def _child_weight(c) -> float | None:
+        if c.weight is not None:
+            return c.weight
+        return c.quantity if parent_is_weight_unit else None
+    total_child_weight = sum(w for c in payload.children if (w := _child_weight(c)) is not None)
     derived_parent_qty = round(parent_qty - total_child_qty, 10)
     derived_mother_weight = (
         round(parent_weight - total_child_weight, weight_decimals) if parent_weight is not None else None
