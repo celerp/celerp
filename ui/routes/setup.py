@@ -208,8 +208,8 @@ def setup_routes(app):
                     settings = dict(raw.get("settings") or {})
                     settings["vertical"] = vertical
                     api._raise(await c.patch("/companies/me", json={"name": raw.get("name", ""), "settings": settings}))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("storing vertical failed during setup wizard: %s", exc)
             # Re-seed demo items with vertical-aware examples now that vertical is set
             try:
                 async with api._client(token) as c:
