@@ -1172,6 +1172,12 @@ async def list_mfg_orders(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/manufacturing", params=params or {})).json()
 
 
+async def get_mfg_order(token: str, order_id: str) -> dict:
+    """A single production run (raises 404 through APIError for an unknown id)."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/manufacturing/{order_id}")).json()
+
+
 async def manufacturing_to_make(token: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/manufacturing/to-make")).json()

@@ -6381,6 +6381,8 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 table.ws-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; }
 .ws-tbl th, .ws-tbl td { border: 1px solid #ccc; padding: 1.6mm 2.6mm; text-align: left; vertical-align: top; }
 .ws-tbl th { background: #f2f2f2; }
+.ws-tbl th:not(.ws-num) { text-align: center; }
+.ws-tbl th.ws-num, .ws-tbl td.ws-num { text-align: right; }
 .ws-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ws-pre { white-space: pre-wrap; }
 .ws-images { display: flex; flex-wrap: wrap; gap: 4mm; }
@@ -6503,6 +6505,52 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
             materials,
             workflow,
             Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
+    )
+
+
+def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
+    """Standalone printable run sheet: a production run's calculated (scaled) input quantities.
+    Reuses the worksheet's print shell, CSS and auto-print. Costs never appear here - it is a
+    shop-floor pick list for one run, so it shows required vs issued-to-date quantity only."""
+    EM = EMPTY
+    by_id = {(it.get("id") or it.get("entity_id") or ""): it for it in items}
+    outs = order.get("expected_outputs") or [{}]
+    build_qty = float(outs[0].get("quantity") or 0)
+    inputs = order.get("inputs") or []
+
+    def _row(inp: dict) -> FT:
+        it = by_id.get(inp.get("item_id") or "") or {}
+        return Tr(
+            Td(it.get("sku") or inp.get("item_id") or EM),
+            Td(it.get("name") or EM),
+            Td(f"{float(inp.get('quantity') or 0):g}", cls="ws-num"),
+            Td(f"{float(inp.get('issued_qty') or 0):g}", cls="ws-num"),
+        )
+
+    table = Table(
+        Thead(Tr(Th("SKU"), Th("Name"), Th("Required", cls="ws-num"), Th("Issued", cls="ws-num"))),
+        Tbody(*[_row(inp) for inp in inputs]),
+        cls="ws-tbl",
+    ) if inputs else P("No inputs on this run.", cls="ws-muted")
+
+    title = f"Run - build qty {build_qty:g}"
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(title),
+            Style(_WORKSHEET_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(Div(title, cls="ws-title"), cls="ws-headl"),
+                Div(Div("Run Sheet"), Div(today, cls="ws-muted"), cls="ws-meta"),
+                cls="ws-header",
+            ),
+            Div(H2("Inputs"), table, cls="ws-section"),
+            Div(Span(title), Span("Powered by celerp.com"), cls="ws-foot"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )
