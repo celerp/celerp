@@ -1175,7 +1175,7 @@ async def test_wf_manufacturing_full_cycle(client):
     await client.put(f"/manufacturing/items/{fg_id}/recipe", headers=h,
                      json={"output_qty": 2, "components": [{"item_id": raw_id, "quantity": 5}], "labor": [], "overhead": []})
 
-    # Build 2 of the finished good, then issue components and complete (restocks the FG in place).
+    # Build 2 of the finished good, then issue components and complete (output lands as a discrete lot under the FG).
     oid = (await client.post(f"/manufacturing/items/{fg_id}/build", headers=h, json={"quantity": 2})).json()["id"]
     assert (await client.post(f"/manufacturing/{oid}/issue", headers=h)).status_code == 200
     assert (await client.post(f"/manufacturing/{oid}/complete", headers=h, json={})).status_code == 200
@@ -1187,7 +1187,10 @@ async def test_wf_manufacturing_full_cycle(client):
     assert raw_state["quantity"] == 15  # 20 - 5
 
     fg = (await client.get(f"/items/{fg_id}", headers=h)).json()
-    assert fg["sku"] == "FG-WF" and fg["quantity"] == 2  # restocked in place
+    assert fg["sku"] == "FG-WF" and fg["quantity"] == 0  # the product row is never the pile
+    items = (await client.get("/items", headers=h)).json()["items"]
+    lot = next(i for i in items if i.get("parent_item_id") == fg_id and i.get("lot") is True)
+    assert lot["sku"] == "FG-WF" and lot["quantity"] == 2  # output received as a discrete lot
 
 
 
