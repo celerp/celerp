@@ -17,7 +17,6 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, fmt_money, party_options,
@@ -55,6 +54,39 @@ def _row_status_badge(status: str) -> FT:
     return Span(label, cls=f"badge badge--recon-{status}")
 
 
+# ── Select-to-match interaction ───────────────────────────────────────────────
+# Click a bank statement line to select it, then click a book entry to reconcile
+# the two on the spot, the way Xero handles a manual match. No popup, no reload.
+_RECON_MATCH_JS = """
+window.reconSelectLine = function(row, lineId, ev) {
+  if (ev && ev.target.closest('button, a, input, .row-actions')) return;
+  var ws = row.closest('.recon-workspace');
+  if (!ws) return;
+  ws.querySelectorAll('.recon-row--active').forEach(function(r){ r.classList.remove('recon-row--active'); });
+  row.classList.add('recon-row--active');
+  ws.dataset.activeLine = lineId;
+  ws.classList.add('recon-armed');
+};
+window.reconMatchEntry = function(entry, jeId) {
+  var ws = entry.closest('.recon-workspace');
+  if (!ws) return;
+  var lineId = ws.dataset.activeLine;
+  if (!lineId) {
+    celerpToast('Select a bank statement line on the left first, then click a book entry to match it.', 'info');
+    return;
+  }
+  htmx.ajax('POST', '/accounting/reconcile/' + ws.dataset.sessionId + '/lines/' + lineId + '/match-confirm', {
+    values: {je_id: jeId},
+    target: '#stmt-line-' + lineId,
+    swap: 'outerHTML',
+  });
+  ws.querySelectorAll('.recon-row--active').forEach(function(r){ r.classList.remove('recon-row--active'); });
+  delete ws.dataset.activeLine;
+  ws.classList.remove('recon-armed');
+};
+"""
+
+
 # ── Statement line row ────────────────────────────────────────────────────────
 
 def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
@@ -64,16 +96,10 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
     amount = float(line.get("amount", 0))
     amt_cls = "cell--number " + ("recon-amount--credit" if amount >= 0 else "recon-amount--debit")
 
+    selectable = status in ("unmatched", "suggested")
     actions = []
-    if status in ("unmatched", "suggested"):
+    if selectable:
         actions += [
-            A(t("acct.match"),
-                href=f"/accounting/reconcile/{session_id}/lines/{lid}/match-picker",
-                hx_get=f"/accounting/reconcile/{session_id}/lines/{lid}/match-picker",
-                hx_target=f"#recon-expand-{lid}",
-                hx_swap="innerHTML",
-                cls="btn btn--xs btn--secondary",
-            ),
             A(t("acct.create"),
                 hx_get=f"/accounting/reconcile/{session_id}/lines/{lid}/create-form",
                 hx_target=f"#recon-expand-{lid}",
@@ -132,51 +158,8 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
         ),
         Div(id=f"recon-expand-{lid}", cls="recon-row-expand"),
         id=f"stmt-line-{lid}",
-        cls=row_cls,
-    )
-
-
-# ── Match picker (inline partial) ────────────────────────────────────────────
-
-def _match_picker(session_id: str, line_id: str, unmatched_entries: list[dict], currency: str) -> FT:
-    if not unmatched_entries:
-        return Div(P(t("acct.no_unmatched_book_entries_found"), cls="empty-state"),
-                   cls="recon-inline-form")
-
-    rows = []
-    for e in unmatched_entries[:50]:  # cap at 50 for performance
-        rows.append(Tr(
-            Td(e.get("ts", EMPTY)[:10]),
-            Td(e.get("memo", EMPTY)),
-            Td(fmt_money(e.get("amount", 0), currency), cls="cell--number"),
-            Td(
-                Button(t("acct.match"),
-                    hx_post=f"/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm",
-                    hx_vals=hx_vals({"je_id": e["je_id"]}),
-                    hx_target=f"#stmt-line-{line_id}",
-                    hx_swap="outerHTML",
-                    cls="btn btn--xs btn--primary",
-                )
-            ),
-        ))
-
-    return Div(
-        H4(t("page.select_book_entry_to_match")),
-        Input(
-            type="text",
-            placeholder="Filter...",
-            oninput="this.closest('.recon-inline-form').querySelectorAll('tr').forEach(r=>{"
-                    "r.style.display=this.value&&!r.textContent.toLowerCase().includes(this.value.toLowerCase())?'none':'';});",
-            cls="form-input mb-sm",
-        ),
-        Table(
-            Thead(Tr(Th(t("th.date")), Th(t("th.memo")), Th(t("label.amount")), Th(""))),
-            Tbody(*rows),
-            cls="data-table data-table--compact",
-        ),
-        Button(t("btn.cancel"), onclick=f"document.getElementById('recon-expand-{line_id}').innerHTML=''",
-               cls="btn btn--xs btn--outline mt-sm"),
-        cls="recon-inline-form",
+        cls=row_cls + (" recon-row--selectable" if selectable else ""),
+        onclick=(f"reconSelectLine(this, '{lid}', event)" if selectable else None),
     )
 
 
@@ -405,6 +388,7 @@ def _workspace_view(
 
     book_panel = Div(
         H3(t("page.book_entries"), cls="recon-panel-title"),
+        P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
         Div(
             *[
                 Div(
@@ -417,7 +401,9 @@ def _workspace_view(
                         Span(fmt_money(e.get("amount", 0), currency), cls="cell--number"),
                         cls="recon-row-right",
                     ),
-                    cls="recon-row recon-row--unmatched",
+                    cls="recon-row recon-row--unmatched recon-book-entry",
+                    id=f"book-entry-{e['je_id']}",
+                    onclick=f"reconMatchEntry(this, '{e['je_id']}')",
                 )
                 for e in unmatched_entries
             ],
@@ -440,8 +426,10 @@ def _workspace_view(
             cls="recon-stats-bar",
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
+        Script(_RECON_MATCH_JS),
         id="recon-workspace",
         cls="recon-workspace",
+        **{"data-session-id": session_id},
     )
 
 
@@ -720,24 +708,6 @@ def setup_routes(app):
             return _workspace_redirect(session_id, "No statement lines were found in the CSV.")
         return _workspace_redirect(session_id)
 
-    @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/match-picker")
-    async def match_picker_partial(request: Request, session_id: str, line_id: str):
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-            recon = await api.get_reconciliation(token, session_id)
-            lines_data = await api.get_statement_lines(token, session_id)
-            lines = lines_data.get("items", [])
-            matched_je_ids = {l["matched_je_id"] for l in lines if l.get("matched_je_id")}
-            book_entries = [e for e in recon.get("unreconciled_entries", [])
-                            if e["je_id"] not in matched_je_ids]
-        except APIError:
-            return P(t("acct.error_loading_entries"), cls="error-banner")
-        return _match_picker(session_id, line_id, book_entries, currency)
-
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/create-form")
     async def create_form_partial(request: Request, session_id: str, line_id: str):
         token = _token(request)
@@ -789,12 +759,28 @@ def setup_routes(app):
         form = await request.form()
         je_id = str(form.get("je_id", "")).strip()
         if not je_id:
+            # Confirming a suggested line carries no entry: reconcile the entry the
+            # matcher already proposed, read from the line's current suggestion.
+            try:
+                lines_data = await api.get_statement_lines(token, session_id)
+                line_obj = next(
+                    (l for l in lines_data.get("items", []) if l["id"] == line_id), None)
+                je_id = str((line_obj or {}).get("matched_je_id") or "").strip()
+            except APIError:
+                je_id = ""
+        if not je_id:
             return P(t("acct.missing_jeid"), cls="error-banner")
         try:
             line = await api.match_recon_line(token, session_id, line_id, je_id)
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
-        return _stmt_line_row(line, session_id, currency)
+        # Drop the now-reconciled entry from the book panel so it cannot be
+        # picked twice. The line's own matched_je_id is authoritative.
+        matched_je_id = str(line.get("matched_je_id") or je_id).strip()
+        return (
+            _stmt_line_row(line, session_id, currency),
+            Div(id=f"book-entry-{matched_je_id}", hx_swap_oob="delete"),
+        )
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/create-confirm")
     async def create_confirm(request: Request, session_id: str, line_id: str):
