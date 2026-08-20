@@ -116,8 +116,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     page.wait_for_selector("#mfg-table", timeout=8000)
     page.screenshot(path=str(SHOTS / "wip-after-start.png"), full_page=True)
 
-    # ── Bulk Complete via the Action dropdown (accept the confirm) -> completed + stock up ──
-    stock_before = float(api.get(f"/items/{widget}").json().get("quantity", 0))
+    # ── Bulk Complete via the Action dropdown (accept the confirm) -> completed + output lots ──
     page.on("dialog", lambda d: d.accept())
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
     # Tick both runs and confirm "2 selected" actually registered before dispatching Complete. The
@@ -141,11 +140,14 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     assert _poll(api, lambda items: all(
         o.get("status") == "completed" for o in items if o.get("id") in both
     )), "both runs should be completed after the bulk Complete UI action"
-    # 3 + 5 = 8 widgets produced.
-    assert _poll(api, lambda _items: float(api.get(f"/items/{widget}").json().get("quantity", 0)) > stock_before), \
-        "WIP-WIDGET stock should increase after Complete"
-    assert float(api.get(f"/items/{widget}").json()["quantity"]) >= stock_before + 8, \
-        "WIP-WIDGET stock should rise by the produced quantity (8)"
+    # 3 + 5 = 8 widgets produced, each run's output landing as a discrete lot under the widget.
+    def _lot_total() -> float:
+        return sum(i["quantity"] for i in api.get("/items").json()["items"]
+                   if i.get("parent_item_id") == widget and i.get("lot") is True)
+    assert _poll(api, lambda _items: _lot_total() > 0), \
+        "WIP-WIDGET output should land as discrete lots after Complete"
+    assert _lot_total() >= 8, "produced quantity (8) should land as discrete lots"
+    assert float(api.get(f"/items/{widget}").json()["quantity"]) == 0  # the product row is never the pile
 
     # ── Priority Excel funnel filters live (data-col 3) ──
     page.goto(f"{ui_server}/manufacturing/production?status=completed", wait_until="domcontentloaded")
