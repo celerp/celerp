@@ -214,6 +214,15 @@ class TestAuthRouting:
         # The timer carries the current page so login can return there
         assert "next=" in _IDLE_LOGOUT_JS
 
+    def test_idle_timer_counts_scroll_in_capture_phase(self):
+        """Scrolling an inner panel must reset the idle timer. Scroll events do not
+        bubble, so a document-level listener only sees them with capture:true;
+        without it the session logs out while the user is actively scrolling a
+        long list (e.g. the reconciliation panels)."""
+        from ui.components.shell import _IDLE_LOGOUT_JS
+        assert "'scroll'" in _IDLE_LOGOUT_JS
+        assert "capture:true" in _IDLE_LOGOUT_JS
+
     @pytest.mark.asyncio
     async def test_login_bounce_carries_next_and_login_returns_there(self, ui_client):
         """A timed-out user bounced off a page gets sent back to that page
