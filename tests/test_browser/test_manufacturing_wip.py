@@ -145,7 +145,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
         return sum(i["quantity"] for i in api.get("/items").json()["items"]
                    if i.get("parent_item_id") == widget and i.get("lot") is True)
     assert _poll(api, lambda _items: _lot_total() > 0), \
-        "WIP-WIDGET output should land as discrete lots after Complete"
+        "widget output should land as discrete lots after Complete"
     assert _lot_total() >= 8, "produced quantity (8) should land as discrete lots"
     assert float(api.get(f"/items/{widget}").json()["quantity"]) == 0  # the product row is never the pile
 
