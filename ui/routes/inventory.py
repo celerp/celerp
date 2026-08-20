@@ -5491,50 +5491,41 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual") and f["key"] != "sold_price"]
     virtual_total_fields = {f["key"]: f for f in schema if f.get("virtual") and f.get("type") == "money"}
     _cur = currency
-    for pk in price_keys:
-        def _make_price_renderer(field=pk, _currency=_cur):
-            def renderer(entity_id: str, row: dict) -> FT:
-                sell_by = (row.get("sell_by") or "").strip()
-                val = row.get(field, "")
-                # Render formatted money value with currency symbol
-                try:
-                    formatted = fmt_money(val, _currency) if val not in (None, "", "--") else "--"
-                except (ValueError, TypeError):
-                    formatted = "--"
-                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
-                inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
-                _safe_eid = entity_id.replace(":", "-")
-                return Td(
-                    inner, annotation,
-                    id=f"cell-{_safe_eid}-{field}",
-                    cls="cell cell--money cell--clickable",
-                    data_col=field,
-                    hx_get=f"/api/items/{entity_id}/field/{field}/edit",
-                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
-                )
-            return renderer
-        renderers[pk] = _make_price_renderer()
-
-    # Sold price: read-only realized per-unit sale price, shown with the same "/ sell_unit"
-    # annotation as the wholesale/retail columns but without any click-to-edit affordance.
-    if "sold_price" in schema_keys:
-        def _sold_price_renderer(entity_id: str, row: dict, _currency=_cur) -> FT:
+    def _make_price_renderer(field, _currency=_cur, editable=True):
+        def renderer(entity_id: str, row: dict) -> FT:
             sell_by = (row.get("sell_by") or "").strip()
-            val = row.get("sold_price")
+            val = row.get(field, "")
+            # Render formatted money value with currency symbol
             try:
                 formatted = fmt_money(val, _currency) if val not in (None, "", "--") else "--"
             except (ValueError, TypeError):
                 formatted = "--"
-            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if (sell_by and formatted != "--") else ""
+            # A read-only cell suppresses the unit annotation next to "--": there is
+            # no value the unit could belong to and no edit affordance to hint at.
+            annotate = sell_by and (editable or formatted != "--")
+            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if annotate else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             _safe_eid = entity_id.replace(":", "-")
-            return Td(
-                inner, annotation,
-                id=f"cell-{_safe_eid}-sold_price",
-                cls="cell cell--money",
-                data_col="sold_price",
-            )
-        renderers["sold_price"] = _sold_price_renderer
+            attrs: dict = {
+                "id": f"cell-{_safe_eid}-{field}",
+                "cls": "cell cell--money cell--clickable" if editable else "cell cell--money",
+                "data_col": field,
+            }
+            if editable:
+                attrs.update(
+                    hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+            return Td(inner, annotation, **attrs)
+        return renderer
+
+    for pk in price_keys:
+        renderers[pk] = _make_price_renderer(pk)
+
+    # Sold price: read-only realized per-unit sale price, shown with the same "/ sell_unit"
+    # annotation as the wholesale/retail columns but without any click-to-edit affordance.
+    if "sold_price" in schema_keys:
+        renderers["sold_price"] = _make_price_renderer("sold_price", editable=False)
 
     # Virtual total column renderers
     for vk, vf in virtual_total_fields.items():
