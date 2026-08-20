@@ -3029,13 +3029,30 @@ async def match_stmt_line(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+    bank = (
+        await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))
+    ).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    valid_ids = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank.chart_account_code)}
+    if payload.je_id not in valid_ids:
+        raise HTTPException(status_code=400, detail="Book entry not found for this bank account")
+    already = set(recon.reconciled_je_ids or [])
+    own = sl.matched_je_id if sl.status in ("matched", "created") else None
+    if payload.je_id in already and payload.je_id != own:
+        raise HTTPException(status_code=400, detail="Book entry is already reconciled against another statement line")
+    old_je_id = own
+    was_resolved = sl.status in ("matched", "created")
     sl.status = "matched"
     sl.matched_je_id = payload.je_id
     existing = list(recon.reconciled_je_ids or [])
+    if old_je_id and old_je_id != payload.je_id and old_je_id in existing:
+        existing.remove(old_je_id)
     if payload.je_id not in existing:
         existing.append(payload.je_id)
-        recon.reconciled_je_ids = existing
-    recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
+    recon.reconciled_je_ids = existing
+    if not was_resolved:
+        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
     await db.commit()
     return _stmt_line_to_dict(sl)
 

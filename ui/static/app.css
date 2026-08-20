@@ -1911,10 +1911,18 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .recon-row-left { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .recon-row-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .recon-date { font-size: 12px; color: var(--c-text2); }
-.recon-desc { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.recon-desc { font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
 .recon-ref { font-size: 11px; }
 .recon-amount--credit { color: var(--c-green); font-weight: 600; }
 .recon-amount--debit { color: var(--c-red); font-weight: 600; }
+/* Select-to-match: pick a statement line, then click a book entry */
+.recon-panel-hint { font-size: 12px; padding: 6px 16px; margin: 0; border-bottom: 1px solid var(--c-border); }
+.recon-row--selectable { cursor: pointer; }
+.recon-row--active { outline: 2px solid var(--c-blue); outline-offset: -2px; background: var(--c-blue-light); }
+.recon-book-entry { cursor: pointer; }
+.recon-book-entry:hover { background: var(--c-blue-light); }
+.recon-workspace:has(.recon-row--active) .recon-panel--book { box-shadow: 0 0 0 2px var(--c-blue); }
+.recon-book-filter { margin: 8px 16px; width: calc(100% - 32px); }
 /* Row status colors */
 .recon-row--matched { background: var(--c-green-bg); }
 .recon-row--suggested { background: var(--c-amber-bg); }

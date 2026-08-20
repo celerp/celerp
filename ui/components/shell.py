@@ -55,8 +55,12 @@ _IDLE_LOGOUT_JS = ("""
   var t;
   function out(){ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }
   function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
+  // capture:true so scroll counts as activity: scroll events do not bubble, so a
+  // document listener only sees them in the capture phase. Without it, scrolling an
+  // inner overflow container (e.g. the reconciliation line panels) never resets the
+  // timer and the session logs out mid-work despite the user actively scrolling.
   ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){
-    document.addEventListener(ev, reset, {passive:true});
+    document.addEventListener(ev, reset, {passive:true, capture:true});
   });
   document.addEventListener('htmx:afterRequest', reset);
   reset();

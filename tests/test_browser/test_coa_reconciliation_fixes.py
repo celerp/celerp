@@ -205,3 +205,114 @@ def test_reconciliation_import_and_mapping(page, ui_server, api, bank_account):
     assert page.locator("#stmt-lines-panel > .recon-row").count() == 2, \
         "re-import must replace, not append, statement lines"
     _shot(page, "08-reimport-still-two-lines")
+
+
+def _post_bank_je(api, chart_code, memo, amount, ts="2026-03-01"):
+    """Post a JE moving `amount` through the bank ledger account (negative = out)."""
+    debit, credit = (0.0, -amount) if amount < 0 else (amount, 0.0)
+    r = api.post("/accounting/journal-entries", json={
+        "ts": ts, "memo": memo,
+        "entries": [
+            {"account": "1111", "debit": credit, "credit": debit},
+            {"account": chart_code, "debit": debit, "credit": credit},
+        ],
+        "idempotency_token": uuid.uuid4().hex,
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_select_to_match_end_to_end(page, ui_server, api, bank_account):
+    """Xero-style manual match: select a statement line, click a book entry.
+
+    Covers the full loop in the running UI: armed styling, the no-selection
+    toast, the match itself, the book panel and stats refreshing without a
+    reload, and Undo returning the freed entry to the panel."""
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _post_bank_je(api, bank_account["chart_account_code"], "Wire to ACME supplier", -5000.0)
+
+    sid = _start_session(api, bank_account["id"])
+    page.goto(f"{ui_server}/accounting/reconcile/{sid}", wait_until="domcontentloaded")
+    _upload_csv(page, AUTO_CSV, "statement.csv")
+    page.click('button:has-text("Import CSV")')
+    page.wait_for_selector("#stmt-lines-panel")
+    _no_crash(page, "select-match-workspace")
+
+    entry = page.locator(".recon-book-entry", has_text="Wire to ACME supplier")
+    assert entry.count() == 1, "seeded ledger entry must appear in the book panel"
+
+    # Clicking an entry with nothing selected explains itself instead of failing.
+    entry.click()
+    toast = page.wait_for_selector(".toast")
+    assert "Select a bank statement line" in toast.inner_text()
+    page.click(".toast__close")
+    page.wait_for_selector(".toast", state="detached")
+
+    # Select the statement line: row highlights and the book panel arms.
+    line = page.locator(".recon-row--selectable", has_text="Wire ACME")
+    line.click()
+    page.wait_for_selector(".recon-row--active")
+    _shot(page, "09-line-selected-book-panel-armed")
+
+    # The filter narrows the panel without touching the server.
+    page.fill(".recon-book-filter", "zzz")
+    assert entry.first.is_hidden()
+    page.fill(".recon-book-filter", "acme")
+    assert entry.first.is_visible()
+
+    # Click the entry: the whole workspace refreshes in one swap.
+    entry.click()
+    page.wait_for_selector(".recon-stat--matched:has-text('Matched: 1')")
+    _no_crash(page, "after-match")
+    assert entry.count() == 0, \
+        "a matched entry must leave the book panel without a reload"
+    _shot(page, "10-line-matched-entry-left-panel")
+
+    # Undo: the freed entry returns to the book panel, again without a reload.
+    page.locator(".recon-row", has_text="Wire ACME").locator('button:has-text("Undo")').click()
+    page.wait_for_selector('.recon-book-entry:has-text("Wire to ACME supplier")')
+    assert page.locator(".recon-book-entry", has_text="Wire to ACME supplier").count() == 1
+    page.wait_for_selector(".recon-stat--matched:has-text('Matched: 0')")
+    _no_crash(page, "after-undo")
+    _shot(page, "11-undo-entry-restored-to-panel")
+
+
+def test_match_endpoint_validates_book_entry(api, bank_account):
+    """Function-level validation on manual match: unknown entries are rejected,
+    an entry cannot be claimed by two statement lines, and undo releases it."""
+    amount = -1234.56
+    _post_bank_je(api, bank_account["chart_account_code"], "Validation wire", amount,
+                  ts="2026-03-02")
+    sid = _start_session(api, bank_account["id"])
+    r = api.post(f"/accounting/reconciliation/{sid}/import-csv",
+                 files={"file": ("statement.csv", AUTO_CSV, "text/csv")})
+    assert r.status_code == 200, r.text
+    lines = api.get(f"/accounting/reconciliation/{sid}/statement-lines").json()["items"]
+    assert len(lines) == 2
+    entries = api.get(f"/accounting/reconciliation/{sid}").json()["unreconciled_entries"]
+    je_id = next(e["je_id"] for e in entries if e["amount"] == amount)
+
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/match",
+                 json={"je_id": "je:does-not-exist"})
+    assert r.status_code == 400, r.text
+
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/match",
+                 json={"je_id": je_id})
+    assert r.status_code == 200, r.text
+
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[1]['id']}/match",
+                 json={"je_id": je_id})
+    assert r.status_code == 400, r.text
+    assert "already reconciled" in r.json()["detail"]
+
+    # Re-matching the same line to its own entry stays idempotent.
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/match",
+                 json={"je_id": je_id})
+    assert r.status_code == 200, r.text
+
+    # Undo releases the entry for the other line.
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/unmatch")
+    assert r.status_code == 200, r.text
+    r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[1]['id']}/match",
+                 json={"je_id": je_id})
+    assert r.status_code == 200, r.text
