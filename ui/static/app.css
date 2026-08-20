@@ -1911,7 +1911,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .recon-row-left { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .recon-row-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .recon-date { font-size: 12px; color: var(--c-text2); }
-.recon-desc { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.recon-desc { font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
 .recon-ref { font-size: 11px; }
 .recon-amount--credit { color: var(--c-green); font-weight: 600; }
 .recon-amount--debit { color: var(--c-red); font-weight: 600; }
