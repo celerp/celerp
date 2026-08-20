@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Contact-scoped consignment / memo holdings.
+"""Contact-scoped consignment / memo holdings and realized sale prices.
 
-Two mirror-image questions, answered as pure reads over existing projection state
+Three mirror-image questions, answered as pure reads over existing projection state
 (no new columns, no migration):
 
 - What is currently out on memo TO a customer? Items with status ``memo_out`` whose
@@ -12,8 +12,10 @@ Two mirror-image questions, answered as pure reads over existing projection stat
 - What do we currently hold on consignment FROM a supplier? Items with
   ``consignment_flag == "in"`` created by one of that supplier's ``consignment_in``
   docs (tracked on the doc as ``received_item_ids``). Valued at cost.
+- What did a sold item actually sell for? The per-unit price on its selling
+  document's line, matched by item reference or SKU (``sold_prices``).
 
-Both functions are pure over already-loaded rows so the inventory endpoint can share
+Every function is pure over already-loaded rows so the inventory endpoint can share
 one item scan, and so the membership predicate is unit-testable in isolation. The
 value each returns is exactly what the list endpoint should display and total for the
 scoped view, so the card total and the list reconcile by construction.
@@ -21,7 +23,24 @@ scoped view, so the card total and the list reconcile by construction.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+
+
+def _doc_lines(docs: Iterable[tuple[str, dict]]) -> Iterator[tuple[str, dict]]:
+    """Yield (doc_id, line) for every line item across the given docs' states."""
+    for doc_id, state in docs:
+        for line in (state or {}).get("line_items", []) or []:
+            yield str(doc_id), line
+
+
+def _lines_by_ref(docs: Iterable[tuple[str, dict]]) -> dict[tuple[str, str], dict]:
+    """(doc_id, item-ref) -> line, for every doc line carrying an item reference."""
+    out: dict[tuple[str, str], dict] = {}
+    for doc_id, line in _doc_lines(docs):
+        eid = line.get("entity_id") or line.get("item_id")
+        if eid:
+            out[(doc_id, eid)] = line
+    return out
 
 
 def _num(value: object) -> float | None:
@@ -55,12 +74,7 @@ def memo_holdings(
     doc_ids = {doc_id for doc_id, _ in memo_docs}
     # (doc_id, item_id) -> line, so an item that was on memo to A, returned, then
     # re-sent to B resolves against the doc that is actually in fulfilled_for_docs.
-    line_by: dict[tuple[str, str], dict] = {}
-    for doc_id, state in memo_docs:
-        for line in (state or {}).get("line_items", []) or []:
-            eid = line.get("entity_id") or line.get("item_id")
-            if eid:
-                line_by[(doc_id, eid)] = line
+    line_by = _lines_by_ref(memo_docs)
 
     out: dict[str, float] = {}
     for item_id, state in items:
@@ -138,17 +152,13 @@ def sold_prices(
     price cannot be resolved, so the view shows an honest ``--`` rather than a
     fabricated 0.
     """
-    line_by_ref: dict[tuple[str, str], dict] = {}
+    sold_docs = list(sold_docs)
+    line_by_ref = _lines_by_ref(sold_docs)
     line_by_sku: dict[tuple[str, str], dict] = {}
-    for doc_id, state in sold_docs:
-        for line in (state or {}).get("line_items", []) or []:
-            key = str(doc_id)
-            eid = line.get("entity_id") or line.get("item_id")
-            if eid:
-                line_by_ref[(key, eid)] = line
-            sku = str(line.get("sku") or "").strip()
-            if sku:
-                line_by_sku.setdefault((key, sku), line)  # first priced line for the sku
+    for doc_id, line in _doc_lines(sold_docs):
+        sku = str(line.get("sku") or "").strip()
+        if sku:
+            line_by_sku.setdefault((doc_id, sku), line)  # first line for the sku wins
 
     out: dict[str, float | None] = {}
     for item_id, state in items:
