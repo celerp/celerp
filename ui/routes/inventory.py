@@ -935,42 +935,38 @@ async def _inventory_content(
         for _it in items:
             if str(_it.get("status") or "").lower() == "draft":
                 _it["_row_editable_keys"] = sorted(AMOUNT_EDIT_GATED_KEYS)
-    # Under a contact holdings scope the meaningful per-row value is the scope value the
-    # total is summed from (quoted memo price / consignment cost), not the catalog price.
-    # Surface it as a read-only column so the rows visibly add up to the banner figure.
+    # Derived read-only money columns, appended to the schema when their values exist:
+    # - Under a contact holdings scope the meaningful per-row value is the scope value the
+    #   total is summed from (quoted memo price / consignment cost), not the catalog
+    #   price; surfacing it makes the rows visibly add up to the banner figure.
+    # - On the sold view, each row's realized per-unit sale price sits alongside the
+    #   wholesale/retail prices for direct comparison (derived server-side, list_items).
     scope_value_label = ""
     if p.get("on_memo_to"):
         scope_value_label = "Quoted"
     elif p.get("consigned_from"):
         scope_value_label = "Cost"
-    if scope_value_label and any(i.get("holding_value") is not None for i in items):
-        eff_schema = eff_schema + [{
-            "key": "holding_value", "label": scope_value_label, "type": "money",
-            "editable": False, "required": False, "options": [], "visible_to_roles": [],
-            "position": 99, "show_in_table": True,
-        }]
-    else:
+    if not (scope_value_label and any(i.get("holding_value") is not None for i in items)):
         scope_value_label = ""
-
-    # Sold price: on the sold view, surface each row's realized per-unit sale price as a
-    # read-only money column, alongside the wholesale/retail prices for direct comparison.
-    # The value is derived server-side from the selling document (list_items).
     sold_view = "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}
     show_sold_price = sold_view and any(i.get("sold_price") is not None for i in items)
+    derived_money_cols = []
+    if scope_value_label:
+        derived_money_cols.append(("holding_value", scope_value_label, 99))
     if show_sold_price:
+        derived_money_cols.append(("sold_price", "Sold", 98))
+    for _key, _label, _position in derived_money_cols:
         eff_schema = eff_schema + [{
-            "key": "sold_price", "label": "Sold", "type": "money",
+            "key": _key, "label": _label, "type": "money",
             "editable": False, "required": False, "options": [], "visible_to_roles": [],
-            "position": 98, "show_in_table": True,
+            "position": _position, "show_in_table": True,
         }]
 
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-    if scope_value_label and "holding_value" not in visible_cols:
-        # Saved column prefs predate this column, so make sure the scope value is shown.
-        visible_cols = visible_cols + ["holding_value"]
-    if show_sold_price and "sold_price" not in visible_cols:
-        # Saved column prefs predate this column, so make sure the sold price is shown.
-        visible_cols = visible_cols + ["sold_price"]
+    for _key, _label, _position in derived_money_cols:
+        if _key not in visible_cols:
+            # Saved column prefs predate this derived column, so force it visible.
+            visible_cols = visible_cols + [_key]
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
     p_with_cols = {**p, "cols": visible_cols}
