@@ -581,3 +581,48 @@ def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
     assert stored_px > before + 150, (
         f"persisted width for '{key}' lost the drag: stored {stored_px:.0f}px, pre-drag {before:.0f}px"
     )
+
+
+# ── hidden columns: the pinned body must keep every visible column under its header ────────
+def test_pinned_columns_align_with_hidden_column_after_sideways_scroll(page, ui_server, sticky_inventory):
+    """Hide one column the way the column manager does (prefs in localStorage), scroll the
+    table sideways FIRST, then down until the header pins. Every visible column's body cells
+    must still sit under that column's header. The pin locks column geometry with a colgroup
+    built from the header row's cells; a hidden column's cell generates no box, so a col built
+    for it lands on the next visible column and every column after it drifts."""
+    _goto(page, ui_server)
+    keys = _data_keys(page)
+    assert len(keys) >= 4, f"need several columns to observe drift, got {keys}"
+    hidden = keys[1]
+    page.evaluate(
+        "(args) => { var p = {}; args.keys.forEach(function(k){ p[k] = k !== args.hidden; });"
+        " localStorage.setItem('celerp_cols_inventory', JSON.stringify(p)); }",
+        {"keys": keys, "hidden": hidden},
+    )
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
+    page.wait_for_function(
+        "(k) => { var th=document.querySelector('#data-table thead th[data-key=\"'+k+'\"]');"
+        " return !!th && th.style.display === 'none'; }",
+        arg=hidden, timeout=5000,
+    )
+
+    # Widen the first column so the table overflows its wrap, then scroll right BEFORE pinning.
+    page.evaluate(
+        "() => { var th=document.querySelector('#data-table thead th[data-key]'); if(th) th.style.width='900px'; }"
+    )
+    page.evaluate(
+        "() => { var w=document.querySelector('.table-scroll-wrap'); w.scrollLeft=300; w.dispatchEvent(new Event('scroll')); }"
+    )
+    _scroll_to_pin(page)
+    assert _pinned(page)
+
+    visible = [k for k in keys if k != hidden]
+    for key in visible:
+        lefts = _col_lefts(page, key)
+        if lefts is None:
+            continue  # column has no body cell rendered (never true for the seed rows)
+        assert abs(lefts[0] - lefts[1]) <= 2, (
+            f"column '{key}' drifted from its header while pinned with '{hidden}' hidden: "
+            f"header left {lefts[0]:.1f}px, body left {lefts[1]:.1f}px"
+        )
