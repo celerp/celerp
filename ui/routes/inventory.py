@@ -952,10 +952,25 @@ async def _inventory_content(
     else:
         scope_value_label = ""
 
+    # Sold price: on the sold view, surface each row's realized per-unit sale price as a
+    # read-only money column, alongside the wholesale/retail prices for direct comparison.
+    # The value is derived server-side from the selling document (list_items).
+    sold_view = "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}
+    show_sold_price = sold_view and any(i.get("sold_price") is not None for i in items)
+    if show_sold_price:
+        eff_schema = eff_schema + [{
+            "key": "sold_price", "label": "Sold", "type": "money",
+            "editable": False, "required": False, "options": [], "visible_to_roles": [],
+            "position": 98, "show_in_table": True,
+        }]
+
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     if scope_value_label and "holding_value" not in visible_cols:
         # Saved column prefs predate this column, so make sure the scope value is shown.
         visible_cols = visible_cols + ["holding_value"]
+    if show_sold_price and "sold_price" not in visible_cols:
+        # Saved column prefs predate this column, so make sure the sold price is shown.
+        visible_cols = visible_cols + ["sold_price"]
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
     p_with_cols = {**p, "cols": visible_cols}
@@ -5471,7 +5486,9 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
 
     # Price column renderers: show currency symbol + "/ sell_unit" annotation
     from ui.components.table import fmt_money
-    price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual")]
+    # sold_price is derived and read-only, so it is excluded from the click-to-edit price
+    # loop below and gets its own display-only renderer.
+    price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual") and f["key"] != "sold_price"]
     virtual_total_fields = {f["key"]: f for f in schema if f.get("virtual") and f.get("type") == "money"}
     _cur = currency
     for pk in price_keys:
@@ -5497,6 +5514,27 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 )
             return renderer
         renderers[pk] = _make_price_renderer()
+
+    # Sold price: read-only realized per-unit sale price, shown with the same "/ sell_unit"
+    # annotation as the wholesale/retail columns but without any click-to-edit affordance.
+    if "sold_price" in schema_keys:
+        def _sold_price_renderer(entity_id: str, row: dict, _currency=_cur) -> FT:
+            sell_by = (row.get("sell_by") or "").strip()
+            val = row.get("sold_price")
+            try:
+                formatted = fmt_money(val, _currency) if val not in (None, "", "--") else "--"
+            except (ValueError, TypeError):
+                formatted = "--"
+            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if (sell_by and formatted != "--") else ""
+            inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+            _safe_eid = entity_id.replace(":", "-")
+            return Td(
+                inner, annotation,
+                id=f"cell-{_safe_eid}-sold_price",
+                cls="cell cell--money",
+                data_col="sold_price",
+            )
+        renderers["sold_price"] = _sold_price_renderer
 
     # Virtual total column renderers
     for vk, vf in virtual_total_fields.items():

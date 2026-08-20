@@ -2388,3 +2388,53 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
                            json={"target_type": "invoice"})
     assert rc.status_code == 422, rc.text
     _check_detail(rc.json()["detail"])
+
+
+@pytest.mark.asyncio
+async def test_sold_view_attaches_realized_sale_price(client, session, auth, _setup_ids):
+    """A sold item listed under status=sold carries sold_price = its selling line's unit price.
+
+    Red statement: list_items does not attach a sold_price key, so the sold record
+    returned by GET /items?status=sold has no realized price to display
+    (celerp-inventory/routes.py list_items, pre-change).
+    """
+    from celerp.models.projections import Projection
+    from celerp.services.fulfill import execute_fulfill
+    from celerp.services.pick import compute_pick_plan
+
+    item_id = await _create_item(client, auth, "SOLDPX-A", 2, cost_price=4.0, sell_by="carat")
+    doc_id = await _create_and_finalize_invoice(
+        client, auth, [{"sku": "SOLDPX-A", "quantity": 2, "unit_price": 100.0}], ref_id="INV-SOLDPX-1")
+
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    available_inv = [{
+        "entity_id": item_id, "sku": inv_row.state["sku"],
+        "quantity": float(inv_row.state["quantity"]),
+        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
+        "cost_total": float(inv_row.state.get("cost_total", 0)),
+    }]
+    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
+    await execute_fulfill(
+        session, doc_entity_id=doc_id, doc_state=doc_row.state,
+        pick_result=pick_result, company_id=_setup_ids["company_id"],
+        user_id=str(_setup_ids["user_id"]),
+    )
+    await session.commit()
+
+    r = await client.get("/items", headers=auth["headers"], params={"status": "sold"})
+    assert r.status_code == 200, r.text
+    rows = {it["sku"]: it for it in r.json()["items"]}
+    assert "SOLDPX-A" in rows, "sold item missing from status=sold list"
+    assert rows["SOLDPX-A"]["sold_price"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_sold_price_absent_outside_sold_view(client, session, auth, _setup_ids):
+    """sold_price is computed only for the sold view, so an available item never carries it."""
+    await _create_item(client, auth, "SOLDPX-B", 5, cost_price=4.0, sell_by="carat")
+    r = await client.get("/items", headers=auth["headers"], params={"status": "available"})
+    assert r.status_code == 200, r.text
+    rows = {it["sku"]: it for it in r.json()["items"]}
+    assert "SOLDPX-B" in rows
+    assert "sold_price" not in rows["SOLDPX-B"]

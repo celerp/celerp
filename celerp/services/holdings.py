@@ -117,3 +117,56 @@ def consignment_holdings(
             cost = (unit * (_num(state.get("quantity")) or 0.0)) if unit is not None else 0.0
         out[item_id] = round(cost, 2)
     return out
+
+
+def sold_prices(
+    items: Iterable[tuple[str, dict]],
+    sold_docs: Iterable[tuple[str, dict]],
+) -> dict[str, float | None]:
+    """Map item_id -> realized per-unit sale price for sold items.
+
+    ``items``: (entity_id, state) for the sold items to price.
+    ``sold_docs``: (entity_id, state) for the documents that sold them.
+
+    The price is read from the line of the document that sold the item
+    (its ``status_doc_id``). The line is matched by its item reference where the doc
+    carries one (imported docs, per-line fulfillment), else by SKU (engine-fulfilled
+    invoices created from a SKU carry no item reference on the line, only the sku the
+    item still holds). The value is the line's ``unit_price`` (per sell-unit,
+    post-discount); when only a ``line_total`` is stored it is divided by the line
+    quantity to a per-unit figure. Returns None for an item whose selling line or
+    price cannot be resolved, so the view shows an honest ``--`` rather than a
+    fabricated 0.
+    """
+    line_by_ref: dict[tuple[str, str], dict] = {}
+    line_by_sku: dict[tuple[str, str], dict] = {}
+    for doc_id, state in sold_docs:
+        for line in (state or {}).get("line_items", []) or []:
+            key = str(doc_id)
+            eid = line.get("entity_id") or line.get("item_id")
+            if eid:
+                line_by_ref[(key, eid)] = line
+            sku = str(line.get("sku") or "").strip()
+            if sku:
+                line_by_sku.setdefault((key, sku), line)  # first priced line for the sku
+
+    out: dict[str, float | None] = {}
+    for item_id, state in items:
+        state = state or {}
+        doc_id = state.get("status_doc_id")
+        if not doc_id:
+            out[item_id] = None
+            continue
+        line = line_by_ref.get((str(doc_id), item_id))
+        if line is None:
+            sku = str(state.get("sku") or "").strip()
+            line = line_by_sku.get((str(doc_id), sku)) if sku else None
+        if line is None:
+            out[item_id] = None
+            continue
+        unit = _num(line.get("unit_price"))
+        if unit is None:
+            total, qty = _num(line.get("line_total")), _num(line.get("quantity"))
+            unit = (total / qty) if (total is not None and qty) else None
+        out[item_id] = round(unit, 2) if unit is not None else None
+    return out

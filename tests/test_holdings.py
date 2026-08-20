@@ -9,7 +9,7 @@ tests then layer the HTTP wiring on top.
 
 from __future__ import annotations
 
-from celerp.services.holdings import consignment_holdings, memo_holdings
+from celerp.services.holdings import consignment_holdings, memo_holdings, sold_prices
 
 
 # --- memo (consignment out to a customer) -----------------------------------
@@ -104,3 +104,44 @@ def test_consignment_excludes_item_from_a_different_supplier():
     items = [("item:1", {"consignment_flag": "in", "cost_total": 400.0})]
     docs = [("doc:C", {"received_item_ids": ["item:OTHER"]})]
     assert consignment_holdings(items, docs) == {}
+
+
+# --- sold price (realized per-unit sale price of a sold item) ----------------
+
+def test_sold_price_is_selling_line_unit_price():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [{"item_id": "item:1", "unit_price": 89.96, "line_total": 206.0}]})]
+    assert sold_prices(items, docs) == {"item:1": 89.96}
+
+
+def test_sold_price_matches_line_by_item_id_when_entity_id_blank():
+    # Real docs carry the item reference on the line's item_id; entity_id is empty there.
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [{"entity_id": "", "item_id": "item:1", "unit_price": 50.0}]})]
+    assert sold_prices(items, docs) == {"item:1": 50.0}
+
+
+def test_sold_price_derives_per_unit_from_line_total_when_no_unit_price():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [{"item_id": "item:1", "line_total": 206.0, "quantity": 2.0}]})]
+    assert sold_prices(items, docs) == {"item:1": 103.0}
+
+
+def test_sold_price_matches_line_by_sku_when_line_has_no_item_ref():
+    # Engine-fulfilled invoice: the line was created from a SKU and carries no item
+    # reference, so the match falls back to the item's own sku.
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
+    docs = [("doc:A", {"line_items": [{"sku": "GEM-1", "quantity": 2, "unit_price": 100.0}]})]
+    assert sold_prices(items, docs) == {"item:1": 100.0}
+
+
+def test_sold_price_is_none_when_selling_line_missing():
+    # Item marked sold but no matching line resolves (e.g. deleted doc): honest None, never 0.
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [{"item_id": "item:OTHER", "unit_price": 10.0}]})]
+    assert sold_prices(items, docs) == {"item:1": None}
+
+
+def test_sold_price_is_none_without_status_doc():
+    items = [("item:1", {"status": "sold"})]
+    assert sold_prices(items, []) == {"item:1": None}
