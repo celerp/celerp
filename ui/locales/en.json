@@ -1140,6 +1140,7 @@
   "page.billing_addresses": "Billing Addresses",
   "page.book_entries": "Book Entries",
   "recon.book_match_hint": "Select a bank statement line, then click a book entry here to match it.",
+  "recon.select_line_first": "Select a bank statement line on the left first, then click a book entry to match it.",
   "page.bulk_attach_images_documents": "Bulk Attach Images & Documents",
   "page.charts": "Charts",
   "page.check_your_email": "Check your email",

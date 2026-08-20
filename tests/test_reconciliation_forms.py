@@ -46,7 +46,6 @@ _RECON = {
     "difference": 100.0,
     "tolerance": 1.0,
     "statement_date": "2026-08-01",
-    "unreconciled_entries": [],
 }
 _BANK = {"bank_name": "Test Bank", "account_number": "1234"}
 
@@ -57,9 +56,20 @@ def test_statement_line_is_selectable_not_a_match_picker():
         {"id": "line-9", "status": "unmatched", "amount": -20.0,
          "description": "Coffee", "line_date": "2026-08-02"},
         "sess-1", "USD"))
-    assert "reconSelectLine(this, 'line-9'" in html
+    assert "reconSelectLine(this, event)" in html
     assert "recon-row--selectable" in html
     assert "match-picker" not in html
+
+
+def test_suggested_confirm_binds_its_displayed_entry():
+    """Confirm posts the je_id the user saw, and targets the whole workspace."""
+    html = to_xml(_stmt_line_row(
+        {"id": "line-9", "status": "suggested", "amount": -20.0,
+         "description": "Coffee", "line_date": "2026-08-02",
+         "matched_je_id": "je:abc"},
+        "sess-1", "USD"))
+    assert '{"je_id":"je:abc"}' in html
+    assert 'hx-target="#recon-workspace"' in html
 
 
 def test_book_entries_are_clickable_to_match():
@@ -71,7 +81,9 @@ def test_book_entries_are_clickable_to_match():
                      "memo": "Coffee shop", "amount": -20.0}]
     html = to_xml(_workspace_view("sess-1", _RECON, _BANK, lines, book_entries, "USD"))
     assert 'id="book-entry-je:abc"' in html
-    assert "reconMatchEntry(this, 'je:abc')" in html
+    assert "reconMatchEntry(this)" in html
     assert "recon-book-entry" in html
+    assert "recon-book-filter" in html  # search box over the book entries
     assert 'data-session-id="sess-1"' in html
+    assert "data-select-first" in html  # toast copy travels on the element, not in JS
     assert "window.reconMatchEntry" in html  # the interaction script travels with the swap

@@ -8,6 +8,7 @@ import base64
 import binascii
 import csv
 import io
+import json
 from datetime import date as _date
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, fmt_money, party_options,
@@ -58,32 +60,53 @@ def _row_status_badge(status: str) -> FT:
 # Click a bank statement line to select it, then click a book entry to reconcile
 # the two on the spot, the way Xero handles a manual match. No popup, no reload.
 _RECON_MATCH_JS = """
-window.reconSelectLine = function(row, lineId, ev) {
-  if (ev && ev.target.closest('button, a, input, .row-actions')) return;
+window.reconSelectLine = function(row, ev) {
+  if (ev && ev.target.closest('button, a, input, select, textarea, label, form, .row-actions')) return;
   var ws = row.closest('.recon-workspace');
   if (!ws) return;
+  var wasActive = row.classList.contains('recon-row--active');
   ws.querySelectorAll('.recon-row--active').forEach(function(r){ r.classList.remove('recon-row--active'); });
-  row.classList.add('recon-row--active');
-  ws.dataset.activeLine = lineId;
-  ws.classList.add('recon-armed');
+  if (!wasActive) row.classList.add('recon-row--active');
 };
-window.reconMatchEntry = function(entry, jeId) {
+window.reconMatchEntry = function(entry) {
   var ws = entry.closest('.recon-workspace');
   if (!ws) return;
-  var lineId = ws.dataset.activeLine;
-  if (!lineId) {
-    celerpToast('Select a bank statement line on the left first, then click a book entry to match it.', 'info');
+  var active = ws.querySelector('.recon-row--active');
+  if (!active) {
+    celerpToast(ws.dataset.selectFirst, 'info');
     return;
   }
-  htmx.ajax('POST', '/accounting/reconcile/' + ws.dataset.sessionId + '/lines/' + lineId + '/match-confirm', {
-    values: {je_id: jeId},
-    target: '#stmt-line-' + lineId,
+  htmx.ajax('POST', '/accounting/reconcile/' + ws.dataset.sessionId + '/lines/'
+      + active.id.replace('stmt-line-', '') + '/match-confirm', {
+    values: {je_id: entry.id.replace('book-entry-', '')},
+    target: '#recon-workspace',
     swap: 'outerHTML',
   });
-  ws.querySelectorAll('.recon-row--active').forEach(function(r){ r.classList.remove('recon-row--active'); });
-  delete ws.dataset.activeLine;
-  ws.classList.remove('recon-armed');
 };
+window.reconFilterBook = function(input) {
+  var q = input.value.trim().toLowerCase();
+  input.closest('.recon-panel').querySelectorAll('.recon-book-entry').forEach(function(row) {
+    row.style.display = !q || row.textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+  });
+};
+if (!window._reconScrollHook) {
+  window._reconScrollHook = true;
+  var _reconScroll = {};
+  document.body.addEventListener('htmx:beforeSwap', function(ev) {
+    var ws = document.getElementById('recon-workspace');
+    if (!ws || !ws.contains(ev.detail.target) && ev.detail.target !== ws) return;
+    _reconScroll = {};
+    ws.querySelectorAll('.recon-panel-body').forEach(function(b, i) { _reconScroll[i] = b.scrollTop; });
+  });
+  document.body.addEventListener('htmx:afterSettle', function() {
+    var ws = document.getElementById('recon-workspace');
+    if (!ws) return;
+    ws.querySelectorAll('.recon-panel-body').forEach(function(b, i) {
+      if (_reconScroll[i]) b.scrollTop = _reconScroll[i];
+    });
+    _reconScroll = {};
+  });
+}
 """
 
 
@@ -117,7 +140,10 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
             actions.append(
                 Button(t("btn.confirm"),
                     hx_post=f"/accounting/reconcile/{session_id}/lines/{lid}/match-confirm",
-                    hx_target=f"#stmt-line-{lid}",
+                    # Bind the entry the user is looking at, so a suggestion that
+                    # changes between render and click cannot match silently.
+                    hx_vals=hx_vals({"je_id": str(line.get("matched_je_id") or "")}),
+                    hx_target="#recon-workspace",
                     hx_swap="outerHTML",
                     cls="btn btn--xs btn--primary",
                 )
@@ -125,7 +151,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
         actions.append(
             Button(t("btn.skip"),
                 hx_post=f"/accounting/reconcile/{session_id}/lines/{lid}/skip",
-                hx_target=f"#stmt-line-{lid}",
+                hx_target="#recon-workspace",
                 hx_swap="outerHTML",
                 cls="btn btn--xs btn--outline",
             )
@@ -134,7 +160,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
         actions.append(
             Button(t("btn.undo"),
                 hx_post=f"/accounting/reconcile/{session_id}/lines/{lid}/unmatch",
-                hx_target=f"#stmt-line-{lid}",
+                hx_target="#recon-workspace",
                 hx_swap="outerHTML",
                 cls="btn btn--xs btn--outline",
             )
@@ -159,7 +185,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
         Div(id=f"recon-expand-{lid}", cls="recon-row-expand"),
         id=f"stmt-line-{lid}",
         cls=row_cls + (" recon-row--selectable" if selectable else ""),
-        onclick=(f"reconSelectLine(this, '{lid}', event)" if selectable else None),
+        onclick=("reconSelectLine(this, event)" if selectable else None),
     )
 
 
@@ -210,7 +236,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
                 cls="form-actions",
             ),
             hx_post=f"/accounting/reconcile/{session_id}/lines/{line_id}/create-confirm",
-            hx_target=f"#stmt-line-{line_id}",
+            hx_target="#recon-workspace",
             hx_swap="outerHTML",
         ),
         cls="recon-inline-form",
@@ -257,7 +283,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                 cls="form-actions",
             ),
             hx_post=f"/accounting/reconcile/{session_id}/lines/{line_id}/split-confirm",
-            hx_target=f"#stmt-line-{line_id}",
+            hx_target="#recon-workspace",
             hx_swap="outerHTML",
         ),
         cls="recon-inline-form",
@@ -292,6 +318,7 @@ def _workspace_view(
     lines: list[dict],
     book_entries: list[dict],
     currency: str,
+    notice: str | None = None,
 ) -> FT:
     total = len(lines)
     matched = sum(1 for l in lines if l["status"] in ("matched", "created"))
@@ -308,7 +335,10 @@ def _workspace_view(
 
     # Build sets for unmatched book entries
     matched_je_ids = {l["matched_je_id"] for l in lines if l.get("matched_je_id")}
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in matched_je_ids]
+    unmatched_entries = sorted(
+        (e for e in book_entries if e["je_id"] not in matched_je_ids),
+        key=lambda e: e.get("ts") or "", reverse=True,
+    )
 
     bank_name = bank.get("bank_name", "")
     acc_num = bank.get("account_number", "")
@@ -389,6 +419,9 @@ def _workspace_view(
     book_panel = Div(
         H3(t("page.book_entries"), cls="recon-panel-title"),
         P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
+        Input(type="search", placeholder=t("label.search"),
+              oninput="reconFilterBook(this)",
+              cls="form-input recon-book-filter") if unmatched_entries else None,
         Div(
             *[
                 Div(
@@ -403,7 +436,7 @@ def _workspace_view(
                     ),
                     cls="recon-row recon-row--unmatched recon-book-entry",
                     id=f"book-entry-{e['je_id']}",
-                    onclick=f"reconMatchEntry(this, '{e['je_id']}')",
+                    onclick="reconMatchEntry(this)",
                 )
                 for e in unmatched_entries
             ],
@@ -427,10 +460,33 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
+        Script(f"celerpToast({json.dumps(notice)}, 'error');") if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
-        **{"data-session-id": session_id},
+        **{"data-session-id": session_id,
+           "data-select-first": t("recon.select_line_first")},
     )
+
+
+async def _fresh_workspace(token: str, session_id: str, notice: str | None = None):
+    """Re-render the whole workspace from fresh API state.
+
+    Every reconciliation mutation returns this, so the book panel, stats bar,
+    difference chip, and toolbar can never drift out of step with the lines.
+    """
+    try:
+        company = await api.get_company(token)
+        currency = company.get("currency", "")
+        recon = await api.get_reconciliation(token, session_id)
+        lines = (await api.get_statement_lines(token, session_id)).get("items", [])
+    except APIError as e:
+        if e.status == 401:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        return P(str(e.detail), cls="error-banner")
+    bank = recon.get("bank_account", {})
+    book_entries = recon.get("unreconciled_entries", [])
+    return _workspace_view(session_id, recon, bank, lines, book_entries, currency,
+                           notice=notice)
 
 
 # ── CSV import helpers ────────────────────────────────────────────────────────
@@ -751,53 +807,30 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="error-banner")
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-        except APIError:
-            currency = ""
         form = await request.form()
         je_id = str(form.get("je_id", "")).strip()
         if not je_id:
-            # Confirming a suggested line carries no entry: reconcile the entry the
-            # matcher already proposed, read from the line's current suggestion.
-            try:
-                lines_data = await api.get_statement_lines(token, session_id)
-                line_obj = next(
-                    (l for l in lines_data.get("items", []) if l["id"] == line_id), None)
-                je_id = str((line_obj or {}).get("matched_je_id") or "").strip()
-            except APIError:
-                je_id = ""
-        if not je_id:
-            return P(t("acct.missing_jeid"), cls="error-banner")
+            return await _fresh_workspace(token, session_id, notice=t("acct.missing_jeid"))
         try:
-            line = await api.match_recon_line(token, session_id, line_id, je_id)
+            await api.match_recon_line(token, session_id, line_id, je_id)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        # Drop the now-reconciled entry from the book panel so it cannot be
-        # picked twice. The line's own matched_je_id is authoritative.
-        matched_je_id = str(line.get("matched_je_id") or je_id).strip()
-        return (
-            _stmt_line_row(line, session_id, currency),
-            Div(id=f"book-entry-{matched_je_id}", hx_swap_oob="delete"),
-        )
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/create-confirm")
     async def create_confirm(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="error-banner")
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-        except APIError:
-            currency = ""
         form = await request.form()
         account_code = str(form.get("account_code", "")).strip()
         memo = str(form.get("memo", "")).strip()
         amount_raw = str(form.get("amount", "")).strip()
         if not account_code:
-            return P(t("acct.account_code_required"), cls="error-banner")
+            return await _fresh_workspace(token, session_id,
+                                          notice=t("acct.account_code_required"))
         data = {"account_code": account_code, "memo": memo}
         # No party chosen means no contact key, so an entry nobody named posts
         # exactly the request it posted before the picker existed.
@@ -810,21 +843,18 @@ def setup_routes(app):
             except ValueError:
                 pass
         try:
-            line = await api.create_recon_expense(token, session_id, line_id, data)
+            await api.create_recon_expense(token, session_id, line_id, data)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return _stmt_line_row(line, session_id, currency)
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/split-confirm")
     async def split_confirm(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="error-banner")
-        try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-        except APIError:
-            currency = ""
         form = await request.form()
         # Parse split-N fields
         splits = []
@@ -844,12 +874,15 @@ def setup_routes(app):
                     pass
             i += 1
         if not splits:
-            return P(t("acct.at_least_one_split_entry_required"), cls="error-banner")
+            return await _fresh_workspace(token, session_id,
+                                          notice=t("acct.at_least_one_split_entry_required"))
         try:
-            line = await api.split_recon_line(token, session_id, line_id, splits)
+            await api.split_recon_line(token, session_id, line_id, splits)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return _stmt_line_row(line, session_id, currency)
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/skip")
     async def skip_line(request: Request, session_id: str, line_id: str):
@@ -857,15 +890,12 @@ def setup_routes(app):
         if not token:
             return P(t("error.unauthorized"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-        except APIError:
-            currency = ""
-        try:
-            line = await api.skip_recon_line(token, session_id, line_id)
+            await api.skip_recon_line(token, session_id, line_id)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return _stmt_line_row(line, session_id, currency)
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/unmatch")
     async def unmatch_line(request: Request, session_id: str, line_id: str):
@@ -873,15 +903,12 @@ def setup_routes(app):
         if not token:
             return P(t("error.unauthorized"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-        except APIError:
-            currency = ""
-        try:
-            line = await api.unmatch_recon_line(token, session_id, line_id)
+            await api.unmatch_recon_line(token, session_id, line_id)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
-        return _stmt_line_row(line, session_id, currency)
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/auto-match")
     async def trigger_auto_match(request: Request, session_id: str):
@@ -890,18 +917,11 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="error-banner")
         try:
             await api.auto_match_recon(token, session_id)
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-            recon = await api.get_reconciliation(token, session_id)
-            lines_data = await api.get_statement_lines(token, session_id)
-            lines = lines_data.get("items", [])
-            bank = recon.get("bank_account", {})
-            book_entries = recon.get("unreconciled_entries", [])
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return P(str(e.detail), cls="error-banner")
-        return _workspace_view(session_id, recon, bank, lines, book_entries, currency)
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/bulk-confirm")
     async def trigger_bulk_confirm(request: Request, session_id: str):
@@ -910,18 +930,11 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="error-banner")
         try:
             await api.bulk_confirm_recon(token, session_id)
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-            recon = await api.get_reconciliation(token, session_id)
-            lines_data = await api.get_statement_lines(token, session_id)
-            lines = lines_data.get("items", [])
-            bank = recon.get("bank_account", {})
-            book_entries = recon.get("unreconciled_entries", [])
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return P(str(e.detail), cls="error-banner")
-        return _workspace_view(session_id, recon, bank, lines, book_entries, currency)
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/complete")
     async def complete_recon(request: Request, session_id: str):
@@ -955,15 +968,8 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="error-banner")
         try:
             await api.write_off_recon(token, session_id, {})
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-            recon = await api.get_reconciliation(token, session_id)
-            lines_data = await api.get_statement_lines(token, session_id)
-            lines = lines_data.get("items", [])
-            bank = recon.get("bank_account", {})
-            book_entries = recon.get("unreconciled_entries", [])
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return P(str(e.detail), cls="error-banner")
-        return _workspace_view(session_id, recon, bank, lines, book_entries, currency)
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
