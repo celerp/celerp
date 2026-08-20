@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Production-run execution: build -> issue components -> receive finished goods.
 
-Covers the headline P3 correctness rule — completion restocks the *real* product (keyed on
-``allow_splitting``: increment the SKU, or create a discrete lot under it) and never spawns a
-nameless throwaway item — plus the completion journal entry and status transitions.
+Covers the headline P3 correctness rule - every completion lands the output as a discrete lot
+under the real product (never a nameless throwaway item, never a silent SKU-pile bump), so a run
+is always a record of a specific batch - plus the completion journal entry and status transitions.
 """
 from __future__ import annotations
 
@@ -49,8 +49,8 @@ def _balanced(entries: list[dict]) -> None:
 
 @pytest.mark.asyncio
 async def test_build_issue_receive_restocks_product_and_posts_je(client, session):
-    """The full two-step run: issue decrements components and starts the run; receive restocks the
-    product (same SKU, incremented) and completes it. No nameless item is ever created."""
+    """The full two-step run: issue decrements components and starts the run; receive lands the
+    output as a discrete lot under the product and completes it. No nameless item is ever created."""
     token = await _register(client)
     gold = await _item(client, token, "GOLD", quantity=100, cost_total=8000)  # unit cost 80
     ring = await _item(client, token, "RING", quantity=0)
@@ -64,14 +64,19 @@ async def test_build_issue_receive_restocks_product_and_posts_je(client, session
     assert state["status"] == "in_progress" and state["is_in_production"] is True
     assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 90  # 100 - 10
 
-    # Receive all -> product restocked (same item), run auto-completes.
+    # Receive all -> output lands as a discrete lot under the product, run auto-completes.
     assert (await client.post(f"/manufacturing/{run}/receive", headers=_h(token))).status_code == 200
     state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
     assert state["status"] == "completed" and state["is_in_production"] is False
 
     items = (await client.get("/items", headers=_h(token))).json()["items"]
     rings = [i for i in items if i.get("sku") == "RING"]
-    assert len(rings) == 1 and rings[0]["id"] == ring and rings[0]["quantity"] == 2  # incremented, not a clone
+    assert len(rings) == 2  # the catalog product + one discrete lot (always auto-split, like invoices)
+    product = next(i for i in rings if i["id"] == ring)
+    lot = next(i for i in rings if i["id"] != ring)
+    assert product["quantity"] == 0  # the product itself is never the pile
+    assert lot["quantity"] == 2 and lot["manufacturing_order_id"] == run and lot.get("lot") is True
+    assert lot.get("allow_splitting") is True  # a splittable product yields a splittable lot
     assert not any(i.get("name") in (None, "") for i in items)  # no nameless throwaway item
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
@@ -95,7 +100,13 @@ async def test_one_tap_build_completes_in_one_call(client):
                              json={"quantity": 3, "complete": True})).json()["id"]
     assert (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()["status"] == "completed"
     assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 85  # 100 - 15
-    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 0  # product is never the pile
+
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    rings = [i for i in items if i.get("sku") == "R"]
+    assert len(rings) == 2  # product + one discrete lot from the one-tap run
+    lot = next(i for i in rings if i["id"] != ring)
+    assert lot["quantity"] == 3 and lot["manufacturing_order_id"] == run and lot.get("lot") is True
 
 
 @pytest.mark.asyncio

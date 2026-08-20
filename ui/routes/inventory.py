@@ -2331,8 +2331,9 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
+        items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, today)))
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today)))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
     async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
@@ -6396,12 +6397,21 @@ def _worksheet_unit_label(unit: str) -> str:
     return {"min": "min", "hr": "hr", "day": "day"}.get(unit, unit or "min")
 
 
-def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
+def _component_label(c: dict, by_id: dict[str, dict]) -> str:
+    """SKU plus name for a recipe component. Imported-recipe rows carry only a SKU, so the name
+    is resolved from the item list at render; an item that no longer exists shows its SKU alone."""
+    sku = c.get("sku") or c.get("item_id") or ""
+    name = c.get("name") or (by_id.get(c.get("item_id") or "") or {}).get("name") or ""
+    return f"{sku} - {name}".strip(" -") or EMPTY
+
+
+def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: str) -> FT:
     """Standalone printable production worksheet: product info + images + materials + workflow.
     Costs never appear here — this is a shop-floor build sheet, not a costing document. Mirrors
     the document print view (auto window.print(); the browser saves it as one PDF)."""
     recipe = item.get("recipe") or {}
     EM = EMPTY
+    by_id = {(it.get("id") or it.get("entity_id") or ""): it for it in items}
 
     # ── Product images ──
     images = _item_image_files(item)
@@ -6422,7 +6432,7 @@ def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
             Table(
                 Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"))),
                 Tbody(*[Tr(
-                    Td(f"{c.get('sku') or ''} {('- ' + c['name']) if c.get('name') else ''}".strip(" -") or EM),
+                    Td(_component_label(c, by_id)),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
                     Td(c.get("unit") or EM),
                 ) for c in comps]),
