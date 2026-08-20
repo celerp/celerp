@@ -320,6 +320,9 @@ a:hover { text-decoration: underline; }
   .table-top-scroll.top-scroll-pinned {
     position: fixed;
     top: 0;
+    /* Floor at 0 until JS sets the real width right after this class lands - the base rule's
+       width:100% would otherwise resolve against the viewport for a moment and clamp scrollLeft. */
+    width: 0;
     z-index: 6;
     background: var(--c-bg3);
   }

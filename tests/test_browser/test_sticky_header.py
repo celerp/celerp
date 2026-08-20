@@ -315,6 +315,21 @@ def test_pinned_header_tracks_horizontal_scroll(page, ui_server, sticky_inventor
     assert lefts is not None and abs(lefts[0] - lefts[1]) <= 2
 
 
+def test_top_scroll_pinned_css_floors_width_before_js_sets_it(page, ui_server, sticky_inventory):
+    _goto(page, ui_server)
+    page.wait_for_selector(".table-top-scroll")
+    width = page.evaluate(
+        """() => {
+          var p = document.querySelector('.table-top-scroll');
+          p.classList.add('top-scroll-pinned');
+          var w = getComputedStyle(p).width;
+          p.classList.remove('top-scroll-pinned');
+          return w;
+        }"""
+    )
+    assert width == "0px", f"unsized .top-scroll-pinned resolved to {width}, not a safe 0px floor"
+
+
 # ── the frozen header stays clipped inside the table, never painting over the sidebar (#274) ──
 def test_pinned_header_never_overlaps_sidebar_when_scrolled_right(page, ui_server, sticky_inventory):
     _goto(page, ui_server)
