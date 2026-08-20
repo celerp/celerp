@@ -2428,10 +2428,7 @@ async def test_sold_view_attaches_realized_sale_price(client, session, auth, _se
     assert "SOLDPX-A" in rows, "sold item missing from status=sold list"
     assert rows["SOLDPX-A"]["sold_price"] == 100.0
 
-
-@pytest.mark.asyncio
-async def test_sold_price_absent_outside_sold_view(client, session, auth, _setup_ids):
-    """sold_price is computed only for the sold view, so an available item never carries it."""
+    # sold_price is computed only for the sold view: an available item never carries it.
     await _create_item(client, auth, "SOLDPX-B", 5, cost_price=4.0, sell_by="carat")
     r = await client.get("/items", headers=auth["headers"], params={"status": "available"})
     assert r.status_code == 200, r.text
