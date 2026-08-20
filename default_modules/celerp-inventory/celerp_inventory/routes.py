@@ -647,6 +647,34 @@ async def list_items(
         )
         result = [r for r in result if r.get("id") in scope_value]
 
+    # Sold price: when the sold view is active, price each sold item from the line of
+    # the document that sold it (status_doc_id). A realized sale price is not a cost, so
+    # (like the memo value below) it is not gated by view_inventory_costs. Computed here
+    # over the loaded rows; attached to the result dicts after visibility rebuild.
+    sold_scoped = "sold" in (status_set or {str(status).lower()} if status else set())
+    sold_price: dict[str, float | None] = {}
+    if sold_scoped:
+        from celerp.services.holdings import sold_prices
+        sold_rows = [r for r in rows if str((r.state or {}).get("status") or "").lower() == "sold"]
+        sold_doc_ids = {
+            str((r.state or {}).get("status_doc_id"))
+            for r in sold_rows if (r.state or {}).get("status_doc_id")
+        }
+        if sold_doc_ids:
+            sold_docs = (
+                await session.execute(
+                    select(Projection).where(
+                        Projection.company_id == company_id,
+                        Projection.entity_type == "doc",
+                        Projection.entity_id.in_(sold_doc_ids),
+                    )
+                )
+            ).scalars().all()
+            sold_price = sold_prices(
+                [(r.entity_id, r.state) for r in sold_rows],
+                [(d.entity_id, d.state) for d in sold_docs],
+            )
+
     if category:
         cats = {c.strip() for c in category.split(",") if c.strip()}
         result = [r for r in result if str(r.get("category") or "") in cats]
@@ -742,6 +770,12 @@ async def list_items(
     if holding_scoped:
         for r in result:
             r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"), 0.0)
+
+    # Attach the realized sale price to each sold row (ungated: a sale price is not a cost).
+    if sold_scoped:
+        for r in result:
+            if str(r.get("status") or "").lower() == "sold":
+                r["sold_price"] = sold_price.get(r.get("id"))
 
     # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
     # so staff always see the items that need to be picked/sold first at the top.

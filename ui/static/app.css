@@ -320,6 +320,9 @@ a:hover { text-decoration: underline; }
   .table-top-scroll.top-scroll-pinned {
     position: fixed;
     top: 0;
+    /* Floor at 0 until JS sets the real width right after this class lands - the base rule's
+       width:100% would otherwise resolve against the viewport for a moment and clamp scrollLeft. */
+    width: 0;
     z-index: 6;
     background: var(--c-bg3);
   }
@@ -1882,6 +1885,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .item-link--active { color: var(--c-accent); }
 .item-link--active:hover { opacity: 0.7; }
 .item-link--inactive { color: var(--c-text2); opacity: 0.4; cursor: default; }
+/* Finalized SKU cell: eye icon and identifier text on one row, matching the editable view. */
+.li-ident-view { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.li-ident-view > span { overflow: hidden; text-overflow: ellipsis; }
 .catalog-ac-input { width: 100%; padding-right: 20px !important; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%230ea57a'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 6px center; }
 .catalog-ac-list { position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 4px; max-height: 200px; overflow-y: auto; box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
 .catalog-ac-option { padding: 6px 10px; font-size: 12px; cursor: pointer; border-bottom: 1px solid var(--c-bg3); }
