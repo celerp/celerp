@@ -1245,7 +1245,7 @@ async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = 
 
 
 async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None) -> dict:
-    """Receive finished goods from a run (restocks per allow_splitting). None = receive all remaining."""
+    """Receive finished goods from a run as a discrete lot. None = receive all remaining."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/receive", json={"quantity": quantity})).json()
 

@@ -718,8 +718,8 @@ class MfgOrderIssued(BaseModel):
 
 
 class MfgOrderReceived(BaseModel):
-    # Finished goods received from a run. quantity restocks the output (per allow_splitting);
-    # lot_item_id is set when a non-splittable output created a new lot under the product.
+    # Finished goods received from a run. quantity is received as a discrete lot under the product;
+    # lot_item_id is that lot's id.
     quantity: float
     lot_item_id: str | None = None
     received_by: str | None = None
