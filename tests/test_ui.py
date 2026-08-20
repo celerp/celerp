@@ -1420,6 +1420,41 @@ class TestDocsPage:
         assert b"catalog-ac-list" in html, (
             "Draft doc must include catalog-ac-list dropdown container"
         )
+        # The catalog-link eye must render on draft lines too (shared helper).
+        assert b"item-link" in html, "Draft line must include the catalog-link eye"
+
+    @pytest.mark.asyncio
+    async def test_finalized_doc_line_has_catalog_link_eye(self, ui_client):
+        """The catalog-link eye must appear on lines of a FINALIZED doc, not only drafts.
+
+        A finalized (sent/paid) line coming from the catalog shows the active eye
+        linking to /inventory/{id}; a line with no catalog item shows the inert
+        placeholder. Same affordance in every document state (GDR 2h uniformity).
+        """
+        final_doc = {
+            **_DOCS[0],  # status "sent" -> non-editable, finalized render path
+            "line_items": [
+                {"description": "Ruby", "entity_id": "i:42", "quantity": 1,
+                 "unit_price": 100, "line_total": 100},
+                {"description": "Custom note", "quantity": 1,
+                 "unit_price": 5, "line_total": 5},
+            ],
+        }
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=final_doc)):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # Catalog line: active eye linking to the item.
+        assert "item-link item-link--active" in html, (
+            "Finalized catalog line must show the active catalog-link eye"
+        )
+        assert "/inventory/i:42" in html, (
+            "Finalized catalog eye must link to /inventory/{entity_id}"
+        )
+        # Non-catalog line: inert placeholder eye, never a broken active link.
+        assert "item-link item-link--inactive" in html, (
+            "Finalized non-catalog line must show the inert placeholder eye"
+        )
 
     @pytest.mark.asyncio
     async def test_docs_type_filter(self, ui_client):
