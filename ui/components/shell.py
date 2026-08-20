@@ -1157,7 +1157,13 @@ _STICKY_HEADER_JS = """
     var thead = t.tHead; if(!thead || !thead.rows.length) return;
     // Idempotent: drop any stale artifacts before recapturing, so re-pinning never duplicates them.
     clearPinArtifacts(t);
-    var cells = thead.rows[0].cells;
+    // Visible cells only: the column manager hides a column by display:none on its th and tds,
+    // and hidden cells generate no boxes. colgroup cols map to RENDERED boxes positionally, so a
+    // col emitted for a hidden column would land on the next visible column and shift every
+    // column after it under the wrong header.
+    var allCells = thead.rows[0].cells, cells = [], ci;
+    for(ci=0;ci<allCells.length;ci++){ if(getComputedStyle(allCells[ci]).display !== 'none') cells.push(allCells[ci]); }
+    if(!cells.length) return;
     var widths = [], i;
     for(i=0;i<cells.length;i++) widths.push(cells[i].getBoundingClientRect().width);
     var theadH = thead.getBoundingClientRect().height;

@@ -230,6 +230,33 @@ class TestInventoryCellRenderers:
         from fasthtml.common import to_xml
         return to_xml(td)
 
+    def _schema_with_sold_price(self):
+        return self._schema() + [{
+            "key": "sold_price", "label": "Sold", "type": "money", "editable": False,
+        }]
+
+    def test_sold_price_renderer_value_with_unit_annotation_read_only(self):
+        # A realized sale price renders as a plain money cell with its sell-by
+        # annotation, and is derived, not editable: no click-to-edit affordance.
+        from ui.routes.inventory import _inventory_cell_renderers
+        renderers = _inventory_cell_renderers(self._schema_with_sold_price(), units_map=self._umap())
+        assert "sold_price" in renderers
+        td = renderers["sold_price"]("item:1", {"sold_price": 89.96, "sell_by": "carat"})
+        s = self._render_str(td)
+        assert "89.96" in s
+        assert "/ carat" in s
+        assert "hx-get" not in s.lower()
+        assert "dblclick" not in s.lower()
+        assert "cell--clickable" not in s
+
+    def test_sold_price_renderer_none_shows_dash_no_annotation(self):
+        from ui.routes.inventory import _inventory_cell_renderers
+        renderers = _inventory_cell_renderers(self._schema_with_sold_price(), units_map=self._umap())
+        td = renderers["sold_price"]("item:1", {"sold_price": None, "sell_by": "carat"})
+        s = self._render_str(td)
+        assert "--" in s
+        assert "/ carat" not in s
+
     def test_weight_renderer_derived_for_weight_sell_by(self):
         from ui.routes.inventory import _inventory_cell_renderers
         schema = self._schema()

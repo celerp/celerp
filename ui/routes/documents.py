@@ -378,6 +378,22 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
+def _item_link_eye(entity_id: str, title: str = "View item details") -> FT:
+    """Eye glyph on a document line linking to its catalog item, in EVERY document state.
+    Active (accent, opens the catalog) when the line came from the catalog; a greyed,
+    inert placeholder otherwise, so the SKU column reads the same in the draft and
+    finalized views. One source of truth for both row builders (the editable SKU input
+    and the finalized SKU cell); the draft autocomplete JS re-points the same element
+    live as the user picks an item."""
+    active = bool(entity_id)
+    return A("👁", href=f"/inventory/{entity_id}" if active else "#",
+             target="_blank" if active else "",
+             cls="item-link item-link--active" if active else "item-link item-link--inactive",
+             data_name="item_link",
+             title=title if active else "No linked item",
+             onclick="" if active else "event.preventDefault();")
+
+
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
     "purchase_order": "Purchase Orders",
@@ -6236,12 +6252,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     line_body_id = "line-body"
     if is_editable:
         def _sku_input(val: str = "", entity_id: str = "", barcode: str = "") -> FT:
-            eye_cls = "item-link item-link--active" if entity_id else "item-link item-link--inactive"
-            eye_href = f"/inventory/{entity_id}" if entity_id else "#"
-            eye = A("👁", href=eye_href, target="_blank" if entity_id else "",
-                     cls=eye_cls, data_name="item_link",
-                     title="View item details" if entity_id else "No linked item",
-                     onclick="" if entity_id else "event.preventDefault();")
+            eye = _item_link_eye(entity_id)
             # Barcode is stamped on every line (hidden input) regardless of the display
             # mode, so the stored data never depends on the company's identifier setting.
             # The visible line under the SKU input exists only when barcodes are shown.
@@ -7989,16 +8000,17 @@ async function celerpCsvImport(input, entityId) {{
                 [Div(_ln, cls="li-measure") for _ln in measure_sublines(li, item_meta=_meta)]
                 if doc_type in _INVOICE_LAYOUT_DOC_TYPES else []
             )
-            # On a shipping document the catalog item is where HS code / origin are
-            # maintained, so the SKU links straight to it (one click to fix the source).
+            # The eye links to the catalog item in every state (shared with the editable
+            # view). On a shipping document the catalog item is where HS code / origin are
+            # maintained, so the eye there says so; one affordance, no duplicate SKU link.
             _ident_1st, _ident_2nd = line_identifier(li, line_identifier_mode)
             _ident_2nd_div = Div(_ident_2nd, cls="li-ident-2nd", title=_ident_2nd) if _ident_2nd else None
-            _sku_cell = (
-                Td(A(_ident_1st, href=f"/inventory/{li_eid}", target="_blank",
-                     title="Open this item in the catalog (HS code and origin live there)",
-                     cls="auth-link"), _ident_2nd_div, cls="col-sku")
-                if pol["customs"] and li_eid and _ident_1st
-                else Td(format_value(_ident_1st or None), _ident_2nd_div, cls="col-sku")
+            _eye_title = ("Open this item in the catalog (HS code and origin live there)"
+                          if pol["customs"] else "View item details")
+            _sku_cell = Td(
+                Div(_item_link_eye(li_eid, title=_eye_title),
+                    Span(format_value(_ident_1st or None)), cls="li-ident-view"),
+                _ident_2nd_div, cls="col-sku",
             )
             cells += [
                 _sku_cell,
