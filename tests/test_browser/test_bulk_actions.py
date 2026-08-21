@@ -78,5 +78,46 @@ def test_bulk_transfer_modal(page, ui_server, bulk_item_ids):
     assert action_select.count() > 0, "No action select dropdown in bulk toolbar"
     options_text = page.locator("#bulk-action-select option").all_inner_texts()
     assert "Transfer" in options_text, f"Transfer option not found. Got: {options_text}"
-    # Inventory items are archived/disposed rather than hard-deleted.
-    assert "Archive / Dispose" in options_text, f"Archive/Dispose option not found. Got: {options_text}"
+    # "Dispose" was a misleading label for what only archives; the menu now reads plain "Archive",
+    # with a separate real "Write off" action that seeds a write-off list.
+    assert "Archive" in options_text and "Archive / Dispose" not in options_text, \
+        f"Archive option not renamed. Got: {options_text}"
+    assert any("Write off" in o for o in options_text), f"No Write off bulk action. Got: {options_text}"
+
+
+def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
+    """J2: archiving a still-stocked item surfaces an unmissable two-way choice (keep the stock on
+    the books vs write it off) instead of silently archiving, and takes no ledger action on its own.
+    Control: a zero-stock item archives plain, with no choice dialog."""
+    native: list[str] = []
+    page.on("dialog", lambda d: (native.append(d.message), d.accept()))
+
+    # qty>0 -> the two-way choice modal, no automatic archive or JE.
+    pos_id = api.post("/items", json={
+        "sku": "WO-GUARD-POS", "sell_by": "piece", "name": "Guard Pos", "quantity": 7}).json()["id"]
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    row = page.locator(f'input.row-select[value="{pos_id}"]')
+    row.wait_for(timeout=5000)
+    row.click()
+    page.wait_for_selector("#bulk-toolbar.is-active", timeout=3000)
+    n0 = len(native)
+    page.locator("#bulk-action-select").select_option("archive")
+    # A real in-page choice appears (not a native confirm, not a silent archive).
+    page.get_by_text("Write off remaining stock").wait_for(state="visible", timeout=3000)
+    assert page.get_by_text("Keep stock on books").count() > 0
+    assert len(native) == n0, "archive fired a native confirm instead of the two-way choice"
+    # No automatic ledger/status action while the choice is pending.
+    assert api.get(f"/items/{pos_id}").json()["status"] == "available"
+
+    # Control: qty=0 archives plain, with no two-way choice (behaviour as at merge-base).
+    zero_id = api.post("/items", json={
+        "sku": "WO-GUARD-ZERO", "sell_by": "piece", "name": "Guard Zero", "quantity": 0}).json()["id"]
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    zrow = page.locator(f'input.row-select[value="{zero_id}"]')
+    zrow.wait_for(timeout=5000)
+    zrow.click()
+    page.wait_for_selector("#bulk-toolbar.is-active", timeout=3000)
+    page.locator("#bulk-action-select").select_option("archive")
+    assert page.get_by_text("Write off remaining stock").count() == 0, "zero-stock archive showed the choice"
+    page.wait_for_timeout(500)
+    assert api.get(f"/items/{zero_id}").json()["status"] == "archived"

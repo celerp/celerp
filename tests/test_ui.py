@@ -19523,3 +19523,65 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
         )
     assert r2.status_code == 400
     assert "reserved_conflicts" not in r2.json()
+
+
+class TestDisposedTab:
+    """The disposal register: the Disposed status tab and its rows (J3)."""
+
+    @pytest.mark.asyncio
+    async def test_disposed_tab_lists_rows_linked_to_writeoff_record(self, ui_client):
+        """Filtering to Disposed lists each written-off lot with its value and a status badge whose
+        number links back to the source write-off record (where the reason and account live)."""
+        import re as _re
+        disposed = {"entity_id": "gc:900", "name": "Spoiled Batch", "status": "disposed",
+                    "status_doc_id": "doc:WO-2026-0001", "status_doc_number": "WO-2026-0001",
+                    "total_cost": "50.00"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [disposed], "total": 1})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        # A Disposed tab exists in the status-tab strip (scoped: status=disposed also rides in the
+        # search box and pagination links, so a bare substring check is not enough).
+        tabs = _re.search(r'id="status-tabs".*?</div>', body, _re.S)
+        assert tabs and "Disposed" in tabs.group(0), "no Disposed status tab rendered"
+        # The disposed row shows its value and a badge linking to the source write-off record.
+        _pre, _post = body.split("cell-gc-900-status", 1)
+        cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--disposed" in cell
+        assert 'href="/docs/doc:WO-2026-0001"' in cell and "WO-2026-0001" in cell
+        assert "50.00" in body
+
+    @pytest.mark.asyncio
+    async def test_disposed_tab_empty_state(self, ui_client):
+        """With nothing disposed the Disposed tab still renders and shows the standard per-status
+        empty message."""
+        import re as _re
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        tabs = _re.search(r'id="status-tabs".*?</div>', body, _re.S)
+        assert tabs and "Disposed" in tabs.group(0), "no Disposed status tab rendered"
+        assert "No disposed items." in body
