@@ -746,7 +746,7 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
     )
 
 
-# Inventory-audit stock adjustment accounts (O1 default - overridable later via settings):
+# Inventory-audit stock adjustment accounts:
 #   shrinkage (count < system): Dr 5100 Cost of Goods Sold / Cr 1130-P Inventory
 #   overage   (count > system): Dr 1130-P Inventory          / Cr 4300 Other Income
 _AUDIT_SHRINKAGE_ACCT = "5100"
@@ -754,44 +754,43 @@ _AUDIT_OVERAGE_ACCT = "4300"
 _AUDIT_INVENTORY_ACCT = _INVENTORY_ACCT
 
 
-def _audit_je_id(list_id: str, cycle: int) -> str:
-    return f"je:auto:{list_id}:audit:{cycle}"
+# Memo prefix per list-adjustment kind; the full memo is "<prefix> <list_id>".
+_ADJUST_MEMO = {"audit": "Inventory audit adjustment", "writeoff": "Inventory write-off"}
 
 
-async def create_for_audit_adjustment(
-    session, *, company_id, user_id, list_id: str, shrinkage_value: float, overage_value: float, cycle: int = 0,
+def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:
+    return f"je:auto:{list_id}:{kind}:{cycle}"
+
+
+async def create_for_line_adjustment(
+    session, *, company_id, user_id, list_id: str, kind: str, entries: list[dict], cycle: int = 0,
 ) -> None:
-    """Post the balanced inventory write-down/up JE for an audit's stock adjustment.
+    """Post one balanced auto JE for a list terminal that adjusts stock value.
 
-    shrinkage_value = total value lost (count below system); overage_value = total value gained.
-    Cycle-aware so a re-adjust after an undo posts a fresh JE rather than colliding on idempotency.
+    `entries` is the caller-built balanced set of debit/credit lines: audit builds fixed
+    shrinkage/overage lines; write-off builds one debit per chosen destination account against
+    a single Inventory credit. Idempotency is namespaced by kind+cycle so audit and write-off
+    never collide, and a re-run after an undo posts a fresh cycle rather than a duplicate.
     """
-    entries: list[dict] = []
-    if shrinkage_value > 1e-9:
-        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": round(float(shrinkage_value), 2), "credit": 0.0})
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": round(float(shrinkage_value), 2)})
-    if overage_value > 1e-9:
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": round(float(overage_value), 2), "credit": 0.0})
-        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": round(float(overage_value), 2)})
     if not entries:
         return  # nothing to post (no value change)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=_audit_je_id(list_id, cycle),
-        idem_create=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "c"),
-        idem_posted=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "p"),
-        memo=f"Inventory audit adjustment {list_id}",
+        je_id=_list_adjustment_je_id(list_id, kind, cycle),
+        idem_create=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "c"),
+        idem_posted=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "p"),
+        memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
         ts=__import__("datetime").date.today().isoformat(),
         entries=entries,
-        metadata_={"trigger": "audit.adjusted", "list_id": list_id},
+        metadata_={"trigger": f"{kind}.adjusted", "list_id": list_id},
     )
 
 
-async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: str, cycle: int = 0) -> None:
-    """Void the audit-adjustment JE (undo). No-op if it was never posted (zero-value adjustment)."""
-    je_id = _audit_je_id(list_id, cycle)
+async def void_for_list_adjustment(session, *, company_id, user_id, list_id: str, kind: str, cycle: int = 0) -> None:
+    """Void a list-adjustment JE (undo). No-op if it was never posted (zero-value adjustment)."""
+    je_id = _list_adjustment_je_id(list_id, kind, cycle)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is not None and row.state.get("status") == "posted":
         await emit_event(
@@ -800,13 +799,42 @@ async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: st
             entity_id=je_id,
             entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data=je_void_data(f"Reversed: audit {list_id} stock adjustment undone", row.state),
+            data=je_void_data(f"Reversed: {kind} {list_id} stock adjustment undone", row.state),
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=je_idempotency_key(list_id, f"audit.undo:{cycle}", "void"),
-            metadata_={"trigger": "audit.undo", "list_id": list_id},
+            idempotency_key=je_idempotency_key(list_id, f"{kind}.undo:{cycle}", "void"),
+            metadata_={"trigger": f"{kind}.undo", "list_id": list_id},
         )
+
+
+async def create_for_audit_adjustment(
+    session, *, company_id, user_id, list_id: str, shrinkage_value: float, overage_value: float, cycle: int = 0,
+) -> None:
+    """Post the balanced inventory write-down/up JE for an audit's stock adjustment.
+
+    shrinkage_value = total value lost (count below system); overage_value = total value gained.
+    Thin wrapper: builds the fixed-account shrinkage/overage entries and delegates to the shared
+    list-adjustment poster (kind="audit"), so audit and write-off share one posting core.
+    """
+    entries: list[dict] = []
+    if shrinkage_value > 1e-9:
+        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": round(float(shrinkage_value), 2), "credit": 0.0})
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": round(float(shrinkage_value), 2)})
+    if overage_value > 1e-9:
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": round(float(overage_value), 2), "credit": 0.0})
+        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": round(float(overage_value), 2)})
+    await create_for_line_adjustment(
+        session, company_id=company_id, user_id=user_id, list_id=list_id,
+        kind="audit", entries=entries, cycle=cycle,
+    )
+
+
+async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: str, cycle: int = 0) -> None:
+    """Void the audit-adjustment JE (undo). No-op if it was never posted (zero-value adjustment)."""
+    await void_for_list_adjustment(
+        session, company_id=company_id, user_id=user_id, list_id=list_id, kind="audit", cycle=cycle,
+    )
 
 
 async def upsert_opening_inventory_je(
