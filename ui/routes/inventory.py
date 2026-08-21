@@ -3424,6 +3424,22 @@ function celerpPrintLabel(entityId, templateId) {
         expired = result.get("expired", len(entity_ids))
         return _bulk_destructive_success(f"{expired} item(s) expired.")
 
+    # ── Bulk write-off (seed a write-off list from the selection, then open it) ──
+    @app.post("/api/items/bulk/write-off")
+    async def bulk_item_write_off(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            new = await api.create_writeoff(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{new['id']}"})
+
     # ── Bulk duplicate (create a copy of each selected item) ─────────────
 
     @app.post("/api/items/bulk/duplicate")
@@ -4819,6 +4835,8 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         action_options.append(Option(t("inv.send_to"), value="send_to"))
     action_options.extend(module_action_opts)
     action_options.append(Option(t("inv.archive"), value="archive"))
+    if role_has_permission(settings or {}, role, "edit_documents"):
+        action_options.append(Option(t("inv.writeoff"), value="write_off"))
     action_options.append(Option(t("inv.expire"), value="expire"))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inv.duplicate"), value="duplicate"))

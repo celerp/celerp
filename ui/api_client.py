@@ -1413,6 +1413,12 @@ async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty:
         return _raise(await c.patch(f"/lists/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
 
 
+# ── Inventory write-offs (a list_type=writeoff on the unified /lists lifecycle) ──
+async def create_writeoff(token: str, entity_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/lists/writeoff", json={"entity_ids": entity_ids})).json()
+
+
 async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
