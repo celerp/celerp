@@ -92,9 +92,12 @@ def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
     native: list[str] = []
     page.on("dialog", lambda d: (native.append(d.message), d.accept()))
 
-    # qty>0 -> the two-way choice modal, no automatic archive or JE.
+    # qty>0 -> the two-way choice modal, no automatic archive or JE. The item must be available
+    # (on the books) for the guard to matter: a draft holds no stock value and cannot be archived
+    # through the generic status path in the first place.
     pos_id = api.post("/items", json={
         "sku": "WO-GUARD-POS", "sell_by": "piece", "name": "Guard Pos", "quantity": 7}).json()["id"]
+    api.post("/items/bulk/make-available", json={"entity_ids": [pos_id]})
     page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     row = page.locator(f'input.row-select[value="{pos_id}"]')
     row.wait_for(timeout=5000)
@@ -109,10 +112,15 @@ def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
     # No automatic ledger/status action while the choice is pending.
     assert api.get(f"/items/{pos_id}").json()["status"] == "available"
 
-    # Control: qty=0 archives plain, with no two-way choice (behaviour as at merge-base).
+    # Control: an available but depleted (qty=0) item archives plain, with no two-way choice
+    # (behaviour as at merge-base).
     zero_id = api.post("/items", json={
         "sku": "WO-GUARD-ZERO", "sell_by": "piece", "name": "Guard Zero", "quantity": 0}).json()["id"]
+    api.post("/items/bulk/make-available", json={"entity_ids": [zero_id]})
     page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    # Selection persists across pages by design; drop the still-selected stocked item from the first
+    # scenario so only the depleted item is under the archive action here.
+    page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
     zrow = page.locator(f'input.row-select[value="{zero_id}"]')
     zrow.wait_for(timeout=5000)
     zrow.click()
