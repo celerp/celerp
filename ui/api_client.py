@@ -1419,6 +1419,17 @@ async def create_writeoff(token: str, entity_ids: list[str]) -> dict:
         return _raise(await c.post("/lists/writeoff", json={"entity_ids": entity_ids})).json()
 
 
+async def set_writeoff_line(token: str, entity_id: str, *, line_id: str | None = None, item_id: str | None = None, qty_out: float | None = None, account: str | None = None, comment: str | None = None) -> dict:
+    body: dict = {}
+    if line_id is not None: body["line_id"] = line_id
+    if item_id is not None: body["item_id"] = item_id
+    if qty_out is not None: body["qty_out"] = qty_out
+    if account is not None: body["account"] = account
+    if comment is not None: body["comment"] = comment
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/writeoff-line", json=body)).json()
+
+
 async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()

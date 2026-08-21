@@ -2861,6 +2861,75 @@ class TestDocumentPolish:
         assert b"ct:CUST-001" in r.content
 
 
+class TestWriteoffListDetail:
+    """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
+    (GDR 2f), the account picker is filtered to expense/cogs/equity chart accounts (function-level
+    filter mirrored from the API), and every render path stays column-aligned."""
+
+    _WO_CHART = [
+        {"code": "6100", "name": "Wastage", "account_type": "expense", "is_active": True},
+        {"code": "5100", "name": "Cost of Goods Sold", "account_type": "cogs", "is_active": True},
+        {"code": "3200", "name": "Owner Drawings", "account_type": "equity", "is_active": True},
+        {"code": "1130", "name": "Inventory", "account_type": "asset", "is_active": True},
+        {"code": "4000", "name": "Sales", "account_type": "revenue", "is_active": True},
+    ]
+
+    def _wo_list(self):
+        return {
+            "entity_id": "list:WO-1", "list_type": "writeoff", "status": "draft",
+            "ref_id": "WO-1", "currency": "USD", "line_items": [
+                {"line_id": "ln-abc", "item_id": "item:1", "sku": "SKU-1", "name": "Widget",
+                 "quantity": 10, "qty_out": None, "account": None, "comment": ""},
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_draft_writeoff_renders_entry_cells_filtered_and_aligned(self, ui_client):
+        from bs4 import BeautifulSoup
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # The three write-off entry columns are present as click-to-edit cells (GDR 2f).
+        assert "col-qtyout" in html
+        assert "col-account" in html
+        assert "col-comment" in html
+        # Each cell edits through its own write-off line endpoint.
+        for field in ("qty_out", "account", "comment"):
+            assert f"/lists/list:WO-1/writeoff-line/ln-abc/{field}/edit" in html
+
+        # Column alignment: the line table's header cell count equals its data-row cell count.
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.select_one("table.doc-lines")
+        assert table is not None
+        header_cells = table.select_one("thead tr").find_all("th")
+        data_cells = table.select_one("tbody tr").find_all("td")
+        assert len(header_cells) == len(data_cells), (len(header_cells), len(data_cells))
+        # The three write-off headers are the on-page entry columns.
+        header_text = [th.get_text(strip=True) for th in header_cells]
+        assert {"Qty out", "Account", "Comment"} <= set(header_text)
+
+    @pytest.mark.asyncio
+    async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get(
+                "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # Expense / cogs / equity codes are offered; asset (1130) and revenue (4000) are not.
+        assert "6100" in html and "5100" in html and "3200" in html
+        assert "1130" not in html
+        assert "4000" not in html
+
+
 class TestSettingsPolish:
     """Settings click-to-edit affordance — visual cue must be present."""
 

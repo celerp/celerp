@@ -879,6 +879,7 @@ def editable_cell(
     placeholder: str | None = None,
     patch_url: str | None = None,
     aria_label: str | None = None,
+    cls_extra: str = "",
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
@@ -1026,7 +1027,7 @@ def editable_cell(
             onkeydown=escape_js,
         )
 
-    return Td(input_el, cls=f"cell cell--editing cell--{cell_type}")
+    return Td(input_el, cls=f"cell cell--editing cell--{cell_type}{(' ' + cls_extra) if cls_extra else ''}")
 
 
 def _normalize_number_str(s: str) -> str:
@@ -1097,6 +1098,7 @@ def display_cell(
     label_map: dict | None = None,
     placeholder: str | None = None,
     status_doc: tuple[str, str] | None = None,
+    cls_extra: str = "",
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
@@ -1109,6 +1111,7 @@ def display_cell(
                  stays click-to-edit and saving still uses whatever the user types.
     status_doc: status cells only - (doc_entity_id, doc_number) of the causing document,
                 rendered inside the badge as a link (see _display_val)."""
+    _x = f" {cls_extra}" if cls_extra else ""
     display_value = label_map.get(value, value) if label_map and value is not None else value
     # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
     # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
@@ -1128,8 +1131,8 @@ def display_cell(
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
-        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
+            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
+        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
         # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
@@ -1148,7 +1151,7 @@ def display_cell(
                 id=f"img-input-{entity_id.replace(':', '-')}",
             ),
             id=f"img-cell-{entity_id.replace(':', '-')}",
-            cls="cell cell--image cell--droppable",
+            cls=f"cell cell--image cell--droppable{_x}",
             data_entity_id=entity_id,
             data_col=field,
             title="Drag & drop image or click to upload",
@@ -1163,7 +1166,7 @@ def display_cell(
             hx_target="this",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-            cls=f"cell cell--{cell_type} cell--clickable",
+            cls=f"cell cell--{cell_type} cell--clickable{_x}",
             data_col=field,
         )
 
@@ -1176,7 +1179,7 @@ def display_cell(
             hx_target="this",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-            cls=f"cell cell--{cell_type} cell--clickable",
+            cls=f"cell cell--{cell_type} cell--clickable{_x}",
             data_col=field,
         )
 
@@ -1188,7 +1191,7 @@ def display_cell(
         hx_target="this",
         hx_swap="outerHTML",
         hx_trigger="dblclick",
-        cls=f"cell cell--{cell_type} cell--clickable",
+        cls=f"cell cell--{cell_type} cell--clickable{_x}",
         data_col=field,
     )
 
