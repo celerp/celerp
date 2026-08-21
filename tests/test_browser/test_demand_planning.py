@@ -364,8 +364,10 @@ def test_demand_planning_interactions(page, ui_server, api):
     assert _has(lambda o: o.get("output_item_id") == pendant and o.get("status") == "completed"), (
         "No completed run for DP-PENDANT via the 'Make & complete' toolbar action"
     )
-    assert float(api.get(f"/items/{pendant}").json().get("quantity", 0)) > 0, (
-        "DP-PENDANT stock should be > 0 after Make & complete"
+    lots = [i for i in api.get("/items").json()["items"]
+            if i.get("parent_item_id") == pendant and i.get("lot") is True]
+    assert lots and sum(l["quantity"] for l in lots) > 0, (
+        "DP-PENDANT output should land as a discrete lot after Make & complete"
     )
 
 

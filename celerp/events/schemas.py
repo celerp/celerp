@@ -193,6 +193,14 @@ class ItemProduced(BaseModel):
     quantity_produced: float
 
 
+class ItemCostAdjusted(BaseModel):
+    # Restate a lot's goods cost after the fact. Manufacturing re-costs a produced lot to the run's
+    # actual input cost once completion knows the true received quantity. cost_total is the new
+    # absolute cost_base; landed contributions rescale from it.
+    cost_total: float
+    manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
+
+
 # --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
 # The recipe is the single source of truth for how a manufactured item is built.
 # Interpretation (cost roll-up, expansion) lives in celerp-manufacturing; the schema
@@ -710,8 +718,8 @@ class MfgOrderIssued(BaseModel):
 
 
 class MfgOrderReceived(BaseModel):
-    # Finished goods received from a run. quantity restocks the output (per allow_splitting);
-    # lot_item_id is set when a non-splittable output created a new lot under the product.
+    # Finished goods received from a run. quantity is received as a discrete lot under the product;
+    # lot_item_id is that lot's id.
     quantity: float
     lot_item_id: str | None = None
     received_by: str | None = None
@@ -1054,6 +1062,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
+    "item.cost_adjusted": ItemCostAdjusted,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,

@@ -19,6 +19,9 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("actual_outputs", [])
         # Execution progress: how much of each input has been issued, and how much output received.
         current.setdefault("received_qty", 0.0)
+        # The lots this run has produced, in receipt order - the run's own record of its output,
+        # used to re-cost them at completion without scanning every item.
+        current.setdefault("received_lots", [])
         current["inputs"] = [{**i, "issued_qty": float(i.get("issued_qty") or 0)} for i in current.get("inputs", [])]
     elif event_type == "mfg.order.started":
         current["status"] = "in_progress"
@@ -44,6 +47,12 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
                 inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued[inp["item_id"]]
     elif event_type == "mfg.order.received":
         current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
+        lot_id = data.get("lot_item_id")
+        if lot_id:
+            lots = list(current.get("received_lots") or [])
+            if lot_id not in lots:
+                lots.append(lot_id)
+            current["received_lots"] = lots
     elif event_type == "mfg.order.scheduled":
         # Phase-A scheduling: apply only the keys provided (a blank value clears the field).
         for key in ("due_date", "planned_start", "priority"):

@@ -2342,8 +2342,9 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
+        items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, today)))
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today)))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
     async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
@@ -6405,6 +6406,8 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 table.ws-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; }
 .ws-tbl th, .ws-tbl td { border: 1px solid #ccc; padding: 1.6mm 2.6mm; text-align: left; vertical-align: top; }
 .ws-tbl th { background: #f2f2f2; }
+.ws-tbl th:not(.ws-num) { text-align: center; }
+.ws-tbl th.ws-num, .ws-tbl td.ws-num { text-align: right; }
 .ws-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ws-pre { white-space: pre-wrap; }
 .ws-images { display: flex; flex-wrap: wrap; gap: 4mm; }
@@ -6421,12 +6424,21 @@ def _worksheet_unit_label(unit: str) -> str:
     return {"min": "min", "hr": "hr", "day": "day"}.get(unit, unit or "min")
 
 
-def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
+def _component_label(c: dict, by_id: dict[str, dict]) -> str:
+    """SKU plus name for a recipe component. Imported-recipe rows carry only a SKU, so the name
+    is resolved from the item list at render; an item that no longer exists shows its SKU alone."""
+    sku = c.get("sku") or c.get("item_id") or ""
+    name = c.get("name") or (by_id.get(c.get("item_id") or "") or {}).get("name") or ""
+    return f"{sku} - {name}".strip(" -") or EMPTY
+
+
+def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: str) -> FT:
     """Standalone printable production worksheet: product info + images + materials + workflow.
     Costs never appear here — this is a shop-floor build sheet, not a costing document. Mirrors
     the document print view (auto window.print(); the browser saves it as one PDF)."""
     recipe = item.get("recipe") or {}
     EM = EMPTY
+    by_id = {(it.get("id") or it.get("entity_id") or ""): it for it in items}
 
     # ── Product images ──
     images = _item_image_files(item)
@@ -6447,7 +6459,7 @@ def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
             Table(
                 Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"))),
                 Tbody(*[Tr(
-                    Td(f"{c.get('sku') or ''} {('- ' + c['name']) if c.get('name') else ''}".strip(" -") or EM),
+                    Td(_component_label(c, by_id)),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
                     Td(c.get("unit") or EM),
                 ) for c in comps]),
@@ -6518,6 +6530,52 @@ def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
             materials,
             workflow,
             Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
+    )
+
+
+def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
+    """Standalone printable run sheet: a production run's calculated (scaled) input quantities.
+    Reuses the worksheet's print shell, CSS and auto-print. Costs never appear here - it is a
+    shop-floor pick list for one run, so it shows required vs issued-to-date quantity only."""
+    EM = EMPTY
+    by_id = {(it.get("id") or it.get("entity_id") or ""): it for it in items}
+    outs = order.get("expected_outputs") or [{}]
+    build_qty = float(outs[0].get("quantity") or 0)
+    inputs = order.get("inputs") or []
+
+    def _row(inp: dict) -> FT:
+        it = by_id.get(inp.get("item_id") or "") or {}
+        return Tr(
+            Td(it.get("sku") or inp.get("item_id") or EM),
+            Td(it.get("name") or EM),
+            Td(f"{float(inp.get('quantity') or 0):g}", cls="ws-num"),
+            Td(f"{float(inp.get('issued_qty') or 0):g}", cls="ws-num"),
+        )
+
+    table = Table(
+        Thead(Tr(Th("SKU"), Th("Name"), Th("Required", cls="ws-num"), Th("Issued", cls="ws-num"))),
+        Tbody(*[_row(inp) for inp in inputs]),
+        cls="ws-tbl",
+    ) if inputs else P("No inputs on this run.", cls="ws-muted")
+
+    title = f"Run - build qty {build_qty:g}"
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(title),
+            Style(_WORKSHEET_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(Div(title, cls="ws-title"), cls="ws-headl"),
+                Div(Div("Run Sheet"), Div(today, cls="ws-muted"), cls="ws-meta"),
+                cls="ws-header",
+            ),
+            Div(H2("Inputs"), table, cls="ws-section"),
+            Div(Span(title), Span("Powered by celerp.com"), cls="ws-foot"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )

@@ -22,6 +22,7 @@ class EventType(StrEnum):
     ITEM_MERGED = "item.merged"
     ITEM_CONSUMED = "item.consumed"
     ITEM_PRODUCED = "item.produced"
+    ITEM_COST_ADJUSTED = "item.cost_adjusted"
     ITEM_RECIPE_SET = "item.recipe.set"
     ITEM_WORKFLOW_SET = "item.workflow.set"
     ITEM_RESERVED = "item.reserved"

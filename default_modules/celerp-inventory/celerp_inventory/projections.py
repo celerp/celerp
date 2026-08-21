@@ -54,6 +54,8 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
     "transformed_from", "transformed_into", "fulfilled_for_docs",
     "status_doc_id", "status_doc_number",
+    # manufactured-lot identity: a produced lot links to its product and its run, and flags itself
+    "parent_item_id", "manufacturing_order_id", "lot",
     # files / media
     "files", "attachments", "preview_image_id",
     # other structured internals
@@ -327,6 +329,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         if "cost_base" in data and data["cost_base"] is not None:
             current["cost_base"] = float(data["cost_base"])
         _recompute_cost(current)  # landed cost is per-unit, so it scales with quantity
+    elif event_type == "item.cost_adjusted":
+        # Restate the goods cost of a lot after the fact: manufacturing re-costs a produced lot to the
+        # run's actual input cost once completion knows the true received quantity. cost_total in the
+        # payload is the new absolute cost_base; landed contributions rescale from it.
+        current["cost_base"] = float(data["cost_total"])
+        _recompute_cost(current)
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
         # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.
@@ -365,7 +373,16 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _stamp_status_doc(current, {})
         current["merged_into"] = data.get("merged_into")
     elif event_type == "item.consumed":
-        current["quantity"] = max(0.0, float(current.get("quantity", 0)) - float(data["quantity_consumed"]))
+        # Relieve goods cost with the units, so unit cost stays put as a component is drawn down
+        # (perpetual costing: what leaves carries its share of cost_base, exactly as a sale relieves
+        # COGS). Landed cost is per-unit and _recompute_cost rescales it, so only cost_base moves here.
+        qty = float(current.get("quantity") or 0)
+        consumed = float(data["quantity_consumed"])
+        if qty > 0 and current.get("cost_base") is not None:
+            base_unit = float(current["cost_base"]) / qty
+            current["cost_base"] = round(max(0.0, float(current["cost_base"]) - base_unit * consumed), 2)
+        current["quantity"] = max(0.0, qty - consumed)
+        _recompute_cost(current)
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
     elif event_type == "item.recipe.set":

@@ -154,7 +154,10 @@ def test_full_manufacturing_journey(page, ui_server, api):
 
     assert api.get(f"/manufacturing/{run_id}").json()["status"] == "completed"
     rings = [i for i in api.get("/items").json()["items"] if i.get("sku") == "JNY-RING"]
-    assert len(rings) == 1 and rings[0]["id"] == ring  # restocked in place — one ring item, no clone
+    parent = [i for i in rings if i["id"] == ring]
+    lots = [i for i in rings if i.get("parent_item_id") == ring and i.get("lot") is True]
+    assert len(parent) == 1 and parent[0]["quantity"] == 0  # original product row preserved, never the pile
+    assert len(lots) == 1 and lots[0]["quantity"] > 0  # output lands as exactly one discrete lot
     assert rings[0]["quantity"] == 2.0  # made the 2 demanded
     assert api.get(f"/items/{gold}").json()["quantity"] == 90.0  # 100 - 5*2 issued
 
