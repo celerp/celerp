@@ -1304,7 +1304,7 @@ async def delete_work_center(
 
 # Item statuses whose stock does not count toward a product's on-hand:
 # sold/consumed/etc., plus draft (created but not yet committed to stock).
-_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft"})
+_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired", "draft", "disposed"})
 
 
 async def _reject_draft_item(session: AsyncSession, company_id, item_id: str, action: str) -> dict:

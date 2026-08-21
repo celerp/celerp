@@ -15,6 +15,7 @@ class EventType(StrEnum):
     ITEM_TRANSFERRED = "item.transferred"
     ITEM_QUANTITY_ADJUSTED = "item.quantity.adjusted"
     ITEM_EXPIRED = "item.expired"
+    ITEM_WRITTEN_OFF = "item.written_off"
     ITEM_SPLIT = "item.split"
     ITEM_SPLIT_FROM = "item.split_from"
     ITEM_TRANSFORM = "item.transform"

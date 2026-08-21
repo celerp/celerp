@@ -2706,7 +2706,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
 # Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
 # supplier: they are at a customer, gone, or no longer a live parcel.
-_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged"})
+_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged", "disposed"})
 
 
 class ReturnItem(BaseModel):

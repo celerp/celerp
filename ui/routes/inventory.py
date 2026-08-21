@@ -5140,7 +5140,7 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
 
     # When viewing a specific hidden/archived status, the available/reserved card
     # defs are irrelevant. Show a single total card instead.
-    _HIDDEN = {"sold", "archived", "merged", "expired"}
+    _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
     if active_status and active_status not in ("", "all"):
         total = sum(count_by_status.values())
         cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]

@@ -117,6 +117,18 @@ class ItemExpired(BaseModel):
     reason: str | None = None
 
 
+class ItemWrittenOff(BaseModel):
+    # A unit of stock leaving the company for a non-sale reason (spoilage, samples,
+    # drawings). reason/account live single-sourced on the write-off list; the item row
+    # only records that it is off the books and points back to that list via source_list_id.
+    account: str
+    qty: float
+    unit_cost: float
+    cost_total: float
+    reason: str | None = None
+    source_list_id: str | None = None
+
+
 class ItemSplit(BaseModel):
     # Aggregate marker on the MOTHER. The projection consumes child_ids/child_skus;
     # children_detail drives the per-child history rows (one row per child).
@@ -1045,6 +1057,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
+    "item.written_off": ItemWrittenOff,
     "item.split": ItemSplit,
     "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,

@@ -17,7 +17,7 @@ from celerp.output.doc_print import (  # noqa: F401
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
-INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out"})
+INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out", "disposed"})
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
