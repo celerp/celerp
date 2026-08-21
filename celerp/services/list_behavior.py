@@ -74,6 +74,18 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             manager=True),),
         scan_finalized="count",
     ),
+    "writeoff": ListBehavior(
+        # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
+        # reconciliation. Each line names its destination expense/drawings account and a comment;
+        # the terminal carves/disposes the stock and posts one journal entry.
+        label="Write-off", money=False, extra_columns=("qty_out", "account", "comment"),
+        finalize_label="Finalize", finalize_milestone=None,
+        terminal=(TerminalAction(
+            "write-off", "Write off stock", "written_off",
+            confirm="Remove the listed quantities from stock? This posts a journal entry.",
+            manager=True),),
+        scan_finalized="noop",
+    ),
     "shipping_doc": ListBehavior(
         # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)
         # and the Commercial Invoice (customs values + declaration, for cross-border carriers).
@@ -90,6 +102,7 @@ _RESULT_LABELS = {
     "stock_adjusted": "Adjusted",
     "received": "Received",
     "expired": "Expired",
+    "written_off": "Written off",
 }
 
 
