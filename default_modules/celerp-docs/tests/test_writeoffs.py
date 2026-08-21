@@ -128,7 +128,7 @@ async def test_writeoff_full_row_disposes_and_posts_je(client):
 
     # The whole row is now a hidden `disposed` item (no split).
     assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "disposed"
-    assert a not in {i["entity_id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
+    assert a not in {i["id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
 
     st = await _state(client, t, wo)
     assert st["status"] == "closed" and st["result"] == "written_off"
@@ -378,8 +378,8 @@ async def test_disposed_excluded_from_default_and_inventory_value(client):
     assert (await _terminal(client, t, wo)).status_code == 200
 
     # Hidden from the default list, present under the disposed filter.
-    assert a not in {i["entity_id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
-    assert a in {i["entity_id"] for i in (await client.get("/items?status=disposed", headers=_h(t))).json()["items"]}
+    assert a not in {i["id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
+    assert a in {i["id"] for i in (await client.get("/items?status=disposed", headers=_h(t))).json()["items"]}
     # Excluded from active inventory value.
     after = (await client.get("/items/valuation", headers=_h(t))).json()
     assert after["active_item_count"] == before["active_item_count"] - 1
