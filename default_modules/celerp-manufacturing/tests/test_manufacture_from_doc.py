@@ -49,6 +49,27 @@ async def _to_make(client, token) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_board_on_hand_counts_produced_lots(client) -> None:
+    """A manufactured product's stock lives in produced lots, not the catalog row, so the To-Make
+    board's on-hand must aggregate those lots - otherwise every built product reads as 0 on hand
+    and the board over-suggests builds."""
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDB", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGB", quantity=0)  # catalog row stays empty
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    await _doc(client, token, [{"item_id": ring, "sku": "RINGB", "name": "Ring", "quantity": 10, "unit_price": 100}])
+
+    # One-tap build 6: produced as a lot under the product, catalog row still 0.
+    r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token),
+                          json={"quantity": 6, "complete": True})
+    assert r.status_code == 200, r.text
+
+    row = (await _to_make(client, token))[ring]
+    assert row["on_hand"] == 6.0  # the produced lot, not the empty catalog row
+    assert row["to_make"] == 4.0  # 10 demand - 6 on hand
+
+
+@pytest.mark.asyncio
 async def test_no_runs_auto_created_from_docs(client) -> None:
     """In the product-centric model, opening the runs list does NOT spawn runs from documents."""
     token = await _register(client)

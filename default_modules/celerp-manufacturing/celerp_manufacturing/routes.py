@@ -98,7 +98,7 @@ class ReceiveBody(BaseModel):
 
 class CompleteBody(BaseModel):
     actual_outputs: list[MfgOutput] | None = None
-    waste_quantity: float | None = None
+    waste_quantity: float | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
     labor_hours: float | None = None
@@ -343,7 +343,7 @@ async def build_item(
     """Create a production run to build N of a manufacturable item — inputs expand from its recipe.
 
     With ``complete=true`` this is a one-tap build: the run is created, its components issued,
-    its output received (restocked per ``allow_splitting``), and the run completed in a single call.
+    its output received as a discrete lot, and the run completed in a single call.
     """
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
@@ -572,7 +572,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     )).scalars().all()
     in_progress = _in_progress_by_item(runs)
 
-    # Non-splittable outputs restock as discrete lots under the product, so on-hand must include them.
+    # Every produced output is a discrete lot under the product, so on-hand must include them.
     lot_qty = _lot_qty_by_parent(states)
     hours_per_day = await _default_hours_per_day(session, company_id)
     items: list[dict] = []
@@ -1336,11 +1336,22 @@ def _component_unit_cost(state: dict | None) -> float:
 
 
 def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
-    """Total standard input cost of a run = sum(required qty x component unit cost)."""
-    return round(sum(
-        float(inp.get("quantity") or 0) * _component_unit_cost(states.get(inp.get("item_id")))
-        for inp in run_state.get("inputs", [])
-    ), 2)
+    """Actual input cost of a run = sum(quantity issued x component unit cost), falling back to the
+    planned required quantity for an input nothing has been issued against yet so a bare run still
+    costs something. Feeds both the produced lot cost and the completion JE input relief, so the
+    actuals propagate from this one edit."""
+    total = 0.0
+    for inp in run_state.get("inputs", []):
+        unit = _component_unit_cost(states.get(inp.get("item_id")))
+        issued = float(inp.get("issued_qty") or 0)
+        qty = issued if issued > 0 else float(inp.get("quantity") or 0)
+        total += qty * unit
+    return round(total, 2)
+
+
+# Namespace for deterministic produced-lot ids: a receipt re-submitted with the same idempotency
+# key resolves to the same lot id, so the deduped event stream never mints a phantom second lot.
+_MFG_LOT_NS = uuid.UUID("6f1d0c2a-7b3e-4a9c-8d5f-2e0a1b4c6d8e")
 
 
 def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
@@ -1388,12 +1399,18 @@ async def _issue_and_record(session: AsyncSession, company_id, user, order_id: s
 
 
 async def _receive(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
-                   qty: float, states: dict[str, dict]) -> str | None:
-    """Restock `qty` of the run's output product and record the receipt on the run.
+                   qty: float, states: dict[str, dict], idempotency_key: str | None = None) -> str | None:
+    """Restock `qty` of the run's output as a new discrete lot and record the receipt on the run.
 
-    Keyed on the product's `allow_splitting`: True increments the existing product SKU's quantity;
-    False creates a new discrete lot entry linked to the product. Returns the lot id (or None).
+    Every receipt mints its own lot under the product, exactly like a received purchase, so a
+    fungible product carries a true weighted-average cost across batches. The lot inherits the
+    product's splittability (so a fungible product's lot stays partially sellable) and takes a
+    provisional unit cost of issued-to-date input over received-to-date quantity; completion re-costs
+    it to the final actual output cost. A key re-submitted with the same request resolves to the same
+    lot id and deduped events, so a retry never mints a phantom second lot. Returns the lot id
+    (or None if the run has no resolvable output product).
     """
+    rk = idempotency_key or uuid.uuid4().hex
     out_id = run_state.get("output_item_id")
     product = states.get(out_id) if out_id else None
     if out_id and product is None:
@@ -1405,51 +1422,49 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
         if str(product.get("status") or "").lower() == "draft":
             raise HTTPException(status_code=422, detail=f"Cannot produce into a draft item ({out_id}); make it available first.")
         loc = product.get("location_id")
-        if bool(product.get("allow_splitting", True)):
-            # Fungible / bulk: add to the existing product's pile.
-            await emit_event(
-                session, company_id=company_id, entity_id=out_id, entity_type="item",
-                event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
-                location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
-                metadata_={"manufacturing_order_id": order_id},
-            )
-        else:
-            # Discrete / unique: a new lot under the same product, with its own cost and trace.
-            lot_id = f"item:{uuid.uuid4()}"
-            expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0) or qty
-            unit_cost = _run_input_cost(run_state, states) / (expected or 1)
-            await emit_event(
-                session, company_id=company_id, entity_id=lot_id, entity_type="item",
-                event_type="item.created",
-                data={
-                    "sku": product.get("sku"), "name": product.get("name"),
-                    "sell_by": product.get("sell_by"), "category": product.get("category"),
-                    "inventory_type": product.get("inventory_type"), "allow_splitting": False,
-                    "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
-                    "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
-                },
-                actor_id=user.id, location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
-                metadata_={"manufacturing_order_id": order_id},
-            )
-            await emit_event(
-                session, company_id=company_id, entity_id=lot_id, entity_type="item",
-                event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
-                location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
-                metadata_={"manufacturing_order_id": order_id},
-            )
+        received_after = float(run_state.get("received_qty") or 0) + qty
+        unit_cost = _run_input_cost(run_state, states) / (received_after or 1)
+        lot_id = f"item:{uuid.uuid5(_MFG_LOT_NS, f'{order_id}:{rk}')}"
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item",
+            event_type="item.created",
+            data={
+                "sku": product.get("sku"), "name": product.get("name"),
+                "sell_by": product.get("sell_by"), "category": product.get("category"),
+                "inventory_type": product.get("inventory_type"),
+                "allow_splitting": bool(product.get("allow_splitting", True)),
+                "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
+                "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
+            },
+            actor_id=user.id, location_id=loc, source="api",
+            idempotency_key=f"mfg:{order_id}:receive:{rk}:created",
+            metadata_={"manufacturing_order_id": order_id},
+        )
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item",
+            event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
+            location_id=loc, source="api",
+            idempotency_key=f"mfg:{order_id}:receive:{rk}:produced",
+            metadata_={"manufacturing_order_id": order_id},
+        )
 
     await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.received",
         data={"quantity": qty, "lot_item_id": lot_id, "received_by": str(user.id)},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=f"mfg:{order_id}:receive:{rk}:received", metadata_={},
     )
     return lot_id
 
 
 async def _close_run(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
                      states: dict[str, dict], payload: "CompleteBody | None" = None) -> None:
-    """Emit mfg.order.completed (with actuals/waste/labor) and post the completion journal entry."""
+    """Close a run: record the actual yield, post the completion journal entry, and re-cost the run's
+    lots to the final actual output cost so they reconcile exactly against that entry.
+
+    Idempotent: the completion event, its journal entry, and every lot re-cost carry deterministic
+    keys derived from the order id, so closing the same run twice dedups rather than double posting."""
     input_cost = _run_input_cost(run_state, states)
     waste = None
     waste_cost = 0.0
@@ -1457,24 +1472,57 @@ async def _close_run(session: AsyncSession, company_id, user, order_id: str, run
         waste = {"quantity": payload.waste_quantity, "unit": payload.waste_unit, "reason": payload.waste_reason}
         total_in = sum(float(i.get("quantity", 0) or 0) for i in run_state.get("inputs", [])) or 0.0
         if payload.waste_quantity and total_in > 0:
-            waste_cost = input_cost * (float(payload.waste_quantity) / total_in)
+            # Clamp so waste can never exceed the input cost and drive output cost negative.
+            waste_cost = min(input_cost * (float(payload.waste_quantity) / total_in), input_cost)
+    if payload is not None and payload.actual_outputs is not None:
+        actual_outputs = [o.model_dump() for o in payload.actual_outputs]
+    else:
+        # No explicit yield given: record what was actually received as the actual output.
+        received = float(run_state.get("received_qty") or 0)
+        expected = (run_state.get("expected_outputs") or [{}])[0]
+        actual_outputs = [{**expected, "quantity": received}] if expected else []
     await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.completed",
         data={
             "completed_by": str(user.id),
-            "actual_outputs": run_state.get("expected_outputs", []),
+            "actual_outputs": actual_outputs,
             "waste": waste,
             "labor_hours": payload.labor_hours if payload is not None else None,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=(payload.idempotency_key if payload is not None else None) or str(uuid.uuid4()),
+        idempotency_key=f"mfg:{order_id}:completed",
         metadata_={},
     )
     await auto_je.create_for_mfg_completed(
         session, company_id=company_id, user_id=user.id, order_id=order_id,
         input_cost=input_cost, waste_cost=waste_cost,
     )
+    await _recost_run_lots(session, company_id, user, order_id, run_state, input_cost - waste_cost)
+
+
+async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
+                           output_cost: float) -> None:
+    """Restate every lot this run produced to a shared unit cost of output_cost / total received, so
+    the sum of the lots' cost equals the completion entry's output leg under single or multiple
+    receipts and with or without waste. Emits one deterministic item.cost_adjusted per lot."""
+    total_received = float(run_state.get("received_qty") or 0)
+    if total_received <= 0:
+        return  # nothing received: no lot to re-cost, and never divide by a zero yield
+    unit_cost = float(output_cost) / total_received
+    fresh = await _all_item_states(session, company_id)
+    for lot_id in run_state.get("received_lots") or []:
+        lot = fresh.get(lot_id)
+        if lot is None:
+            continue
+        new_total = round(unit_cost * float(lot.get("quantity") or 0), 2)
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item",
+            event_type="item.cost_adjusted",
+            data={"cost_total": new_total, "manufacturing_order_id": order_id},
+            actor_id=user.id, location_id=lot.get("location_id"), source="api",
+            idempotency_key=f"mfg:{order_id}:recost:{lot_id}", metadata_={"manufacturing_order_id": order_id},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1719,7 +1767,7 @@ async def receive_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Receive finished goods from a run — restocks the output per `allow_splitting`. Omitting
+    """Receive finished goods from a run as a discrete lot under the product. Omitting
     `quantity` receives everything still outstanding; once fully received the run auto-completes."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
@@ -1729,7 +1777,8 @@ async def receive_order(
     if qty <= 0:
         raise HTTPException(status_code=422, detail="Receive quantity must be greater than zero")
     states = await _all_item_states(session, company_id)
-    lot_id = await _receive(session, company_id, user, order_id, row.state, qty, states)
+    lot_id = await _receive(session, company_id, user, order_id, row.state, qty, states,
+                            idempotency_key=(payload.idempotency_key if payload else None))
     # Auto-complete once the full expected output has been received.
     row = await _get_order(session, company_id, order_id)
     if _outstanding_output(row.state) <= 1e-9:
@@ -1749,8 +1798,8 @@ async def complete_order(
 ) -> dict:
     """Finish a run now: issue any outstanding components, receive all outstanding output, and close.
 
-    This is the one-tap close used by the product hub's Complete action; the output is restocked per
-    `allow_splitting` (incrementing the SKU or creating a new lot) — never a nameless throwaway item.
+    This is the one-tap close used by the product hub's Complete action; the output lands as a
+    discrete lot under the product, never a nameless throwaway item.
     """
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:

@@ -228,7 +228,12 @@ def _consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[d
             out.extend(group)  # unique / non-splittable -> keep each lot (labeled)
             continue
         method = resolve_pick_method(group[0], company_settings)
-        rep = dict(_sorted_inventory(group, method)[0])  # bind the pick-first lot
+        sorted_lots = _sorted_inventory(group, method)
+        stocked = [g for g in sorted_lots if float(g.get("quantity") or 0) > 0]
+        # Bind the pick-first lot WITH stock; a lot-only product's catalog row sits at qty 0, and
+        # binding that empty row makes fulfillment reject the line despite in-stock sibling lots.
+        # Fall back to the pick-first row only when every lot is empty (genuine out of stock).
+        rep = dict((stocked or sorted_lots)[0])
         rep["quantity"] = sum(float(g.get("quantity") or 0) for g in group)  # aggregate on-hand
         out.append(rep)
     return out

@@ -44,7 +44,8 @@ async def test_build_creates_planned_run_with_expanded_inputs(client) -> None:
 
 @pytest.mark.asyncio
 async def test_build_complete_one_tap_increments_splittable_sku(client) -> None:
-    """allow_splitting default true: one-tap build increments the existing product, no nameless item."""
+    """allow_splitting default true: one-tap build lands the output as a discrete lot under the
+    product; the product's own on-hand is untouched and no nameless item is created."""
     token = await _register(client)
     gold = await _item(client, token, "GOLD2", quantity=100, cost_total=8000)
     ring = await _item(client, token, "RING2", quantity=4)
@@ -52,11 +53,17 @@ async def test_build_complete_one_tap_increments_splittable_sku(client) -> None:
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
     r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2, "complete": True})
     assert r.status_code == 200
-    assert (await client.get(f"/manufacturing/{r.json()['id']}", headers=_h(token))).json()["status"] == "completed"
-    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 6  # 4 + 2, same SKU
+    run = r.json()["id"]
+    assert (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()["status"] == "completed"
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 4  # product on-hand untouched
     assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 90  # 100 - 10
-    skus = [i.get("sku") for i in (await client.get("/items", headers=_h(token))).json()["items"]]
-    assert skus.count("RING2") == 1  # restocked in place — no second/throwaway RING2 entry
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    rings = [i for i in items if i.get("sku") == "RING2"]
+    assert len(rings) == 2  # product + one discrete lot (always auto-split)
+    lot = next(i for i in rings if i["id"] != ring)
+    assert lot["quantity"] == 2 and lot["parent_item_id"] == ring and lot.get("lot") is True
+    assert lot.get("allow_splitting") is True  # a splittable product yields a splittable lot
+    assert not any(i.get("name") in (None, "") for i in items)  # no nameless throwaway item
 
 
 @pytest.mark.asyncio

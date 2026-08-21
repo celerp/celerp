@@ -86,8 +86,11 @@ def test_product_hub_work_orders_and_action_dropdown(page, ui_server, api):
     done = _poll_run_status(api, run_id, "completed")
     assert done["status"] == "completed"
 
-    # Finished stock went up; the gold component was consumed (5 per ring * 2 = 10 g).
-    assert api.get(f"/items/{ring}").json()["quantity"] == 2.0
+    # Finished output lands as a discrete lot under the ring; the gold component was consumed (5 per ring * 2 = 10 g).
+    assert api.get(f"/items/{ring}").json()["quantity"] == 0.0  # the product row is never the pile
+    lot = next(i for i in api.get("/items").json()["items"]
+               if i.get("parent_item_id") == ring and i.get("lot") is True)
+    assert lot["quantity"] == 2.0  # output received as a discrete lot
     assert api.get(f"/items/{gold}").json()["quantity"] == 90.0
 
 

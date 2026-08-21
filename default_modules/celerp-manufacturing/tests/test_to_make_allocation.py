@@ -159,8 +159,9 @@ async def test_make_work_orders_complete_one_tap(client):
     assert len(res["created"]) == 1
     run_id = res["created"][0]["run_id"]
     assert (await client.get(f"/manufacturing/{run_id}", headers=_h(token))).json()["status"] == "completed"
-    # Output restocked, components consumed.
-    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3.0
+    # Output landed as a discrete lot under the product; components consumed.
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    assert sum(float(i["quantity"]) for i in items if i.get("sku") == "RC") == 3.0
     assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 97.0
 
 
@@ -199,7 +200,8 @@ async def test_bulk_run_action_start_then_complete(client):
     completed = (await client.post("/manufacturing/bulk-action", headers=_h(token),
                                    json={"run_ids": [r1, r2], "action": "complete"})).json()
     assert set(completed["done"]) == {r1, r2}
-    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3.0
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    assert sum(float(i["quantity"]) for i in items if i.get("sku") == "RB") == 3.0
 
     # Re-completing closed runs is skipped, not an error.
     again = (await client.post("/manufacturing/bulk-action", headers=_h(token),

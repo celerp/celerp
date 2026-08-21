@@ -139,6 +139,8 @@ def _order_row(order: dict, today: str = "") -> FT:
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
         Td(src_cell),
+        Td(A("Run sheet", href=f"/manufacturing/{rid}/run-sheet/print", target="_blank",
+             cls="btn btn--xs btn--secondary"), cls="cell--actions"),
         cls="data-row",
     )
 
@@ -267,7 +269,7 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
                 cls="col-checkbox"),
             filter_th("Product", 1), Th(t("th.status")), filter_th("Priority", 3, center=True),
             Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs"), cls="cell--number"),
-            Th("Source order"),
+            Th("Source order"), Th("Run sheet", cls="cell--actions"),
         )),
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
@@ -578,6 +580,25 @@ def setup_routes(app):
             nav_active="manufacturing",
             request=request,
         )
+
+    @app.get("/manufacturing/{order_id}/run-sheet/print")
+    async def run_sheet_print(request: Request, order_id: str):
+        """Standalone printable run sheet: one production run's calculated (scaled) input quantities
+        (auto window.print(); the user saves it as a PDF). Reuses the worksheet print shell."""
+        from ui.routes.inventory import _run_sheet_print_view
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            order = await api.get_mfg_order(token, order_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return HTMLResponse(str(e.detail), status_code=e.status or 404)
+        items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
+        today = date.today().isoformat()
+        return HTMLResponse(to_xml(_run_sheet_print_view(order, items, today)))
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
