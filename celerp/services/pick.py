@@ -85,6 +85,35 @@ def _sorted_inventory(inventory: list[dict], strategy: str) -> list[dict]:
     return sorted(inventory, key=lambda it: it.get("created_at") or "")  # fifo
 
 
+def plan_lot_draws(
+    primary: dict,
+    needed: float,
+    siblings: list[dict],
+    method: str,
+) -> tuple[list[tuple[dict, float, bool]], float]:
+    """Allocate ``needed`` units across lots: the primary (bound) lot first, then
+    the siblings in the ``method`` draw order (fifo/fefo/lifo). Each draw is
+    ``(lot, take_qty, is_full_lot)``; the second element of the result is the
+    quantity no lot could cover (0.0 when stock suffices).
+
+    Pure allocation arithmetic - eligibility (SKU match, status, reservation
+    ownership) is the caller's job. Lots are dicts carrying entity_id, quantity,
+    created_at and expires_at, as _sorted_inventory reads them.
+    """
+    draws: list[tuple[dict, float, bool]] = []
+    remaining = float(needed)
+    for lot in [primary] + _sorted_inventory(siblings, method):
+        if remaining <= 1e-9:
+            break
+        avail = float(lot.get("quantity") or 0)
+        if avail <= 1e-9:
+            continue
+        take = min(remaining, avail)
+        draws.append((lot, take, abs(take - avail) <= 1e-9))
+        remaining -= take
+    return draws, max(0.0, remaining)
+
+
 def compute_pick_plan(
     line_items: list[dict],
     inventory: list[dict],

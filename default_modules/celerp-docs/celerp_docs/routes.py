@@ -4111,7 +4111,7 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
     SKU's total available stock (minus already-committed lots) is still short.
     """
-    from celerp.services.pick import resolve_pick_method, _sorted_inventory
+    from celerp.services.pick import plan_lot_draws, resolve_pick_method
     from celerp.models.company import Company
     sku = str(primary_proj.state.get("sku") or "").strip()
     company = await session.get(Company, company_id)
@@ -4128,26 +4128,17 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     by_id = {l.entity_id: l for l in lots}
     if primary_proj.entity_id not in by_id:
         return None
-    if sum(float(l.state.get("quantity") or 0) for l in lots) + 1e-9 < needed:
-        return None  # truly short across all lots
 
     def _d(p):
         return {"entity_id": p.entity_id,
+                "quantity": float(p.state.get("quantity") or 0),
                 "created_at": p.created_at.isoformat() if p.created_at else "",
                 "expires_at": p.state.get("expires_at")}
-    others = [l for l in lots if l.entity_id != primary_proj.entity_id]
-    ordered_ids = [primary_proj.entity_id] + [d["entity_id"] for d in _sorted_inventory([_d(o) for o in others], method)]
-
-    draws, remaining = [], needed
-    for eid in ordered_ids:
-        if remaining <= 1e-9:
-            break
-        lot = by_id[eid]
-        avail = float(lot.state.get("quantity") or 0)
-        take = min(remaining, avail)
-        draws.append((lot, take, abs(take - avail) <= 1e-9))
-        remaining -= take
-    return draws
+    others = [_d(l) for l in lots if l.entity_id != primary_proj.entity_id]
+    draws, short_qty = plan_lot_draws(_d(primary_proj), needed, others, method)
+    if short_qty > 1e-9:
+        return None  # truly short across all lots
+    return [(by_id[lot["entity_id"]], take, is_full) for lot, take, is_full in draws]
 
 
 def _plan_line_carve(line: dict, parcel_state: dict, unit_map: dict) -> dict | None:
