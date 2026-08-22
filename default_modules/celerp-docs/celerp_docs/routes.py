@@ -4249,13 +4249,18 @@ async def fulfill_lines(
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
     # Each line keyed by the item parcel it references (for qty + split measures).
+    # Line indices are captured before any split remap: _apply_split_plan rewrites
+    # lines in place, so the index is the stable key the finalize JE's per-line
+    # COGS allocation snapshot is also keyed by.
     line_qty_by_eid: dict[str, float] = {}
     line_by_eid: dict[str, dict] = {}
-    for li in state.get("line_items", []):
+    line_index_by_eid: dict[str, int] = {}
+    for _idx, li in enumerate(state.get("line_items", [])):
         _eid = li.get("entity_id") or li.get("item_id") or ""
         if _eid:
             line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
             line_by_eid[_eid] = li
+            line_index_by_eid[_eid] = _idx
 
     _unit_map = await _get_unit_map(session, company_id)
 
@@ -4266,6 +4271,7 @@ async def fulfill_lines(
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
+    fulfilled_line_eids: set[str] = set()  # accepted stock lines, by pre-remap line eid
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
@@ -4302,6 +4308,7 @@ async def fulfill_lines(
                     owner_entity_id=entity_id,
                 )
                 if _draws is not None:
+                    fulfilled_line_eids.add(item_eid)
                     for _lot, _take, _full in _draws:
                         _leid = _lot.entity_id
                         fetched[_leid] = _lot
@@ -4347,6 +4354,7 @@ async def fulfill_lines(
                 continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
+        fulfilled_line_eids.add(item_eid)
         # Partial draw of a splittable parcel: split off the invoiced amount as a child
         # and fulfill that; the mother keeps the remainder. A full or over-invoiced line
         # takes the whole parcel and plans no carve.
@@ -4407,6 +4415,32 @@ async def fulfill_lines(
             idempotency_key=str(uuid.uuid4()),
             metadata_={"doc_id": entity_id},
         )
+
+    # True up recognized COGS against reality: the finalize JE recognized each line at
+    # the lots it expected to draw; the lots actually drawn just now can cost more or
+    # less (a sibling lot was sold in between, costs changed). The difference for the
+    # lines fulfilled here posts as one adjustment JE dated to this fulfillment. Docs
+    # whose finalize JE carries no allocation snapshot have no recognized basis and
+    # get no adjustment.
+    if doc_type == "invoice" and to_fulfill:
+        _recognized_allocs = await auto_je.recognized_cogs_allocations(session, company_id, entity_id)
+        if _recognized_allocs is not None:
+            _recognized = sum(
+                float((_recognized_allocs.get(str(line_index_by_eid[_eid])) or {}).get("amount") or 0)
+                for _eid in fulfilled_line_eids if _eid in line_index_by_eid
+            )
+            _delta = round(total_cogs - _recognized, 2)
+            if abs(_delta) > 0.005:
+                await auto_je.create_for_doc_cogs_adjustment(
+                    session,
+                    company_id=cid,
+                    user_id=uid,
+                    doc_id=entity_id,
+                    delta=_delta,
+                    cycle_tag=f"fulfill-{int(state.get('revert_count') or 0)}",
+                    doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
+                    ts=now,
+                )
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".

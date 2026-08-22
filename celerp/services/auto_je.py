@@ -274,6 +274,11 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     if cogs > 0:
         entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
         entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
+    # The per-line allocation snapshot rides on the JE so fulfillment can true up
+    # actual lot costs against exactly what this JE recognized, per line.
+    metadata_ = {"trigger": "doc.finalized", "doc_id": doc_id}
+    if cogs_result.allocations:
+        metadata_["cogs_allocations"] = cogs_result.allocations
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -284,7 +289,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         memo=f"Auto JE for {doc_id} finalized",
         ts=doc.get("finalized_at") or doc.get("issue_date"),
         entries=entries,
-        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+        metadata_=metadata_,
     )
 
 
@@ -737,6 +742,91 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(cogs)},
         ],
         metadata_={"trigger": "doc.cogs_backfill", "doc_id": doc_id},
+    )
+
+
+async def recognized_cogs_allocations(session, company_id, doc_id: str) -> dict | None:
+    """The per-line COGS the doc's live finalize-family JE recognized.
+
+    Reads the allocation snapshot off the creation event of the currently posted
+    finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one).
+    Returns the allocations dict keyed by line index, or None when no posted
+    finalize-family JE carries a snapshot - which is every doc finalized before
+    snapshots existed, where fulfillment has no recognized basis to true up
+    against and must post no adjustment.
+    """
+    from celerp.models.ledger import LedgerEntry
+
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    ))).scalars().all()
+    live = None
+    for row in rows:
+        if not row.entity_id.startswith(prefix):
+            continue
+        suffix = row.entity_id[len(prefix):]
+        if not (suffix == "fin" or suffix.startswith("fin:")):
+            continue
+        if (row.state or {}).get("status") != "posted":
+            continue
+        if live is None or (
+            row.created_at is not None
+            and (live.created_at is None or row.created_at > live.created_at)
+        ):
+            live = row
+    if live is None:
+        return None
+    created = (await session.execute(
+        _select(LedgerEntry)
+        .where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == live.entity_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+        )
+        .order_by(LedgerEntry.id.desc())
+        .limit(1)
+    )).scalars().first()
+    if created is None:
+        return None
+    return (created.metadata_ or {}).get("cogs_allocations") or None
+
+
+async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id: str, delta: float, cycle_tag: str, doc_number: str, ts: str | None = None) -> None:
+    """Post the fulfillment true-up JE: the difference between the actual cost of
+    the lots drawn and the COGS recognized at finalize.
+
+    A positive delta (actual cost above recognized) debits 5100 and relieves
+    inventory; a negative one reverses that. cycle_tag scopes the JE id and its
+    idempotency keys to the fulfillment cycle (fulfill-0, fulfill-1, ...), so a
+    replay within a cycle is a no-op and each re-finalize cycle trues up on its
+    own JE.
+    """
+    amount = round(abs(float(delta)), 2)
+    if amount <= 0:
+        return
+    if delta > 0:
+        entries = [
+            {"account": "5100", "debit": amount, "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": amount},
+        ]
+    else:
+        entries = [
+            {"account": _INVENTORY_ACCT, "debit": amount, "credit": 0.0},
+            {"account": "5100", "debit": 0.0, "credit": amount},
+        ]
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:cogs-adj:{cycle_tag}",
+        idem_create=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "p"),
+        memo=f"COGS adjustment for {doc_number} at fulfillment",
+        ts=ts,
+        entries=entries,
+        metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id, "cogs_delta": round(float(delta), 2)},
     )
 
 
