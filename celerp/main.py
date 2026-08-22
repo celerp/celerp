@@ -281,6 +281,22 @@ async def lifespan(_app: FastAPI):
             "may show their status without a document link until a later boot"
         )
 
+    # One-time backfill: post the missing COGS JE for invoices finalized before
+    # COGS moved into the finalize JE and never fulfilled since. Marker-gated
+    # (runs once; retries stragglers while any doc is locked or errored);
+    # non-fatal like the backfill above.
+    try:
+        from celerp.db import SessionLocal as _CogsSession
+        from celerp.services.cogs_backfill import run_cogs_backfill
+        async with _CogsSession() as _cogs_sess:
+            await run_cogs_backfill(_cogs_sess)
+            await _cogs_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "COGS backfill failed (non-fatal); affected invoices keep their "
+            "missing COGS until a later boot retries"
+        )
+
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)
     # keep the tunnel always-on; a free instance opens it at boot only when it already
