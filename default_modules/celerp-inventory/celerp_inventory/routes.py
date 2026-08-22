@@ -2317,7 +2317,18 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
     Does NOT commit — the caller owns the transaction.
     """
-    parent = parent_proj
+    # Lock and re-read the live parent projection before carving: split_off_child emits
+    # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
+    # parcel must each base their decrement on the current committed quantity, not on a
+    # snapshot read earlier. FOR UPDATE serializes them so the second decrements from the
+    # first's result instead of overwriting it (lost update / phantom stock).
+    locked = (await session.execute(
+        select(Projection)
+        .where(Projection.company_id == company_id, Projection.entity_id == parent_proj.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    parent = locked if locked is not None else parent_proj
     entity_id = parent.entity_id
     parent_sku = parent.state.get("sku", "")
     parent_qty = float(parent.state.get("quantity") or 0)

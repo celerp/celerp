@@ -4144,6 +4144,82 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     return draws
 
 
+def _plan_line_carve(line: dict, parcel_state: dict, unit_map: dict) -> dict | None:
+    """Plan how to carve the invoiced portion off a parent parcel for an on-page split.
+
+    Returns the child's split measures (quantity plus the weight/pieces the parcel is
+    sold by), or None when the line takes the whole parcel (a full or over-invoiced
+    line needs no split). Pure computation shared by fulfill and reserve so the carve
+    rule lives once.
+    """
+    line_qty = float(line.get("quantity") or 0)
+    available = float(parcel_state.get("quantity", 0))
+    if not (line_qty + 1e-9 < available):
+        return None
+    sell_by = parcel_state.get("sell_by")
+    # An explicit line measure is authoritative and is validated by split_off_child (which
+    # rejects a weight/pieces that disagrees with child_qty). Only when the line omits it
+    # do we derive it: for a parcel sold BY that measure the quantity IS the measure.
+    line_weight = line.get("weight")
+    line_pieces = line.get("pieces")
+    return {
+        "child_qty": line_qty,
+        "child_weight": line_weight if line_weight is not None
+        else (line_qty if is_weight_unit(sell_by, unit_map) else None),
+        "child_pieces": line_pieces if line_pieces is not None
+        else (line_qty if is_pieces_unit(sell_by, unit_map) else None),
+    }
+
+
+async def _apply_split_plan(
+    session, *, company_id, cid, uid, entity_id: str, state: dict,
+    split_plan: dict[str, dict], fetched: dict[str, Projection], source: str,
+) -> dict[str, tuple[str, str]]:
+    """Carve each planned child off its parent, retarget the doc lines to the child, and
+    emit the doc.updated line-items change. Returns ``{parent_eid: (child_eid, child_sku)}``.
+
+    Emits no status/transition event - each caller applies its own transition afterward
+    (fulfill emits item.fulfilled; reserve retargets its item.status.set), so fulfill's
+    semantics never leak into reserve. The parent-projection FOR UPDATE lock that keeps
+    two concurrent carves of one parcel from losing an update lives in split_off_child,
+    the single carve primitive both paths share.
+    """
+    from celerp_inventory.routes import split_off_child
+
+    remap: dict[str, tuple[str, str]] = {}
+    new_line_items = [dict(li) for li in state.get("line_items", [])]
+    for parent_eid, plan in split_plan.items():
+        try:
+            child_eid, child_sku = await split_off_child(
+                session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
+                child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
+                child_pieces=plan.get("child_pieces"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
+            )
+        remap[parent_eid] = (child_eid, child_sku)
+        fetched[child_eid] = await session.get(
+            Projection, {"company_id": company_id, "entity_id": child_eid})
+        for nli in new_line_items:
+            if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
+                nli["entity_id"] = child_eid
+                nli["item_id"] = child_eid
+                nli["sku"] = child_sku
+                break
+    await emit_event(
+        session, company_id=cid, entity_id=entity_id, entity_type="doc",
+        event_type="doc.updated",
+        data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
+        actor_id=uid, location_id=None, source=source,
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    state["line_items"] = new_line_items
+    return remap
+
+
 @router.post("/{entity_id}/fulfill-lines")
 async def fulfill_lines(
     entity_id: str,
@@ -4271,17 +4347,12 @@ async def fulfill_lines(
                 continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
-        if line_qty + 1e-9 < available:
-            # Partial draw of a splittable parcel: split off the invoiced amount as a
-            # child and fulfill that; the mother keeps the remainder. For a parcel sold
-            # BY pieces/weight the quantity IS that measure, so derive it (the line
-            # doesn't carry it separately); otherwise take the line's entered value
-            # (defaults to the parcel's, so by default the child takes all).
-            split_plan[item_eid] = {
-                "child_qty": line_qty,
-                "child_weight": line_qty if is_weight_unit(_sb, _unit_map) else _line.get("weight"),
-                "child_pieces": line_qty if is_pieces_unit(_sb, _unit_map) else _line.get("pieces"),
-            }
+        # Partial draw of a splittable parcel: split off the invoiced amount as a child
+        # and fulfill that; the mother keeps the remainder. A full or over-invoiced line
+        # takes the whole parcel and plans no carve.
+        _carve = _plan_line_carve(_line, item_proj.state, _unit_map)
+        if _carve is not None:
+            split_plan[item_eid] = _carve
 
     # A shortage or a non-splittable partial prohibits the whole fulfill.
     if blocked:
@@ -4300,37 +4371,13 @@ async def fulfill_lines(
     # Split partial draws: carve the invoiced amount off each parcel as a child,
     # retarget fulfillment to the child, and rewrite the doc line to reference it.
     if split_plan:
-        from celerp_inventory.routes import split_off_child
-        new_line_items = [dict(li) for li in state.get("line_items", [])]
-        for parent_eid, plan in split_plan.items():
-            try:
-                child_eid, child_sku = await split_off_child(
-                    session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
-                    child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
-                    child_pieces=plan.get("child_pieces"),
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
-                )
-            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
-            fetched[child_eid] = await session.get(Projection, {"company_id": company_id, "entity_id": child_eid})
-            del fetched[parent_eid]
-            for nli in new_line_items:
-                if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
-                    nli["entity_id"] = child_eid
-                    nli["item_id"] = child_eid
-                    nli["sku"] = child_sku
-                    break
-        await emit_event(
-            session, company_id=cid, entity_id=entity_id, entity_type="doc",
-            event_type="doc.updated",
-            data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
-            actor_id=uid, location_id=None, source="fulfillment",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
+        remap = await _apply_split_plan(
+            session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id,
+            state=state, split_plan=split_plan, fetched=fetched, source="fulfillment",
         )
-        state["line_items"] = new_line_items
+        for parent_eid, (child_eid, _child_sku) in remap.items():
+            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
+            del fetched[parent_eid]
 
     total_cogs = 0.0
     for item_eid in to_fulfill:
@@ -4678,7 +4725,20 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     if not line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
+    # Each line keyed by the item parcel it references, so a partial reserve can carve
+    # only the invoiced portion (the same measures the fulfill split uses).
+    line_qty_by_eid: dict[str, float] = {}
+    line_by_eid: dict[str, dict] = {}
+    for li in state.get("line_items", []):
+        _eid = li.get("entity_id") or li.get("item_id") or ""
+        if _eid:
+            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
+            line_by_eid[_eid] = li
+    unit_map = await _get_unit_map(session, row.company_id)
+
     errors: list[str] = []
+    blocked: list[str] = []  # 409: partial reserve of a non-splittable parcel
+    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial reserves)
     projs: dict[str, Projection] = {}
     to_unship: dict[str, Projection] = {}  # sold by THIS doc: reverse the sale, then reserve
     for eid in line_entity_ids:
@@ -4709,8 +4769,23 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             if proj.state.get("status_doc_id") != entity_id:
                 errors.append(f"{eid} ({sku}): reserved by another document")
                 continue
+        # A partially-invoiced line reserves only the invoiced portion: carve a child and
+        # reserve that. A partial reserve of an explicitly non-splittable parcel is gated
+        # exactly as partial fulfillment is. A full or over-invoiced line reserves whole.
+        if new_status == "reserved" and eid not in to_unship:
+            _carve = _plan_line_carve(line_by_eid.get(eid, {}), proj.state, unit_map)
+            if _carve is not None:
+                if not splitting_allowed(proj.state):
+                    blocked.append(
+                        f"{sku}: invoiced {line_qty_by_eid.get(eid, 0):g} of "
+                        f"{float(proj.state.get('quantity', 0)):g} but 'Allow Splitting' is off; "
+                        f"enable splitting or reserve the full quantity")
+                    continue
+                split_plan[eid] = _carve
         projs[eid] = proj
 
+    if blocked:
+        raise HTTPException(status_code=409, detail="Cannot reserve: " + "; ".join(blocked))
     if errors:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
@@ -4723,8 +4798,19 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             state=state, doc_type=state.get("doc_type", ""), to_revert=list(to_unship),
             fetched=to_unship,
         )
+    # Carve the invoiced portion off each partial parcel and reserve the child instead of
+    # the mother; the mother keeps its remainder available.
+    remap: dict[str, tuple[str, str]] = {}
+    if split_plan:
+        remap = await _apply_split_plan(
+            session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
+            state=state, split_plan=split_plan, fetched=projs, source="reservation",
+        )
     doc_number = state.get("doc_number") or state.get("ref_id") or ""
+    reserved_eids: list[str] = []
     for eid in line_entity_ids:
+        target_eid = remap[eid][0] if eid in remap else eid
+        reserved_eids.append(target_eid)
         # Reserve stamps this doc as owner (source_doc_id present); release omits it so
         # _stamp_status_doc clears the ownership stamp - a true handoff back to the pool.
         data: dict = {"new_status": new_status}
@@ -4732,14 +4818,14 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             data["source_doc_id"] = entity_id
             data["doc_number"] = doc_number
         await emit_event(
-            session, company_id=cid, entity_id=eid, entity_type="item",
+            session, company_id=cid, entity_id=target_eid, entity_type="item",
             event_type="item.status.set", data=data,
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
         )
 
     await session.commit()
-    return {"new_status": new_status, "reserved": list(line_entity_ids)}
+    return {"new_status": new_status, "reserved": reserved_eids}
 
 
 @router.post("/{entity_id}/reserve-lines")
