@@ -1438,6 +1438,12 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
+    # Reverse the finalize JE before the doc goes void, symmetric with unvoid's
+    # re-posting: leaving it posted would double-count once unvoid re-posts. Voiding
+    # first also surfaces a locked-period refusal before anything else mutates,
+    # mirroring the revert-to-draft ordering.
+    current_revert_count = int(row.state.get("revert_count", 0))
+    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",

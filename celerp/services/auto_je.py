@@ -510,6 +510,31 @@ async def create_for_bill_conversion(
     )
 
 
+async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id: str, idem_key: str, reason: str, trigger: str) -> bool:
+    """Void a single auto-JE when it is currently posted. Returns True if it voided one.
+
+    Voiding an entry already in 'void' status is a no-op (the status guard skips it),
+    so callers may safely sweep a set of candidate JEs without tracking which are live.
+    """
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if row is None or row.state.get("status") != "posted":
+        return False
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=je_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.voided",
+        data=je_void_data(reason, row.state),
+        actor_id=user_id,
+        location_id=None,
+        source="auto_je",
+        idempotency_key=idem_key,
+        metadata_={"trigger": trigger, "doc_id": doc_id},
+    )
+    return True
+
+
 async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
     """Void the auto-JE that was created when a doc was finalized (invoice or bill).
 
@@ -519,26 +544,48 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     # Cycle-aware invoice JE id (matches create_for_doc_finalized logic).
     cycle = revert_count
     fin_suffix = f"fin:{cycle}" if cycle else "fin"
+    # Void idempotency key is cycle-aware to allow multiple revert cycles.
+    void_cycle_key = f"revert_to_draft:{revert_count}"
     for je_suffix in (fin_suffix, "bill"):
-        je_id = f"je:auto:{doc_id}:{je_suffix}"
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-        if row is not None and row.state.get("status") == "posted":
-            # Void idempotency key is cycle-aware to allow multiple revert cycles.
-            void_cycle_key = f"revert_to_draft:{revert_count}"
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=je_id,
-                entity_type="journal_entry",
-                event_type="acc.journal_entry.voided",
-                data=je_void_data(f"Reversed: {doc_id} reverted to draft", row.state),
-                actor_id=user_id,
-                location_id=None,
-                source="auto_je",
-                idempotency_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
-                metadata_={"trigger": "doc.reverted_to_draft", "doc_id": doc_id},
-            )
+        voided = await _void_je_if_posted(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            doc_id=doc_id,
+            je_id=f"je:auto:{doc_id}:{je_suffix}",
+            idem_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
+            reason=f"Reversed: {doc_id} reverted to draft",
+            trigger="doc.reverted_to_draft",
+        )
+        if voided:
             return  # void the first found; at most one exists per doc
+
+
+async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
+    """Reverse every posted finalize-family auto-JE when a finalized doc is voided.
+
+    Symmetric with create_for_doc_unvoided, which re-posts the finalize JE on unvoid.
+    Without this, voiding leaves the finalize JE posted and a subsequent unvoid posts a
+    second one (je:auto:{doc}:fin:unvoid), double-counting revenue and COGS in the
+    ledger. Sweeping every finalize-family suffix rather than returning on the first
+    keeps the books flat across any finalize/revert/unvoid history: at most one is live
+    at void time and the rest are already void (skipped by the status guard).
+
+    revert_count: the current revert_count from doc state, so cycle-aware finalize ids
+    (fin, fin:1, ... fin:{revert_count}) are all covered.
+    """
+    fin_suffixes = [f"fin:{c}" if c else "fin" for c in range(revert_count + 1)]
+    for je_suffix in fin_suffixes + ["fin:unvoid", "bill"]:
+        await _void_je_if_posted(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            doc_id=doc_id,
+            je_id=f"je:auto:{doc_id}:{je_suffix}",
+            idem_key=je_idempotency_key(doc_id, f"voided:{je_suffix}", "void"),
+            reason=f"Reversed: {doc_id} voided",
+            trigger="doc.voided",
+        )
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:

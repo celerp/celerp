@@ -2805,6 +2805,36 @@ async def test_cogs_reverses_on_revert(client, session, auth, _setup_ids):
 
 
 @pytest.mark.asyncio
+async def test_void_unvoid_does_not_double_post_ledger(client, session, auth, _setup_ids):
+    """Void then unvoid a finalized invoice nets revenue and COGS back to a single
+    posting, never double. Voiding reverses the finalize JE (revenue + COGS); unvoiding
+    re-posts it once. At merge-base void reverses nothing while unvoid re-posts, so the
+    round trip leaves 5100 and 4100 at double their finalize values."""
+    sku = f"VOIDCYC-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 200.0, "entity_id": item_id},
+    ])
+    after_finalize = await _je_net(client, auth["headers"])
+    assert after_finalize.get("5100") == 100.0, f"COGS posts at finalize, got {after_finalize.get('5100')}"
+    assert after_finalize.get("4100") == -200.0, f"revenue posts at finalize, got {after_finalize.get('4100')}"
+
+    # Void reverses the finalize JE: no finalize-related posting stays live.
+    r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test void"})
+    assert r.status_code == 200, r.text
+    after_void = await _je_net(client, auth["headers"])
+    assert after_void.get("5100", 0.0) == 0.0, f"void must reverse COGS, got {after_void.get('5100')}"
+    assert after_void.get("4100", 0.0) == 0.0, f"void must reverse revenue, got {after_void.get('4100')}"
+
+    # Unvoid re-posts the finalize JE exactly once: back to the finalize state, not double.
+    r = await client.post(f"/docs/{doc_id}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    after_unvoid = await _je_net(client, auth["headers"])
+    assert after_unvoid.get("5100") == 100.0, f"unvoid restores COGS to 100 (not 200), got {after_unvoid.get('5100')}"
+    assert after_unvoid.get("4100") == -200.0, f"unvoid restores revenue to -200 (not -400), got {after_unvoid.get('4100')}"
+
+
+@pytest.mark.asyncio
 async def test_cogs_nonstock_or_zero_qty_line_skipped(client, session, auth, _setup_ids):
     """A finalize line that is non-stock (no inventory parcel) contributes 0 COGS and is
     skipped, while a sibling costed stock line still posts, with no crash. At merge-base
