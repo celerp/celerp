@@ -12,9 +12,12 @@ notification.
 
 Runs at startup behind an instance_meta marker, exactly like the status-doc
 backfill. A doc inside a locked accounting period (or one whose legacy state
-the cost computation rejects) is skipped and counted; the marker stays unset in
-that case so the next boot retries the stragglers - the emit idempotency keys
-make re-posting impossible for docs already handled.
+the cost computation rejects) is deferred and counted; the marker stays unset
+in that case so the next boot retries the stragglers - the emit idempotency
+keys make re-posting impossible for docs already handled. A doc whose line
+quantity exceeds its bound lot is skipped terminally instead: the remainder was
+drawn from sibling lots at costs unknowable now, so the owner posts that JE
+manually from the notification.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services import auto_je
-from celerp.services.auto_je import compute_doc_cogs, finalize_family_suffixes
+from celerp.services.auto_je import compute_doc_cogs
 
 log = logging.getLogger(__name__)
 
@@ -67,14 +70,15 @@ def _has_posted_cogs(je_states: list[dict]) -> bool:
     return False
 
 
-def _live_finalize_je(je_by_suffix: dict[str, dict], revert_count: int) -> dict | None:
-    """The posted finalize-family JE state, latest cycle (or unvoid) winning."""
-    live = None
-    for suffix in finalize_family_suffixes(revert_count):
-        state = je_by_suffix.get(suffix)
-        if state is not None and state.get("status") == "posted":
-            live = state
-    return live
+def _live_finalize_je(je_by_suffix: dict[str, dict]) -> dict | None:
+    """The posted finalize-family JE state (fin, a re-finalize cycle, or an
+    unvoid restore of one). The void sweep keeps at most one of them posted at
+    any time, so the first posted match is the live one."""
+    for suffix, state in je_by_suffix.items():
+        if suffix == "fin" or suffix.startswith("fin:"):
+            if state.get("status") == "posted":
+                return state
+    return None
 
 
 def _notify_body(c: dict) -> str:
@@ -86,6 +90,8 @@ def _notify_body(c: dict) -> str:
         parts.append(f"{c['deferred']} deferred: accounting period locked.")
     if c["errored"]:
         parts.append(f"{c['errored']} could not be computed.")
+    if c["skipped"]:
+        parts.append(f"{c['skipped']} skipped: cost spans multiple lots, post manually.")
     return " ".join(parts)
 
 
@@ -163,8 +169,7 @@ async def run_cogs_backfill(session) -> dict:
         je_by_suffix = doc_jes.get((doc.company_id, doc.entity_id), {})
         if not je_by_suffix:
             continue
-        revert_count = int(state.get("revert_count") or 0)
-        fin_je = _live_finalize_je(je_by_suffix, revert_count)
+        fin_je = _live_finalize_je(je_by_suffix)
         if fin_je is None:
             continue
         if _has_posted_cogs(list(je_by_suffix.values())):
@@ -172,13 +177,15 @@ async def run_cogs_backfill(session) -> dict:
 
         c = per_company.setdefault(doc.company_id, {
             "posted": 0, "total": 0.0, "zero_cost": 0,
-            "deferred": 0, "errored": 0, "earliest": None, "latest": None,
+            "deferred": 0, "errored": 0, "skipped": 0,
+            "earliest": None, "latest": None,
         })
         ts = fin_je.get("ts") or state.get("finalized_at") or state.get("issue_date")
         try:
             async with session.begin_nested():
-                cogs = (await compute_doc_cogs(session, doc.company_id, state)).total
-                if cogs > 0:
+                cogs_result = await compute_doc_cogs(session, doc.company_id, state)
+                cogs = cogs_result.total
+                if not cogs_result.ambiguous and cogs > 0:
                     await auto_je.create_for_doc_cogs_backfill(
                         session,
                         company_id=doc.company_id,
@@ -201,7 +208,17 @@ async def run_cogs_backfill(session) -> dict:
             c["errored"] += 1
             log.exception("COGS backfill could not compute %s", doc.entity_id)
         else:
-            if cogs > 0:
+            if cogs_result.ambiguous:
+                # The line drew beyond its bound lot, so the remainder's true lot
+                # costs are unknowable now. Posting an extrapolated guess would put
+                # a wrong number in the books; a skip is terminal and the owner
+                # posts the JE manually from the notification.
+                c["skipped"] += 1
+                log.warning(
+                    "COGS backfill skipped %s (%s): cost spans multiple lots, post manually",
+                    doc.entity_id, state.get("doc_number") or "no number",
+                )
+            elif cogs > 0:
                 c["posted"] += 1
                 c["total"] += cogs
                 day = str(ts)[:10] if ts else None
@@ -213,11 +230,11 @@ async def run_cogs_backfill(session) -> dict:
             else:
                 c["zero_cost"] += 1
 
-    totals = {"posted": 0, "zero_cost": 0, "deferred": 0, "errored": 0}
+    totals = {"posted": 0, "zero_cost": 0, "deferred": 0, "errored": 0, "skipped": 0}
     for company_id, c in per_company.items():
         for key in totals:
             totals[key] += c[key]
-        if any((c["posted"], c["zero_cost"], c["deferred"], c["errored"])):
+        if any((c["posted"], c["zero_cost"], c["deferred"], c["errored"], c["skipped"])):
             await _notify(session, company_id, c)
 
     pending = totals["deferred"] or totals["errored"]
@@ -226,8 +243,9 @@ async def run_cogs_backfill(session) -> dict:
         await conn.run_sync(lambda c: set_meta(c, COGS_BACKFILL_KEY, "done"))
 
     log.info(
-        "COGS backfill: %d posted, %d zero cost, %d deferred, %d errored%s",
+        "COGS backfill: %d posted, %d zero cost, %d deferred, %d errored, %d skipped%s",
         totals["posted"], totals["zero_cost"], totals["deferred"], totals["errored"],
+        totals["skipped"],
         "" if not pending else " (marker left unset; next boot retries)",
     )
     return {"changed": True, **totals}

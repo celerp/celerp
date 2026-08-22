@@ -210,7 +210,7 @@ async def test_backfill_full_cogs_for_partially_fulfilled_invoice(session):
     await _clear_marker(session)
     company_id = await _seed_company(session)
     _seed_parcel(session, company_id, "item:p3a", cost_total=40.0, quantity=2.0)
-    _seed_parcel(session, company_id, "item:p3b", cost_price=15.0)
+    _seed_parcel(session, company_id, "item:p3b", cost_price=15.0, quantity=2.0)
     doc_id = "doc:INV-0003"
     lines = [
         {"quantity": 1, "item_id": "item:p3a", "line_total": 50.0},
@@ -342,7 +342,7 @@ async def test_backfill_zero_cost_doc_posts_nothing_and_counts(session):
     a fabricated amount; zero-cost alone does not hold the marker open."""
     await _clear_marker(session)
     company_id = await _seed_company(session)
-    _seed_parcel(session, company_id, "item:p8", cost_price=0.0)
+    _seed_parcel(session, company_id, "item:p8", cost_price=0.0, quantity=1.0)
     doc_id = "doc:INV-0008"
     _seed_doc(session, company_id, doc_id,
               line_items=[{"quantity": 1, "item_id": "item:p8", "line_total": 100.0}])
@@ -410,7 +410,7 @@ async def test_backfill_notifies_per_company_with_counts(session):
 
     # Company A: one posted, one zero-cost, one deferred, one errored.
     _seed_parcel(session, company_a, "item:a1", cost_total=40.0, quantity=2.0)
-    _seed_parcel(session, company_a, "item:a2", cost_price=0.0)
+    _seed_parcel(session, company_a, "item:a2", cost_price=0.0, quantity=1.0)
     _seed_doc(session, company_a, "doc:INV-A1",
               line_items=[{"quantity": 1, "item_id": "item:a1", "line_total": 100.0}])
     await _emit_je(session, company_a, "je:auto:doc:INV-A1:fin",
@@ -558,7 +558,7 @@ async def test_backfill_ledger_invariant_and_idempotent_rowcount(session):
     await _clear_marker(session)
     company_id = await _seed_company(session)
     _seed_parcel(session, company_id, "item:m1", cost_total=40.0, quantity=2.0)
-    _seed_parcel(session, company_id, "item:m0", cost_price=0.0)
+    _seed_parcel(session, company_id, "item:m0", cost_price=0.0, quantity=1.0)
     lines = [{"quantity": 1, "item_id": "item:m1", "line_total": 100.0}]
     zero_lines = [{"quantity": 1, "item_id": "item:m0", "line_total": 100.0}]
     nonstock_lines = [{"quantity": 1, "line_total": 100.0}]
