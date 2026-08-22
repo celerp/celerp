@@ -2940,7 +2940,7 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     assert r.status_code == 200, r.text
     session.expire_all()
     doc2_adj = await session.get(
-        Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0"})
+        Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0:l0"})
     assert doc2_adj is None, (
         "a fulfill whose actual cost equals the recognized COGS must post no adjustment JE")
 
@@ -2948,7 +2948,7 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
                           json={"line_entity_ids": [lot_a]})
     assert r.status_code == 200, r.text
     session.expire_all()
-    adj_id = f"je:auto:{doc1}:cogs-adj:fulfill-0"
+    adj_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
     adj = await session.get(Projection, {"company_id": cid, "entity_id": adj_id})
     assert adj is not None and adj.state.get("status") == "posted", (
         f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs recognized 110)")
@@ -2972,13 +2972,103 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
     await auto_je_service.create_for_doc_cogs_adjustment(
         session, company_id=cid, user_id=None, doc_id=doc1, delta=60.0,
-        cycle_tag="fulfill-0", doc_number="RETRY", ts="2026-01-01")
+        cycle_tag="fulfill-0:l0", doc_number="RETRY", ts="2026-01-01")
     await session.commit()
     rows_after = (await session.execute(
         select(func.count()).select_from(LedgerEntry)
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
     assert rows_after == rows_before, (
         f"re-running the adjustment must be a no-op, ledger rows went {rows_before} -> {rows_after}")
+
+
+@pytest.mark.asyncio
+async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, session, auth, _setup_ids):
+    """Lines of one cycle fulfilled in separate calls each true up on their own
+    batch-keyed JE: the JE id carries the batch's line indexes, so a second batch
+    with a different delta posts its own adjustment instead of deduping away on
+    the first batch's idempotency key, and each batch's delta compares only that
+    batch's lines. Replaying a batch stays a no-op.
+
+    Setup: two SKUs. SKU1 lots A1 2 at 10, B1 3 at 30, C1 3 at 50; SKU2 lots
+    A2 2 at 20, B2 3 at 40, C2 3 at 70. doc1 line 0 (SKU1 qty 5 bound A1)
+    recognizes 110; line 1 (SKU2 qty 5 bound A2) recognizes 160. doc2 sells B1
+    and B2 outright, so batch 1 (line 0) draws A1+C1 = 170, delta +60, and
+    batch 2 (line 1) draws A2+C2 = 250, delta +90."""
+    from celerp.models.projections import Projection
+
+    cid = _setup_ids["company_id"]
+    sku1 = f"BATCH1-{uuid.uuid4().hex[:6]}"
+    sku2 = f"BATCH2-{uuid.uuid4().hex[:6]}"
+    lot_a1 = await _create_item(client, auth, sku1, 2, cost_price=10.0)
+    lot_b1 = await _create_item(client, auth, sku1, 3, cost_price=30.0)
+    await _create_item(client, auth, sku1, 3, cost_price=50.0)
+    lot_a2 = await _create_item(client, auth, sku2, 2, cost_price=20.0)
+    lot_b2 = await _create_item(client, auth, sku2, 3, cost_price=40.0)
+    await _create_item(client, auth, sku2, 3, cost_price=70.0)
+
+    doc1 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku1, "name": sku1, "quantity": 5, "unit_price": 60.0, "entity_id": lot_a1},
+        {"sku": sku2, "name": sku2, "quantity": 5, "unit_price": 80.0, "entity_id": lot_a2},
+    ])
+    doc2 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku1, "name": sku1, "quantity": 3, "unit_price": 60.0, "entity_id": lot_b1},
+        {"sku": sku2, "name": sku2, "quantity": 3, "unit_price": 80.0, "entity_id": lot_b2},
+    ])
+    r = await client.post(f"/docs/{doc2}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot_b1, lot_b2]})
+    assert r.status_code == 200, r.text
+
+    def _adj_amount(adj):
+        by_acct = {e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+                   for e in adj.state.get("entries", [])}
+        return by_acct.get("5100")
+
+    # Batch 1: line 0 only.
+    r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot_a1]})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    adj_l0_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
+    adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
+    assert adj_l0 is not None and adj_l0.state.get("status") == "posted", (
+        f"batch 1 must post its own adjustment JE {adj_l0_id} (actual 170 vs recognized 110)")
+    assert _adj_amount(adj_l0) == (60.0, 0.0), (
+        f"batch 1 delta must be +60 for its own line only, got {_adj_amount(adj_l0)}")
+
+    # Batch 2: line 1, same cycle, different delta. Must post a second JE, not
+    # dedup away on batch 1's key.
+    r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot_a2]})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    adj_l1_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l1"
+    adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
+    assert adj_l1 is not None and adj_l1.state.get("status") == "posted", (
+        f"batch 2 must post its own adjustment JE {adj_l1_id} (actual 250 vs recognized 160)")
+    assert _adj_amount(adj_l1) == (90.0, 0.0), (
+        f"batch 2 delta must be +90 for its own line only, got {_adj_amount(adj_l1)}")
+    adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
+    assert _adj_amount(adj_l0) == (60.0, 0.0), "batch 2 must not disturb batch 1's JE"
+
+    # Replaying batch 2 posts nothing new, even with a different computed delta.
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services import auto_je as auto_je_service
+    rows_before = (await session.execute(
+        select(func.count()).select_from(LedgerEntry)
+        .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_l1_id))).scalar()
+    await auto_je_service.create_for_doc_cogs_adjustment(
+        session, company_id=cid, user_id=None, doc_id=doc1, delta=42.0,
+        cycle_tag="fulfill-0:l1", doc_number="RETRY", ts="2026-01-01")
+    await session.commit()
+    rows_after = (await session.execute(
+        select(func.count()).select_from(LedgerEntry)
+        .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_l1_id))).scalar()
+    assert rows_after == rows_before, (
+        f"replaying batch 2 must be a no-op, ledger rows went {rows_before} -> {rows_after}")
+    session.expire_all()
+    adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
+    assert _adj_amount(adj_l1) == (90.0, 0.0), "replay must not change batch 2's posted entries"
 
 
 @pytest.mark.asyncio

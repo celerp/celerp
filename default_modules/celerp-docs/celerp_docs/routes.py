@@ -4422,19 +4422,27 @@ async def fulfill_lines(
     if doc_type == "invoice" and to_fulfill:
         _recognized_allocs = await auto_je.recognized_cogs_allocations(session, company_id, entity_id)
         if _recognized_allocs is not None:
+            _batch_indices = sorted({
+                line_index_by_eid[_eid] for _eid in fulfilled_line_eids if _eid in line_index_by_eid
+            })
             _recognized = sum(
-                float((_recognized_allocs.get(str(line_index_by_eid[_eid])) or {}).get("amount") or 0)
-                for _eid in fulfilled_line_eids if _eid in line_index_by_eid
+                float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
+                for _idx in _batch_indices
             )
             _delta = round(total_cogs - _recognized, 2)
             if abs(_delta) > 0.005:
+                # The JE identity carries the batch's line indexes: lines of one
+                # cycle can be fulfilled in separate calls, and each batch's delta
+                # must post on its own JE. Retrying the same batch dedups on the
+                # idempotency key; a different batch is a different key.
+                _batch_tag = "l" + "-".join(str(_idx) for _idx in _batch_indices)
                 await auto_je.create_for_doc_cogs_adjustment(
                     session,
                     company_id=cid,
                     user_id=uid,
                     doc_id=entity_id,
                     delta=_delta,
-                    cycle_tag=f"fulfill-{int(state.get('revert_count') or 0)}",
+                    cycle_tag=f"fulfill-{int(state.get('revert_count') or 0)}:{_batch_tag}",
                     doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
                     ts=now,
                 )

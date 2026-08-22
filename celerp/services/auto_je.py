@@ -664,8 +664,8 @@ def _recognition_root(suffix: str) -> str | None:
 
     The root is the suffix with any unvoid-restore generations stripped, so a
     restore shares its original's root: fin, fin:2, fin:unvoid, fin:2:unvoid:1
-    all root to their cycle id; cogs-adj:fulfill-0:unvoid:1 roots to
-    cogs-adj:fulfill-0. A payment (pay:0) or fulfillment (fulfill-1) suffix
+    all root to their cycle id; cogs-adj:fulfill-0:l0:unvoid:1 roots to
+    cogs-adj:fulfill-0:l0. A payment (pay:0) or fulfillment (fulfill-1) suffix
     returns None.
     """
     root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
@@ -851,9 +851,10 @@ async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id
 
     A positive delta (actual cost above recognized) debits 5100 and relieves
     inventory; a negative one reverses that. cycle_tag scopes the JE id and its
-    idempotency keys to the fulfillment cycle (fulfill-0, fulfill-1, ...), so a
-    replay within a cycle is a no-op and each re-finalize cycle trues up on its
-    own JE.
+    idempotency keys to the fulfillment cycle plus the batch of lines fulfilled
+    in one call (fulfill-0:l0-1, fulfill-1:l2, ...), so replaying a batch is a
+    no-op while each distinct batch, and each re-finalize cycle, trues up on
+    its own JE.
     """
     amount = round(abs(float(delta)), 2)
     if amount <= 0:
