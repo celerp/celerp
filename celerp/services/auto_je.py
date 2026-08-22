@@ -535,30 +535,48 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
     return True
 
 
+def finalize_family_suffixes(revert_count: int = 0) -> list[str]:
+    """Every JE id suffix that can carry a doc's finalize recognition.
+
+    Covers each finalize cycle (fin, fin:1, ... fin:{revert_count}) plus the
+    unvoid restore. At most one is posted at any time; the rest are void.
+    """
+    cycles = [f"fin:{c}" if c else "fin" for c in range(int(revert_count or 0) + 1)]
+    return cycles + ["fin:unvoid"]
+
+
+def _void_sweep_suffixes(revert_count: int = 0) -> list[str]:
+    """Every JE id suffix a void sweep must cover: the finalize family plus the
+    one-time COGS backfill JE and the bill finalize JE."""
+    return finalize_family_suffixes(revert_count) + ["cogs-backfill", "bill"]
+
+
 async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
-    """Void the auto-JE that was created when a doc was finalized (invoice or bill).
+    """Void every posted auto-JE tied to a doc's finalized state when it reverts
+    to draft (invoice or bill).
+
+    Sweeps the full finalize family plus the COGS backfill JE rather than
+    stopping at the first hit: a backfilled invoice carries two posted JEs
+    (finalize and cogs-backfill), and an unvoided invoice's live finalize JE is
+    fin:unvoid, not the cycle id. _void_je_if_posted skips anything already
+    void, so the sweep only ever reverses what is live.
 
     revert_count: the current revert_count from doc state (before this revert increments it).
-    Used to derive the correct JE entity id for cycle-aware invoice JEs.
+    Used to derive the correct JE entity ids for cycle-aware invoice JEs.
     """
-    # Cycle-aware invoice JE id (matches create_for_doc_finalized logic).
-    cycle = revert_count
-    fin_suffix = f"fin:{cycle}" if cycle else "fin"
-    # Void idempotency key is cycle-aware to allow multiple revert cycles.
-    void_cycle_key = f"revert_to_draft:{revert_count}"
-    for je_suffix in (fin_suffix, "bill"):
-        voided = await _void_je_if_posted(
+    for je_suffix in _void_sweep_suffixes(revert_count):
+        await _void_je_if_posted(
             session,
             company_id=company_id,
             user_id=user_id,
             doc_id=doc_id,
             je_id=f"je:auto:{doc_id}:{je_suffix}",
-            idem_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
+            # Cycle- and suffix-aware so multiple revert cycles and multiple
+            # live JEs in one revert each get their own void event.
+            idem_key=je_idempotency_key(doc_id, f"revert_to_draft:{revert_count}:{je_suffix}", "void"),
             reason=f"Reversed: {doc_id} reverted to draft",
             trigger="doc.reverted_to_draft",
         )
-        if voided:
-            return  # void the first found; at most one exists per doc
 
 
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
@@ -569,13 +587,14 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str, reve
     second one (je:auto:{doc}:fin:unvoid), double-counting revenue and COGS in the
     ledger. Sweeping every finalize-family suffix rather than returning on the first
     keeps the books flat across any finalize/revert/unvoid history: at most one is live
-    at void time and the rest are already void (skipped by the status guard).
+    at void time and the rest are already void (skipped by the status guard). The
+    one-time COGS backfill JE is part of the sweep too, since a backfilled invoice
+    holds its COGS in that separate JE.
 
     revert_count: the current revert_count from doc state, so cycle-aware finalize ids
     (fin, fin:1, ... fin:{revert_count}) are all covered.
     """
-    fin_suffixes = [f"fin:{c}" if c else "fin" for c in range(revert_count + 1)]
-    for je_suffix in fin_suffixes + ["fin:unvoid", "bill"]:
+    for je_suffix in _void_sweep_suffixes(revert_count):
         await _void_je_if_posted(
             session,
             company_id=company_id,
@@ -586,6 +605,30 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str, reve
             reason=f"Reversed: {doc_id} voided",
             trigger="doc.voided",
         )
+
+
+async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: str, cogs: float, ts: str | None) -> None:
+    """Post the one-time COGS JE for a finalized invoice that predates
+    COGS-at-finalize and never received its COGS at fulfillment.
+
+    ts carries the doc's finalize-family JE date so the expense lands in the
+    period that recognized the revenue; a dateless doc stays dateless.
+    """
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:cogs-backfill",
+        idem_create=je_idempotency_key(doc_id, "invoice.cogs_backfill", "c"),
+        idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
+        memo=f"Auto JE for {doc_id} COGS backfill",
+        ts=ts,
+        entries=[
+            {"account": "5100", "debit": float(cogs), "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(cogs)},
+        ],
+        metadata_={"trigger": "doc.cogs_backfill", "doc_id": doc_id},
+    )
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
