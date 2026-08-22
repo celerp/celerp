@@ -87,7 +87,7 @@ def setup_routes(app):
              lambda r: r.get("name") or r.get("sku") or "",
              lambda r: f"/inventory/{r.get('id', '')}",
              lambda r: r.get("sku") or "",
-             frozenset({"sold", "archived", "merged", "expired"})),
+             frozenset({"sold", "archived", "merged", "expired", "disposed"})),
             (api.list_contacts(token, {"q": q, "limit": "5"}),
              "items", "👤",
              lambda r: r.get("name") or r.get("contact_name") or "",

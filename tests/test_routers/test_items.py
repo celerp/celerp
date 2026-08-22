@@ -2690,3 +2690,26 @@ async def test_transform_drops_sell_prices_keeps_cost(client):
     assert not child.get("wholesale_price"), f"wholesale_price should be dropped, got {child.get('wholesale_price')!r}"
     # Cost still preserved.
     assert float(child.get("cost_total") or 0) == 260.0
+
+
+@pytest.mark.asyncio
+async def test_set_item_status_rejects_disposed(client):
+    """The generic status route must not be a back door to the off-books `disposed` terminal: that
+    status is reachable only through the manager-gated write-off flow. The route rejects it with a
+    write-off-specific reason and emits no status event."""
+    reg = await client.post("/auth/register", json={
+        "company_name": "Items Co", "email": f"admin-{uuid.uuid4().hex[:8]}@items.test",
+        "name": "A", "password": "pw"})
+    h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    iid = (await client.post("/items", json={
+        "status": "available", "sku": "ST-DISP", "name": "Thing", "quantity": 3, "sell_by": "piece"},
+        headers=h)).json()["id"]
+
+    r = await client.post(f"/items/{iid}/status", json={"new_status": "disposed"}, headers=h)
+    assert r.status_code == 422, r.text
+    detail = (r.json().get("detail") or "").lower()
+    # Distinct from the generic "Unknown status ..." rejection - names the write-off flow.
+    assert "unknown status" not in detail
+    assert "write" in detail
+    # No status event emitted: the item is untouched.
+    assert (await client.get(f"/items/{iid}", headers=h)).json()["status"] == "available"

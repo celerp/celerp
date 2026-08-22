@@ -351,6 +351,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["is_expired"] = event_type == "item.expired"
         current["status"] = "expired" if event_type == "item.expired" else "archived"
         _stamp_status_doc(current, {})
+    elif event_type == "item.written_off":
+        # Off the books via the manager-gated Write off stock terminal. The status badge
+        # links back to the source write-off list, where the reason and destination account
+        # are single-sourced (DRY); nothing about them is copied onto the item row.
+        current["status"] = "disposed"
+        _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id")})
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])

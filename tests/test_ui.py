@@ -2861,6 +2861,106 @@ class TestDocumentPolish:
         assert b"ct:CUST-001" in r.content
 
 
+class TestWriteoffListDetail:
+    """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
+    (GDR 2f), the account picker is filtered to expense/cogs/equity chart accounts (function-level
+    filter mirrored from the API), and every render path stays column-aligned."""
+
+    _WO_CHART = [
+        {"code": "6100", "name": "Wastage", "account_type": "expense", "is_active": True},
+        {"code": "5100", "name": "Cost of Goods Sold", "account_type": "cogs", "is_active": True},
+        {"code": "3200", "name": "Owner Drawings", "account_type": "equity", "is_active": True},
+        {"code": "1130", "name": "Inventory", "account_type": "asset", "is_active": True},
+        {"code": "4000", "name": "Sales", "account_type": "revenue", "is_active": True},
+    ]
+
+    def _wo_list(self):
+        return {
+            "entity_id": "list:WO-1", "list_type": "writeoff", "status": "draft",
+            "ref_id": "WO-1", "currency": "USD", "line_items": [
+                {"line_id": "ln-abc", "item_id": "item:1", "sku": "SKU-1", "name": "Widget",
+                 "quantity": 10, "qty_out": None, "account": None, "comment": ""},
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_draft_writeoff_renders_entry_cells_filtered_and_aligned(self, ui_client):
+        from bs4 import BeautifulSoup
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # The three write-off entry columns are present as click-to-edit cells (GDR 2f).
+        assert "col-qtyout" in html
+        assert "col-account" in html
+        assert "col-comment" in html
+        # Each cell edits through its own write-off line endpoint.
+        for field in ("qty_out", "account", "comment"):
+            assert f"/lists/list:WO-1/writeoff-line/ln-abc/{field}/edit" in html
+
+        # Column alignment: the line table's header cell count equals its data-row cell count.
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.select_one("table.doc-lines")
+        assert table is not None
+        header_cells = table.select_one("thead tr").find_all("th")
+        data_cells = table.select_one("tbody tr").find_all("td")
+        assert len(header_cells) == len(data_cells), (len(header_cells), len(data_cells))
+        # The three write-off headers are the on-page entry columns.
+        header_text = [th.get_text(strip=True) for th in header_cells]
+        assert {"Qty out", "Account", "Comment"} <= set(header_text)
+
+    @pytest.mark.asyncio
+    async def test_finalized_writeoff_offers_terminal_button(self, ui_client):
+        """A finalized write-off offers the registry-declared Write off stock terminal; finalize only
+        locks the lines, so without this button the stock removal and journal entry are unreachable."""
+        lst = {**self._wo_list(), "status": "finalized"}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "Write off stock" in html
+        assert "/lists/list:WO-1/action/write-off" in html
+
+    @pytest.mark.asyncio
+    async def test_closed_writeoff_offers_undo_button(self, ui_client):
+        """A closed (written_off) write-off offers Undo write-off: the terminal is reversible."""
+        lst = {**self._wo_list(), "status": "closed", "result": "written_off"}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "Undo write-off" in html
+        assert "/lists/list:WO-1/action/undo-write-off" in html
+
+    @pytest.mark.asyncio
+    async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get(
+                "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # Expense / cogs / equity codes are offered; asset (1130) and revenue (4000) are not.
+        assert "6100" in html and "5100" in html and "3200" in html
+        assert "1130" not in html
+        assert "4000" not in html
+
+
 class TestSettingsPolish:
     """Settings click-to-edit affordance — visual cue must be present."""
 
@@ -19523,3 +19623,78 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
         )
     assert r2.status_code == 400
     assert "reserved_conflicts" not in r2.json()
+
+
+def _inventory_nav_slots():
+    """Load the inventory module's sidebar nav slot list from its manifest."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "celerp_inv_init_disposed",
+        str(Path(__file__).parent.parent / "default_modules/celerp-inventory/__init__.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.PLUGIN_MANIFEST["slots"]["nav"]
+
+
+class TestDisposedTab:
+    """The disposal register (J3): reached from the sidebar nav (like Sold/Archived), listing each
+    written-off lot with its value and a badge linking back to the source write-off record."""
+
+    @pytest.mark.asyncio
+    async def test_disposed_tab_lists_rows_linked_to_writeoff_record(self, ui_client):
+        """Filtering to Disposed lists each written-off lot with its value and a status badge whose
+        number links back to the source write-off record (where the reason and account live)."""
+        # Entry point: a sidebar nav link filtering inventory to status=disposed, mirroring the
+        # existing Sold/Archived links (status views are reached from the shell nav, not a status-tab
+        # strip in the inventory content - see test_status_tabs_removed_from_inventory_content).
+        nav = _inventory_nav_slots()
+        assert "inventory_disposed" in [n.get("key") for n in nav]
+        assert "/inventory?status=disposed" in [n.get("href") for n in nav]
+        disposed = {"entity_id": "gc:900", "name": "Spoiled Batch", "status": "disposed",
+                    "status_doc_id": "doc:WO-2026-0001", "status_doc_number": "WO-2026-0001",
+                    "total_cost": "50.00"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [disposed], "total": 1})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+        assert r.status_code == 200
+        body = r.content.decode()
+        # The disposed row shows its value and a badge linking to the source write-off record.
+        _pre, _post = body.split("cell-gc-900-status", 1)
+        cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
+        assert "badge--disposed" in cell
+        assert 'href="/docs/doc:WO-2026-0001"' in cell and "WO-2026-0001" in cell
+        assert "50.00" in body
+
+    @pytest.mark.asyncio
+    async def test_disposed_tab_empty_state(self, ui_client):
+        """With nothing disposed the register (reached via the disposed nav link) shows the standard
+        per-status empty message."""
+        nav = _inventory_nav_slots()
+        assert "inventory_disposed" in [n.get("key") for n in nav]
+        assert "/inventory?status=disposed" in [n.get("href") for n in nav]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
+        assert r.status_code == 200
+        assert "No disposed items." in r.content.decode()

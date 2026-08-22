@@ -17,7 +17,7 @@ from celerp.output.doc_print import (  # noqa: F401
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
-INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out"})
+INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out", "disposed"})
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
@@ -879,6 +879,7 @@ def editable_cell(
     placeholder: str | None = None,
     patch_url: str | None = None,
     aria_label: str | None = None,
+    cls_extra: str = "",
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
@@ -1026,7 +1027,7 @@ def editable_cell(
             onkeydown=escape_js,
         )
 
-    return Td(input_el, cls=f"cell cell--editing cell--{cell_type}")
+    return Td(input_el, cls=f"cell cell--editing cell--{cell_type}{(' ' + cls_extra) if cls_extra else ''}")
 
 
 def _normalize_number_str(s: str) -> str:
@@ -1097,6 +1098,7 @@ def display_cell(
     label_map: dict | None = None,
     placeholder: str | None = None,
     status_doc: tuple[str, str] | None = None,
+    cls_extra: str = "",
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
@@ -1109,6 +1111,7 @@ def display_cell(
                  stays click-to-edit and saving still uses whatever the user types.
     status_doc: status cells only - (doc_entity_id, doc_number) of the causing document,
                 rendered inside the badge as a link (see _display_val)."""
+    _x = f" {cls_extra}" if cls_extra else ""
     display_value = label_map.get(value, value) if label_map and value is not None else value
     # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
     # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
@@ -1128,8 +1131,8 @@ def display_cell(
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
-        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
+            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
+        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
         # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
@@ -1148,7 +1151,7 @@ def display_cell(
                 id=f"img-input-{entity_id.replace(':', '-')}",
             ),
             id=f"img-cell-{entity_id.replace(':', '-')}",
-            cls="cell cell--image cell--droppable",
+            cls=f"cell cell--image cell--droppable{_x}",
             data_entity_id=entity_id,
             data_col=field,
             title="Drag & drop image or click to upload",
@@ -1163,7 +1166,7 @@ def display_cell(
             hx_target="this",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-            cls=f"cell cell--{cell_type} cell--clickable",
+            cls=f"cell cell--{cell_type} cell--clickable{_x}",
             data_col=field,
         )
 
@@ -1176,7 +1179,7 @@ def display_cell(
             hx_target="this",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
-            cls=f"cell cell--{cell_type} cell--clickable",
+            cls=f"cell cell--{cell_type} cell--clickable{_x}",
             data_col=field,
         )
 
@@ -1188,7 +1191,7 @@ def display_cell(
         hx_target="this",
         hx_swap="outerHTML",
         hx_trigger="dblclick",
-        cls=f"cell cell--{cell_type} cell--clickable",
+        cls=f"cell cell--{cell_type} cell--clickable{_x}",
         data_col=field,
     )
 
@@ -1672,7 +1675,10 @@ function bulkActionChanged(action){
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
   if(action==='archive'){
-    if(!confirm('Archive / Dispose selected items? They will be hidden from the default view.')) return;
+    // Archiving retires the product but leaves any remaining stock on the books. When stock is
+    // still held the user must choose (keep on books vs write off) - never a silent ledger move.
+    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
+    if(!confirm('Archive selected items? They will be hidden from the default view.')) return;
     _bulkImmediate('/api/items/bulk/status','bulk_status','archived');return;
   }
   if(action==='restore'){
@@ -1680,7 +1686,12 @@ function bulkActionChanged(action){
     _bulkImmediate('/api/items/bulk/status','bulk_status','available');return;
   }
   if(action==='expire'){
+    // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
+    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/expire',null,null);});return;}
     _bulkImmediate('/api/items/bulk/expire',null,null);return;
+  }
+  if(action==='write_off'){
+    _bulkWriteOff();return;
   }
   if(action==='make_available'){
     if(!confirm('Make selected draft items available? They will count as real stock.')) return;
@@ -1749,6 +1760,51 @@ function _bulkImmediate(url,extraName,extraValue){
   // Remove the form only after the request completes (see merge handler note) so HX-Trigger
   // events fired on the source element still reach the document-level listeners.
   htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+    .then(function(){form.remove();},function(){form.remove();});
+}
+function _selectedStockedIds(){
+  // Selected items that still hold stock (quantity > 0). Prefer the live rendered qty - an inline
+  // edit re-renders the row's checkbox - and fall back to the selection snapshot for rows not on
+  // the current page, so the guard is never skipped on stale zero data.
+  var all=CelerpSelection.all();
+  return Object.keys(all).filter(function(id){
+    var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+    var q=(cb&&cb.dataset.qty!=null&&cb.dataset.qty!=='')?cb.dataset.qty:(all[id].qty||'0');
+    return parseFloat(q)>0;
+  });
+}
+function _stockGuardChoice(keepFn){
+  // The unmissable two-way choice for archiving/expiring still-stocked items (GDR 2d): keep the
+  // stock on the books, or write it off. Cancel and Esc are the way back; no action fires until
+  // the user picks, so nothing moves on the ledger automatically.
+  var existing=document.getElementById('stock-guard-choice');
+  if(existing){existing.close();existing.remove();}
+  var dlg=document.createElement('dialog');
+  dlg.className='modal-dialog';dlg.id='stock-guard-choice';
+  var body=document.createElement('div');body.className='modal-body';
+  var msg=document.createElement('p');
+  msg.textContent='Some selected items still hold stock. Archiving retires the product but leaves its stock on the books. What should happen to the remaining stock?';
+  body.appendChild(msg);
+  var acts=document.createElement('div');acts.className='modal-actions';
+  function mkBtn(label,cls,fn){var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){dlg.close();dlg.remove();if(fn)fn();});return b;}
+  acts.appendChild(mkBtn('Keep stock on books','btn--secondary',keepFn));
+  acts.appendChild(mkBtn('Write off remaining stock','btn--primary',_bulkWriteOff));
+  acts.appendChild(mkBtn('Cancel','btn--ghost',null));
+  body.appendChild(acts);dlg.appendChild(body);
+  document.body.appendChild(dlg);
+  dlg.addEventListener('cancel',function(){dlg.remove();});
+  dlg.showModal();
+}
+function _bulkWriteOff(){
+  // Seed a draft write-off list from the current selection and navigate to it (the server proxy
+  // replies with HX-Redirect to the new list). Data entry happens on-page in that list.
+  var form=document.createElement('form');
+  CelerpSelection.ids().forEach(function(id){
+    var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+    form.appendChild(inp);
+  });
+  document.body.appendChild(form);
+  htmx.ajax('POST','/api/items/bulk/write-off',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
     .then(function(){form.remove();},function(){form.remove();});
 }
 function _liveMergeMeta(id){

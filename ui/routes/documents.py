@@ -16,7 +16,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures
 from ui.components.shell import base_shell, page_header, toast_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
@@ -302,16 +302,26 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         # stage and keeps editable rows like any other list. The On-hand/Counted columns show in every
         # audit state (a draft just has no frozen on-hand or counts yet).
         counting = is_audit and status in (_LF, _LC)
+        # A write-off list carries qty_out/account/comment entry columns (registry: extra_columns).
+        # Its lines are entered on-page (click-to-edit) only while the list is a draft; once
+        # finalized/closed the manifest is locked and the columns render as static text.
+        writeoff = "qty_out" in b.extra_columns
         return {
             "no_money": not b.money,
             # customs (shipping documents): value-bearing but non-accounting. The draft shows
             # every field a printout needs (HS code, origin, customs value); disc/tax stay off.
             "customs": b.customs,
-            "show_onhand": "on_hand" in b.extra_columns,
+            # Write-off lines show the item on-hand too (sourced from item_meta_map like audits).
+            "show_onhand": ("on_hand" in b.extra_columns) or writeoff,
             "show_counted": "counted" in b.extra_columns,
             "audit": is_audit,
             "counting": counting,
             "counted_editable": is_audit and status == _LF,
+            "writeoff": writeoff,
+            "writeoff_editable": writeoff and status == _LD,
+            "show_qtyout": writeoff,
+            "show_account": writeoff,
+            "show_comment": writeoff,
         }
     return {
         "no_money": doc_type in _NO_MONEY_DOC_TYPES,
@@ -321,6 +331,11 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         "audit": False,
         "counting": False,
         "counted_editable": False,
+        "writeoff": False,
+        "writeoff_editable": False,
+        "show_qtyout": False,
+        "show_account": False,
+        "show_comment": False,
     }
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
@@ -4342,12 +4357,21 @@ celerpUpdateBulkAlloc();
                 _list_share_active = bool((await api.get_share_state(token, entity_id)).get("active"))
             except Exception:
                 pass
+        # A write-off list enters each line's destination account on-page, so it needs the chart of
+        # accounts for the picker. Fetched only for this type - other lists have no account column.
+        _chart_accounts: list[dict] = []
+        if (lst.get("list_type") or "") == "writeoff":
+            try:
+                _chart_accounts = (await api.get_chart(token)).get("items", [])
+            except Exception:
+                _chart_accounts = []
         return await base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
+                        chart_accounts=_chart_accounts,
                         line_identifier_mode=_ident_mode, relay_error=_ls_error),
             title=f"List {ref} - Celerp",
             nav_active="lists",
@@ -4515,7 +4539,7 @@ celerpUpdateBulkAlloc();
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
-            elif action in ("adjust", "undo-adjust"):
+            elif action in ("adjust", "undo-adjust", "write-off", "undo-write-off"):
                 await api.list_action(token, entity_id, action)
             else:
                 return _R("", status_code=400)
@@ -4755,6 +4779,92 @@ celerpUpdateBulkAlloc();
                  title="Click to edit count"),
             cls="editable-cell",
         )
+
+    async def _writeoff_line_value(token: str, entity_id: str, line_id: str, field: str):
+        """The stored value of one write-off line field, or None if the line is gone."""
+        lst = await api.get_list(token, entity_id)
+        li = next((l for l in (lst.get("line_items") or []) if l.get("line_id") == line_id), None)
+        return li.get(field) if li else None
+
+    async def _writeoff_account_opts(token: str) -> tuple[list, dict]:
+        """(codes, labels) for the write-off account picker, from the chart of accounts."""
+        try:
+            return _writeoff_account_choices((await api.get_chart(token)).get("items", []))
+        except Exception:
+            return [], {}
+
+    @app.get("/lists/{entity_id}/writeoff-line/{line_id}/{field}/edit")
+    async def list_writeoff_line_edit(request: Request, entity_id: str, line_id: str, field: str):
+        """Inline editor for a write-off line's qty_out / account / comment (draft-only entry)."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _WRITEOFF_FIELDS:
+            return _R("Unknown field", status_code=404)
+        try:
+            value = await _writeoff_line_value(token, entity_id, line_id, field)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
+        return _writeoff_editable_cell(entity_id, line_id, field, value, opts, labels)
+
+    @app.patch("/lists/{entity_id}/writeoff-line/{line_id}/{field}")
+    async def list_writeoff_line_save(request: Request, entity_id: str, line_id: str, field: str):
+        """Save one write-off line field. qty_out and account are validated at the function level by
+        the API; on rejection the editor stays open with the value and an inline reason (GDR 2e - the
+        control is never removed to prevent the error)."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _WRITEOFF_FIELDS:
+            return _R("Unknown field", status_code=404)
+        form = await request.form()
+        raw = str(form.get("value", "")).strip()
+        opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
+        # Assemble the API kwargs. A blank qty_out/account is a no-op: the API only sets a value, it
+        # cannot clear one, so a blank submit restores the stored value rather than fabricating a clear.
+        kwargs: dict = {}
+        if field == "qty_out":
+            if raw != "":
+                try:
+                    kwargs["qty_out"] = float(raw)
+                except ValueError:
+                    return _writeoff_editable_cell(entity_id, line_id, field, raw, opts, labels)(
+                        P("Enter a number", cls="cell-error"))
+        elif field == "account":
+            if raw != "":
+                kwargs["account"] = raw
+        else:  # comment - free text, may be blanked
+            kwargs["comment"] = raw
+        if kwargs:
+            try:
+                await api.set_writeoff_line(token, entity_id, line_id=line_id, **kwargs)
+            except APIError as e:
+                return _writeoff_editable_cell(entity_id, line_id, field, kwargs.get(field, raw), opts, labels)(
+                    P(str(e.detail), cls="cell-error"))
+        try:
+            value = await _writeoff_line_value(token, entity_id, line_id, field)
+        except APIError:
+            value = kwargs.get(field)
+        return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
+
+    @app.get("/lists/{entity_id}/writeoff-line/{line_id}/{field}/display")
+    async def list_writeoff_line_display(request: Request, entity_id: str, line_id: str, field: str):
+        """Read-only cell for a write-off line field (ESC restore / post-save path)."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _WRITEOFF_FIELDS:
+            return _R("Unknown field", status_code=404)
+        try:
+            value = await _writeoff_line_value(token, entity_id, line_id, field)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
+        return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
 
 def _doc_table(
@@ -5033,6 +5143,61 @@ def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str
         title="Double-click to edit",
         cls="editable-cell",
     )
+
+
+# ── Write-off line entry cells (list_type=writeoff) ──────────────────────────
+# The three per-line entry columns: qty_out is a number (right-aligned over its figures),
+# account a searchable select filtered to the write-off destination classes, comment free text.
+_WRITEOFF_FIELDS: frozenset[str] = frozenset({"qty_out", "account", "comment"})
+_WRITEOFF_CELL_TYPES: dict[str, str] = {"qty_out": "number", "account": "select", "comment": "text"}
+_WRITEOFF_COL_CLASS: dict[str, str] = {"qty_out": "col-qtyout", "account": "col-account", "comment": "col-comment"}
+# A write-off destination is an expense/cogs/equity account (spoilage/samples -> expense or cogs;
+# owner drawings / family use -> equity). Single source of the picker filter, mirroring the API's
+# _WRITEOFF_ACCOUNT_TYPES so the dropdown and the function-level validation never diverge.
+_WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "cogs", "equity"})
+
+
+def _writeoff_account_choices(chart_items: list | None) -> tuple[list[str], dict[str, str]]:
+    """(codes, {code: 'CODE Name'}) for the chart accounts a write-off may post to."""
+    accts = [a for a in (chart_items or []) if a.get("account_type") in _WRITEOFF_ACCOUNT_TYPES]
+    options = [a.get("code", "") for a in accts if a.get("code")]
+    labels = {a.get("code", ""): f"{a.get('code','')} {a.get('name','')}".strip() for a in accts if a.get("code")}
+    return options, labels
+
+
+def _writeoff_display_cell(entity_id: str, line_id: str, field: str, value,
+                           acct_options: list[str] | None = None, acct_labels: dict | None = None) -> FT:
+    """Read-only write-off entry cell (click-to-edit). Empty renders the -- sentinel."""
+    kw: dict = {"options": acct_options or [], "label_map": acct_labels or {}} if field == "account" else {}
+    return display_cell(
+        entity_id, field, value, cell_type=_WRITEOFF_CELL_TYPES[field],
+        edit_url=f"/lists/{entity_id}/writeoff-line/{line_id}/{field}/edit",
+        cls_extra=_WRITEOFF_COL_CLASS[field], **kw,
+    )
+
+
+def _writeoff_editable_cell(entity_id: str, line_id: str, field: str, value,
+                            acct_options: list[str] | None = None, acct_labels: dict | None = None) -> FT:
+    """Editing state of a write-off entry cell. Saves via PATCH to the writeoff-line route;
+    ESC restores through the field's /display sibling (editable_cell's default restore_url)."""
+    kw: dict = {"options": acct_options or [], "label_map": acct_labels or {}} if field == "account" else {}
+    return editable_cell(
+        entity_id, field, value, cell_type=_WRITEOFF_CELL_TYPES[field],
+        patch_url=f"/lists/{entity_id}/writeoff-line/{line_id}/{field}",
+        cls_extra=_WRITEOFF_COL_CLASS[field], **kw,
+    )
+
+
+def _writeoff_static_cell(field: str, value, acct_labels: dict | None = None) -> FT:
+    """Finalized/closed write-off cell: static text, -- when empty. qty_out right-aligned;
+    account shows its 'CODE Name' label."""
+    col = _WRITEOFF_COL_CLASS[field]
+    if field == "qty_out":
+        return Td(f"{float(value):g}" if value is not None else "--", cls=f"cell--number {col}")
+    if field == "account":
+        disp = (acct_labels or {}).get(value, value) if value else None
+        return Td(str(disp) if disp else "--", cls=col)
+    return Td(str(value) if value not in (None, "") else "--", cls=col)
 
 
 def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> FT:
@@ -5675,6 +5840,31 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _pay_due = 0.0
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
+    # Write-off entry columns (qty_out / account / comment). Built once for every render path (draft
+    # editable, finalized static) so the finalized _li_row - shared with non-list docs - always sees a
+    # bound helper. The account picker options are the expense/cogs/equity chart codes.
+    _wo_acct_options, _wo_acct_labels = _writeoff_account_choices(chart_accounts)
+
+    def _writeoff_cells(li: dict) -> list:
+        """Qty out / Account / Comment cells for a write-off line, appended after On hand.
+        A draft (pol['writeoff_editable']) renders click-to-edit cells saving to the writeoff-line
+        routes; finalized/closed renders static text. Each cell is guarded by its pol['show_*'] flag
+        so non-write-off lists (every show_* False) render byte-identical."""
+        out: list = []
+        lid = li.get("line_id") or ""
+        editable = pol["writeoff_editable"]
+        _fields = (("qty_out", pol["show_qtyout"]), ("account", pol["show_account"]),
+                   ("comment", pol["show_comment"]))
+        for _f, _show in _fields:
+            if not _show:
+                continue
+            if editable:
+                out.append(_writeoff_display_cell(entity_id, lid, _f, li.get(_f),
+                                                  _wo_acct_options, _wo_acct_labels))
+            else:
+                out.append(_writeoff_static_cell(_f, li.get(_f), _wo_acct_labels))
+        return out
+
     _s = settings or {}
     _can_edit = role_has_permission(_s, role, "edit_documents")
     _can_finalize = role_has_permission(_s, role, "finalize_documents")
@@ -5824,6 +6014,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo",
                                                hx_swap="none", cls="btn btn--secondary",
                                                title="Turn this quote into a memo so the goods go out on approval before invoicing."))
+            elif pol["writeoff"]:
+                # Write-off terminal (registry-declared): removes each line's qty out from stock and
+                # posts one journal entry. Manager permission is enforced server-side (GDR 2e).
+                _wo_term = _list_behavior("writeoff").terminal[0]
+                action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
+                                               hx_swap="none", cls="btn btn--primary",
+                                               hx_confirm=_wo_term.confirm,
+                                               title="Remove each line's quantity out from stock and post one journal entry. This closes the write-off."))
+        elif status == _LC and pol["writeoff"] and doc.get("result") == "written_off":
+            # Closed write-off: the terminal is reversible (GDR 2a) - void the JE, restore the stock.
+            action_btns_left.append(Button("Undo write-off", hx_post=f"/lists/{entity_id}/action/undo-write-off",
+                                           hx_swap="none", cls="btn btn--secondary",
+                                           title="Reverse this write-off: void its journal entry and restore the disposed stock to available.",
+                                           hx_confirm="Reverse this write-off? The disposed stock returns to available and its journal entry is voided."))
         elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
             # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
             action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",
@@ -6573,6 +6777,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 else:
                     _cq = li.get("counted_qty")
                     cells.append(Td(f"{float(_cq):g}" if _cq is not None else "--", cls="cell--number col-counted"))
+            cells.extend(_writeoff_cells(li))
             # The scanned/adjusted highlight only means something on an audit. If the list was switched
             # to another type, the stored audited_at/adjusted flags persist but carry no meaning there
             # (no row action), so don't paint the highlight.
@@ -6677,11 +6882,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value="", data_name="item_quantity"),
                    cls="cell--number col-total"),
             ])
-            # Audit columns: empty row has no item so show placeholder dashes.
+            # Audit/write-off columns: empty row has no item so show placeholder dashes.
             if pol["show_onhand"]:
                 cells.append(Td("--", cls="cell--number col-onhand"))
             if pol["show_counted"]:
                 cells.append(Td("--", cls="cell--number col-counted"))
+            if pol["show_qtyout"]:
+                cells.append(_writeoff_static_cell("qty_out", None))
+            if pol["show_account"]:
+                cells.append(_writeoff_static_cell("account", None, _wo_acct_labels))
+            if pol["show_comment"]:
+                cells.append(_writeoff_static_cell("comment", None))
             return Tr(*cells)
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
@@ -6712,6 +6923,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _line_headers.append(Th("On hand", cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _line_headers.append(Th("Counted", cls="cell--number col-counted"))
+        # Qty out is numeric (right-aligned over its figures); Account/Comment are text (left).
+        if pol["show_qtyout"]:
+            _line_headers.append(Th("Qty out", cls="cell--number col-qtyout"))
+        if pol["show_account"]:
+            _line_headers.append(Th("Account", cls="col-account"))
+        if pol["show_comment"]:
+            _line_headers.append(Th("Comment", cls="col-comment"))
         _line_thead = Thead(Tr(*_line_headers))
         _line_colgroup = None
 
@@ -8043,6 +8261,7 @@ async function celerpCsvImport(input, entityId) {{
                 _cq = li.get("counted_qty")
                 _cq_display = f"{float(_cq):g}" if _cq is not None else "--"
                 cells.append(Td(_cq_display, cls="cell--number col-counted"))
+            cells.extend(_writeoff_cells(li))
             # The scanned/adjusted highlight only means something on an audit. If the list was switched
             # to another type, the stored audited_at/adjusted flags persist but carry no meaning there
             # (no row action), so don't paint the highlight.
@@ -8069,6 +8288,12 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th("On hand", cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _thead_base.append(Th("Counted", cls="cell--number col-counted"))
+        if pol["show_qtyout"]:
+            _thead_base.append(Th("Qty out", cls="cell--number col-qtyout"))
+        if pol["show_account"]:
+            _thead_base.append(Th("Account", cls="col-account"))
+        if pol["show_comment"]:
+            _thead_base.append(Th("Comment", cls="col-comment"))
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(

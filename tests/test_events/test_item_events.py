@@ -55,6 +55,18 @@ def test_item_all_events() -> None:
     assert state5["status"] == "archived"
 
 
+def test_written_off_event_sets_disposed_not_archived() -> None:
+    state = apply_item_event({}, "item.created", {"sku": "S", "name": "A", "quantity": 5})
+    written = apply_item_event(state, "item.written_off",
+                              {"account": "6950", "reason": "spoiled", "qty": 5, "unit_cost": 10, "cost_total": 50})
+    # A written-off lot is its own terminal status, distinct from catalog retirement.
+    assert written["status"] == "disposed"
+    assert not is_item_available(written)
+    # The legacy item.disposed event still projects to archived (unchanged).
+    legacy = apply_item_event(state, "item.disposed", {})
+    assert legacy["status"] == "archived"
+
+
 def test_item_snapshot_is_like_create() -> None:
     state = apply_item_event({}, "item.snapshot", {"sku": "S", "name": "A", "quantity": 1})
     assert is_item_available(state)

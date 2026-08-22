@@ -2706,7 +2706,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
 # Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
 # supplier: they are at a customer, gone, or no longer a live parcel.
-_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged"})
+_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged", "disposed"})
 
 
 class ReturnItem(BaseModel):
@@ -5726,6 +5726,269 @@ async def undo_audit_adjust(
             l.pop("prior_qty", None)
     await auto_je.void_for_audit_adjustment(session, company_id=company_id, user_id=user.id,
                                             list_id=entity_id, cycle=cycle)
+    await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
+    await session.commit()
+    return {"ok": True}
+
+
+# --- Write-off (disposal) list: seed from a selection, remove stock per line, post one JE ----------
+# Mirrors the audit trio (create / set-line / terminal / undo) but is EVENT-based: the user enters the
+# known quantity leaving stock per line, with a destination expense/cogs/equity account and a comment,
+# rather than counting. The terminal carves or disposes each line's stock and posts one balanced JE.
+
+_WRITEOFF_ACCOUNT_TYPES = frozenset({"expense", "cogs", "equity"})
+
+
+class WriteoffCreateBody(BaseModel):
+    entity_ids: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = None
+
+
+class WriteoffLineBody(BaseModel):
+    line_id: str | None = None
+    item_id: str | None = None
+    qty_out: float | None = None
+    account: str | None = None
+    comment: str | None = None
+
+
+async def _get_writeoff(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("list_type") != "writeoff":
+        raise HTTPException(status_code=404, detail="Write-off not found")
+    return row
+
+
+async def _validate_writeoff_account(session, company_id, code: str) -> None:
+    """A write-off destination must be a real chart account of an expense/cogs/equity class (spoilage
+    and samples -> expense or cogs; owner drawings / family use -> equity). Validated at the function
+    level, never only in the picker: a direct API call cannot post to an asset or revenue account."""
+    from celerp_accounting.models import Account
+    acc = (await session.execute(select(Account).where(
+        Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=422, detail=f"Account '{code}' is not in the chart of accounts")
+    if acc.account_type not in _WRITEOFF_ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Account '{code}' is a {acc.account_type} account; a write-off destination must be "
+                   "an expense, cogs, or equity account",
+        )
+
+
+def _writeoff_seed_line(item: Projection) -> dict:
+    """One draft write-off line for an item, seeded with its live on-hand and blank entry fields."""
+    st = item.state
+    return {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"),
+            "name": st.get("name"), "quantity": float(st.get("quantity") or 0),
+            "qty_out": None, "account": None, "comment": ""}
+
+
+@lists_router.post("/writeoff")
+async def create_writeoff_list(
+    payload: WriteoffCreateBody,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a write-off list as a DRAFT seeded from the selected inventory items - the entry point for
+    the inventory Write off bulk action. Each seeded line carries the item's on-hand quantity and blank
+    qty_out/account/comment for on-page entry; Finalize locks it, then the Write off stock terminal
+    removes the stock and posts one JE. Mirrors create_audit_list, but the seed source is the selection,
+    not a location scan."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="Select at least one item to write off")
+    company = await session.get(Company, company_id)
+    lines: list[dict] = []
+    for eid in payload.entity_ids:
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if item is None or item.entity_type != "item":
+            continue  # non-item ids in the selection are skipped, never seeded as phantom lines
+        lines.append(_writeoff_seed_line(item))
+    if not lines:
+        raise HTTPException(status_code=422, detail="No inventory items in the selection")
+    ref_id = next_doc_ref(company, "writeoff")
+    entity_id = f"list:{ref_id}"
+    if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
+        raise HTTPException(status_code=409, detail=f"Write-off number '{ref_id}' already exists")
+    data = {"list_type": "writeoff", "status": DRAFT, "ref_id": ref_id, "line_items": lines,
+            "adjust_count": 0, "currency": company.settings.get("currency", "USD")}
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
+    await session.commit()
+    return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
+
+
+@lists_router.post("/{entity_id}/writeoff-line")
+async def set_writeoff_line(
+    entity_id: str, payload: WriteoffLineBody,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set (or append) a write-off line's quantity-out, destination account and comment, on-page while
+    the list is a draft. Pass line_id to edit a seeded line, or item_id (no line_id) to add another line
+    for an item already selectable on the list - the SAME item can be written off to two accounts
+    (spoiled -> wastage, sampled -> marketing). qty_out and account are validated at the function
+    level."""
+    row = await _get_writeoff(session, company_id, entity_id)
+    if row.state.get("status") != DRAFT:
+        raise HTTPException(status_code=409, detail="Write-off lines are editable only while it is a draft")
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    if payload.line_id is not None:
+        line = next((l for l in lines if l.get("line_id") == payload.line_id), None)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Line is not on this write-off")
+    elif payload.item_id is not None:
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": payload.item_id})
+        if item is None or item.entity_type != "item":
+            raise HTTPException(status_code=404, detail="Item not found")
+        line = _writeoff_seed_line(item)
+        lines.insert(0, line)  # newest line to the top (GDR 2n)
+    else:
+        raise HTTPException(status_code=422, detail="line_id or item_id is required")
+
+    if payload.qty_out is not None:
+        q = float(payload.qty_out)
+        on_hand = float(line.get("quantity") or 0)
+        if q <= 0:
+            raise HTTPException(status_code=422, detail="qty_out must be greater than 0")
+        if q > on_hand:
+            raise HTTPException(status_code=422, detail=f"qty_out {q} exceeds the on-hand quantity {on_hand}")
+        line["qty_out"] = q
+    if payload.account is not None:
+        await _validate_writeoff_account(session, company_id, payload.account)
+        line["account"] = payload.account
+    if payload.comment is not None:
+        line["comment"] = payload.comment
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    return {"ok": True, "line_id": line["line_id"]}
+
+
+@lists_router.post("/{entity_id}/write-off")
+async def write_off_stock(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Write-off terminal (manager): remove each line's qty_out from stock and post one balanced JE (one
+    debit per destination account against a single Inventory credit). A full-quantity line disposes the
+    whole item row; a partial line carves a child lot via the shared split primitive and disposes that.
+    Every disposed portion ends as a hidden `disposed` item - the permanent disposal record. Uncounted
+    (blank qty_out) lines are skipped and reported. Reversible via undo-write-off."""
+    from celerp_inventory.routes import split_off_child
+    # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
+    # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
+    # only reads status; the ledger effect here is why the write-off locks and the audit does not.
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id == entity_id
+    ).with_for_update())).scalar_one_or_none()
+    if row is None or row.state.get("list_type") != "writeoff":
+        raise HTTPException(status_code=404, detail="Write-off not found")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Finalize the write-off before removing stock")
+    cycle = int(row.state.get("adjust_count") or 0)
+    unit_map = await _get_unit_map(session, company_id)
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    debits: dict[str, float] = {}
+    total_value = 0.0
+    written_off = 0
+    skipped = 0
+    for l in lines:
+        qo = l.get("qty_out")
+        account = l.get("account")
+        if qo is None or not account:
+            skipped += 1  # report-and-skip: an unfilled line removes nothing
+            continue
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+        if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
+            skipped += 1  # parent sold/changed since seeding -> skip, never dispose phantom units
+            continue
+        live = float(item.state.get("quantity") or 0)
+        qty_out = float(qo)
+        if qty_out <= 0 or qty_out > live:
+            skipped += 1  # guarded here: split_off_child floors at 0 and never validates qty
+            continue
+        unit_cost = _audit_unit_cost(item.state)
+        value = round(unit_cost * qty_out, 2)
+        sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
+        try:
+            if abs(qty_out - live) < 1e-9:
+                disposed_eid = l["item_id"]  # full row: dispose in place, no split
+            else:
+                # A piece-unit parcel's discarded pieces equal the discarded count, so the carve is
+                # fully determined by qty_out. A weight parcel's discarded weight is not (grams are not
+                # the count), and the write-off line has no weight input, so child_weight stays unset and
+                # split_off_child raises below -> a partial weight write-off is 409, not a guessed carve.
+                sell_by = item.state.get("sell_by") or ""
+                child_pieces = qty_out if is_pieces_unit(sell_by, unit_map) else None
+                disposed_eid, _sku = await split_off_child(
+                    session, company_id=company_id, user_id=user.id, parent_proj=item,
+                    child_qty=qty_out, child_pieces=child_pieces,
+                )
+        except ValueError as exc:
+            # A weight/piece-tracked parcel needs the discarded weight/pieces to carve; without them the
+            # split cannot proceed. Roll back the whole terminal so nothing is disposed and no JE posts.
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=f"Cannot write off {sku}: {exc}")
+        await emit_event(
+            session, company_id=company_id, entity_id=disposed_eid, entity_type="item",
+            event_type="item.written_off",
+            data={"account": account, "qty": qty_out, "unit_cost": unit_cost, "cost_total": value,
+                  "reason": l.get("comment") or None, "source_list_id": entity_id},
+            actor_id=user.id, location_id=None, source="writeoff", idempotency_key=str(uuid.uuid4()),
+            metadata_={"writeoff_id": entity_id},
+        )
+        debits[account] = round(debits.get(account, 0.0) + value, 2)
+        total_value = round(total_value + value, 2)
+        l["disposed_entity_id"] = disposed_eid
+        l["disposed_qty"] = qty_out
+        l["adjusted"] = True
+        written_off += 1
+    entries = [{"account": acct, "debit": val, "credit": 0.0} for acct, val in debits.items()]
+    if entries:
+        entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": round(total_value, 2)})
+    await auto_je.create_for_line_adjustment(
+        session, company_id=company_id, user_id=user.id, list_id=entity_id,
+        kind="writeoff", entries=entries, cycle=cycle,
+    )
+    await _emit_list(session, company_id, entity_id, "list.closed",
+                     {"result": "written_off", "line_items": lines, "adjust_count": cycle + 1}, user)
+    await session.commit()
+    return {"written_off": written_off, "skipped": skipped, "value": round(total_value, 2)}
+
+
+@lists_router.post("/{entity_id}/undo-write-off")
+async def undo_write_off(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse a write-off (manager): void its JE and restore each disposed lot to `available`. A carved
+    child lot is NOT re-merged into its parent - it returns as its own available lot, so quantity is
+    conserved (parent remainder + restored child = the original). Reopens the list (closed -> finalized)
+    so it can be re-run."""
+    row = await _get_writeoff(session, company_id, entity_id)
+    if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
+        raise HTTPException(status_code=409, detail="This write-off has no removal to undo")
+    cycle = int(row.state.get("adjust_count") or 1) - 1
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    for l in lines:
+        if l.get("adjusted") and l.get("disposed_entity_id"):
+            await emit_event(
+                session, company_id=company_id, entity_id=l["disposed_entity_id"], entity_type="item",
+                event_type="item.status.set",
+                data={"new_status": "available", "reason": "writeoff_undo"},
+                actor_id=user.id, location_id=None, source="writeoff", idempotency_key=str(uuid.uuid4()),
+                metadata_={"writeoff_id": entity_id},
+            )
+            l.pop("adjusted", None)
+            l.pop("disposed_entity_id", None)
+            l.pop("disposed_qty", None)
+    await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
+                                           list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
     await session.commit()
     return {"ok": True}

@@ -296,7 +296,7 @@ class ReserveBody(BaseModel):
 
 
 # Statuses hidden from the default inventory view. Users must explicitly request them.
-_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
+_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed"})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
@@ -306,7 +306,7 @@ _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 # historic events are never rejected.
 ITEM_STATUSES: frozenset[str] = frozenset({
     "draft", "available", "active", "reserved", "sold", "archived",
-    "merged", "expired", "memo_out", "returned",
+    "merged", "expired", "memo_out", "returned", "disposed",
 })
 
 # Authoring-only event types: none of these mean the item has circulated.
@@ -336,6 +336,14 @@ async def assert_status_change_allowed(
         raise HTTPException(
             status_code=422,
             detail=f"Unknown status '{new_status}'; allowed: {', '.join(sorted(ITEM_STATUSES))}",
+        )
+    if ns == "disposed":
+        # disposed is off the books and is set atomically with a journal entry. It is reachable
+        # only through the manager-gated Write off stock terminal, never a generic status edit -
+        # otherwise edit_inventory alone could take stock off-books with no ledger effect.
+        raise HTTPException(
+            status_code=422,
+            detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
         )
     if ns != "draft":
         return
