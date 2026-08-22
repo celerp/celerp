@@ -2,29 +2,95 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 import json
+import logging
 import os
 from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
 
+_log = logging.getLogger(__name__)
+
 _LOCALES_DIR = Path(__file__).parent / "locales"
 _DEBUG = os.getenv("CELERP_DEBUG_I18N") == "1"
+
+# Language codes with a central catalog file on disk, frozen once at import
+# (no per-request glob). Module-contributed languages are held in _registry.
+_DISK_LANGS = frozenset(p.stem for p in _LOCALES_DIR.glob("*.json"))
+
+# Module-contributed catalogs, keyed by language code:
+#   {lang: {"catalog": {key: value}, "rtl": bool}}
+# Modules push into this via register_catalog(); central files still win for an
+# existing language, so a module can only ADD keys or a new language.
+_registry: dict[str, dict] = {}
 
 # Context variable holds the active language for the current request
 _current_lang: ContextVar[str] = ContextVar("celerp_lang", default="en")
 
-# RTL languages
+# RTL languages (central set; a module may additionally declare its own RTL)
 RTL_LANGS = frozenset({"ar", "he", "fa", "ur"})
 
 
 def _load(lang: str) -> dict:
+    """Merged catalog for *lang*: module contributions overlaid by the central
+    file, so the central copy wins for an existing language. A language with no
+    central file (a wholly module-owned language) returns the module catalog."""
     path = _LOCALES_DIR / f"{lang}.json"
-    if not path.exists():
-        path = _LOCALES_DIR / "en.json"
-    return json.loads(path.read_text())
+    central = json.loads(path.read_text()) if path.exists() else {}
+    mod = _registry.get(lang, {}).get("catalog", {})
+    return {**mod, **central}
 
 
 _cached_load = lru_cache(maxsize=32)(_load) if not _DEBUG else _load
+
+
+def _invalidate_cache() -> None:
+    """Drop the memoized catalogs. In CELERP_DEBUG_I18N mode _cached_load is the
+    raw function with no cache_clear, so the call is guarded."""
+    getattr(_cached_load, "cache_clear", lambda: None)()
+
+
+def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
+    """Register a module's UI catalog for *lang*.
+
+    Validates that *mapping* is a dict of string values: a non-dict mapping is
+    logged and ignored; individual non-str values are dropped and logged, so a
+    bad value degrades honestly instead of failing later in t().format(). On a
+    module-vs-module clash for the same language and key, the FIRST registration
+    wins. The load cache is invalidated so the new catalog is visible at once.
+    """
+    if not isinstance(mapping, dict):
+        _log.warning(
+            "register_catalog: ignoring non-dict catalog for %r (%s)",
+            lang, type(mapping).__name__,
+        )
+        return
+    clean: dict[str, str] = {}
+    for key, value in mapping.items():
+        if isinstance(value, str):
+            clean[key] = value
+        else:
+            _log.warning(
+                "register_catalog: dropping non-str value for key %r in %r (%s)",
+                key, lang, type(value).__name__,
+            )
+    entry = _registry.setdefault(lang, {"catalog": {}, "rtl": False})
+    # First-registered wins: existing keys overlay the incoming ones.
+    entry["catalog"] = {**clean, **entry["catalog"]}
+    if rtl:
+        entry["rtl"] = True
+    _invalidate_cache()
+
+
+def clear_registry() -> None:
+    """Clear all module-contributed catalogs and drop the load cache. Tests only."""
+    _registry.clear()
+    _invalidate_cache()
+
+
+def available_langs() -> list[str]:
+    """Sorted language codes available in the UI: central files plus every
+    module-contributed language. The single source for language discovery."""
+    return sorted(_DISK_LANGS | _registry.keys())
 
 
 def t(key: str, lang: str | None = None, **kwargs) -> str:
@@ -57,7 +123,7 @@ def get_lang(request) -> str:
     accept = request.headers.get("accept-language", "")
     for part in accept.split(","):
         code = part.split(";")[0].strip().split("-")[0].lower()
-        if code and (_LOCALES_DIR / f"{code}.json").exists():
+        if code and (code in _DISK_LANGS or code in _registry):
             return code
     return "en"
 
@@ -73,5 +139,10 @@ def current_lang() -> str:
 
 
 def is_rtl(lang: str | None = None) -> bool:
-    """Check if the given (or current) language is RTL."""
-    return (lang or _current_lang.get()) in RTL_LANGS
+    """Check if the given (or current) language is RTL, consulting the central
+    RTL set and any module-declared RTL flag."""
+    code = lang or _current_lang.get()
+    if code in RTL_LANGS:
+        return True
+    entry = _registry.get(code)
+    return bool(entry and entry.get("rtl"))
