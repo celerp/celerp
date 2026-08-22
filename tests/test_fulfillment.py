@@ -2593,6 +2593,81 @@ async def test_reserve_carve_concurrent_no_lost_update(client, session, auth, _s
 
 
 @pytest.mark.asyncio
+async def test_split_off_child_rejects_over_capacity(client, session, auth, _setup_ids):
+    """A single carve larger than the locked parent quantity is rejected outright: no
+    child is created and the parent keeps its full quantity. At merge-base split_off_child
+    never checks child_qty against the locked read, so the carve wrongly succeeds in
+    full and the parent is floored to 0 instead of being left at its actual 4."""
+    from celerp.models.projections import Projection
+    from celerp_inventory.routes import split_off_child
+
+    sku = f"CAPCHK-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 4, sell_by="piece", cost_price=100.0)
+    cid = _setup_ids["company_id"]
+    uid = str(_setup_ids["user_id"])
+
+    parent = await session.get(Projection, {"company_id": cid, "entity_id": mother_id})
+    with pytest.raises(ValueError, match="6 of 4"):
+        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=parent,
+                              child_qty=6, child_pieces=6)
+    await session.rollback()
+
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert float(mother["quantity"]) == 4.0, (
+        f"parent quantity must be unchanged after a rejected carve, got {mother['quantity']}")
+
+    items = (await client.get("/items", headers=auth["headers"])).json()["items"]
+    lots = [i for i in items if i.get("sku") == sku]
+    assert len(lots) == 1, f"a rejected carve must not create a child, got lots={lots}"
+
+
+@pytest.mark.asyncio
+async def test_split_off_child_concurrent_over_capacity_rejects_second(client, session, auth, _setup_ids):
+    """Two carves that each ask for more than half of one parcel must not both succeed:
+    the first consumes the parcel down to a remainder smaller than the second request, so
+    the second's own locked re-read must reject it. Total carved off the parcel must never
+    exceed what it actually held. At merge-base split_off_child never validates child_qty
+    against the locked quantity, so both 6-unit carves against the 10-unit parcel succeed
+    and 12 units come off a 10-unit parcel (phantom stock)."""
+    import copy
+    import types as _types
+    from celerp.models.projections import Projection
+    from celerp_inventory.routes import split_off_child
+
+    sku = f"CAPCONC-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 10, sell_by="piece", cost_price=100.0)
+    cid = _setup_ids["company_id"]
+    uid = str(_setup_ids["user_id"])
+
+    real = await session.get(Projection, {"company_id": cid, "entity_id": mother_id})
+    stale = copy.deepcopy(dict(real.state))  # quantity == 10 snapshot
+
+    def _snap():
+        return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
+
+    # First carve: 6 of 10, succeeds, leaves the locked parent at 4.
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+    await session.commit()
+
+    # Second carve, from the same stale (quantity == 10) snapshot: 6 of the now-locked 4
+    # must be rejected, not silently floored.
+    with pytest.raises(ValueError, match="6 of 4"):
+        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+    await session.rollback()
+
+    items = (await client.get("/items", headers=auth["headers"])).json()["items"]
+    lots = [i for i in items if i.get("sku") == sku]
+    assert len(lots) == 2, f"only the first carve should have created a child, got lots={lots}"
+    total = sum(float(i.get("quantity") or 0) for i in lots)
+    assert total <= 10.0 + 1e-6, (
+        f"stock must never exceed the parcel's original quantity: total={total} "
+        f"(qtys={[i.get('quantity') for i in lots]})")
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert abs(float(mother["quantity"]) - 4.0) < 1e-6, (
+        f"mother should hold the true remainder 4, got {mother['quantity']}")
+
+
+@pytest.mark.asyncio
 async def test_split_gate_allows_none_parcel(client, session, auth, _setup_ids):
     """A partial draw of a parcel whose allow_splitting is unset/None is allowed: the
     fulfill gate carves a child and the mother keeps the remainder. At merge-base the

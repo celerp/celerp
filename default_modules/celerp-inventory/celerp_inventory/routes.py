@@ -2308,6 +2308,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     no auto-derivation; the mother keeps ``parent - child`` for each.
 
     Invariants (raise ValueError if violated):
+      - child_qty must not exceed the locked parent quantity
       - parcel has weight (weight-unit sell_by OR a weight attribute)
             -> child_weight is required
       - sell_by is a weight unit  -> child_weight must equal child_qty
@@ -2321,7 +2322,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
     # parcel must each base their decrement on the current committed quantity, not on a
     # snapshot read earlier. FOR UPDATE serializes them so the second decrements from the
-    # first's result instead of overwriting it (lost update / phantom stock).
+    # first's result instead of overwriting it (lost update). Serializing the read alone
+    # only fixes ordering; the capacity check just below is what stops a carve larger than
+    # what is actually on hand, which is the other half of "no phantom stock".
     locked = (await session.execute(
         select(Projection)
         .where(Projection.company_id == company_id, Projection.entity_id == parent_proj.entity_id)
@@ -2333,6 +2336,10 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     parent_sku = parent.state.get("sku", "")
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
+
+    # --- validate against the locked quantity (no floor, no silent clamp) ---
+    if round(child_qty - parent_qty, 10) > 0:
+        raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
