@@ -827,6 +827,31 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
             for item in contribution:
                 register_slot(slot_name, {**item, "_module": pkg_name})
 
+    # Register module-contributed UI translation catalogs (the `locales`
+    # manifest key, mirroring `slots` above). Each entry maps a language code to
+    # {"file": <path>, "rtl": <bool>}. Pushed into ui.i18n through a lazy import
+    # so the i18n leaf never imports the module subsystem. A malformed or
+    # unreadable entry is logged and skipped; the module and its other locales
+    # still load.
+    for lang, entry in (manifest.get("locales") or {}).items():
+        if not isinstance(entry, dict) or "file" not in entry:
+            log.error(
+                "Module %r locale %r skipped: entry must be a dict with a 'file' key",
+                pkg_name, lang,
+            )
+            continue
+        cat_path = pkg_path / entry["file"]
+        try:
+            catalog = json.loads(cat_path.read_text())
+        except (OSError, ValueError) as exc:
+            log.error(
+                "Module %r locale %r skipped: cannot read %s (%s: %s)",
+                pkg_name, lang, entry["file"], type(exc).__name__, exc,
+            )
+            continue
+        from ui.i18n import register_catalog
+        register_catalog(lang, catalog, rtl=bool(entry.get("rtl")))
+
     log.info(
         "Module %r loaded (v%s, slots: %s)",
         manifest["name"],
