@@ -30,6 +30,7 @@ from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl
 from celerp.services.units import is_weight_unit, is_pieces_unit
+from celerp.services.line_measures import splitting_allowed
 
 _DEFAULT_PER_PAGE = 50
 
@@ -7642,7 +7643,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
     safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
 
     # 2x2 compact action cards
-    allow_splitting = item.get("allow_splitting", True)
+    allow_splitting = splitting_allowed(item)
     sell_by = item.get("sell_by") or "piece"
     # Splittable only when the server preview resolved and the parcel can be carved.
     can_split = bool(allow_splitting and split_preview and not split_preview.get("cannot_split"))

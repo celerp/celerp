@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import line_label
+from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -4219,7 +4219,7 @@ async def fulfill_lines(
             # Cross-lot spanning: a splittable product can draw the shortfall from other
             # lots of the same SKU (bound lot first, then FIFO/FEFO/LIFO). Each drawn lot
             # is fulfilled at its own cost (specific identification by lot).
-            if item_proj.state.get("allow_splitting") is True:
+            if splitting_allowed(item_proj.state):
                 _draws = await _plan_span_draws(
                     session, company_id, item_proj, line_qty,
                     exclude=set(to_fulfill) | span_consumed,
@@ -4243,9 +4243,9 @@ async def fulfill_lines(
                 f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
             )
             continue
-        # Split-on-fulfill is allowed only when splitting is explicitly enabled.
-        # A missing/None allow_splitting (e.g. older imports) must NOT bypass this.
-        if line_qty + 1e-9 < available and item_proj.state.get("allow_splitting") is not True:
+        # Split-on-fulfill is blocked only when splitting is explicitly disabled.
+        # A missing/None allow_splitting (e.g. older imports) is treated as splittable.
+        if line_qty + 1e-9 < available and not splitting_allowed(item_proj.state):
             blocked.append(
                 f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
                 f"enable splitting or invoice the full quantity"

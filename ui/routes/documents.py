@@ -14,7 +14,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
-from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures
+from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
@@ -224,7 +224,7 @@ def _consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[d
     out: list[dict] = []
     for sku in order:
         group = by_sku[sku]
-        if len(group) == 1 or not all(g.get("allow_splitting") for g in group):
+        if len(group) == 1 or not all(splitting_allowed(g) for g in group):
             out.extend(group)  # unique / non-splittable -> keep each lot (labeled)
             continue
         method = resolve_pick_method(group[0], company_settings)
@@ -683,7 +683,8 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "hs_code": item.get("hs_code") or None,
             "country_of_origin": item.get("country_of_origin") or None,
             "entity_id": eid,
-            "allow_splitting": bool(item.get("allow_splitting")),
+            "allow_splitting": splitting_allowed(item),
+            "item_quantity": item.get("quantity"),
         })
     return line_items
 
@@ -1637,7 +1638,8 @@ def setup_routes(app):
                 "hs_code": hs_code or catalog_item.get("hs_code") or "",
                 "account_code": account_code,
                 "entity_id": catalog_item.get("entity_id") or "",
-                "allow_splitting": bool(catalog_item.get("allow_splitting")),
+                "allow_splitting": splitting_allowed(catalog_item),
+                "item_quantity": catalog_item.get("quantity"),
                 "ambiguous": row_ambiguous,
             }
             new_lines.append(line)
@@ -6589,7 +6591,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             discounted = float(qty or 0) * float(price or 0) * (1 - discount_pct / 100)
             line_tot = discounted
             li_entity_id = li.get("entity_id") or li.get("item_id") or ""
-            li_allow_splitting = "1" if li.get("allow_splitting") else ""
+            _meta = (item_meta_map or {}).get(li_entity_id) or {}
+            _allow_split = splitting_allowed(_meta) if "allow_splitting" in _meta else splitting_allowed(li)
+            li_allow_splitting = "1" if _allow_split else ""
             account_cell = None
             if doc_type in ("purchase_order", "bill"):
                 _acct_list = chart_accounts or []
@@ -6649,8 +6653,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # PCS / WEIGHT are editable inputs inline in the description cell. Show
                 # only the secondary measure (the one qty is NOT) — same skip rule as the
                 # print/finalized view; locks + values come from the shared helper.
-                _meta = (item_meta_map or {}).get(li_entity_id) or {}
-                _allow_split = _meta.get("allow_splitting", bool(li.get("allow_splitting")))
                 _locks = measure_locks(_meta, allow_split=_allow_split)
                 _qty_disabled = _locks["qty_locked"]
                 _qty_measure = "weight" if _meta.get("qty_is_weight") else ("pieces" if _meta.get("qty_is_pieces") else "")
@@ -6761,7 +6763,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    None if pol["customs"] else Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
-                   Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity"),
+                   Input(type="hidden", value=str(li.get("item_quantity") or _meta.get("quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
             ])
             if pol["show_onhand"]:
@@ -6878,7 +6880,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="line_total"),
                    None if pol["customs"] else Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
-                   Input(type="hidden", value="", data_name="allow_splitting"),
+                   Input(type="hidden", value="1", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity"),
                    cls="cell--number col-total"),
             ])

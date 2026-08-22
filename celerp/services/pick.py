@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from celerp.services.line_measures import splitting_allowed
+
 
 @dataclass
 class PickLine:
@@ -145,7 +147,7 @@ def compute_pick_plan(
                 cost_total = float(item.get("cost_total") or 0)
                 item_qty = float(item.get("quantity") or 1)
                 cost = cost_total / item_qty if item_qty else 0.0
-            allow_split = item.get("allow_splitting", True)
+            allow_split = splitting_allowed(item)
 
             if avail <= needed + 1e-9:
                 # Take entire item

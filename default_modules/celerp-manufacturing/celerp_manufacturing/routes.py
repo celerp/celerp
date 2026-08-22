@@ -30,6 +30,7 @@ from celerp.models.company import Company, User, WorkCenter
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je
+from celerp.services.line_measures import splitting_allowed
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 
@@ -1432,7 +1433,7 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
                 "sku": product.get("sku"), "name": product.get("name"),
                 "sell_by": product.get("sell_by"), "category": product.get("category"),
                 "inventory_type": product.get("inventory_type"),
-                "allow_splitting": bool(product.get("allow_splitting", True)),
+                "allow_splitting": splitting_allowed(product),
                 "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
                 "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
             },
