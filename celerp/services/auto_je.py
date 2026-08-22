@@ -109,6 +109,37 @@ async def _emit_auto_posted_je(
     )
 
 
+async def compute_doc_cogs(session, company_id, doc: dict) -> float:
+    """Sum COGS for a document's stock lines at posting time.
+
+    Per stock line the per-unit cost is the parcel's cost_total spread over its own
+    quantity (cost_total / parcel_qty) when that quantity is positive, and the parcel
+    cost_price otherwise, so a partially-invoiced line costs only the quantity it draws
+    rather than the whole parcel. Each line's contribution is clamped at zero so one
+    mis-costed parcel cannot cancel correctly-costed lines; non-stock and zero-quantity
+    lines contribute nothing.
+    """
+    total_cogs = 0.0
+    for li in doc.get("line_items", []):
+        line_qty = float(li.get("quantity") or 0)
+        if line_qty <= 0:
+            continue
+        item_id = li.get("item_id") or li.get("entity_id")
+        if not item_id:
+            continue
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
+        if not proj:
+            continue
+        cost_total = proj.state.get("cost_total")
+        parcel_qty = float(proj.state.get("quantity") or 0)
+        if cost_total is not None and parcel_qty > 0:
+            unit_cost = float(cost_total) / parcel_qty
+        else:
+            unit_cost = float(proj.state.get("cost_price") or 0)
+        total_cogs += max(0.0, unit_cost * line_qty)
+    return total_cogs
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
     currency = doc.get("currency", "USD")
     rate = _Dec(str(doc.get("conversion_rate") or 1))
@@ -123,6 +154,17 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     cycle = int(doc.get("revert_count", 0))
     cycle_suffix = f"fin:{cycle}" if cycle else "fin"
     je_type_key = f"invoice.finalized:{cycle}" if cycle else "invoice.finalized"
+    entries = [
+        {"account": "1120", "debit": total, "credit": 0.0},
+        {"account": "4100", "debit": 0.0, "credit": revenue},
+        {"account": "2120", "debit": 0.0, "credit": tax},
+    ]
+    # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
+    # the invoice date, so the P&L matches even when the invoice is never fulfilled.
+    cogs = await compute_doc_cogs(session, company_id, doc)
+    if cogs > 0:
+        entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
+        entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -132,11 +174,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
         ts=doc.get("finalized_at") or doc.get("issue_date"),
-        entries=[
-            {"account": "1120", "debit": total, "credit": 0.0},
-            {"account": "4100", "debit": 0.0, "credit": revenue},
-            {"account": "2120", "debit": 0.0, "credit": tax},
-        ],
+        entries=entries,
         metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
     )
 
@@ -522,6 +560,17 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         base_total = to_base(to_stored_float(total_d), rate, base_currency)
         base_tax = to_base(to_stored_float(tax_d), rate, base_currency)
         base_revenue = to_base(to_stored_float(round_money(total_d - tax_d, currency)), rate, base_currency)
+        entries = [
+            {"account": "1120", "debit": base_total, "credit": 0.0},
+            {"account": "4100", "debit": 0.0, "credit": base_revenue},
+            {"account": "2120", "debit": 0.0, "credit": base_tax},
+        ]
+        # Restore COGS symmetrically with revenue: the finalize JE carries both, so
+        # unvoiding must re-post the same COGS pair it originally recognized.
+        cogs = await compute_doc_cogs(session, company_id, doc)
+        if cogs > 0:
+            entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
+            entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -531,11 +580,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             idem_posted=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "p"),
             memo=f"Auto JE for {doc_id} unvoided (restore finalize)",
             ts=doc.get("finalized_at") or doc.get("issue_date"),
-            entries=[
-                {"account": "1120", "debit": base_total, "credit": 0.0},
-                {"account": "4100", "debit": 0.0, "credit": base_revenue},
-                {"account": "2120", "debit": 0.0, "credit": base_tax},
-            ],
+            entries=entries,
             metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
         )
     elif doc_type in ("bill", "purchase_order"):

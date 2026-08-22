@@ -4463,16 +4463,6 @@ async def fulfill_lines(
         metadata_={},
     )
 
-    # Create COGS JE only for invoices that reach fully-fulfilled status.
-    # Memos don't get a COGS JE here; that happens when the invoice is finalized.
-    if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
-        from datetime import date as _fdate
-        await auto_je.create_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
-            cycle=state.get("fulfill_cycle", 0),
-            ts=_fdate.today().isoformat(),
-        )
-
     await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
 
@@ -4568,14 +4558,6 @@ async def _reverse_whole_lines(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
-
-    # Void COGS JE for invoices when fulfillment is fully reversed.
-    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
-    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
-        await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id,
-            cycle=state.get("fulfill_cycle", 0),
-        )
 
     return doc_fulfillment_status
 
