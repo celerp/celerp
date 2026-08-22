@@ -46,18 +46,3 @@ def test_lang_switcher_in_topbar(page, ui_server):
     # With only en.json, it won't render. Just verify no crash.
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
-
-
-def test_language_change_endpoint_no_crash(page, ui_server):
-    """I18N-04: POST /settings/company/language → no 500, renders updated picker."""
-    # Use HTMX-style POST (form data)
-    resp = page.request.post(
-        f"{ui_server}/settings/company/language",
-        form={"language": "en"},
-    )
-    assert resp.status != 500, \
-        f"POST /settings/company/language returned {resp.status}"
-    # Response should be a valid HTML fragment (not a full traceback)
-    body = resp.text()
-    assert "Internal Server Error" not in body
-    assert "Traceback" not in body

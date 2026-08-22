@@ -1540,48 +1540,6 @@ def setup_routes(app):
             return _R(str(e.detail), status_code=e.status)
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
 
-    @app.post("/settings/company/language")
-    async def company_language_post(request: Request):
-        """HTMX: save company language setting and update celerp_lang cookie."""
-        from starlette.responses import HTMLResponse
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        form = await request.form()
-        new_lang = str(form.get("language", "en")).strip()
-        from pathlib import Path as _Path
-        _VALID_LANGS = {p.stem for p in (_Path(__file__).parent.parent / "locales").glob("*.json")}
-        if new_lang not in _VALID_LANGS:
-            new_lang = "en"
-        try:
-            company = await api.get_company(token)
-            settings_dict = dict(company.get("settings") or {})
-            settings_dict["language"] = new_lang
-            await api.patch_company(token, {"settings": settings_dict})
-        except APIError:
-            pass
-        _LANGUAGES = sorted(
-            [(p.stem, t(f"settings.language_{p.stem}", new_lang))
-             for p in (_Path(__file__).parent.parent / "locales").glob("*.json")],
-            key=lambda x: x[1],
-        )
-        from starlette.responses import HTMLResponse as _HR
-        import fasthtml.common as _fh
-        sel = Select(
-            *[Option(label, value=code, selected=(code == new_lang)) for code, label in _LANGUAGES],
-            name="language",
-            hx_post="/settings/company/language",
-            hx_target="this",
-            hx_swap="outerHTML",
-            hx_trigger="change",
-            cls="cell-input cell-input--select",
-        )
-        from fasthtml.common import to_xml
-        html = to_xml(sel)
-        resp = _HR(content=html)
-        resp.set_cookie("celerp_lang", new_lang, httponly=False, samesite="lax", max_age=86400 * 30)
-        return resp
-
     @app.post("/settings/bulk-attach")
     async def settings_bulk_attach(request: Request):
         token = _token(request)
