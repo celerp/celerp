@@ -10,12 +10,16 @@ duplicate JEs regardless of trigger source (API, import, doctor repair).
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
+from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_money, to_base, to_decimal, to_stored_float
+from celerp.services.pick import plan_lot_draws, resolve_pick_method
+from celerp.services.units import is_non_stock_line
 from sqlalchemy import select as _select
 
 # Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
@@ -109,18 +113,108 @@ async def _emit_auto_posted_je(
     )
 
 
-async def compute_doc_cogs(session, company_id, doc: dict) -> float:
-    """Sum COGS for a document's stock lines at posting time.
+@dataclass
+class CogsResult:
+    """COGS for a document with its per-line lot allocation.
 
-    Per stock line the per-unit cost is the parcel's cost_total spread over its own
-    quantity (cost_total / parcel_qty) when that quantity is positive, and the parcel
-    cost_price otherwise, so a partially-invoiced line costs only the quantity it draws
-    rather than the whole parcel. Each line's contribution is clamped at zero so one
-    mis-costed parcel cannot cancel correctly-costed lines; non-stock and zero-quantity
-    lines contribute nothing.
+    ``allocations`` is keyed by the line's index in doc["line_items"] as a
+    string (JSON metadata round-trips string keys). Each entry carries the lots
+    the line prices at (lot_entity_id, qty, unit_cost), the provisional_qty no
+    lot could cover (priced at the bound lot's unit cost), and the line's total
+    amount. ``ambiguous`` is True when at least one splittable line exceeds its
+    bound lot, so bound-lot-only pricing is a guess rather than an exact cost.
     """
-    total_cogs = 0.0
-    for li in doc.get("line_items", []):
+    total: float = 0.0
+    allocations: dict[str, dict] = field(default_factory=dict)
+    ambiguous: bool = False
+
+
+def _lot_unit_cost(state: dict) -> float:
+    """A lot's per-unit cost: cost_total spread over its own quantity when that
+    quantity is positive, the lot's cost_price otherwise."""
+    cost_total = state.get("cost_total")
+    qty = float(state.get("quantity") or 0)
+    if cost_total is not None and qty > 0:
+        return float(cost_total) / qty
+    return float(state.get("cost_price") or 0)
+
+
+async def _span_line_lots(
+    session, company_id, primary_proj, needed: float, doc_id: str | None,
+) -> tuple[list[dict], float, float]:
+    """Resolve a spanning line's draws across the SKU's sibling lots.
+
+    Eligible siblings: same company, item entity, same SKU, positive quantity,
+    and either available or reserved by doc_id (this document's own hold).
+    Draw order is the bound lot first, then the effective pick method. Returns
+    (lots, provisional_qty, amount); the shortfall no lot covers is priced
+    provisionally at the bound lot's unit cost.
+    """
+    from celerp.models.company import Company
+
+    sku = str(primary_proj.state.get("sku") or "").strip()
+    company = await session.get(Company, company_id)
+    method = resolve_pick_method(primary_proj.state, (company.settings or {}) if company else {})
+
+    def _lot(entity_id: str, created_at, state: dict) -> dict:
+        return {
+            "entity_id": entity_id,
+            "quantity": float(state.get("quantity") or 0),
+            "created_at": created_at.isoformat() if created_at else "",
+            "expires_at": state.get("expires_at"),
+            "unit_cost": _lot_unit_cost(state),
+        }
+
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    siblings: list[dict] = []
+    for r in rows:
+        if r.entity_id == primary_proj.entity_id:
+            continue
+        s = r.state or {}
+        if str(s.get("sku") or "").strip() != sku:
+            continue
+        if float(s.get("quantity") or 0) <= 1e-9:
+            continue
+        status = s.get("status") or "available"
+        if not (status == "available"
+                or (status == "reserved" and doc_id is not None and s.get("status_doc_id") == doc_id)):
+            continue
+        siblings.append(_lot(r.entity_id, r.created_at, s))
+
+    primary = _lot(primary_proj.entity_id, primary_proj.created_at, primary_proj.state)
+    draws, short_qty = plan_lot_draws(primary, needed, siblings, method)
+    lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"]}
+            for lot, take, _is_full in draws]
+    amount = sum(take * lot["unit_cost"] for lot, take, _is_full in draws)
+    if short_qty > 1e-9:
+        amount += short_qty * primary["unit_cost"]
+    return lots, short_qty, amount
+
+
+async def compute_doc_cogs(
+    session, company_id, doc: dict, *, span_lots: bool = False, doc_id: str | None = None,
+) -> CogsResult:
+    """Cost a document's stock lines at posting time, lot by lot.
+
+    Each line prices at the specific lots it draws (specific identification by
+    lot). A splittable line whose quantity exceeds its bound lot is flagged
+    ambiguous: the remainder physically comes from sibling lots at their own
+    costs, so extrapolating the bound lot's unit cost is a guess.
+
+    span_lots=False prices the whole line at the bound lot's unit cost (the
+    historical extrapolation) and leaves the ambiguity to the caller - the
+    backfill refuses to post a guess. span_lots=True (live finalize) resolves
+    the remainder across the SKU's other lots - available ones plus lots
+    reserved by doc_id - in the effective pick order; whatever no lot covers
+    stays priced at the bound lot's cost as provisional_qty.
+
+    Non-stock lines (service, freight) hold no goods and contribute nothing.
+    Per-line amounts are clamped at zero so one mis-costed lot cannot cancel
+    correctly costed siblings.
+    """
+    result = CogsResult()
+    for index, li in enumerate(doc.get("line_items", [])):
         line_qty = float(li.get("quantity") or 0)
         if line_qty <= 0:
             continue
@@ -130,17 +224,29 @@ async def compute_doc_cogs(session, company_id, doc: dict) -> float:
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
         if not proj:
             continue
-        cost_total = proj.state.get("cost_total")
-        parcel_qty = float(proj.state.get("quantity") or 0)
-        if cost_total is not None and parcel_qty > 0:
-            unit_cost = float(cost_total) / parcel_qty
+        state = proj.state
+        if is_non_stock_line(state.get("inventory_type"), state.get("sell_by")):
+            continue
+        unit_cost = _lot_unit_cost(state)
+        bound_qty = float(state.get("quantity") or 0)
+        spans = line_qty > bound_qty + 1e-9 and splitting_allowed(state)
+        if spans:
+            result.ambiguous = True
+        if spans and span_lots:
+            lots, provisional_qty, amount = await _span_line_lots(
+                session, company_id, proj, line_qty, doc_id)
         else:
-            unit_cost = float(proj.state.get("cost_price") or 0)
-        total_cogs += max(0.0, unit_cost * line_qty)
-    return total_cogs
+            lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost}]
+            provisional_qty = 0.0
+            amount = unit_cost * line_qty
+        amount = max(0.0, amount)
+        result.allocations[str(index)] = {
+            "lots": lots, "provisional_qty": provisional_qty, "amount": amount}
+        result.total += amount
+    return result
 
 
-async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
+async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     currency = doc.get("currency", "USD")
     rate = _Dec(str(doc.get("conversion_rate") or 1))
     total_d = round_money(doc.get("total", 0), currency)
@@ -161,7 +267,10 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     ]
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
     # the invoice date, so the P&L matches even when the invoice is never fulfilled.
-    cogs = await compute_doc_cogs(session, company_id, doc)
+    # span_lots is set only by the live finalize route, where a line exceeding its
+    # bound lot recognizes at the sibling lots that will actually be drawn.
+    cogs_result = await compute_doc_cogs(session, company_id, doc, span_lots=span_lots, doc_id=doc_id)
+    cogs = cogs_result.total
     if cogs > 0:
         entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
         entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
@@ -657,7 +766,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         ]
         # Restore COGS symmetrically with revenue: the finalize JE carries both, so
         # unvoiding must re-post the same COGS pair it originally recognized.
-        cogs = await compute_doc_cogs(session, company_id, doc)
+        cogs = (await compute_doc_cogs(session, company_id, doc)).total
         if cogs > 0:
             entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
             entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})

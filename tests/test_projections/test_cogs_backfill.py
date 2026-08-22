@@ -157,8 +157,8 @@ async def test_backfill_posts_cogs_for_unfulfilled_invoice(session):
     await session.commit()
     assert result["posted"] == 1
 
-    expected = await compute_doc_cogs(
-        session, company_id, {"line_items": lines})
+    expected = (await compute_doc_cogs(
+        session, company_id, {"line_items": lines})).total
     assert expected > 0
 
     jes = await _doc_jes(session, company_id, doc_id)
@@ -224,7 +224,7 @@ async def test_backfill_full_cogs_for_partially_fulfilled_invoice(session):
     await run_cogs_backfill(session)
     await session.commit()
 
-    expected = await compute_doc_cogs(session, company_id, {"line_items": lines})
+    expected = (await compute_doc_cogs(session, company_id, {"line_items": lines})).total
     assert expected == 50.0  # 40/2 * 1 + 15 * 2
     jes = await _doc_jes(session, company_id, doc_id)
     assert _posted_5100_debits(jes) == [expected]
@@ -618,7 +618,7 @@ async def test_backfill_ledger_invariant_and_idempotent_rowcount(session):
             and any(e.get("account") == "4100" and float(e.get("credit") or 0) > 0
                     for e in st.get("entries", []))
             for st in jes.values())
-        cogs = await compute_doc_cogs(session, company_id, doc.state)
+        cogs = (await compute_doc_cogs(session, company_id, doc.state)).total
         debits = _posted_5100_debits(jes)
         if has_posted_revenue and cogs > 0:
             assert len(debits) == 1, f"{doc.entity_id}: expected exactly one 5100 debit, got {debits}"

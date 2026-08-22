@@ -1380,7 +1380,10 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     )
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
-        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # span_lots: the interactive finalize recognizes a line exceeding its bound
+        # lot at the sibling lots that will actually be drawn; import/repair paths
+        # stay on exact bound-lot pricing.
+        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
         # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
         # Finalizing the invoice is the point at which the sale is confirmed.
         _cid = uuid.UUID(str(company_id))

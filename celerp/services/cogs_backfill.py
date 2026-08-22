@@ -177,7 +177,7 @@ async def run_cogs_backfill(session) -> dict:
         ts = fin_je.get("ts") or state.get("finalized_at") or state.get("issue_date")
         try:
             async with session.begin_nested():
-                cogs = await compute_doc_cogs(session, doc.company_id, state)
+                cogs = (await compute_doc_cogs(session, doc.company_id, state)).total
                 if cogs > 0:
                     await auto_je.create_for_doc_cogs_backfill(
                         session,
