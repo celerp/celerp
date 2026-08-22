@@ -1441,12 +1441,11 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
-    # Reverse the finalize JE before the doc goes void, symmetric with unvoid's
-    # re-posting: leaving it posted would double-count once unvoid re-posts. Voiding
-    # first also surfaces a locked-period refusal before anything else mutates,
-    # mirroring the revert-to-draft ordering.
-    current_revert_count = int(row.state.get("revert_count", 0))
-    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
+    # Reverse the recognition JEs before the doc goes void, symmetric with unvoid's
+    # batch restore: leaving them posted would double-count once unvoid re-posts.
+    # Voiding first also surfaces a locked-period refusal before anything else
+    # mutates, mirroring the revert-to-draft ordering.
+    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -1599,10 +1598,8 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Re-apply JEs for the restored status (idempotent - uses doc-scoped keys)
-    _unvoid_company = await session.get(Company, company_id)
-    _unvoid_base_currency = (_unvoid_company.settings.get("currency", "USD") if _unvoid_company else "USD")
-    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=state, base_currency=_unvoid_base_currency)
+    # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
+    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.

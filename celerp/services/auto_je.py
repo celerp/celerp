@@ -9,6 +9,7 @@ duplicate JEs regardless of trigger source (API, import, doctor repair).
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
@@ -649,75 +650,126 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
     return True
 
 
-def finalize_family_suffixes(revert_count: int = 0) -> list[str]:
-    """Every JE id suffix that can carry a doc's finalize recognition.
+# The JE families that carry a doc's recognized economics: finalize (fin, and
+# fin:{cycle} after reverts), bill conversion, the one-time COGS backfill, and
+# the fulfillment COGS adjustment (cogs-adj:{cycle_tag}). These are what a doc
+# void reverses and an unvoid restores. Settlement and stock-movement JEs
+# (payments, credit-note applications, fulfillment, receiving, landed cost,
+# returns) are not recognition: they reverse through their own flows.
+_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
 
-    Covers each finalize cycle (fin, fin:1, ... fin:{revert_count}) plus the
-    unvoid restore. At most one is posted at any time; the rest are void.
+
+def _recognition_root(suffix: str) -> str | None:
+    """The recognition root of a JE id suffix, or None for non-recognition JEs.
+
+    The root is the suffix with any unvoid-restore generations stripped, so a
+    restore shares its original's root: fin, fin:2, fin:unvoid, fin:2:unvoid:1
+    all root to their cycle id; cogs-adj:fulfill-0:unvoid:1 roots to
+    cogs-adj:fulfill-0. A payment (pay:0) or fulfillment (fulfill-1) suffix
+    returns None.
     """
-    cycles = [f"fin:{c}" if c else "fin" for c in range(int(revert_count or 0) + 1)]
-    return cycles + ["fin:unvoid"]
+    root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
+    for family in _RECOGNITION_FAMILIES:
+        if root == family or root.startswith(f"{family}:"):
+            return root
+    return None
 
 
-def _void_sweep_suffixes(revert_count: int = 0) -> list[str]:
-    """Every JE id suffix a void sweep must cover: the finalize family plus the
-    one-time COGS backfill JE and the bill finalize JE."""
-    return finalize_family_suffixes(revert_count) + ["cogs-backfill", "bill"]
+async def _doc_recognition_jes(session, company_id, doc_id: str) -> dict[str, Projection]:
+    """suffix -> JE projection for every recognition-family auto-JE of the doc."""
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    ))).scalars().all()
+    jes: dict[str, Projection] = {}
+    for row in rows:
+        if not row.entity_id.startswith(prefix):
+            continue
+        suffix = row.entity_id[len(prefix):]
+        if _recognition_root(suffix) is not None:
+            jes[suffix] = row
+    return jes
+
+
+async def _doc_void_events(session, company_id, doc_id: str) -> list:
+    """Every acc.journal_entry.voided ledger event on the doc's auto-JEs, oldest
+    first (ledger id order)."""
+    from celerp.models.ledger import LedgerEntry
+
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(
+        _select(LedgerEntry)
+        .where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.voided",
+        )
+        .order_by(LedgerEntry.id)
+    )).scalars().all()
+    return [r for r in rows if r.entity_id.startswith(prefix)]
 
 
 async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
-    """Void every posted auto-JE tied to a doc's finalized state when it reverts
-    to draft (invoice or bill).
+    """Void every posted recognition-family auto-JE when a doc reverts to draft
+    (invoice or bill).
 
-    Sweeps the full finalize family plus the COGS backfill JE rather than
-    stopping at the first hit: a backfilled invoice carries two posted JEs
-    (finalize and cogs-backfill), and an unvoided invoice's live finalize JE is
-    fin:unvoid, not the cycle id. _void_je_if_posted skips anything already
+    The candidates are enumerated from the doc's actual JE projections, so any
+    recognition JE the doc has accumulated - finalize cycles, unvoid restores,
+    the COGS backfill, fulfillment COGS adjustments - is reversed without a
+    fixed list to fall out of date. _void_je_if_posted skips anything already
     void, so the sweep only ever reverses what is live.
 
-    revert_count: the current revert_count from doc state (before this revert increments it).
-    Used to derive the correct JE entity ids for cycle-aware invoice JEs.
+    revert_count: the current revert_count from doc state (before this revert
+    increments it), scoping the void idempotency keys per revert cycle.
     """
-    for je_suffix in _void_sweep_suffixes(revert_count):
+    for suffix in await _doc_recognition_jes(session, company_id, doc_id):
         await _void_je_if_posted(
             session,
             company_id=company_id,
             user_id=user_id,
             doc_id=doc_id,
-            je_id=f"je:auto:{doc_id}:{je_suffix}",
+            je_id=f"je:auto:{doc_id}:{suffix}",
             # Cycle- and suffix-aware so multiple revert cycles and multiple
             # live JEs in one revert each get their own void event.
-            idem_key=je_idempotency_key(doc_id, f"revert_to_draft:{revert_count}:{je_suffix}", "void"),
+            idem_key=je_idempotency_key(doc_id, f"revert_to_draft:{revert_count}:{suffix}", "void"),
             reason=f"Reversed: {doc_id} reverted to draft",
             trigger="doc.reverted_to_draft",
         )
 
 
-async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
-    """Reverse every posted finalize-family auto-JE when a finalized doc is voided.
+async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> None:
+    """Reverse every posted recognition-family auto-JE when a finalized doc is
+    voided, stamping each void event with this void's batch number.
 
-    Symmetric with create_for_doc_unvoided, which re-posts the finalize JE on unvoid.
-    Without this, voiding leaves the finalize JE posted and a subsequent unvoid posts a
-    second one (je:auto:{doc}:fin:unvoid), double-counting revenue and COGS in the
-    ledger. Sweeping every finalize-family suffix rather than returning on the first
-    keeps the books flat across any finalize/revert/unvoid history: at most one is live
-    at void time and the rest are already void (skipped by the status guard). The
-    one-time COGS backfill JE is part of the sweep too, since a backfilled invoice
-    holds its COGS in that separate JE.
-
-    revert_count: the current revert_count from doc state, so cycle-aware finalize ids
-    (fin, fin:1, ... fin:{revert_count}) are all covered.
+    Symmetric with create_for_doc_unvoided, which restores exactly the JEs the
+    most recent batch voided. The candidates come from the doc's actual JE
+    projections (finalize cycles, unvoid restores, COGS backfill, COGS
+    adjustments), so nothing live is left behind and nothing settled (payments,
+    fulfillment stock moves) is touched. The batch number in both the metadata
+    and the idempotency key keeps every void/unvoid cycle's events distinct:
+    a second cycle's voids can never dedup against the first's.
     """
-    for je_suffix in _void_sweep_suffixes(revert_count):
-        await _void_je_if_posted(
+    void_events = await _doc_void_events(session, company_id, doc_id)
+    batch = 1 + max(
+        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
+        default=0,
+    )
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items():
+        je_id = f"je:auto:{doc_id}:{suffix}"
+        if (row.state or {}).get("status") != "posted":
+            continue
+        await emit_event(
             session,
             company_id=company_id,
-            user_id=user_id,
-            doc_id=doc_id,
-            je_id=f"je:auto:{doc_id}:{je_suffix}",
-            idem_key=je_idempotency_key(doc_id, f"voided:{je_suffix}", "void"),
-            reason=f"Reversed: {doc_id} voided",
-            trigger="doc.voided",
+            entity_id=je_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=je_void_data(f"Reversed: {doc_id} voided", row.state),
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
+            metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
         )
 
 
@@ -830,92 +882,85 @@ async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id
     )
 
 
-async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
-    """Re-apply the finalize JE when a doc is unvoided.
+async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:
+    """Restore exactly what the immediately preceding void removed.
 
-    Uses 'unvoid' suffix in idempotency keys to avoid colliding with original JEs
-    (which may still exist if voiding didn't delete them).
+    Finds the recognition JEs the most recent void batch reversed and re-posts
+    each as a new JE copying its memo, entries, and date verbatim - never
+    recomputing: costs may have moved since the doc was voided, and an unvoid
+    must put back the numbers the void took out, not today's. Each restore
+    lives at je:auto:{doc_id}:{root}:unvoid:{n}, so repeated void/unvoid cycles
+    keep every generation distinct, and a family that already holds a posted JE
+    is skipped (the restore already happened). One copy mechanism covers every
+    doc type and family: invoice finalize, bill conversion, COGS backfill, and
+    COGS adjustments alike.
+
+    Docs voided before batch stamping existed have per-JE void events with no
+    batch number; for those, each recognition family whose latest void event
+    came from a doc void (not a revert to draft) restores the JE that event
+    reversed.
     """
-    doc_type = doc.get("doc_type", "")
-    currency = doc.get("currency", "USD")
-    rate = _Dec(str(doc.get("conversion_rate") or 1))
-    total = float(doc.get("total", 0) or 0)
-    if total <= 0:
-        return
+    from celerp.models.ledger import LedgerEntry
 
-    if doc_type == "invoice":
-        tax_d = round_money(doc.get("tax", 0), currency)
-        total_d = round_money(total, currency)
-        base_total = to_base(to_stored_float(total_d), rate, base_currency)
-        base_tax = to_base(to_stored_float(tax_d), rate, base_currency)
-        base_revenue = to_base(to_stored_float(round_money(total_d - tax_d, currency)), rate, base_currency)
-        entries = [
-            {"account": "1120", "debit": base_total, "credit": 0.0},
-            {"account": "4100", "debit": 0.0, "credit": base_revenue},
-            {"account": "2120", "debit": 0.0, "credit": base_tax},
-        ]
-        # Restore COGS symmetrically with revenue: the finalize JE carries both, so
-        # unvoiding must re-post the same COGS pair it originally recognized.
-        cogs = (await compute_doc_cogs(session, company_id, doc)).total
-        if cogs > 0:
-            entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
-            entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
+    prefix = f"je:auto:{doc_id}:"
+    jes = await _doc_recognition_jes(session, company_id, doc_id)
+    void_events = await _doc_void_events(session, company_id, doc_id)
+
+    batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
+    if batched:
+        last_batch = max(int(e.metadata_["void_batch"]) for e in batched)
+        to_restore = [e.entity_id for e in batched
+                      if int(e.metadata_["void_batch"]) == last_batch]
+    else:
+        last_void_by_root: dict[str, object] = {}
+        for event in void_events:  # oldest first, so the latest event wins
+            root = _recognition_root(event.entity_id[len(prefix):])
+            if root is not None:
+                last_void_by_root[root] = event
+        to_restore = [e.entity_id for e in last_void_by_root.values()
+                      if (e.metadata_ or {}).get("trigger") == "doc.voided"]
+
+    for voided_je_id in to_restore:
+        suffix = voided_je_id[len(prefix):]
+        root = _recognition_root(suffix)
+        source = jes.get(suffix)
+        if root is None or source is None:
+            continue
+        family = {s: r for s, r in jes.items() if _recognition_root(s) == root}
+        if any((r.state or {}).get("status") == "posted" for r in family.values()):
+            continue
+        state = source.state or {}
+        entries = state.get("entries") or []
+        if not entries:
+            continue
+        generation = 1 + sum(1 for s in family if s != root)
+        created = (await session.execute(
+            _select(LedgerEntry)
+            .where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.entity_id == voided_je_id,
+                LedgerEntry.event_type == "acc.journal_entry.created",
+            )
+            .order_by(LedgerEntry.id.desc())
+            .limit(1)
+        )).scalars().first()
+        metadata_ = {"trigger": "doc.unvoided", "doc_id": doc_id, "restores": voided_je_id}
+        allocations = ((created.metadata_ or {}) if created else {}).get("cogs_allocations")
+        if allocations:
+            # The allocation snapshot rides along so fulfillment still trues up
+            # against what the restored JE recognizes.
+            metadata_["cogs_allocations"] = allocations
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:fin:unvoid",
-            idem_create=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "c"),
-            idem_posted=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "p"),
-            memo=f"Auto JE for {doc_id} unvoided (restore finalize)",
-            ts=doc.get("finalized_at") or doc.get("issue_date"),
+            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}",
+            idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
+            memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
+            ts=state.get("ts"),
             entries=entries,
-            metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
-        )
-    elif doc_type in ("bill", "purchase_order"):
-        line_items = doc.get("line_items", [])
-        debit_entries: list[dict] = []
-        tax_total_d = _Dec(0)
-        if line_items:
-            for li in line_items:
-                line_total = to_stored_float(round_money(
-                    to_decimal(li.get("line_total") or 0) or
-                    to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
-                    currency,
-                ))
-                if line_total <= 0:
-                    continue
-                receive_as = (li.get("receive_as") or "").strip().lower()
-                if li.get("account_code"):
-                    account = li["account_code"]
-                elif receive_as == "expense":
-                    account = "6950"
-                elif receive_as == "asset":
-                    account = "1210"
-                else:
-                    account = _INVENTORY_ACCT if li.get("sku") else "6950"
-                debit_entries.append({"account": account, "debit": to_base(line_total, rate, base_currency), "credit": 0.0})
-            # Input VAT from the doc's effective tax (see create_for_bill_conversion), which keeps the JE balanced.
-            tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
-            if tax_total_d > 0:
-                debit_entries.append({"account": "1150", "debit": to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
-        base_total = to_base(total, rate, base_currency)
-        if not debit_entries:
-            if total <= 0:
-                return
-            debit_entries.append({"account": "6950", "debit": base_total, "credit": 0.0})
-        entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": base_total}]
-        await _emit_auto_posted_je(
-            session,
-            company_id=company_id,
-            user_id=user_id,
-            je_id=f"je:auto:{doc_id}:bill:unvoid",
-            idem_create=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "c"),
-            idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "p"),
-            memo=f"Auto JE for {doc_id} unvoided (restore bill conversion)",
-            ts=doc.get("issue_date") or doc.get("finalized_at"),
-            entries=entries,
-            metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
+            metadata_=metadata_,
         )
 
 

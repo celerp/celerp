@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -24,13 +23,6 @@ async def _seed_company(session) -> uuid.UUID:
     session.add(Company(id=company_id, name="SweepCo", slug=f"sw-{company_id.hex[:8]}"))
     await session.flush()
     return company_id
-
-
-def _seed_parcel(session, company_id, entity_id: str) -> None:
-    session.add(Projection(
-        company_id=company_id, entity_id=entity_id, entity_type="item",
-        state={"cost_total": 40.0, "quantity": 2.0}, version=1,
-        updated_at=datetime.now(timezone.utc)))
 
 
 def _fin_entries() -> list[dict]:
@@ -75,21 +67,12 @@ async def _je_states(session, company_id, doc_id: str) -> dict[str, dict]:
     return {r.entity_id: r.state for r in rows if r.entity_id.startswith(prefix)}
 
 
-def _doc_state(line_items) -> dict:
-    return {
-        "doc_type": "invoice", "status": "finalized", "total": 110.0,
-        "tax": 10.0, "line_items": line_items, "finalized_at": "2024-06-01",
-    }
-
-
 @pytest.mark.asyncio
 async def test_void_after_backfill_voids_backfill_je(session):
     """Voiding a backfilled invoice voids the backfill JE alongside the finalize
     JE, and a later unvoid restores exactly one COGS leg."""
     company_id = await _seed_company(session)
-    _seed_parcel(session, company_id, "item:v1")
     doc_id = "doc:INV-V1"
-    lines = [{"quantity": 1, "item_id": "item:v1", "line_total": 100.0}]
     await _emit_je(session, company_id, f"je:auto:{doc_id}:fin",
                    entries=_fin_entries(), ts="2024-06-01")
     await _emit_je(session, company_id, f"je:auto:{doc_id}:cogs-backfill",
@@ -106,8 +89,7 @@ async def test_void_after_backfill_voids_backfill_je(session):
         "void sweep left the backfill JE posted")
 
     await create_for_doc_unvoided(
-        session, company_id=company_id, user_id=None, doc_id=doc_id,
-        doc=_doc_state(lines))
+        session, company_id=company_id, user_id=None, doc_id=doc_id)
     await session.commit()
 
     jes = await _je_states(session, company_id, doc_id)
