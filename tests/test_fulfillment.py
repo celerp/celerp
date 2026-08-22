@@ -2848,3 +2848,231 @@ async def test_cogs_nonstock_or_zero_qty_line_skipped(client, session, auth, _se
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 8.0, (
         f"non-stock line skipped (0), costed sibling posts 2*4=8, got {nets.get('5100')} (nets={nets})")
+
+
+# ---------------------------------------------------------------------------
+# Ledger correctness: cross-lot COGS at finalize, fulfill true-up, non-stock
+# lines, and void/unvoid restore fidelity.
+# ---------------------------------------------------------------------------
+
+
+async def _posted_doc_jes(session, company_id, doc_id: str) -> dict[str, dict]:
+    """entity_id -> state for every posted JE projection belonging to the doc."""
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    ))).scalars().all()
+    prefix = f"je:auto:{doc_id}:"
+    return {r.entity_id: r.state for r in rows
+            if r.entity_id.startswith(prefix) and (r.state or {}).get("status") == "posted"}
+
+
+@pytest.mark.asyncio
+async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_ids):
+    """Finalizing an invoice line that draws more than its bound lot holds recognizes
+    COGS across the sibling lots that will actually be drawn: bound lot first, then
+    siblings in pick order, each at its own cost. Lots: A 2 units at 10, B 3 units at
+    30, same splittable SKU; line qty 5 bound to A must post COGS 2*10 + 3*30 = 110,
+    not 5 units extrapolated at A's unit cost (50)."""
+    sku = f"SPANFIN-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    await _create_item(client, auth, sku, 3, cost_price=30.0)
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 110.0, (
+        f"cross-lot finalize COGS must be 2*10 + 3*30 = 110, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-P") == -110.0, (
+        f"inventory relief must match at -110, got {nets.get('1130-P')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, session, auth, _setup_ids):
+    """When the whole SKU is short of the invoiced quantity, finalize still succeeds:
+    the allocatable units price at their own lots' costs and the unallocatable
+    remainder prices provisionally at the bound lot's unit cost. Lots: A 2 at 10,
+    B 2 at 30 (total 4); line qty 5 bound to A posts 2*10 + 2*30 + 1*10 = 90."""
+    sku = f"SPANSHORT-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    await _create_item(client, auth, sku, 2, cost_price=30.0)
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 90.0, (
+        f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-P") == -90.0, (
+        f"inventory relief must match at -90, got {nets.get('1130-P')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup_ids):
+    """Fulfillment compares the actual cost of the lots drawn with the COGS recognized
+    at finalize and posts one adjustment JE for the difference; a fulfill whose actual
+    cost equals the recognized amount posts no adjustment; re-running the adjustment
+    is idempotent.
+
+    Setup: lots A 2 at 10, B 3 at 30, C 3 at 50. doc1 line qty 5 bound to A
+    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright
+    (recognized 90, fulfilled at exactly 90: no adjustment). Fulfilling doc1
+    afterwards draws A and C (B is sold), actual 2*10 + 3*50 = 170, so doc1 gets one
+    adjustment JE of +60."""
+    from celerp.models.projections import Projection
+
+    cid = _setup_ids["company_id"]
+    sku = f"TRUEUP-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    await _create_item(client, auth, sku, 3, cost_price=50.0)
+
+    doc1 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+    doc2 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot_b},
+    ])
+
+    r = await client.post(f"/docs/{doc2}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot_b]})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    doc2_adj = await session.get(
+        Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0"})
+    assert doc2_adj is None, (
+        "a fulfill whose actual cost equals the recognized COGS must post no adjustment JE")
+
+    r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot_a]})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    adj_id = f"je:auto:{doc1}:cogs-adj:fulfill-0"
+    adj = await session.get(Projection, {"company_id": cid, "entity_id": adj_id})
+    assert adj is not None and adj.state.get("status") == "posted", (
+        f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs recognized 110)")
+    by_acct = {e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+               for e in adj.state.get("entries", [])}
+    assert by_acct.get("5100") == (60.0, 0.0), (
+        f"adjustment must debit 5100 by exactly 60, got {by_acct.get('5100')}")
+    assert by_acct.get("1130-P") == (0.0, 60.0), (
+        f"adjustment must credit 1130-P by exactly 60, got {by_acct.get('1130-P')}")
+
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 260.0, (
+        f"total COGS must be 110 + 90 + 60 = 260, got {nets.get('5100')} (nets={nets})")
+
+    # Idempotency: replaying the same adjustment must not double-post.
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services import auto_je as auto_je_service
+    rows_before = (await session.execute(
+        select(func.count()).select_from(LedgerEntry)
+        .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
+    await auto_je_service.create_for_doc_cogs_adjustment(
+        session, company_id=cid, user_id=None, doc_id=doc1, delta=60.0,
+        cycle_tag="fulfill-0", doc_number="RETRY", ts="2026-01-01")
+    await session.commit()
+    rows_after = (await session.execute(
+        select(func.count()).select_from(LedgerEntry)
+        .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
+    assert rows_after == rows_before, (
+        f"re-running the adjustment must be a no-op, ledger rows went {rows_before} -> {rows_after}")
+
+
+@pytest.mark.asyncio
+async def test_cogs_finalize_skips_service_and_freight_lines(client, session, auth, _setup_ids):
+    """Non-stock lines (service and freight catalog items) carry a cost for margin
+    display but hold no goods, so finalize must post no 5100/1130-P movement for them.
+    Only the stock sibling's 2*4 = 8 may post."""
+    sku_s = f"SVCLINE-{uuid.uuid4().hex[:6]}"
+    sku_f = f"FRTLINE-{uuid.uuid4().hex[:6]}"
+    sku_c = f"STKLINE-{uuid.uuid4().hex[:6]}"
+    rs = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": sku_s, "name": sku_s, "quantity": 1,
+        "sell_by": "piece", "inventory_type": "service", "cost_total": 30.0})
+    assert rs.status_code == 200, rs.text
+    item_s = rs.json()["id"]
+    rf = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": sku_f, "name": sku_f, "quantity": 1,
+        "sell_by": "piece", "inventory_type": "freight", "cost_total": 25.0})
+    assert rf.status_code == 200, rf.text
+    item_f = rf.json()["id"]
+    item_c = await _create_item(client, auth, sku_c, 5, cost_price=4.0)
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_s, "name": sku_s, "quantity": 1, "unit_price": 90.0, "entity_id": item_s},
+        {"sku": sku_f, "name": sku_f, "quantity": 1, "unit_price": 40.0, "entity_id": item_f},
+        {"sku": sku_c, "name": sku_c, "quantity": 2, "unit_price": 9.0, "entity_id": item_c},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 8.0, (
+        f"service/freight lines must post no COGS; only stock 2*4=8, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-P") == -8.0, (
+        f"service/freight lines must not relieve inventory; expected -8, got {nets.get('1130-P')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_double_void_unvoid_cycle_restores_original_economics(client, session, auth, _setup_ids):
+    """Unvoid restores exactly what the immediately preceding void removed, never a
+    recomputation. Finalize -> void -> unvoid -> void -> unvoid, with a sibling lot's
+    cost changed between the cycles, must end with exactly one live posted recognition
+    JE whose economics equal the original finalize, and the trial balance back to the
+    post-finalize snapshot."""
+    from celerp.models.projections import Projection
+
+    cid = _setup_ids["company_id"]
+    sku = f"DBLVOID-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 100.0, "entity_id": lot_a},
+    ])
+    snapshot = await _je_net(client, auth["headers"])
+    assert snapshot.get("5100") == 110.0, (
+        f"finalize must recognize 2*10 + 3*30 = 110, got {snapshot.get('5100')}")
+    assert snapshot.get("4100") == -500.0, f"revenue must post at -500, got {snapshot.get('4100')}"
+
+    r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "cycle one"})
+    assert r.status_code == 200, r.text
+    after_void = await _je_net(client, auth["headers"])
+    assert after_void.get("5100", 0.0) == 0.0 and after_void.get("4100", 0.0) == 0.0, (
+        f"first void must reverse the recognition, got {after_void}")
+
+    r = await client.post(f"/docs/{doc_id}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _je_net(client, auth["headers"]) == snapshot, (
+        "first unvoid must restore the exact post-finalize trial balance")
+
+    # A sibling cost change between the cycles: a recomputing unvoid would now
+    # produce different numbers, a restoring one must not.
+    session.expire_all()
+    lot_b_row = await session.get(Projection, {"company_id": cid, "entity_id": lot_b})
+    lot_b_row.state = {**lot_b_row.state, "cost_total": 300.0}
+    session.add(lot_b_row)
+    await session.commit()
+
+    r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "cycle two"})
+    assert r.status_code == 200, r.text
+    after_void2 = await _je_net(client, auth["headers"])
+    assert after_void2.get("5100", 0.0) == 0.0 and after_void2.get("4100", 0.0) == 0.0, (
+        f"second void must reverse the restored recognition, got {after_void2}")
+
+    r = await client.post(f"/docs/{doc_id}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    final_nets = await _je_net(client, auth["headers"])
+    assert final_nets == snapshot, (
+        f"second unvoid must restore the original finalize economics {snapshot}, got {final_nets}")
+
+    session.expire_all()
+    posted = await _posted_doc_jes(session, cid, doc_id)
+    cogs_posted = [eid for eid, st in posted.items()
+                   if any(e.get("account") == "5100" and float(e.get("debit") or 0) > 0
+                          for e in st.get("entries", []))]
+    assert len(cogs_posted) == 1, (
+        f"exactly one live recognition JE may carry COGS after the cycles, got {cogs_posted}")
+    live = posted[cogs_posted[0]]
+    by_acct = {e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+               for e in live.get("entries", [])}
+    assert by_acct.get("5100") == (110.0, 0.0), (
+        f"the live JE must carry the ORIGINAL COGS of 110, got {by_acct.get('5100')}")

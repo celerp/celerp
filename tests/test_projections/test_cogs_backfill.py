@@ -636,3 +636,62 @@ async def test_backfill_ledger_invariant_and_idempotent_rowcount(session):
     await session.commit()
     assert second == {"changed": False}
     assert await _rowcount(session) == rows_after_first
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_ambiguous_multi_lot_invoice(session, caplog):
+    """A historical invoice whose line quantity exceeds its bound splittable lot
+    cannot be costed from that lot alone (the remainder came from sibling lots at
+    unknown costs), so the backfill posts nothing for it, counts it as skipped,
+    says so in the notification, and warns in the log. The skip is terminal: the
+    completion marker still sets and the next boot is a no-op."""
+    import logging
+
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, "item:amb1", cost_total=40.0, quantity=2.0)
+    _seed_parcel(session, company_id, "item:amb2", cost_total=40.0, quantity=2.0)
+    doc_ok = "doc:INV-AMB1"
+    doc_amb = "doc:INV-AMB2"
+    _seed_doc(session, company_id, doc_ok,
+              line_items=[{"quantity": 1, "item_id": "item:amb1", "line_total": 100.0}],
+              finalized_at="2024-04-05")
+    _seed_doc(session, company_id, doc_amb,
+              line_items=[{"quantity": 5, "item_id": "item:amb2", "line_total": 500.0}],
+              finalized_at="2024-04-06")
+    await _emit_je(session, company_id, f"je:auto:{doc_ok}:fin",
+                   entries=_fin_entries(), ts="2024-04-05")
+    await _emit_je(session, company_id, f"je:auto:{doc_amb}:fin",
+                   entries=_fin_entries(total=550.0, revenue=500.0, tax=50.0), ts="2024-04-06")
+    await session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="celerp.services.cogs_backfill"):
+        result = await run_cogs_backfill(session)
+    await session.commit()
+
+    assert result["posted"] == 1, f"only the unambiguous invoice may post, got {result}"
+    assert result["skipped"] == 1, f"the ambiguous invoice must count as skipped, got {result}"
+
+    jes_ok = await _doc_jes(session, company_id, doc_ok)
+    assert _posted_5100_debits(jes_ok) == [20.0], (
+        f"unambiguous invoice must get its 1*20 backfill, got {_posted_5100_debits(jes_ok)}")
+    jes_amb = await _doc_jes(session, company_id, doc_amb)
+    assert f"je:auto:{doc_amb}:cogs-backfill" not in jes_amb, (
+        "ambiguous invoice must receive no backfill JE at all")
+
+    assert any(doc_amb in rec.getMessage() for rec in caplog.records), (
+        f"skip must be warned with the doc id, got {[r.getMessage() for r in caplog.records]}")
+
+    notes = await _notifications(session, company_id)
+    assert len(notes) == 1
+    assert "1 skipped: cost spans multiple lots, post manually." in notes[0].body, (
+        f"notification must carry the skip, got: {notes[0].body}")
+
+    assert await _marker_value(session) == "done", (
+        "ambiguous skips are terminal and must not hold the completion marker open")
+
+    rows_after_first = await _rowcount(session)
+    second = await run_cogs_backfill(session)
+    await session.commit()
+    assert second == {"changed": False}
+    assert await _rowcount(session) == rows_after_first
