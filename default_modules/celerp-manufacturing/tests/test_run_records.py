@@ -165,6 +165,32 @@ async def test_fungible_output_creates_lot_at_actual_cost(client):
 
 
 @pytest.mark.asyncio
+async def test_mfg_lot_none_product_splittable(client, session):
+    """A lot manufactured from a product whose allow_splitting is unset/None inherits
+    allow_splitting True (routed through splitting_allowed). At merge-base the lot's
+    item.created event stores bool(None) = False, so the lot is wrongly non-splittable."""
+    from celerp.models.projections import Projection
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDN", quantity=1000, cost_total=80000)
+    ring = await _item(client, token, "RINGN", quantity=0)
+    # Force the product's allow_splitting to a present None (older imports left it unset).
+    row = (await session.execute(select(Projection).where(Projection.entity_id == ring))).scalar_one()
+    st = dict(row.state)
+    st["allow_splitting"] = None
+    row.state = st
+    await session.commit()
+
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    run = await _build(client, token, ring, 2, complete=True)
+
+    lots = await _lots(client, token, run)
+    assert len(lots) == 1
+    lot = (await client.get(f"/items/{lots[0]['id']}", headers=_h(token))).json()
+    assert lot["allow_splitting"] is True, (
+        f"a lot from a None-allow_splitting product must be splittable, got {lot.get('allow_splitting')}")
+
+
+@pytest.mark.asyncio
 async def test_fungible_sale_cogs_actual_lot_cost(client):
     """Two fungible runs at different actual costs create two lots; a sale draws them FIFO so COGS
     is the real cost of the specific lots consumed, not a recipe-standard figure."""

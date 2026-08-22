@@ -641,10 +641,10 @@ async def test_split_blocked_when_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
-async def test_split_blocked_when_allow_splitting_field_missing(client, session):
-    """A missing/None allow_splitting must NOT bypass the split guard — only an
-    explicit True allows splitting. Simulate an item whose projection state lacks
-    the field (as older imports produced) by removing it before splitting.
+async def test_split_allowed_when_allow_splitting_field_missing(client, session):
+    """A missing/None allow_splitting is splittable: only an explicit False blocks.
+    Simulate an item whose projection state lacks the field (as older imports produced)
+    and confirm the split now succeeds.
     """
     from celerp.models.projections import Projection
     from sqlalchemy import select
@@ -668,18 +668,18 @@ async def test_split_blocked_when_allow_splitting_field_missing(client, session)
     rs = await client.post(f"/items/{item_id}/split", json={
         "children": [{"sku": "MISSING-SPLIT-1", "quantity": 3}]
     }, headers=h)
-    assert rs.status_code == 422, f"missing allow_splitting must block split, got {rs.status_code}: {rs.text}"
-    assert "Allow Splitting" in rs.json()["detail"]
+    assert rs.status_code == 200, f"missing allow_splitting must be splittable, got {rs.status_code}: {rs.text}"
 
 
 @pytest.mark.asyncio
-async def test_import_defaults_no_split_and_coerces_present_value(client):
-    """Imported items default to no-split (allow_splitting=False) when the field is
-    absent, and a present CSV value ("Yes"/"No") is coerced to a real bool."""
+async def test_import_defaults_unset_split_and_coerces_present_value(client):
+    """Imported items leave allow_splitting unset (None) when the field is absent, so
+    they stay splittable by default; a present CSV value ("Yes"/"No") is coerced to a
+    real bool."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
 
-    # (1) Import WITHOUT allow_splitting → defaults to False → split blocked.
+    # (1) Import WITHOUT allow_splitting → stays unset (None) → splittable.
     eid1 = "item:imp-nofield"
     r = await client.post("/items/import/batch", json={"records": [{
         "entity_id": eid1, "event_type": "item.created", "source": "csv",
@@ -689,9 +689,9 @@ async def test_import_defaults_no_split_and_coerces_present_value(client):
     assert r.status_code == 200, r.text
     assert r.json()["created"] == 1, r.json()
     item1 = (await client.get(f"/items/{eid1}", headers=h)).json()
-    assert item1.get("allow_splitting") is False, item1.get("allow_splitting")
+    assert item1.get("allow_splitting") is None, item1.get("allow_splitting")
     rs1 = await client.post(f"/items/{eid1}/split", json={"children": [{"sku": "IMP-NF-001-1", "quantity": 3}]}, headers=h)
-    assert rs1.status_code == 422, rs1.text
+    assert rs1.status_code == 200, rs1.text
 
     # (2) Import WITH allow_splitting="Yes" → coerced to True → splittable.
     eid2 = "item:imp-yes"

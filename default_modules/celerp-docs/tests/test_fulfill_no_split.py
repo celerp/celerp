@@ -1,11 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Fulfillment must respect 'no split' even when allow_splitting was never set.
+"""Fulfillment treats an unset allow_splitting as splittable.
 
-A partial draw on an invoice line splits the parcel (split-on-fulfill). The
-fulfillment guard must block that split for a parcel that isn't explicitly
-splittable — a missing/None allow_splitting (e.g. older imports) must not bypass
-the gate, the same as a manual split."""
+A partial draw on an invoice line splits the parcel (split-on-fulfill). A
+missing/None allow_splitting (e.g. older imports) is splittable by default, so a
+partial fulfillment carves a child and leaves the remainder on the mother; only
+an explicit False blocks the split."""
 from __future__ import annotations
 
 import uuid
@@ -28,7 +28,7 @@ def _h(t):
 
 
 @pytest.mark.asyncio
-async def test_partial_fulfillment_blocked_when_allow_splitting_missing(client, session):
+async def test_partial_fulfillment_allowed_when_allow_splitting_missing(client, session):
     token = await _register(client)
     h = _h(token)
 
@@ -43,18 +43,17 @@ async def test_partial_fulfillment_blocked_when_allow_splitting_missing(client, 
     row.state = new_state
     await session.commit()
 
-    # Invoice drawing a PARTIAL 3 of the 10 → fulfillment would split off a child.
+    # Invoice drawing a PARTIAL 3 of the 10 → fulfillment splits off a child.
     doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": item, "sku": "PARCEL-NS", "name": "Parcel", "quantity": 3, "unit_price": 5, "sell_by": "piece"}],
     })).json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=h)).status_code == 200
 
     r = await client.post(f"/docs/{doc}/fulfill-lines", headers=h, json={"line_entity_ids": [item]})
-    assert r.status_code == 409, (
-        f"partial fulfillment of a no-split parcel must be blocked, got {r.status_code}: {r.text}"
+    assert r.status_code == 200, (
+        f"partial fulfillment of an unset-split parcel must be allowed, got {r.status_code}: {r.text}"
     )
-    assert "Allow Splitting" in str(r.json().get("detail", ""))
 
-    # And the parcel must be untouched (not split).
+    # And the mother parcel keeps the un-drawn remainder (10 - 3 = 7).
     parcel = (await client.get(f"/items/{item}", headers=h)).json()
-    assert float(parcel.get("quantity") or 0) == 10.0, f"parcel was split: qty={parcel.get('quantity')}"
+    assert float(parcel.get("quantity") or 0) == 7.0, f"mother remainder wrong: qty={parcel.get('quantity')}"

@@ -748,6 +748,19 @@ class TestPickAllowSplitting:
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
 
+    def test_pick_plan_none_item_splittable(self):
+        """An item whose stored allow_splitting is present but None is splittable
+        (routed through splitting_allowed), the same as an absent key. At merge-base pick
+        reads item.get('allow_splitting', True), which returns None (falsy) for a
+        present-None value, so the parcel is wrongly treated as non-splittable."""
+        line_items = [{"sku": "SP-N", "quantity": 3}]
+        inventory = [{"entity_id": "eN", "sku": "SP-N", "quantity": 10, "created_at": "2026-01-01",
+                      "expires_at": None, "cost_total": 10.0, "allow_splitting": None}]
+        result = compute_pick_plan(line_items, inventory)
+        assert len(result.picks) == 1
+        assert result.picks[0].action == "split"
+        assert result.unfulfilled == []
+
 
 # ---------------------------------------------------------------------------
 # consignment_in fulfillment: must NOT deduct inventory
@@ -1234,6 +1247,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
     # Finalize
     fin_r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
     assert fin_r.status_code == 200, fin_r.text
+    # COGS is recognized at finalize (invoice date), before any physical fulfillment.
+    assert (await _je_net(client, auth["headers"])).get("5100") == 100.0, "COGS must post at finalize"
 
     # First fulfill
     r1 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
@@ -1243,6 +1258,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "sold", f"Expected sold after first fulfill, got {item_state['status']}"
+    # Physically fulfilling posts no new COGS (already recognized at finalize).
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "fulfill must not post new COGS"
 
     # Revert lines
     rv_r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
@@ -1251,6 +1268,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "available", f"Expected available after revert, got {item_state['status']}"
+    # Un-fulfilling (revert-lines) does not void the finalize COGS.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "revert-lines must not void finalize COGS"
 
     # Re-fulfill — must succeed without idempotency key collision
     r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
@@ -1260,6 +1279,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
+    # Re-fulfill posts no new COGS either.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "re-fulfill must not double-post COGS"
 
 
 @pytest.mark.asyncio
@@ -2435,3 +2456,365 @@ async def test_sold_view_attaches_realized_sale_price(client, session, auth, _se
     rows = {it["sku"]: it for it in r.json()["items"]}
     assert "SOLDPX-B" in rows
     assert "sold_price" not in rows["SOLDPX-B"]
+
+
+# ---------------------------------------------------------------------------
+# Reserve-side partial carve, split gates for unset/None parcels, COGS-at-finalize.
+# ---------------------------------------------------------------------------
+
+
+async def _je_net(client, headers) -> dict[str, float]:
+    """Net debit-credit per account across all non-voided posted journal entries."""
+    led = (await client.get("/ledger?entity_type=journal_entry", headers=headers)).json()["items"]
+    voided = {e["entity_id"] for e in led if str(e.get("event_type", "")).endswith(".voided")}
+    by_acct: dict[str, float] = {}
+    for e in led:
+        if not str(e.get("event_type", "")).endswith(".created") or e["entity_id"] in voided:
+            continue
+        for x in (e.get("data") or {}).get("entries", []):
+            by_acct[x["account"]] = round(
+                by_acct.get(x["account"], 0.0)
+                + float(x.get("debit", 0) or 0) - float(x.get("credit", 0) or 0), 2)
+    return {k: v for k, v in by_acct.items() if abs(v) > 1e-9}
+
+
+@pytest.mark.asyncio
+async def test_reserve_partial_carves_child(client, session, auth, _setup_ids):
+    """Reserving a partially-invoiced splittable line carves off only the invoiced
+    portion to a child parcel and reserves that child; the mother keeps the remainder
+    available. At merge-base reserve flips the whole row (no carve), so the mother stays
+    reserved at full quantity and no child exists."""
+    sku = f"RESCARVE-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 10, cost_price=100.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 5.0, "entity_id": mother_id},
+    ])
+    r = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [mother_id], "new_status": "reserved"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    li = doc["line_items"][0]
+    child_eid = li.get("entity_id") or li.get("item_id")
+    assert child_eid and child_eid != mother_id, "reserve did not carve a child off the mother"
+
+    child = (await client.get(f"/items/{child_eid}", headers=auth["headers"])).json()
+    assert child["status"] == "reserved"
+    assert float(child["quantity"]) == 3.0
+
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert mother["status"] == "available", f"mother should stay available, got {mother['status']}"
+    assert float(mother["quantity"]) == 7.0, f"mother should keep the remainder 7, got {mother['quantity']}"
+
+
+@pytest.mark.asyncio
+async def test_reserve_partial_nonsplittable_blocked(client, session, auth, _setup_ids):
+    """A partial reserve of an explicitly non-splittable parcel is rejected (4xx) and
+    commits nothing. At merge-base reserve ignores allow_splitting and flips the whole
+    row, so it wrongly succeeds."""
+    sku = f"RESNS-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 10, cost_price=100.0)
+    pr = await client.patch(f"/items/{mother_id}", headers=auth["headers"],
+                            json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
+    assert pr.status_code == 200, pr.text
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 5.0, "entity_id": mother_id},
+    ])
+    r = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [mother_id], "new_status": "reserved"})
+    assert r.status_code in (409, 422), (
+        f"partial reserve of a non-splittable parcel must be blocked, got {r.status_code}: {r.text}")
+
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert mother["status"] == "available", f"nothing should commit, mother={mother['status']}"
+    assert float(mother["quantity"]) == 10.0
+
+
+@pytest.mark.asyncio
+async def test_reserve_split_valueerror_returns_409(client, session, auth, _setup_ids):
+    """A reserve carve whose split_off_child rejects the quantity surfaces a per-line
+    409 'Cannot split' and commits nothing. A piece-tracked parcel whose line pieces
+    disagree with its quantity makes split_off_child raise. At merge-base reserve never
+    carves (whole-row flip), so no split is attempted and no 409 occurs."""
+    sku = f"RESVE-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 10, sell_by="piece", cost_price=100.0)
+    # pieces (5) != quantity (3) on a piece-sold parcel -> split_off_child invariant fails.
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "pieces": 5, "unit_price": 5.0, "entity_id": mother_id},
+    ])
+    r = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [mother_id], "new_status": "reserved"})
+    assert r.status_code == 409, f"a rejected carve must surface 409, got {r.status_code}: {r.text}"
+    assert "split" in r.text.lower()
+
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert mother["status"] == "available"
+    assert float(mother["quantity"]) == 10.0
+
+
+@pytest.mark.asyncio
+async def test_reserve_carve_concurrent_no_lost_update(client, session, auth, _setup_ids):
+    """Two carves of one parcel that each start from the same (stale) parent snapshot
+    must conserve total quantity: mother remainder + both children == the original.
+    split_off_child emits the mother's NEW quantity as an ABSOLUTE value read from the
+    parent, so without a SELECT ... FOR UPDATE re-read under lock the second carve
+    overwrites the first and a unit of stock vanishes (lost update / phantom stock)."""
+    import copy
+    import types as _types
+    from celerp.models.projections import Projection
+    from celerp_inventory.routes import split_off_child
+
+    sku = f"RESCONC-{uuid.uuid4().hex[:6]}"
+    mother_id = await _create_item(client, auth, sku, 10, sell_by="piece", cost_price=100.0)
+    cid = _setup_ids["company_id"]
+    uid = str(_setup_ids["user_id"])
+
+    real = await session.get(Projection, {"company_id": cid, "entity_id": mother_id})
+    stale = copy.deepcopy(dict(real.state))  # quantity == 10 snapshot
+
+    def _snap():
+        return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
+
+    # Two carves, each from the same stale parent snapshot (concurrent readers).
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await session.commit()
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await session.commit()
+
+    items = (await client.get("/items", headers=auth["headers"])).json()["items"]
+    lots = [i for i in items if i.get("sku") == sku]
+    total = sum(float(i.get("quantity") or 0) for i in lots)
+    assert abs(total - 10.0) < 1e-6, (
+        f"stock not conserved across concurrent carves: total={total} "
+        f"(qtys={[i.get('quantity') for i in lots]})")
+    mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
+    assert abs(float(mother["quantity"]) - 4.0) < 1e-6, (
+        f"mother should decrement cumulatively to 4, got {mother['quantity']}")
+
+
+@pytest.mark.asyncio
+async def test_split_gate_allows_none_parcel(client, session, auth, _setup_ids):
+    """A partial draw of a parcel whose allow_splitting is unset/None is allowed: the
+    fulfill gate carves a child and the mother keeps the remainder. At merge-base the
+    gate uses `is not True`, so a None parcel is wrongly blocked (409)."""
+    from celerp.models.projections import Projection
+    sku = f"SPLITNONE-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 10, sell_by="liter")
+    row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    new_state = dict(row.state)
+    new_state["allow_splitting"] = None
+    row.state = new_state
+    await session.commit()
+
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 5.0, "entity_id": item_id},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, f"a None parcel must be splittable, got {r.status_code}: {r.text}"
+    mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert float(mother["quantity"]) == 7.0, f"mother should keep remainder 7, got {mother['quantity']}"
+
+
+@pytest.mark.asyncio
+async def test_span_gate_allows_none_parcel(client, session, auth, _setup_ids):
+    """Cross-lot span of a None-allow_splitting item draws the shortfall from a sibling
+    lot instead of blocking. At merge-base the span gate uses `is True`, so a None parcel
+    fails the gate and the request is rejected as insufficient stock."""
+    from celerp.models.projections import Projection
+    h = auth["headers"]
+    sku = f"SPANNONE-{uuid.uuid4().hex[:6]}"
+    ra = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku,
+                           "quantity": 60, "sell_by": "piece", "cost_total": 60.0})
+    assert ra.status_code == 200, ra.text
+    lot_a = ra.json()["id"]
+    rb = await client.post("/items", headers=h, json={"status": "available", "sku": sku, "name": sku,
+                           "quantity": 40, "sell_by": "piece", "cost_total": 80.0})
+    assert rb.status_code == 200, rb.text
+    lot_b = rb.json()["id"]
+    for eid in (lot_a, lot_b):
+        row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": eid})
+        st = dict(row.state)
+        st["allow_splitting"] = None
+        row.state = st
+    await session.commit()
+
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 100, "unit_price": 5.0, "entity_id": lot_a},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=h, json={"line_entity_ids": [lot_a]})
+    assert r.status_code == 200, f"a None parcel must span across lots, got {r.status_code}: {r.text}"
+    assert r.json()["fulfillment_status"] == "fulfilled"
+    assert (await client.get(f"/items/{lot_a}", headers=h)).json()["status"] == "sold"
+    assert (await client.get(f"/items/{lot_b}", headers=h)).json()["status"] == "sold"
+
+
+@pytest.mark.asyncio
+async def test_invoice_line_legacy_item_splittable():
+    """A draft invoice line for an item whose allow_splitting is unset/None renders the
+    hidden allow_splitting field truthy and item_quantity as the parcel quantity. At
+    merge-base the hidden fields render allow_splitting='' and item_quantity=drawn qty."""
+    import re
+    from fasthtml.common import to_xml
+    from celerp.services.line_measures import item_measure_meta
+    from ui.routes.documents import _doc_detail
+
+    item = {"sku": "LEGACY-P", "name": "Legacy parcel", "quantity": 10, "sell_by": "piece",
+            "allow_splitting": None}
+    eid = "item:legacy-1"
+    meta = {eid: item_measure_meta(item, {})}
+    doc = {"id": "doc:leg", "entity_id": "doc:leg", "doc_type": "invoice", "status": "draft",
+           "line_items": [{"item_id": eid, "entity_id": eid, "sku": "LEGACY-P", "name": "Legacy parcel",
+                           "quantity": 3.0, "unit_price": 5.0, "sell_by": "piece"}]}
+    html = to_xml(_doc_detail(doc, item_meta_map=meta))
+    allow = re.findall(r'<input[^>]*data-name="allow_splitting"[^>]*>', html)
+    iq = re.findall(r'<input[^>]*data-name="item_quantity"[^>]*>', html)
+    assert allow, "no allow_splitting hidden input rendered"
+    assert all('value=""' not in tag for tag in allow), (
+        f"a legacy None item must render allow_splitting truthy, got {allow}")
+    assert any('value="10' in tag for tag in iq), (
+        f"item_quantity must render the parcel qty 10, not the drawn qty, got {iq}")
+
+
+@pytest.mark.asyncio
+async def test_cogs_posts_at_finalize(client, session, auth, _setup_ids):
+    """Finalizing an invoice posts COGS (Dr 5100 / Cr 1130-P), not only revenue. At
+    merge-base finalize posts revenue only; COGS waits until fulfillment."""
+    sku = f"COGSFIN-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 10, cost_price=5.0)  # unit cost 5
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 2, "unit_price": 9.0, "entity_id": item_id},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 10.0, f"finalize must debit COGS 5100 = 2*5, got {nets.get('5100')} (nets={nets})"
+    assert nets.get("1130-P") == -10.0, f"finalize must credit inventory 1130-P, got {nets.get('1130-P')} (nets={nets})"
+
+
+@pytest.mark.asyncio
+async def test_cogs_not_double_posted_on_fulfill(client, session, auth, _setup_ids):
+    """COGS is recognized once, at finalize. Physically fulfilling the issued invoice
+    posts no NEW 5100 entry. At merge-base COGS posts at fulfill instead, so the 5100
+    balance jumps when the line is fulfilled."""
+    sku = f"COGSDBL-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 200.0, "entity_id": item_id},
+    ])
+    net_fin = await _je_net(client, auth["headers"])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+    net_ful = await _je_net(client, auth["headers"])
+    assert net_ful.get("5100", 0.0) == net_fin.get("5100", 0.0), (
+        f"fulfill must not post new COGS; 5100 changed from {net_fin.get('5100')} to {net_ful.get('5100')}")
+    assert net_fin.get("5100") == 100.0, f"COGS must already post at finalize, got {net_fin.get('5100')}"
+
+
+@pytest.mark.asyncio
+async def test_cogs_partial_line_uses_line_qty(client, session, auth, _setup_ids):
+    """COGS at finalize for a partial line is line_qty * unit_cost, not the whole
+    parcel's cost. Parcel: 10 units at cost_total 50 (unit cost 5); line draws 3, so
+    COGS = 15, not 50. At merge-base finalize posts no COGS at all."""
+    sku = f"COGSPART-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 10, cost_price=5.0)  # cost_total 50
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 9.0, "entity_id": item_id},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 15.0, f"partial-line COGS must be 3*5=15, got {nets.get('5100')} (nets={nets})"
+
+
+@pytest.mark.asyncio
+async def test_cogs_zero_cost_line_contributes_zero(client, session, auth, _setup_ids):
+    """A finalize line whose parcel cost is unknown contributes 0 COGS while a sibling
+    costed line posts its full amount, with no crash. At merge-base finalize posts no
+    COGS at all."""
+    sku_u = f"COGSU-{uuid.uuid4().hex[:6]}"   # unknown cost
+    sku_c = f"COGSC-{uuid.uuid4().hex[:6]}"   # costed
+    item_u = await _create_item(client, auth, sku_u, 5)                   # no cost set
+    item_c = await _create_item(client, auth, sku_c, 5, cost_price=4.0)   # unit cost 4
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_u, "name": sku_u, "quantity": 2, "unit_price": 9.0, "entity_id": item_u},
+        {"sku": sku_c, "name": sku_c, "quantity": 2, "unit_price": 9.0, "entity_id": item_c},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 8.0, (
+        f"COGS must be 0 (unknown) + 2*4 (costed) = 8, got {nets.get('5100')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids):
+    """A line whose parcel has quantity <= 0 falls back to the parcel's cost_price for
+    the per-unit cost and posts no division error. Parcel: quantity 0, cost_price 7; line
+    draws 2, so COGS = 14. At merge-base finalize posts no COGS and never divides."""
+    sku = f"COGSZQ-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": sku, "name": sku, "quantity": 0,
+        "cost_price": 7.0, "sell_by": "piece"})
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 2, "unit_price": 9.0, "entity_id": item_id},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 14.0, (
+        f"parcel_qty<=0 must fall back to cost_price: 2*7=14, got {nets.get('5100')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_cogs_negative_line_clamped(client, session, auth, _setup_ids):
+    """A negative per-line cost contributes 0, not a negative that cancels a correctly
+    costed sibling. Parcel A: cost_total -20 over 5 (unit -4) -> clamped to 0; Parcel B:
+    unit cost 4. Two units each: COGS = 0 + 8 = 8, not 8 + (-8) = 0. At merge-base
+    finalize posts no COGS at all."""
+    sku_n = f"COGSNEG-{uuid.uuid4().hex[:6]}"
+    sku_p = f"COGSPOS-{uuid.uuid4().hex[:6]}"
+    rn = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": sku_n, "name": sku_n, "quantity": 5,
+        "cost_total": -20.0, "sell_by": "piece"})
+    assert rn.status_code == 200, rn.text
+    item_n = rn.json()["id"]
+    item_p = await _create_item(client, auth, sku_p, 5, cost_price=4.0)
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_n, "name": sku_n, "quantity": 2, "unit_price": 9.0, "entity_id": item_n},
+        {"sku": sku_p, "name": sku_p, "quantity": 2, "unit_price": 9.0, "entity_id": item_p},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 8.0, (
+        f"negative line must clamp to 0; COGS = 8, got {nets.get('5100')} (nets={nets})")
+
+
+@pytest.mark.asyncio
+async def test_cogs_reverses_on_revert(client, session, auth, _setup_ids):
+    """Revert-to-draft voids the finalize JE including its COGS; re-finalizing restores
+    it. At merge-base finalize carries no COGS, so there is nothing to void or restore."""
+    sku = f"COGSREV-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 200.0, "entity_id": item_id},
+    ])
+    assert (await _je_net(client, auth["headers"])).get("5100") == 100.0, "COGS must post at finalize"
+
+    rv = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
+    assert rv.status_code == 200, rv.text
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 0.0, "revert-to-draft must void COGS"
+
+    rf = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert rf.status_code == 200, rf.text
+    assert (await _je_net(client, auth["headers"])).get("5100") == 100.0, "re-finalize must restore COGS"
+
+
+@pytest.mark.asyncio
+async def test_cogs_nonstock_or_zero_qty_line_skipped(client, session, auth, _setup_ids):
+    """A finalize line that is non-stock (no inventory parcel) contributes 0 COGS and is
+    skipped, while a sibling costed stock line still posts, with no crash. At merge-base
+    finalize posts no COGS at all."""
+    sku_c = f"COGSSTK-{uuid.uuid4().hex[:6]}"
+    item_c = await _create_item(client, auth, sku_c, 5, cost_price=4.0)
+    await _create_and_finalize_invoice(client, auth, [
+        {"sku": f"SVC-{uuid.uuid4().hex[:6]}", "name": "Service", "quantity": 2, "unit_price": 9.0},
+        {"sku": sku_c, "name": sku_c, "quantity": 2, "unit_price": 9.0, "entity_id": item_c},
+    ])
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 8.0, (
+        f"non-stock line skipped (0), costed sibling posts 2*4=8, got {nets.get('5100')} (nets={nets})")
