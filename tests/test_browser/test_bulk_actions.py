@@ -129,3 +129,49 @@ def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
     assert page.get_by_text("Write off remaining stock").count() == 0, "zero-stock archive showed the choice"
     page.wait_for_timeout(500)
     assert api.get(f"/items/{zero_id}").json()["status"] == "archived"
+
+
+def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
+    """J1 end to end: bulk write-off -> fill qty out and account on-page -> Issue -> the Write off
+    stock terminal disposes the stock and closes the list -> Undo write-off restores it. Guards the
+    terminal's UI wiring: finalize alone must never be a dead end."""
+    api.post("/accounting/chart/seed")
+    iid = api.post("/items", json={
+        "sku": "WO-E2E-001", "sell_by": "piece", "name": "Writeoff E2E", "quantity": 8}).json()["id"]
+    api.post("/items/bulk/make-available", json={"entity_ids": [iid]})
+    page.on("dialog", lambda d: d.accept())
+
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
+    row = page.locator(f'input.row-select[value="{iid}"]')
+    row.wait_for(timeout=5000)
+    row.click()
+    page.wait_for_selector("#bulk-toolbar.is-active", timeout=3000)
+    page.locator("#bulk-action-select").select_option("write_off")
+    page.wait_for_url("**/lists/**", timeout=15000)
+
+    # Full-quantity line: qty out 8 of 8, destination account from the seeded chart.
+    page.locator("td.col-qtyout").first.dblclick()
+    qty = page.locator("td.col-qtyout input:visible").first
+    qty.fill("8")
+    qty.press("Enter")
+    page.wait_for_timeout(500)
+    page.locator("td.col-account").first.dblclick()
+    acct = page.locator("td.col-account input:visible").first
+    acct.click()
+    acct.fill("69")
+    page.locator(".combobox-option:visible").first.click()
+    page.wait_for_timeout(500)
+
+    page.get_by_role("button", name="Issue").click()
+    # Finalized view must offer the terminal - this is the regression under guard.
+    page.get_by_role("button", name="Write off stock").wait_for(state="visible", timeout=10000)
+    assert api.get(f"/items/{iid}").json()["status"] == "available"  # nothing disposed yet
+
+    page.get_by_role("button", name="Write off stock").click()
+    page.get_by_role("button", name="Undo write-off").wait_for(state="visible", timeout=10000)
+    assert api.get(f"/items/{iid}").json()["status"] == "disposed"
+
+    page.get_by_role("button", name="Undo write-off").click()
+    page.get_by_role("button", name="Write off stock").wait_for(state="visible", timeout=10000)
+    assert api.get(f"/items/{iid}").json()["status"] == "available"

@@ -4539,7 +4539,7 @@ celerpUpdateBulkAlloc();
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
-            elif action in ("adjust", "undo-adjust"):
+            elif action in ("adjust", "undo-adjust", "write-off", "undo-write-off"):
                 await api.list_action(token, entity_id, action)
             else:
                 return _R("", status_code=400)
@@ -6014,6 +6014,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo",
                                                hx_swap="none", cls="btn btn--secondary",
                                                title="Turn this quote into a memo so the goods go out on approval before invoicing."))
+            elif pol["writeoff"]:
+                # Write-off terminal (registry-declared): removes each line's qty out from stock and
+                # posts one journal entry. Manager permission is enforced server-side (GDR 2e).
+                _wo_term = _list_behavior("writeoff").terminal[0]
+                action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
+                                               hx_swap="none", cls="btn btn--primary",
+                                               hx_confirm=_wo_term.confirm,
+                                               title="Remove each line's quantity out from stock and post one journal entry. This closes the write-off."))
+        elif status == _LC and pol["writeoff"] and doc.get("result") == "written_off":
+            # Closed write-off: the terminal is reversible (GDR 2a) - void the JE, restore the stock.
+            action_btns_left.append(Button("Undo write-off", hx_post=f"/lists/{entity_id}/action/undo-write-off",
+                                           hx_swap="none", cls="btn btn--secondary",
+                                           title="Reverse this write-off: void its journal entry and restore the disposed stock to available.",
+                                           hx_confirm="Reverse this write-off? The disposed stock returns to available and its journal entry is voided."))
         elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
             # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
             action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",

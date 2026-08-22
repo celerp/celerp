@@ -2914,6 +2914,37 @@ class TestWriteoffListDetail:
         assert {"Qty out", "Account", "Comment"} <= set(header_text)
 
     @pytest.mark.asyncio
+    async def test_finalized_writeoff_offers_terminal_button(self, ui_client):
+        """A finalized write-off offers the registry-declared Write off stock terminal; finalize only
+        locks the lines, so without this button the stock removal and journal entry are unreachable."""
+        lst = {**self._wo_list(), "status": "finalized"}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "Write off stock" in html
+        assert "/lists/list:WO-1/action/write-off" in html
+
+    @pytest.mark.asyncio
+    async def test_closed_writeoff_offers_undo_button(self, ui_client):
+        """A closed (written_off) write-off offers Undo write-off: the terminal is reversible."""
+        lst = {**self._wo_list(), "status": "closed", "result": "written_off"}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_chart",
+                  new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
+        ):
+            r = await ui_client.get("/lists/list:WO-1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "Undo write-off" in html
+        assert "/lists/list:WO-1/action/undo-write-off" in html
+
+    @pytest.mark.asyncio
     async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
