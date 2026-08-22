@@ -381,33 +381,19 @@ async def _check_zero_amount_jes(
 async def _emit_finalize_je(
     session: AsyncSession, company_id, user_id, doc_id: str, state: dict,
 ) -> None:
-    total = float(state.get("total", 0) or 0)
-    subtotal = float(state.get("subtotal", total) or total)
-    tax = float(state.get("tax", 0) or 0)
-    ts = state.get("issue_date") or state.get("created_at") or state.get("finalized_at")
+    """Delegate to auto_je.create_for_doc_finalized for DRY compliance.
 
-    je_id = f"je:auto:{doc_id}:fin"
-    entries = [
-        {"account": "1120", "debit": total, "credit": 0.0},
-        {"account": "4100", "debit": 0.0, "credit": subtotal},
-    ]
-    if tax > 0:
-        entries.append({"account": "2120", "debit": 0.0, "credit": tax})
+    A repaired invoice gets the same JE a live finalize posts - revenue, tax,
+    and the COGS pair - in the company's base currency.
+    """
+    from celerp.models.company import Company
+    from celerp.services import auto_je as _auto_je
 
-    await emit_event(
-        session, company_id=company_id, entity_id=je_id,
-        entity_type="journal_entry", event_type="acc.journal_entry.created",
-        data={"memo": f"Auto JE for {doc_id} finalized", "entries": entries, "ts": ts},
-        actor_id=user_id, location_id=None, source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.finalized", "c"),
-        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
-    )
-    await emit_event(
-        session, company_id=company_id, entity_id=je_id,
-        entity_type="journal_entry", event_type="acc.journal_entry.posted",
-        data={}, actor_id=user_id, location_id=None, source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.finalized", "p"),
-        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings.get("currency", "USD") if company else "USD")
+    await _auto_je.create_for_doc_finalized(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+        doc=state, base_currency=base_currency,
     )
 
 

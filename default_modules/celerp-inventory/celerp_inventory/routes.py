@@ -40,6 +40,7 @@ from celerp.services.pricing import (
     resolve_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.projections import is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -1899,9 +1900,9 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
-    # Allow splitting ONLY when explicitly enabled (== True). A missing/None value
-    # (e.g. older imports that never set the field) must NOT bypass this gate.
-    if parent.state.get("allow_splitting") is not True:
+    # Block splitting only when explicitly disabled. A missing/None value
+    # (e.g. older imports that never set the field) is treated as splittable.
+    if not splitting_allowed(parent.state):
         raise HTTPException(
             status_code=422,
             detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
@@ -2307,6 +2308,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     no auto-derivation; the mother keeps ``parent - child`` for each.
 
     Invariants (raise ValueError if violated):
+      - child_qty must not exceed the locked parent quantity
       - parcel has weight (weight-unit sell_by OR a weight attribute)
             -> child_weight is required
       - sell_by is a weight unit  -> child_weight must equal child_qty
@@ -2316,11 +2318,28 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
     Does NOT commit — the caller owns the transaction.
     """
-    parent = parent_proj
+    # Lock and re-read the live parent projection before carving: split_off_child emits
+    # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
+    # parcel must each base their decrement on the current committed quantity, not on a
+    # snapshot read earlier. FOR UPDATE serializes them so the second decrements from the
+    # first's result instead of overwriting it (lost update). Serializing the read alone
+    # only fixes ordering; the capacity check just below is what stops a carve larger than
+    # what is actually on hand, which is the other half of "no phantom stock".
+    locked = (await session.execute(
+        select(Projection)
+        .where(Projection.company_id == company_id, Projection.entity_id == parent_proj.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    parent = locked if locked is not None else parent_proj
     entity_id = parent.entity_id
     parent_sku = parent.state.get("sku", "")
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
+
+    # --- validate against the locked quantity (no floor, no silent clamp) ---
+    if round(child_qty - parent_qty, 10) > 0:
+        raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -2373,6 +2392,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         "status": "available",
         "attributes": child_attrs,
         "barcode": str(next_barcode_seq).zfill(6),
+        # Resolve a possibly-unset parent default to a concrete bool: a None parent
+        # (splittable by default) must not emit a None the item.created schema rejects.
+        "allow_splitting": splitting_allowed(parent.state),
     })
     if child_weight is not None:
         child_data["weight"] = child_weight
@@ -2843,7 +2865,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "quantity": resulting_qty,
         "sell_by": str(target_state.get("sell_by") or "piece"),
         "status": "available",
-        "allow_splitting": bool(target_state.get("allow_splitting", True)),
+        "allow_splitting": splitting_allowed(target_state),
         "attributes": resolved_attrs,
     }
     for field in ("category", "location_id", "barcode", "description", "unit", "tax_codes"):
@@ -3216,9 +3238,8 @@ async def batch_import_items(
         for _dk in _derived_keys:
             rec.data.pop(_dk, None)
         # Normalize allow_splitting to a real bool if the import provided one (CSV
-        # gives strings like "Yes"/"No", and None means "unset"). Imports that omit
-        # it default to no-split in the create branch below; the split guard
-        # requires an explicit True, so a string/None must never read as splittable.
+        # gives strings like "Yes"/"No"). Imports that omit it leave it unset, which
+        # reads as splittable via splitting_allowed; only an explicit False blocks.
         if "allow_splitting" in rec.data and not isinstance(rec.data["allow_splitting"], bool):
             rec.data["allow_splitting"] = str(rec.data["allow_splitting"]).strip().lower() in ("true", "yes", "1", "y", "t")
 
@@ -3315,10 +3336,6 @@ async def batch_import_items(
                 skipped += 1
             continue
         try:
-            # Imported items default to no-split until splitting is explicitly
-            # enabled per item (matches how they display; the split guard requires
-            # an explicit True).
-            rec.data.setdefault("allow_splitting", False)
             loc_id: uuid.UUID | None = None
             raw_loc = rec.data.get("location_id")
             if raw_loc:

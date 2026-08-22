@@ -19,6 +19,15 @@ from __future__ import annotations
 from celerp.services.units import is_pieces_unit, is_weight_unit
 
 
+def splitting_allowed(state: dict) -> bool:
+    """Whether a parcel/item may be split, resolving a possibly-unset default.
+
+    Unset or None allow_splitting means splittable; only an explicit False
+    blocks. Single source of truth for the split default across every consumer.
+    """
+    return state.get("allow_splitting") is not False
+
+
 def _g(value) -> str:
     """Format a measure number without trailing zeros (3.0 -> '3', 4.5 -> '4.5')."""
     return f"{float(value):g}"
@@ -32,7 +41,7 @@ def item_measure_meta(item: dict, unit_map: dict) -> dict:
     sell_by = item.get("sell_by")
     return {
         "sell_by": sell_by,
-        "allow_splitting": bool(item.get("allow_splitting")),
+        "allow_splitting": splitting_allowed(item),
         "quantity": item.get("quantity"),
         "weight": item.get("weight"),
         "weight_unit": item.get("weight_unit"),
@@ -156,7 +165,7 @@ def measure_locks(meta: dict, *, allow_split: bool | None = None) -> dict:
     A cell is locked when the parcel doesn't track that measure, when the
     quantity already IS that measure, or when splitting is disallowed.
     """
-    allow = allow_split if allow_split is not None else bool(meta.get("allow_splitting", True))
+    allow = allow_split if allow_split is not None else splitting_allowed(meta)
     return {
         "pcs_locked": meta.get("pieces") is None or bool(meta.get("qty_is_pieces")) or not allow,
         "weight_locked": meta.get("weight") is None or bool(meta.get("qty_is_weight")) or not allow,

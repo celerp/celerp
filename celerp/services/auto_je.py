@@ -9,13 +9,18 @@ duplicate JEs regardless of trigger source (API, import, doctor repair).
 
 from __future__ import annotations
 
+import re
 import uuid
+from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
+from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_money, to_base, to_decimal, to_stored_float
+from celerp.services.pick import plan_lot_draws, resolve_pick_method
+from celerp.services.units import is_non_stock_line
 from sqlalchemy import select as _select
 
 # Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
@@ -109,7 +114,140 @@ async def _emit_auto_posted_je(
     )
 
 
-async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
+@dataclass
+class CogsResult:
+    """COGS for a document with its per-line lot allocation.
+
+    ``allocations`` is keyed by the line's index in doc["line_items"] as a
+    string (JSON metadata round-trips string keys). Each entry carries the lots
+    the line prices at (lot_entity_id, qty, unit_cost), the provisional_qty no
+    lot could cover (priced at the bound lot's unit cost), and the line's total
+    amount. ``ambiguous`` is True when at least one splittable line exceeds its
+    bound lot, so bound-lot-only pricing is a guess rather than an exact cost.
+    """
+    total: float = 0.0
+    allocations: dict[str, dict] = field(default_factory=dict)
+    ambiguous: bool = False
+
+
+def _lot_unit_cost(state: dict) -> float:
+    """A lot's per-unit cost: cost_total spread over its own quantity when that
+    quantity is positive, the lot's cost_price otherwise."""
+    cost_total = state.get("cost_total")
+    qty = float(state.get("quantity") or 0)
+    if cost_total is not None and qty > 0:
+        return float(cost_total) / qty
+    return float(state.get("cost_price") or 0)
+
+
+async def _span_line_lots(
+    session, company_id, primary_proj, needed: float, doc_id: str | None,
+) -> tuple[list[dict], float, float]:
+    """Resolve a spanning line's draws across the SKU's sibling lots.
+
+    Eligible siblings: same company, item entity, same SKU, positive quantity,
+    and either available or reserved by doc_id (this document's own hold).
+    Draw order is the bound lot first, then the effective pick method. Returns
+    (lots, provisional_qty, amount); the shortfall no lot covers is priced
+    provisionally at the bound lot's unit cost.
+    """
+    from celerp.models.company import Company
+
+    sku = str(primary_proj.state.get("sku") or "").strip()
+    company = await session.get(Company, company_id)
+    method = resolve_pick_method(primary_proj.state, (company.settings or {}) if company else {})
+
+    def _lot(entity_id: str, created_at, state: dict) -> dict:
+        return {
+            "entity_id": entity_id,
+            "quantity": float(state.get("quantity") or 0),
+            "created_at": created_at.isoformat() if created_at else "",
+            "expires_at": state.get("expires_at"),
+            "unit_cost": _lot_unit_cost(state),
+        }
+
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    siblings: list[dict] = []
+    for r in rows:
+        if r.entity_id == primary_proj.entity_id:
+            continue
+        s = r.state or {}
+        if str(s.get("sku") or "").strip() != sku:
+            continue
+        if float(s.get("quantity") or 0) <= 1e-9:
+            continue
+        status = s.get("status") or "available"
+        if not (status == "available"
+                or (status == "reserved" and doc_id is not None and s.get("status_doc_id") == doc_id)):
+            continue
+        siblings.append(_lot(r.entity_id, r.created_at, s))
+
+    primary = _lot(primary_proj.entity_id, primary_proj.created_at, primary_proj.state)
+    draws, short_qty = plan_lot_draws(primary, needed, siblings, method)
+    lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"]}
+            for lot, take, _is_full in draws]
+    amount = sum(take * lot["unit_cost"] for lot, take, _is_full in draws)
+    if short_qty > 1e-9:
+        amount += short_qty * primary["unit_cost"]
+    return lots, short_qty, amount
+
+
+async def compute_doc_cogs(
+    session, company_id, doc: dict, *, span_lots: bool = False, doc_id: str | None = None,
+) -> CogsResult:
+    """Cost a document's stock lines at posting time, lot by lot.
+
+    Each line prices at the specific lots it draws (specific identification by
+    lot). A splittable line whose quantity exceeds its bound lot is flagged
+    ambiguous: the remainder physically comes from sibling lots at their own
+    costs, so extrapolating the bound lot's unit cost is a guess.
+
+    span_lots=False prices the whole line at the bound lot's unit cost (the
+    historical extrapolation) and leaves the ambiguity to the caller - the
+    backfill refuses to post a guess. span_lots=True (live finalize) resolves
+    the remainder across the SKU's other lots - available ones plus lots
+    reserved by doc_id - in the effective pick order; whatever no lot covers
+    stays priced at the bound lot's cost as provisional_qty.
+
+    Non-stock lines (service, freight) hold no goods and contribute nothing.
+    Per-line amounts are clamped at zero so one mis-costed lot cannot cancel
+    correctly costed siblings.
+    """
+    result = CogsResult()
+    for index, li in enumerate(doc.get("line_items", [])):
+        line_qty = float(li.get("quantity") or 0)
+        if line_qty <= 0:
+            continue
+        item_id = li.get("item_id") or li.get("entity_id")
+        if not item_id:
+            continue
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
+        if not proj:
+            continue
+        state = proj.state
+        if is_non_stock_line(state.get("inventory_type"), state.get("sell_by")):
+            continue
+        unit_cost = _lot_unit_cost(state)
+        bound_qty = float(state.get("quantity") or 0)
+        spans = line_qty > bound_qty + 1e-9 and splitting_allowed(state)
+        if spans:
+            result.ambiguous = True
+        if spans and span_lots:
+            lots, provisional_qty, amount = await _span_line_lots(
+                session, company_id, proj, line_qty, doc_id)
+        else:
+            lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost}]
+            provisional_qty = 0.0
+            amount = unit_cost * line_qty
+        amount = max(0.0, amount)
+        result.allocations[str(index)] = {
+            "lots": lots, "provisional_qty": provisional_qty, "amount": amount}
+        result.total += amount
+    return result
+
+
+async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     currency = doc.get("currency", "USD")
     rate = _Dec(str(doc.get("conversion_rate") or 1))
     total_d = round_money(doc.get("total", 0), currency)
@@ -123,6 +261,25 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     cycle = int(doc.get("revert_count", 0))
     cycle_suffix = f"fin:{cycle}" if cycle else "fin"
     je_type_key = f"invoice.finalized:{cycle}" if cycle else "invoice.finalized"
+    entries = [
+        {"account": "1120", "debit": total, "credit": 0.0},
+        {"account": "4100", "debit": 0.0, "credit": revenue},
+        {"account": "2120", "debit": 0.0, "credit": tax},
+    ]
+    # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
+    # the invoice date, so the P&L matches even when the invoice is never fulfilled.
+    # span_lots is set only by the live finalize route, where a line exceeding its
+    # bound lot recognizes at the sibling lots that will actually be drawn.
+    cogs_result = await compute_doc_cogs(session, company_id, doc, span_lots=span_lots, doc_id=doc_id)
+    cogs = cogs_result.total
+    if cogs > 0:
+        entries.append({"account": "5100", "debit": cogs, "credit": 0.0})
+        entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": cogs})
+    # The per-line allocation snapshot rides on the JE so fulfillment can true up
+    # actual lot costs against exactly what this JE recognized, per line.
+    metadata_ = {"trigger": "doc.finalized", "doc_id": doc_id}
+    if cogs_result.allocations:
+        metadata_["cogs_allocations"] = cogs_result.allocations
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -132,12 +289,8 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
         ts=doc.get("finalized_at") or doc.get("issue_date"),
-        entries=[
-            {"account": "1120", "debit": total, "credit": 0.0},
-            {"account": "4100", "debit": 0.0, "credit": revenue},
-            {"account": "2120", "debit": 0.0, "credit": tax},
-        ],
-        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+        entries=entries,
+        metadata_=metadata_,
     )
 
 
@@ -472,116 +625,343 @@ async def create_for_bill_conversion(
     )
 
 
-async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
-    """Void the auto-JE that was created when a doc was finalized (invoice or bill).
+async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id: str, idem_key: str, reason: str, trigger: str) -> bool:
+    """Void a single auto-JE when it is currently posted. Returns True if it voided one.
 
-    revert_count: the current revert_count from doc state (before this revert increments it).
-    Used to derive the correct JE entity id for cycle-aware invoice JEs.
+    Voiding an entry already in 'void' status is a no-op (the status guard skips it),
+    so callers may safely sweep a set of candidate JEs without tracking which are live.
     """
-    # Cycle-aware invoice JE id (matches create_for_doc_finalized logic).
-    cycle = revert_count
-    fin_suffix = f"fin:{cycle}" if cycle else "fin"
-    for je_suffix in (fin_suffix, "bill"):
-        je_id = f"je:auto:{doc_id}:{je_suffix}"
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-        if row is not None and row.state.get("status") == "posted":
-            # Void idempotency key is cycle-aware to allow multiple revert cycles.
-            void_cycle_key = f"revert_to_draft:{revert_count}"
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=je_id,
-                entity_type="journal_entry",
-                event_type="acc.journal_entry.voided",
-                data=je_void_data(f"Reversed: {doc_id} reverted to draft", row.state),
-                actor_id=user_id,
-                location_id=None,
-                source="auto_je",
-                idempotency_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
-                metadata_={"trigger": "doc.reverted_to_draft", "doc_id": doc_id},
-            )
-            return  # void the first found; at most one exists per doc
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if row is None or row.state.get("status") != "posted":
+        return False
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=je_id,
+        entity_type="journal_entry",
+        event_type="acc.journal_entry.voided",
+        data=je_void_data(reason, row.state),
+        actor_id=user_id,
+        location_id=None,
+        source="auto_je",
+        idempotency_key=idem_key,
+        metadata_={"trigger": trigger, "doc_id": doc_id},
+    )
+    return True
 
 
-async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD") -> None:
-    """Re-apply the finalize JE when a doc is unvoided.
+# The JE families that carry a doc's recognized economics: finalize (fin, and
+# fin:{cycle} after reverts), bill conversion, the one-time COGS backfill, and
+# the fulfillment COGS adjustment (cogs-adj:{cycle_tag}). These are what a doc
+# void reverses and an unvoid restores. Settlement and stock-movement JEs
+# (payments, credit-note applications, fulfillment, receiving, landed cost,
+# returns) are not recognition: they reverse through their own flows.
+_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
 
-    Uses 'unvoid' suffix in idempotency keys to avoid colliding with original JEs
-    (which may still exist if voiding didn't delete them).
+
+def _recognition_root(suffix: str) -> str | None:
+    """The recognition root of a JE id suffix, or None for non-recognition JEs.
+
+    The root is the suffix with any unvoid-restore generations stripped, so a
+    restore shares its original's root: fin, fin:2, fin:unvoid, fin:2:unvoid:1
+    all root to their cycle id; cogs-adj:fulfill-0:l0:unvoid:1 roots to
+    cogs-adj:fulfill-0:l0. A payment (pay:0) or fulfillment (fulfill-1) suffix
+    returns None.
     """
-    doc_type = doc.get("doc_type", "")
-    currency = doc.get("currency", "USD")
-    rate = _Dec(str(doc.get("conversion_rate") or 1))
-    total = float(doc.get("total", 0) or 0)
-    if total <= 0:
-        return
+    root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
+    for family in _RECOGNITION_FAMILIES:
+        if root == family or root.startswith(f"{family}:"):
+            return root
+    return None
 
-    if doc_type == "invoice":
-        tax_d = round_money(doc.get("tax", 0), currency)
-        total_d = round_money(total, currency)
-        base_total = to_base(to_stored_float(total_d), rate, base_currency)
-        base_tax = to_base(to_stored_float(tax_d), rate, base_currency)
-        base_revenue = to_base(to_stored_float(round_money(total_d - tax_d, currency)), rate, base_currency)
-        await _emit_auto_posted_je(
-            session,
-            company_id=company_id,
-            user_id=user_id,
-            je_id=f"je:auto:{doc_id}:fin:unvoid",
-            idem_create=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "c"),
-            idem_posted=je_idempotency_key(doc_id, "invoice.finalized.unvoid", "p"),
-            memo=f"Auto JE for {doc_id} unvoided (restore finalize)",
-            ts=doc.get("finalized_at") or doc.get("issue_date"),
-            entries=[
-                {"account": "1120", "debit": base_total, "credit": 0.0},
-                {"account": "4100", "debit": 0.0, "credit": base_revenue},
-                {"account": "2120", "debit": 0.0, "credit": base_tax},
-            ],
-            metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
+
+async def _doc_recognition_jes(session, company_id, doc_id: str) -> dict[str, Projection]:
+    """suffix -> JE projection for every recognition-family auto-JE of the doc."""
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    ))).scalars().all()
+    jes: dict[str, Projection] = {}
+    for row in rows:
+        if not row.entity_id.startswith(prefix):
+            continue
+        suffix = row.entity_id[len(prefix):]
+        if _recognition_root(suffix) is not None:
+            jes[suffix] = row
+    return jes
+
+
+async def _doc_void_events(session, company_id, doc_id: str) -> list:
+    """Every acc.journal_entry.voided ledger event on the doc's auto-JEs, oldest
+    first (ledger id order)."""
+    from celerp.models.ledger import LedgerEntry
+
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(
+        _select(LedgerEntry)
+        .where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.voided",
         )
-    elif doc_type in ("bill", "purchase_order"):
-        line_items = doc.get("line_items", [])
-        debit_entries: list[dict] = []
-        tax_total_d = _Dec(0)
-        if line_items:
-            for li in line_items:
-                line_total = to_stored_float(round_money(
-                    to_decimal(li.get("line_total") or 0) or
-                    to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
-                    currency,
-                ))
-                if line_total <= 0:
-                    continue
-                receive_as = (li.get("receive_as") or "").strip().lower()
-                if li.get("account_code"):
-                    account = li["account_code"]
-                elif receive_as == "expense":
-                    account = "6950"
-                elif receive_as == "asset":
-                    account = "1210"
-                else:
-                    account = _INVENTORY_ACCT if li.get("sku") else "6950"
-                debit_entries.append({"account": account, "debit": to_base(line_total, rate, base_currency), "credit": 0.0})
-            # Input VAT from the doc's effective tax (see create_for_bill_conversion), which keeps the JE balanced.
-            tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
-            if tax_total_d > 0:
-                debit_entries.append({"account": "1150", "debit": to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
-        base_total = to_base(total, rate, base_currency)
-        if not debit_entries:
-            if total <= 0:
-                return
-            debit_entries.append({"account": "6950", "debit": base_total, "credit": 0.0})
-        entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": base_total}]
+        .order_by(LedgerEntry.id)
+    )).scalars().all()
+    return [r for r in rows if r.entity_id.startswith(prefix)]
+
+
+async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
+    """Void every posted recognition-family auto-JE when a doc reverts to draft
+    (invoice or bill).
+
+    The candidates are enumerated from the doc's actual JE projections, so any
+    recognition JE the doc has accumulated - finalize cycles, unvoid restores,
+    the COGS backfill, fulfillment COGS adjustments - is reversed without a
+    fixed list to fall out of date. _void_je_if_posted skips anything already
+    void, so the sweep only ever reverses what is live.
+
+    revert_count: the current revert_count from doc state (before this revert
+    increments it), scoping the void idempotency keys per revert cycle.
+    """
+    for suffix in await _doc_recognition_jes(session, company_id, doc_id):
+        await _void_je_if_posted(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            doc_id=doc_id,
+            je_id=f"je:auto:{doc_id}:{suffix}",
+            # Cycle- and suffix-aware so multiple revert cycles and multiple
+            # live JEs in one revert each get their own void event.
+            idem_key=je_idempotency_key(doc_id, f"revert_to_draft:{revert_count}:{suffix}", "void"),
+            reason=f"Reversed: {doc_id} reverted to draft",
+            trigger="doc.reverted_to_draft",
+        )
+
+
+async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> None:
+    """Reverse every posted recognition-family auto-JE when a finalized doc is
+    voided, stamping each void event with this void's batch number.
+
+    Symmetric with create_for_doc_unvoided, which restores exactly the JEs the
+    most recent batch voided. The candidates come from the doc's actual JE
+    projections (finalize cycles, unvoid restores, COGS backfill, COGS
+    adjustments), so nothing live is left behind and nothing settled (payments,
+    fulfillment stock moves) is touched. The batch number in both the metadata
+    and the idempotency key keeps every void/unvoid cycle's events distinct:
+    a second cycle's voids can never dedup against the first's.
+    """
+    void_events = await _doc_void_events(session, company_id, doc_id)
+    batch = 1 + max(
+        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
+        default=0,
+    )
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items():
+        je_id = f"je:auto:{doc_id}:{suffix}"
+        if (row.state or {}).get("status") != "posted":
+            continue
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=je_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=je_void_data(f"Reversed: {doc_id} voided", row.state),
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
+            metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
+        )
+
+
+async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: str, cogs: float, ts: str | None) -> None:
+    """Post the one-time COGS JE for a finalized invoice that predates
+    COGS-at-finalize and never received its COGS at fulfillment.
+
+    ts carries the doc's finalize-family JE date so the expense lands in the
+    period that recognized the revenue; a dateless doc stays dateless.
+    """
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:cogs-backfill",
+        idem_create=je_idempotency_key(doc_id, "invoice.cogs_backfill", "c"),
+        idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
+        memo=f"Auto JE for {doc_id} COGS backfill",
+        ts=ts,
+        entries=[
+            {"account": "5100", "debit": float(cogs), "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(cogs)},
+        ],
+        metadata_={"trigger": "doc.cogs_backfill", "doc_id": doc_id},
+    )
+
+
+async def recognized_cogs_allocations(session, company_id, doc_id: str) -> dict | None:
+    """The per-line COGS the doc's live finalize-family JE recognized.
+
+    Reads the allocation snapshot off the creation event of the currently posted
+    finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one).
+    Returns the allocations dict keyed by line index, or None when no posted
+    finalize-family JE carries a snapshot - which is every doc finalized before
+    snapshots existed, where fulfillment has no recognized basis to true up
+    against and must post no adjustment.
+    """
+    from celerp.models.ledger import LedgerEntry
+
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    ))).scalars().all()
+    live = None
+    for row in rows:
+        if not row.entity_id.startswith(prefix):
+            continue
+        suffix = row.entity_id[len(prefix):]
+        if not (suffix == "fin" or suffix.startswith("fin:")):
+            continue
+        if (row.state or {}).get("status") != "posted":
+            continue
+        if live is None or (
+            row.created_at is not None
+            and (live.created_at is None or row.created_at > live.created_at)
+        ):
+            live = row
+    if live is None:
+        return None
+    created = (await session.execute(
+        _select(LedgerEntry)
+        .where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == live.entity_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+        )
+        .order_by(LedgerEntry.id.desc())
+        .limit(1)
+    )).scalars().first()
+    if created is None:
+        return None
+    return (created.metadata_ or {}).get("cogs_allocations") or None
+
+
+async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id: str, delta: float, cycle_tag: str, doc_number: str, ts: str | None = None) -> None:
+    """Post the fulfillment true-up JE: the difference between the actual cost of
+    the lots drawn and the COGS recognized at finalize.
+
+    A positive delta (actual cost above recognized) debits 5100 and relieves
+    inventory; a negative one reverses that. cycle_tag scopes the JE id and its
+    idempotency keys to the fulfillment cycle plus the batch of lines fulfilled
+    in one call (fulfill-0:l0-1, fulfill-1:l2, ...), so replaying a batch is a
+    no-op while each distinct batch, and each re-finalize cycle, trues up on
+    its own JE.
+    """
+    amount = round(abs(float(delta)), 2)
+    if amount <= 0:
+        return
+    if delta > 0:
+        entries = [
+            {"account": "5100", "debit": amount, "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": amount},
+        ]
+    else:
+        entries = [
+            {"account": _INVENTORY_ACCT, "debit": amount, "credit": 0.0},
+            {"account": "5100", "debit": 0.0, "credit": amount},
+        ]
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:cogs-adj:{cycle_tag}",
+        idem_create=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "p"),
+        memo=f"COGS adjustment for {doc_number} at fulfillment",
+        ts=ts,
+        entries=entries,
+        metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id, "cogs_delta": round(float(delta), 2)},
+    )
+
+
+async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:
+    """Restore exactly what the immediately preceding void removed.
+
+    Finds the recognition JEs the most recent void batch reversed and re-posts
+    each as a new JE copying its memo, entries, and date verbatim - never
+    recomputing: costs may have moved since the doc was voided, and an unvoid
+    must put back the numbers the void took out, not today's. Each restore
+    lives at je:auto:{doc_id}:{root}:unvoid:{n}, so repeated void/unvoid cycles
+    keep every generation distinct, and a family that already holds a posted JE
+    is skipped (the restore already happened). One copy mechanism covers every
+    doc type and family: invoice finalize, bill conversion, COGS backfill, and
+    COGS adjustments alike.
+
+    Docs voided before batch stamping existed have per-JE void events with no
+    batch number; for those, each recognition family whose latest void event
+    came from a doc void (not a revert to draft) restores the JE that event
+    reversed.
+    """
+    from celerp.models.ledger import LedgerEntry
+
+    prefix = f"je:auto:{doc_id}:"
+    jes = await _doc_recognition_jes(session, company_id, doc_id)
+    void_events = await _doc_void_events(session, company_id, doc_id)
+
+    batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
+    if batched:
+        last_batch = max(int(e.metadata_["void_batch"]) for e in batched)
+        to_restore = [e.entity_id for e in batched
+                      if int(e.metadata_["void_batch"]) == last_batch]
+    else:
+        last_void_by_root: dict[str, object] = {}
+        for event in void_events:  # oldest first, so the latest event wins
+            root = _recognition_root(event.entity_id[len(prefix):])
+            if root is not None:
+                last_void_by_root[root] = event
+        to_restore = [e.entity_id for e in last_void_by_root.values()
+                      if (e.metadata_ or {}).get("trigger") == "doc.voided"]
+
+    for voided_je_id in to_restore:
+        suffix = voided_je_id[len(prefix):]
+        root = _recognition_root(suffix)
+        source = jes.get(suffix)
+        if root is None or source is None:
+            continue
+        family = {s: r for s, r in jes.items() if _recognition_root(s) == root}
+        if any((r.state or {}).get("status") == "posted" for r in family.values()):
+            continue
+        state = source.state or {}
+        entries = state.get("entries") or []
+        if not entries:
+            continue
+        generation = 1 + sum(1 for s in family if s != root)
+        created = (await session.execute(
+            _select(LedgerEntry)
+            .where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.entity_id == voided_je_id,
+                LedgerEntry.event_type == "acc.journal_entry.created",
+            )
+            .order_by(LedgerEntry.id.desc())
+            .limit(1)
+        )).scalars().first()
+        metadata_ = {"trigger": "doc.unvoided", "doc_id": doc_id, "restores": voided_je_id}
+        allocations = ((created.metadata_ or {}) if created else {}).get("cogs_allocations")
+        if allocations:
+            # The allocation snapshot rides along so fulfillment still trues up
+            # against what the restored JE recognizes.
+            metadata_["cogs_allocations"] = allocations
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:bill:unvoid",
-            idem_create=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "c"),
-            idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "p"),
-            memo=f"Auto JE for {doc_id} unvoided (restore bill conversion)",
-            ts=doc.get("issue_date") or doc.get("finalized_at"),
+            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}",
+            idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
+            memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
+            ts=state.get("ts"),
             entries=entries,
-            metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
+            metadata_=metadata_,
         )
 
 

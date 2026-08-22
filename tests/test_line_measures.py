@@ -136,3 +136,18 @@ def test_measure_locks():
     # non-splittable: everything locked.
     locks2 = measure_locks({**meta, "allow_splitting": False})
     assert locks2 == {"pcs_locked": True, "weight_locked": True, "qty_locked": True}
+
+
+def test_splitting_allowed_default_unset_true():
+    """splitting_allowed treats an unset/None allow_splitting as True (only an explicit
+    False blocks), and item_measure_meta reflects that. At merge-base item_measure_meta
+    returns allow_splitting False for a None item, and there is no splitting_allowed
+    helper to import."""
+    from celerp.services.line_measures import splitting_allowed
+    assert splitting_allowed({}) is True
+    assert splitting_allowed({"allow_splitting": None}) is True
+    assert splitting_allowed({"allow_splitting": True}) is True
+    assert splitting_allowed({"allow_splitting": False}) is False
+
+    none_item = {"sell_by": "piece", "quantity": 10, "allow_splitting": None}
+    assert item_measure_meta(none_item, UM)["allow_splitting"] is True

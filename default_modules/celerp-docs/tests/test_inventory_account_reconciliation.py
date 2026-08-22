@@ -42,7 +42,8 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
     item = (await client.post("/items", headers=_h(t), json={
         "status": "available", "sku": "RECON-1", "name": "Widget", "quantity": 10, "sell_by": "piece", "cost_total": 100})).json()["id"]
 
-    # Sell 10 @ price 20 -> COGS 100. Fulfilling posts the COGS JE.
+    # Sell 10 @ price 20 -> COGS 100. Finalizing posts the COGS legs (Dr 5100 / Cr 1130-P)
+    # on the invoice JE, alongside revenue and AR; fulfillment no longer posts COGS.
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": "invoice", "line_items": [
         {"entity_id": item, "sku": "RECON-1", "name": "Widget", "quantity": 10, "unit_price": 20, "sell_by": "piece"}],
         "total": 200})).json()["id"]
@@ -51,11 +52,17 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
     assert r.status_code == 200, r.text
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
-    # The COGS JE credits inventory at 1130-P (the canonical goods account), never the orphan 1300.
-    cogs_je = next(e for e in ledger if "fulfill" in (e.get("entity_id") or "") and e["data"].get("entries"))
-    accts = {x["account"] for x in cogs_je["data"]["entries"]}
-    assert accts == {"5100", "1130-P"}, accts
-    assert "1300" not in accts
+    # COGS relieves inventory at 1130-P (the canonical goods account), never the orphan 1300.
+    cogs_je = next(e for e in ledger
+                   if any(x.get("account") == "5100" for x in (e["data"].get("entries") or [])))
+    dr = {}
+    cr = {}
+    for x in cogs_je["data"]["entries"]:
+        dr[x["account"]] = dr.get(x["account"], 0.0) + float(x.get("debit", 0) or 0)
+        cr[x["account"]] = cr.get(x["account"], 0.0) + float(x.get("credit", 0) or 0)
+    assert round(dr.get("5100", 0.0), 2) == 100.0, dr
+    assert round(cr.get("1130-P", 0.0), 2) == 100.0, cr
+    assert "1300" not in dr and "1300" not in cr
 
     # No JE anywhere references the orphan 1300 account.
     for e in ledger:

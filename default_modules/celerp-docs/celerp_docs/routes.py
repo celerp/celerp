@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import line_label
+from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -1380,7 +1380,10 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     )
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
-        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # span_lots: the interactive finalize recognizes a line exceeding its bound
+        # lot at the sibling lots that will actually be drawn; import/repair paths
+        # stay on exact bound-lot pricing.
+        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
         # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
         # Finalizing the invoice is the point at which the sale is confirmed.
         _cid = uuid.UUID(str(company_id))
@@ -1438,6 +1441,11 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
+    # Reverse the recognition JEs before the doc goes void, symmetric with unvoid's
+    # batch restore: leaving them posted would double-count once unvoid re-posts.
+    # Voiding first also surfaces a locked-period refusal before anything else
+    # mutates, mirroring the revert-to-draft ordering.
+    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -1590,10 +1598,8 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Re-apply JEs for the restored status (idempotent - uses doc-scoped keys)
-    _unvoid_company = await session.get(Company, company_id)
-    _unvoid_base_currency = (_unvoid_company.settings.get("currency", "USD") if _unvoid_company else "USD")
-    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=state, base_currency=_unvoid_base_currency)
+    # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
+    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -4105,7 +4111,7 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
     SKU's total available stock (minus already-committed lots) is still short.
     """
-    from celerp.services.pick import resolve_pick_method, _sorted_inventory
+    from celerp.services.pick import plan_lot_draws, resolve_pick_method
     from celerp.models.company import Company
     sku = str(primary_proj.state.get("sku") or "").strip()
     company = await session.get(Company, company_id)
@@ -4122,26 +4128,93 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     by_id = {l.entity_id: l for l in lots}
     if primary_proj.entity_id not in by_id:
         return None
-    if sum(float(l.state.get("quantity") or 0) for l in lots) + 1e-9 < needed:
-        return None  # truly short across all lots
 
     def _d(p):
         return {"entity_id": p.entity_id,
+                "quantity": float(p.state.get("quantity") or 0),
                 "created_at": p.created_at.isoformat() if p.created_at else "",
                 "expires_at": p.state.get("expires_at")}
-    others = [l for l in lots if l.entity_id != primary_proj.entity_id]
-    ordered_ids = [primary_proj.entity_id] + [d["entity_id"] for d in _sorted_inventory([_d(o) for o in others], method)]
+    others = [_d(l) for l in lots if l.entity_id != primary_proj.entity_id]
+    draws, short_qty = plan_lot_draws(_d(primary_proj), needed, others, method)
+    if short_qty > 1e-9:
+        return None  # truly short across all lots
+    return [(by_id[lot["entity_id"]], take, is_full) for lot, take, is_full in draws]
 
-    draws, remaining = [], needed
-    for eid in ordered_ids:
-        if remaining <= 1e-9:
-            break
-        lot = by_id[eid]
-        avail = float(lot.state.get("quantity") or 0)
-        take = min(remaining, avail)
-        draws.append((lot, take, abs(take - avail) <= 1e-9))
-        remaining -= take
-    return draws
+
+def _plan_line_carve(line: dict, parcel_state: dict, unit_map: dict) -> dict | None:
+    """Plan how to carve the invoiced portion off a parent parcel for an on-page split.
+
+    Returns the child's split measures (quantity plus the weight/pieces the parcel is
+    sold by), or None when the line takes the whole parcel (a full or over-invoiced
+    line needs no split). Pure computation shared by fulfill and reserve so the carve
+    rule lives once.
+    """
+    line_qty = float(line.get("quantity") or 0)
+    available = float(parcel_state.get("quantity", 0))
+    if not (line_qty + 1e-9 < available):
+        return None
+    sell_by = parcel_state.get("sell_by")
+    # An explicit line measure is authoritative and is validated by split_off_child (which
+    # rejects a weight/pieces that disagrees with child_qty). Only when the line omits it
+    # do we derive it: for a parcel sold BY that measure the quantity IS the measure.
+    line_weight = line.get("weight")
+    line_pieces = line.get("pieces")
+    return {
+        "child_qty": line_qty,
+        "child_weight": line_weight if line_weight is not None
+        else (line_qty if is_weight_unit(sell_by, unit_map) else None),
+        "child_pieces": line_pieces if line_pieces is not None
+        else (line_qty if is_pieces_unit(sell_by, unit_map) else None),
+    }
+
+
+async def _apply_split_plan(
+    session, *, company_id, cid, uid, entity_id: str, state: dict,
+    split_plan: dict[str, dict], fetched: dict[str, Projection], source: str,
+) -> dict[str, tuple[str, str]]:
+    """Carve each planned child off its parent, retarget the doc lines to the child, and
+    emit the doc.updated line-items change. Returns ``{parent_eid: (child_eid, child_sku)}``.
+
+    Emits no status/transition event - each caller applies its own transition afterward
+    (fulfill emits item.fulfilled; reserve retargets its item.status.set), so fulfill's
+    semantics never leak into reserve. The parent-projection FOR UPDATE lock that keeps
+    two concurrent carves of one parcel from losing an update lives in split_off_child,
+    the single carve primitive both paths share.
+    """
+    from celerp_inventory.routes import split_off_child
+
+    remap: dict[str, tuple[str, str]] = {}
+    new_line_items = [dict(li) for li in state.get("line_items", [])]
+    for parent_eid, plan in split_plan.items():
+        try:
+            child_eid, child_sku = await split_off_child(
+                session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
+                child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
+                child_pieces=plan.get("child_pieces"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
+            )
+        remap[parent_eid] = (child_eid, child_sku)
+        fetched[child_eid] = await session.get(
+            Projection, {"company_id": company_id, "entity_id": child_eid})
+        for nli in new_line_items:
+            if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
+                nli["entity_id"] = child_eid
+                nli["item_id"] = child_eid
+                nli["sku"] = child_sku
+                break
+    await emit_event(
+        session, company_id=cid, entity_id=entity_id, entity_type="doc",
+        event_type="doc.updated",
+        data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
+        actor_id=uid, location_id=None, source=source,
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    state["line_items"] = new_line_items
+    return remap
 
 
 @router.post("/{entity_id}/fulfill-lines")
@@ -4173,13 +4246,18 @@ async def fulfill_lines(
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
     # Each line keyed by the item parcel it references (for qty + split measures).
+    # Line indices are captured before any split remap: _apply_split_plan rewrites
+    # lines in place, so the index is the stable key the finalize JE's per-line
+    # COGS allocation snapshot is also keyed by.
     line_qty_by_eid: dict[str, float] = {}
     line_by_eid: dict[str, dict] = {}
-    for li in state.get("line_items", []):
+    line_index_by_eid: dict[str, int] = {}
+    for _idx, li in enumerate(state.get("line_items", [])):
         _eid = li.get("entity_id") or li.get("item_id") or ""
         if _eid:
             line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
             line_by_eid[_eid] = li
+            line_index_by_eid[_eid] = _idx
 
     _unit_map = await _get_unit_map(session, company_id)
 
@@ -4190,6 +4268,7 @@ async def fulfill_lines(
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
+    fulfilled_line_eids: set[str] = set()  # accepted stock lines, by pre-remap line eid
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
@@ -4219,13 +4298,14 @@ async def fulfill_lines(
             # Cross-lot spanning: a splittable product can draw the shortfall from other
             # lots of the same SKU (bound lot first, then FIFO/FEFO/LIFO). Each drawn lot
             # is fulfilled at its own cost (specific identification by lot).
-            if item_proj.state.get("allow_splitting") is True:
+            if splitting_allowed(item_proj.state):
                 _draws = await _plan_span_draws(
                     session, company_id, item_proj, line_qty,
                     exclude=set(to_fulfill) | span_consumed,
                     owner_entity_id=entity_id,
                 )
                 if _draws is not None:
+                    fulfilled_line_eids.add(item_eid)
                     for _lot, _take, _full in _draws:
                         _leid = _lot.entity_id
                         fetched[_leid] = _lot
@@ -4243,9 +4323,9 @@ async def fulfill_lines(
                 f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
             )
             continue
-        # Split-on-fulfill is allowed only when splitting is explicitly enabled.
-        # A missing/None allow_splitting (e.g. older imports) must NOT bypass this.
-        if line_qty + 1e-9 < available and item_proj.state.get("allow_splitting") is not True:
+        # Split-on-fulfill is blocked only when splitting is explicitly disabled.
+        # A missing/None allow_splitting (e.g. older imports) is treated as splittable.
+        if line_qty + 1e-9 < available and not splitting_allowed(item_proj.state):
             blocked.append(
                 f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
                 f"enable splitting or invoice the full quantity"
@@ -4271,17 +4351,13 @@ async def fulfill_lines(
                 continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
-        if line_qty + 1e-9 < available:
-            # Partial draw of a splittable parcel: split off the invoiced amount as a
-            # child and fulfill that; the mother keeps the remainder. For a parcel sold
-            # BY pieces/weight the quantity IS that measure, so derive it (the line
-            # doesn't carry it separately); otherwise take the line's entered value
-            # (defaults to the parcel's, so by default the child takes all).
-            split_plan[item_eid] = {
-                "child_qty": line_qty,
-                "child_weight": line_qty if is_weight_unit(_sb, _unit_map) else _line.get("weight"),
-                "child_pieces": line_qty if is_pieces_unit(_sb, _unit_map) else _line.get("pieces"),
-            }
+        fulfilled_line_eids.add(item_eid)
+        # Partial draw of a splittable parcel: split off the invoiced amount as a child
+        # and fulfill that; the mother keeps the remainder. A full or over-invoiced line
+        # takes the whole parcel and plans no carve.
+        _carve = _plan_line_carve(_line, item_proj.state, _unit_map)
+        if _carve is not None:
+            split_plan[item_eid] = _carve
 
     # A shortage or a non-splittable partial prohibits the whole fulfill.
     if blocked:
@@ -4300,37 +4376,13 @@ async def fulfill_lines(
     # Split partial draws: carve the invoiced amount off each parcel as a child,
     # retarget fulfillment to the child, and rewrite the doc line to reference it.
     if split_plan:
-        from celerp_inventory.routes import split_off_child
-        new_line_items = [dict(li) for li in state.get("line_items", [])]
-        for parent_eid, plan in split_plan.items():
-            try:
-                child_eid, child_sku = await split_off_child(
-                    session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
-                    child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
-                    child_pieces=plan.get("child_pieces"),
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
-                )
-            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
-            fetched[child_eid] = await session.get(Projection, {"company_id": company_id, "entity_id": child_eid})
-            del fetched[parent_eid]
-            for nli in new_line_items:
-                if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
-                    nli["entity_id"] = child_eid
-                    nli["item_id"] = child_eid
-                    nli["sku"] = child_sku
-                    break
-        await emit_event(
-            session, company_id=cid, entity_id=entity_id, entity_type="doc",
-            event_type="doc.updated",
-            data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
-            actor_id=uid, location_id=None, source="fulfillment",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
+        remap = await _apply_split_plan(
+            session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id,
+            state=state, split_plan=split_plan, fetched=fetched, source="fulfillment",
         )
-        state["line_items"] = new_line_items
+        for parent_eid, (child_eid, _child_sku) in remap.items():
+            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
+            del fetched[parent_eid]
 
     total_cogs = 0.0
     for item_eid in to_fulfill:
@@ -4360,6 +4412,40 @@ async def fulfill_lines(
             idempotency_key=str(uuid.uuid4()),
             metadata_={"doc_id": entity_id},
         )
+
+    # True up recognized COGS against reality: the finalize JE recognized each line at
+    # the lots it expected to draw; the lots actually drawn just now can cost more or
+    # less (a sibling lot was sold in between, costs changed). The difference for the
+    # lines fulfilled here posts as one adjustment JE dated to this fulfillment. Docs
+    # whose finalize JE carries no allocation snapshot have no recognized basis and
+    # get no adjustment.
+    if doc_type == "invoice" and to_fulfill:
+        _recognized_allocs = await auto_je.recognized_cogs_allocations(session, company_id, entity_id)
+        if _recognized_allocs is not None:
+            _batch_indices = sorted({
+                line_index_by_eid[_eid] for _eid in fulfilled_line_eids if _eid in line_index_by_eid
+            })
+            _recognized = sum(
+                float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
+                for _idx in _batch_indices
+            )
+            _delta = round(total_cogs - _recognized, 2)
+            if abs(_delta) > 0.005:
+                # The JE identity carries the batch's line indexes: lines of one
+                # cycle can be fulfilled in separate calls, and each batch's delta
+                # must post on its own JE. Retrying the same batch dedups on the
+                # idempotency key; a different batch is a different key.
+                _batch_tag = "l" + "-".join(str(_idx) for _idx in _batch_indices)
+                await auto_je.create_for_doc_cogs_adjustment(
+                    session,
+                    company_id=cid,
+                    user_id=uid,
+                    doc_id=entity_id,
+                    delta=_delta,
+                    cycle_tag=f"fulfill-{int(state.get('revert_count') or 0)}:{_batch_tag}",
+                    doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
+                    ts=now,
+                )
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
@@ -4415,16 +4501,6 @@ async def fulfill_lines(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
-
-    # Create COGS JE only for invoices that reach fully-fulfilled status.
-    # Memos don't get a COGS JE here; that happens when the invoice is finalized.
-    if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
-        from datetime import date as _fdate
-        await auto_je.create_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
-            cycle=state.get("fulfill_cycle", 0),
-            ts=_fdate.today().isoformat(),
-        )
 
     await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
@@ -4521,14 +4597,6 @@ async def _reverse_whole_lines(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
-
-    # Void COGS JE for invoices when fulfillment is fully reversed.
-    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
-    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
-        await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id,
-            cycle=state.get("fulfill_cycle", 0),
-        )
 
     return doc_fulfillment_status
 
@@ -4678,7 +4746,20 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     if not line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
+    # Each line keyed by the item parcel it references, so a partial reserve can carve
+    # only the invoiced portion (the same measures the fulfill split uses).
+    line_qty_by_eid: dict[str, float] = {}
+    line_by_eid: dict[str, dict] = {}
+    for li in state.get("line_items", []):
+        _eid = li.get("entity_id") or li.get("item_id") or ""
+        if _eid:
+            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
+            line_by_eid[_eid] = li
+    unit_map = await _get_unit_map(session, row.company_id)
+
     errors: list[str] = []
+    blocked: list[str] = []  # 409: partial reserve of a non-splittable parcel
+    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial reserves)
     projs: dict[str, Projection] = {}
     to_unship: dict[str, Projection] = {}  # sold by THIS doc: reverse the sale, then reserve
     for eid in line_entity_ids:
@@ -4709,8 +4790,23 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             if proj.state.get("status_doc_id") != entity_id:
                 errors.append(f"{eid} ({sku}): reserved by another document")
                 continue
+        # A partially-invoiced line reserves only the invoiced portion: carve a child and
+        # reserve that. A partial reserve of an explicitly non-splittable parcel is gated
+        # exactly as partial fulfillment is. A full or over-invoiced line reserves whole.
+        if new_status == "reserved" and eid not in to_unship:
+            _carve = _plan_line_carve(line_by_eid.get(eid, {}), proj.state, unit_map)
+            if _carve is not None:
+                if not splitting_allowed(proj.state):
+                    blocked.append(
+                        f"{sku}: invoiced {line_qty_by_eid.get(eid, 0):g} of "
+                        f"{float(proj.state.get('quantity', 0)):g} but 'Allow Splitting' is off; "
+                        f"enable splitting or reserve the full quantity")
+                    continue
+                split_plan[eid] = _carve
         projs[eid] = proj
 
+    if blocked:
+        raise HTTPException(status_code=409, detail="Cannot reserve: " + "; ".join(blocked))
     if errors:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
@@ -4723,8 +4819,19 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             state=state, doc_type=state.get("doc_type", ""), to_revert=list(to_unship),
             fetched=to_unship,
         )
+    # Carve the invoiced portion off each partial parcel and reserve the child instead of
+    # the mother; the mother keeps its remainder available.
+    remap: dict[str, tuple[str, str]] = {}
+    if split_plan:
+        remap = await _apply_split_plan(
+            session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
+            state=state, split_plan=split_plan, fetched=projs, source="reservation",
+        )
     doc_number = state.get("doc_number") or state.get("ref_id") or ""
+    reserved_eids: list[str] = []
     for eid in line_entity_ids:
+        target_eid = remap[eid][0] if eid in remap else eid
+        reserved_eids.append(target_eid)
         # Reserve stamps this doc as owner (source_doc_id present); release omits it so
         # _stamp_status_doc clears the ownership stamp - a true handoff back to the pool.
         data: dict = {"new_status": new_status}
@@ -4732,14 +4839,14 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             data["source_doc_id"] = entity_id
             data["doc_number"] = doc_number
         await emit_event(
-            session, company_id=cid, entity_id=eid, entity_type="item",
+            session, company_id=cid, entity_id=target_eid, entity_type="item",
             event_type="item.status.set", data=data,
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
         )
 
     await session.commit()
-    return {"new_status": new_status, "reserved": list(line_entity_ids)}
+    return {"new_status": new_status, "reserved": reserved_eids}
 
 
 @router.post("/{entity_id}/reserve-lines")
