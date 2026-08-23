@@ -101,8 +101,22 @@ def _valid_platforms() -> set[str]:
 def _validate_platform(platform: str):
     """Return error response if platform is invalid, else None."""
     if platform not in _valid_platforms():
-        return Span(f"Unknown connector: {platform}", cls="flash flash--warning")
+        return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
     return None
+
+
+# Raw SyncRun status enum values shown to the user. Each maps to an
+# ``enum.sync_status.<value>`` key resolved at render time (see _sync_status_label),
+# so the label translates while the raw value stays canonical everywhere else.
+_SYNC_STATUS_VALUES: tuple[str, ...] = ("success", "partial", "failed")
+_SYNC_STATUS_LABELS: dict[str, str] = {v: f"enum.sync_status.{v}" for v in _SYNC_STATUS_VALUES}
+
+
+def _sync_status_label(status: str) -> str:
+    """Translated display label for a raw SyncRun status, resolved at render time.
+    Unknown values degrade honestly to the raw string."""
+    key = _SYNC_STATUS_LABELS.get(status)
+    return t(key) if key else (status or "")
 
 
 def _last_sync_info(run) -> FT:
@@ -124,7 +138,7 @@ def _last_sync_info(run) -> FT:
     }.get(run.status, "")
     counts = f"+{run.created_count:,} ~{run.updated_count:,}"
     return Span(
-        f"{relative_time(finished.isoformat())} · {run.status} · {counts}",
+        f"{relative_time(finished.isoformat())} · {_sync_status_label(run.status)} · {counts}",
         cls=f"connector-sync-info {status_cls}",
     )
 
@@ -337,39 +351,52 @@ async def _autosync_once(iid: str, platform: str, token: str) -> None:
         log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
 
 
+# "How it works" steps per connector. Values are i18n keys resolved at render time
+# (see _connector_card), so the steps translate to the request language. The shared
+# accounting-sync step (quickbooks + xero) reuses one key.
 _HOW_IT_WORKS: dict[str, list[str]] = {
     "shopify": [
-        "Enter your Shopify store domain below",
-        "Authorize Celerp in the Shopify OAuth flow",
-        "Products, orders, and customers sync automatically",
+        "connectors.how_shopify_1",
+        "connectors.how_shopify_2",
+        "connectors.how_shopify_3",
     ],
     "woocommerce": [
-        "Enter your WooCommerce store URL",
-        "Paste your REST API consumer key and secret",
-        "Choose sync direction and frequency",
+        "connectors.how_woocommerce_1",
+        "connectors.how_woocommerce_2",
+        "connectors.how_woocommerce_3",
     ],
     "quickbooks": [
-        "Click Connect to open QuickBooks authorization",
-        "Sign in and grant access to your company file",
-        "Invoices, contacts, and items sync on your schedule",
+        "connectors.how_quickbooks_1",
+        "connectors.how_quickbooks_2",
+        "connectors.how_accounting_sync",
     ],
     "xero": [
-        "Click Connect to open Xero authorization",
-        "Select the Xero organization to link",
-        "Invoices, contacts, and items sync on your schedule",
+        "connectors.how_xero_1",
+        "connectors.how_xero_2",
+        "connectors.how_accounting_sync",
     ],
 }
 
+# Sync entity types -> display-label i18n key, resolved at render time (see
+# _entity_label). Common entities reuse existing app-wide labels; push-direction and
+# products get connector-scoped keys. The raw entity value stays canonical elsewhere.
 _ENTITY_LABELS: dict[str, str] = {
-    "products": "Products",
-    "orders": "Orders",
-    "contacts": "Contacts",
-    "inventory": "Inventory",
-    "invoices": "Invoices",
-    "products_out": "Products (push)",
-    "invoices_out": "Invoices (push)",
-    "inventory_out": "Inventory (push)",
+    "products": "connectors.entity_products",
+    "orders": "dashboard.orders",
+    "contacts": "dashboard.contacts",
+    "inventory": "nav.inventory",
+    "invoices": "nav.invoices",
+    "products_out": "connectors.entity_products_out",
+    "invoices_out": "connectors.entity_invoices_out",
+    "inventory_out": "connectors.entity_inventory_out",
 }
+
+
+def _entity_label(entity: str, lang: str = "en") -> str:
+    """Translated display label for a sync entity type, resolved at render time.
+    Unknown entities degrade honestly to their raw value."""
+    key = _ENTITY_LABELS.get(entity)
+    return t(key, lang) if key else entity
 
 _ENTITY_ORDER = ["products", "orders", "contacts", "inventory", "invoices",
                  "products_out", "invoices_out", "inventory_out"]
@@ -435,7 +462,7 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         counts = "…" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
         errs = list(getattr(r, "errors", None) or [])
         rows.append(Tr(
-            Td(_ENTITY_LABELS.get(e, e)),
+            Td(_entity_label(e, lang)),
             Td(when),
             Td(_status_badge_for("running" if running else r.status, lang)),
             Td(counts, cls="cell--number"),
@@ -539,14 +566,14 @@ def _connector_card(
 
     # ── Synced entities pills ─────────────────────────────────────────────────
     entity_pills = Div(
-        *[Span(_ENTITY_LABELS.get(e, e), cls="connector-entity-pill") for e in entities],
+        *[Span(_entity_label(e, lang), cls="connector-entity-pill") for e in entities],
         cls="connector-entity-row",
     )
 
     # ── How it works steps ────────────────────────────────────────────────────
     steps = _HOW_IT_WORKS.get(cid, [])
     steps_section = Ol(
-        *[Li(s, cls="connector-step") for s in steps],
+        *[Li(t(s, lang), cls="connector-step") for s in steps],
         cls="connector-steps",
     ) if steps and not connected else Span()
 
@@ -632,9 +659,9 @@ def _connector_card(
             Form(
                 Input(name="store_url", placeholder="https://mystore.com",
                       cls="input input--sm", style="flex:1;min-width:200px;"),
-                Input(name="consumer_key", placeholder="Consumer Key",
+                Input(name="consumer_key", placeholder=t("connectors.consumer_key_placeholder", lang),
                       cls="input input--sm", style="width:160px;"),
-                Input(name="consumer_secret", placeholder="Consumer Secret",
+                Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
                       type="password", cls="input input--sm", style="width:160px;"),
                 Button(t("connectors.connect", lang),
                        type="submit", cls="btn btn--sm btn--primary"),
@@ -790,12 +817,12 @@ def setup_routes(app):
             return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
 
         # Open the authorize URL in a new tab AND show an on-screen next step + fallback
-        # link — so nothing is silently lost if the popup is blocked (GDR: users must
+        # link, so nothing is silently lost if the popup is blocked (GDR: users must
         # always know what comes next and have a visible way forward).
         return Div(
             Script(f"window.open({url!r}, '_blank', 'noopener');"),
             Span(t("connectors.authorize_opened", lang,
-                   default="Opening authorization in a new tab — complete it there, then return here."),
+                   default="Opening authorization in a new tab, complete it there, then return here."),
                  cls="flash flash--info"),
             A(t("connectors.authorize_link", lang, default="If nothing opened, click here to authorize"),
               href=url, target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
