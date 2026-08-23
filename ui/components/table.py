@@ -19,6 +19,26 @@ from celerp.output.doc_print import (  # noqa: F401
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
 INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out", "disposed"})
 
+
+def display_enum(raw_value, domain: str | None = None) -> str:
+    """Human-facing label for a raw enum/status value. DISPLAY ONLY: the raw value
+    stays canonical everywhere else (APIs, filters, URL params, persistence,
+    comparisons) - never pass a translated label back into any of those.
+
+    Looks up ``enum.<domain>.<raw_value>`` when a domain is known and a catalog
+    entry exists; otherwise falls back to underscore/hyphen-to-space title case,
+    so a caller with no domain context (or a value with no catalog entry yet)
+    still gets readable text instead of a raw slug."""
+    if raw_value is None:
+        return ""
+    raw = str(raw_value)
+    fallback = raw.replace("_", " ").replace("-", " ").title()
+    if not domain:
+        return fallback
+    key = f"enum.{domain}.{raw}"
+    translated = t(key)
+    return translated if translated != key else fallback
+
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
 _DEFAULT_COL_WIDTHS: dict[str, str] = {
@@ -39,10 +59,12 @@ _DEFAULT_COL_WIDTHS: dict[str, str] = {
 }
 
 
-def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
+def format_value(v, fmt: str = "text", currency: str | None = None, domain: str | None = None) -> str | FT:
     """Universal display formatter for table cells and detail pages.
 
     fmt: text | money | badge | date | weight
+    domain: for fmt="badge" only - the enum domain (see display_enum) used to
+            translate the raw value's label; omit when the domain is unknown.
     """
     if v is None or (isinstance(v, str) and not v.strip()):
         return EMPTY
@@ -56,7 +78,7 @@ def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
     if fmt == "badge":
         raw = str(v)
         key = raw.lower().replace(" ", "-").replace("_", "-")
-        label = raw.replace("_", " ")
+        label = display_enum(raw, domain)
         return Span(label, cls=f"badge badge--{key}")
     if fmt == "date":
         s = str(v)[:10] if v else ""
@@ -78,7 +100,7 @@ _SEARCHABLE_THRESHOLD = 10
 # Colors supported by status_cards (maps to CSS modifier class)
 _STATUS_CARD_COLORS = {"green", "yellow", "red", "blue", "gray"}
 
-def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
+def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str | None = None) -> FT:
     """Clickable status filter cards at top of list pages.
 
     cards: [{"label": "Paid", "count": 489, "total": 2990000.0, "status": "paid", "color": "green"}, ...]
@@ -108,8 +130,9 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         return A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
 
     # Ensure "All" card is first (optional)
+    _all_label = all_label if all_label is not None else t("doc.all")
     all_total = total_override if total_override is not None else sum(c.get("count", 0) for c in cards)
-    els = [_card(all_label, all_total, None, None, "blue")] if show_all_card else []
+    els = [_card(_all_label, all_total, None, None, "blue")] if show_all_card else []
     for c in cards:
         els.append(_card(
             c.get("label", ""),
@@ -257,11 +280,18 @@ def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = Fa
     right-aligns the header to match numeric cells. The funnel is guarded so clicking it filters.
     default_exclude: values hidden by default (the funnel starts with them unchecked) - e.g. Status
     excludes Completed/Cancelled until the user re-checks them."""
-    attrs = {"data-col": str(col), "aria-label": f"Filter by {label}"}
+    filter_label = t("label.filter_by", label=label)
+    attrs = {
+        "data-col": str(col), "aria-label": filter_label,
+        "data-i18n-select-all": t("table.select_all_option"),
+        "data-i18n-clear-filter": t("table.clear_filter_btn"),
+        "data-i18n-blank": t("table.blank_value"),
+        "data-i18n-search": t("table.search_ellipsis"),
+    }
     if default_exclude:
         attrs["data-filter-exclude"] = "␟".join(default_exclude)  # unit-separator: values may contain commas
     inner = [Span(label)] + ([Span(cls="sort-ind")] if sortable else [])
-    inner.append(Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs))
+    inner.append(Button("▾", type="button", cls="colfilter", title=filter_label, **attrs))
     cls = ("colfilter-th" + (" sortable-th" if sortable else "")
            + (" cell--center" if center else "") + (" cell--number" if right else ""))
     return Th(*inner, cls=cls, **({"data-sort": str(col)} if sortable else {}))
@@ -273,7 +303,7 @@ def date_range_filter(table_id: str, col: int, label: str) -> FT:
     return Span(
         Span(f"{label}:", cls="daterange-label"),
         Input(type="date", cls="daterange-input", aria_label=f"{label} from", **{"data-bound": "from"}),
-        Span("to", cls="daterange-sep"),
+        Span(t("table.daterange_to"), cls="daterange-sep"),
         Input(type="date", cls="daterange-input", aria_label=f"{label} to", **{"data-bound": "to"}),
         cls="daterange", **{"data-daterange-table": table_id, "data-daterange-col": str(col)},
     )
@@ -335,11 +365,15 @@ COLUMN_FILTER_JS = """
     var t=btn.closest('table');if(!t)return;
     var col=btn.getAttribute('data-col');
     var a=active(t),values=distinct(t,+col);
+    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';
+    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';
+    var i18nBlank=btn.getAttribute('data-i18n-blank')||'(blank)';
+    var i18nClearFilter=btn.getAttribute('data-i18n-clear-filter')||'Clear filter';
     var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);
-    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;
     var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
     var selAllCb=document.createElement('input');selAllCb.type='checkbox';
-    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));
     var list=document.createElement('div');list.className='colfilter-list';
     function commit(){
       var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
@@ -353,7 +387,7 @@ COLUMN_FILTER_JS = """
       var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
       cb.checked=!a[col]||a[col].has(v);
       cb.addEventListener('change',commit);
-      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||'(blank)')));
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));
       list.appendChild(lbl);
     });
     selAllCb.checked=!a[col];selAllCb.indeterminate=!!a[col];
@@ -361,7 +395,7 @@ COLUMN_FILTER_JS = """
       list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
     search.addEventListener('input',function(){var q=search.value.toLowerCase();
       list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
-    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear filter';
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;
     clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
     pop.style.position='fixed';
@@ -418,13 +452,18 @@ def _filter_funnel_btn(param: str, options: list, selected, label: str = "") -> 
     `selected` is the active values (from the current query). SERVER_FILTER_JS handles the rest."""
     import json as _json
     sel = [str(s) for s in (selected or [])]
+    filter_label = t("label.filter_by", label=label) if label else t("table.filter_generic")
     return Button(
         "▾", type="button", cls="colfilter" + (" colfilter--active" if sel else ""),
-        title=f"Filter by {label}" if label else "Filter",
+        title=filter_label,
         **{"data-param": param,
            "data-options": _json.dumps([[str(v), (lbl if lbl is not None else str(v))] for v, lbl in options]),
            "data-selected": _json.dumps(sel),
-           "aria-label": f"Filter by {label}" if label else "Filter"},
+           "aria-label": filter_label,
+           "data-i18n-select-all": t("table.select_all_option"),
+           "data-i18n-search": t("table.search_ellipsis"),
+           "data-i18n-apply": t("btn.apply"),
+           "data-i18n-clear": t("btn.clear")},
     )
 
 
@@ -450,11 +489,15 @@ SERVER_FILTER_JS = """
     var options=JSON.parse(btn.getAttribute('data-options')||'[]');
     var selected=new Set(JSON.parse(btn.getAttribute('data-selected')||'[]'));
     var noFilter=selected.size===0;
+    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';
+    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';
+    var i18nApply=btn.getAttribute('data-i18n-apply')||'Apply';
+    var i18nClear=btn.getAttribute('data-i18n-clear')||'Clear';
     var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-param',param);
-    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;
     var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
     var selAllCb=document.createElement('input');selAllCb.type='checkbox';
-    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));
     var list=document.createElement('div');list.className='colfilter-list';
     options.forEach(function(o){
       var v=String(o[0]),label=o[1]==null?v:o[1];
@@ -473,9 +516,9 @@ SERVER_FILTER_JS = """
       if(!vals||vals.length===0||vals.length===options.length){p.delete(param);}else{p.set(param,vals.join(','));}
       p.set('page','1');window.location.search=p.toString();}
     var foot=document.createElement('div');foot.className='colfilter-foot';
-    var apply=document.createElement('button');apply.type='button';apply.className='btn btn--xs btn--primary';apply.textContent='Apply';
+    var apply=document.createElement('button');apply.type='button';apply.className='btn btn--xs btn--primary';apply.textContent=i18nApply;
     apply.addEventListener('click',function(){go(checkedVals());});
-    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear';
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClear;
     clear.addEventListener('click',function(){go([]);});
     foot.appendChild(apply);foot.appendChild(clear);
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(foot);
@@ -507,10 +550,10 @@ def sortable_th(label, col: int, *, center: bool = False, right: bool = False) -
 def table_pager(table_id: str) -> FT:
     """Client-side pager controls for a `js-table` (hidden until the table spans >1 page)."""
     return Div(
-        Button("‹ Prev", type="button", cls="btn btn--xs btn--ghost",
+        Button(f"‹ {t('btn.prev')}", type="button", cls="btn btn--xs btn--ghost",
                **{"data-page-nav": "prev", "data-page-for": table_id}),
         Span("", cls="enh-page-info"),
-        Button("Next ›", type="button", cls="btn btn--xs btn--ghost",
+        Button(f"{t('btn.next')} ›", type="button", cls="btn btn--xs btn--ghost",
                **{"data-page-nav": "next", "data-page-for": table_id}),
         cls="enh-pager", style="display:none", **{"data-pager-for": table_id},
     )
@@ -616,7 +659,7 @@ def searchable_select(
     name: str,
     options: list[str | tuple[str, str]],
     value: str = "",
-    placeholder: str = "Search or select...",
+    placeholder: str = "",
     cls_extra: str = "",
     allow_custom: bool = False,
     search_url: str = "",
@@ -648,6 +691,7 @@ def searchable_select(
         would otherwise be a column header the screen reader does not read with it.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
+    placeholder = placeholder or t("table.search_or_select")
     count_label = count_label or t("label.n_selected")
     normalized = [
         (o, o) if isinstance(o, str) else (o[0], o[1])
@@ -781,7 +825,7 @@ def paired_display_cell(
         Span(
             pri_disp,
             cls="paired-primary",
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=pri_edit,
             hx_target="closest td",
             hx_swap="outerHTML",
@@ -794,7 +838,7 @@ def paired_display_cell(
         Span(
             sec_disp,
             cls="paired-secondary",
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=sec_edit,
             hx_target="closest td",
             hx_swap="outerHTML",
@@ -832,17 +876,17 @@ def purchase_display_cell(
         Span(
             pu_disp,
             cls="paired-primary",
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=pu_edit,
             hx_target="closest td",
             hx_swap="outerHTML",
             hx_trigger="dblclick",
         ),
-        Span(" → ", cls="paired-sep", title="Purchasing unit conversion to stock unit"),
+        Span(" → ", cls="paired-sep", title=t("table.purchase_unit_conversion_hint")),
         Span(
             cf_disp,
             cls="paired-secondary",
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=cf_edit,
             hx_target="closest td",
             hx_swap="outerHTML",
@@ -960,7 +1004,7 @@ def editable_cell(
             input_el = Select(
                 # Offer a selectable blank "(clear)" option so a SET optional select can be unset
                 # (issue #202); `status` stays required. When empty, show a disabled placeholder.
-                *([Option("— clear —", value="")] if (display_val and cell_type == "select")
+                *([Option(t("table.select_clear_option"), value="")] if (display_val and cell_type == "select")
                   else [] if display_val
                   else [Option("", value="", disabled=True, selected=True)]),
                 *[Option(lbl, value=val, selected=(val == display_val)) for val, lbl in _opt_items],
@@ -1048,22 +1092,26 @@ def _normalize_number_str(s: str) -> str:
 
 
 def _display_val(value, cell_type: str, currency: str | None = None,
-                 status_doc: tuple[str, str] | None = None) -> FT:
+                 status_doc: tuple[str, str] | None = None, domain: str | None = None) -> FT:
     """Format a value for display. Empty/null → EMPTY constant.
 
     status_doc: for status cells only - (doc_entity_id, doc_number) of the document
     that caused the status. The badge then reads STATUS: DOC-NUMBER with the number
-    linking to the document."""
+    linking to the document.
+    domain: for status cells only - the enum domain (see display_enum) used to
+            translate the raw status value's label; omit when unknown."""
     s = str(value).strip() if value is not None else ""
     if cell_type == "bool":
         is_true = str(value).strip().lower() in ("true", "1", "yes")
-        return Span("Yes" if is_true else "No", cls="badge badge--yes" if is_true else "badge badge--no")
+        return Span(t("settings.yes") if is_true else t("settings.no"),
+                    cls="badge badge--yes" if is_true else "badge badge--no")
     if cell_type == "status":
         badge_cls = f"badge badge--{s.lower().replace(' ', '-')}" if s else ""
+        label = display_enum(s, domain) if s else ""
         if s and status_doc:
             doc_id, doc_number = status_doc
-            return Span(s, ": ", A(doc_number, href=f"/docs/{doc_id}", cls="badge__doc-link"), cls=badge_cls)
-        return Span(s or EMPTY, cls=badge_cls)
+            return Span(label, ": ", A(doc_number, href=f"/docs/{doc_id}", cls="badge__doc-link"), cls=badge_cls)
+        return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
             return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
@@ -1086,7 +1134,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
     if cell_type == "image":
         if s:
             return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
-        return Span("＋", cls="cell-image-empty", title="Drop image here or click to upload")
+        return Span("＋", cls="cell-image-empty", title=t("table.drop_image_upload_hint"))
     if cell_type == "textarea":
         # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
         return Span(s, cls="cell-textarea") if s else Span(EMPTY)
@@ -1107,6 +1155,7 @@ def display_cell(
     placeholder: str | None = None,
     status_doc: tuple[str, str] | None = None,
     cls_extra: str = "",
+    domain: str | None = None,
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
@@ -1118,19 +1167,21 @@ def display_cell(
                  reorder value). It is display-only guidance, never a stored value; the cell
                  stays click-to-edit and saving still uses whatever the user types.
     status_doc: status cells only - (doc_entity_id, doc_number) of the causing document,
-                rendered inside the badge as a link (see _display_val)."""
+                rendered inside the badge as a link (see _display_val).
+    domain: status cells only - the enum domain (see display_enum) used to translate
+            the raw status value's label; omit when the caller doesn't know one."""
     _x = f" {cls_extra}" if cls_extra else ""
     display_value = label_map.get(value, value) if label_map and value is not None else value
     # Normalize the reserved conflict sentinel to the canonical "Mixed" for any cell that can carry it
     # (dropdowns AND custom/free attributes left after a merge), so legacy/any-case values read alike.
     if _is_mixed(value):
         display_value = MIXED_VALUE
-    inner = _display_val(display_value, cell_type, currency, status_doc=status_doc)
+    inner = _display_val(display_value, cell_type, currency, status_doc=status_doc, domain=domain)
     # Empty cell + a suggestion -> show it greyed (a hint, not a stored value). The
     # edit trigger below is unchanged, so the cell stays fully editable.
     if placeholder not in (None, "") and (value is None or str(value).strip() in ("", EMPTY)):
         inner = Span(str(placeholder), cls="cell-suggestion", style="color:#9aa0a6;",
-                     title="Suggested value - click to set")
+                     title=t("table.suggested_value_hint"))
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
     _safe_id = entity_id.replace(":", "-")
     _safe_field = re.sub(r"[^A-Za-z0-9_-]", "_", field)
@@ -1162,14 +1213,14 @@ def display_cell(
             cls=f"cell cell--image cell--droppable{_x}",
             data_entity_id=entity_id,
             data_col=field,
-            title="Drag & drop image or click to upload",
+            title=t("table.drag_drop_image_upload_hint"),
         )
 
     if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
         return Td(
             A(inner, href=link_href, cls="table-link"),
             id=_cell_id,
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=_edit,
             hx_target="this",
             hx_swap="outerHTML",
@@ -1182,7 +1233,7 @@ def display_cell(
         return Td(
             A(inner, href=f"/inventory/{entity_id}", cls="table-link"),
             id=_cell_id,
-            title="Double-click to edit",
+            title=t("label.dblclick_to_edit"),
             hx_get=_edit,
             hx_target="this",
             hx_swap="outerHTML",
@@ -1194,7 +1245,7 @@ def display_cell(
     return Td(
         inner,
         id=_cell_id,
-        title="Double-click to edit",
+        title=t("label.dblclick_to_edit"),
         hx_get=_edit,
         hx_target="this",
         hx_swap="outerHTML",
@@ -1261,7 +1312,7 @@ def data_table(
     if not rows:
         if q and q.strip():
             return Div(
-                P(f"No results for '{q.strip()}'", cls="search-empty--table"),
+                P(t("table.no_results_for_query", q=q.strip()), cls="search-empty--table"),
                 cls="empty-state",
                 id="data-table",
             )
@@ -1296,11 +1347,11 @@ def data_table(
                   cls="sort-link"),
                 funnel,
                 cls=th_cls, data_key=key, draggable="true",
-                title="Drag to reorder columns",
+                title=t("table.drag_to_reorder_columns"),
                 style=th_style,
             )
         return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
-                   title="Drag to reorder columns", style=th_style)
+                   title=t("table.drag_to_reorder_columns"), style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
@@ -1310,9 +1361,16 @@ def data_table(
     ))
 
     def _row(row: dict) -> FT:
+        import json as _json
         entity_id = row.get("id") or row.get("entity_id", "")
         safe_id = entity_id.replace(":", "-")
         _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
+        # Single-quoted JS string literal so the inline onclick stays all single
+        # quotes: a double quote here (e.g. from json.dumps) forces the whole
+        # attribute to escape its single quotes, mangling the htmx.ajax URL.
+        _confirm_delete_row = (
+            "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
+        )
         action_cell = [] if not show_row_menu else [
             Td(
                 Div(
@@ -1320,7 +1378,7 @@ def data_table(
                     Div(
                         A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
                         Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                               onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
+                               onclick=f"if(!confirm({_confirm_delete_row}))return;"
                                        f"htmx.ajax('DELETE','{_delete_url}',"
                                        f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
                         cls="row-menu-dropdown", id=f"menu-{safe_id}",
@@ -1362,6 +1420,7 @@ def data_table(
                     currency=currency,
                     link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
                     edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
+                    domain=(f"{entity_type}_status" if f.get("type", "text") == "status" else None),
                 )
                 for f in visible
             ],
@@ -1637,7 +1696,13 @@ def data_table(
   }}
 }})();
 """
-    _bulk_js = """
+    _bulk_i18n_prelude = (
+        "var I18N_CONFIRM_MERGE=" + _json.dumps(t("table.confirm_merge")) + ";\n"
+        "var I18N_A_NEW_SKU=" + _json.dumps(t("table.a_new_sku")) + ";\n"
+        "var I18N_NEW_DOC_TYPE=" + _json.dumps(t("table.new_doc_type")) + ";\n"
+        "var I18N_N_SELECTED=" + _json.dumps(t("label.n_selected")) + ";\n"
+    )
+    _bulk_js = _bulk_i18n_prelude + """
 var CelerpSelection=(function(){
   var KEY='celerp_inv_selection',_map={};
   function _save(){try{sessionStorage.setItem(KEY,JSON.stringify(_map))}catch(e){}}
@@ -2090,7 +2155,51 @@ function sendToTypeChanged(docType, docLabel){
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
     scripts = [Script(_js)]
     if show_checkboxes:
-        scripts.append(Script(_bulk_js.replace("'celerp_inv_selection'", f"'{selection_key}'")))
+        _bulk_js_localized = (
+            _bulk_js
+            .replace("'celerp_inv_selection'", f"'{selection_key}'")
+            .replace("'Archive selected items? They will be hidden from the default view.'",
+                     _json.dumps(t("table.confirm_archive_selected")))
+            .replace("'Restore selected items to the catalog? They will become available again.'",
+                     _json.dumps(t("table.confirm_restore_selected")))
+            .replace("'Make selected draft items available? They will count as real stock.'",
+                     _json.dumps(t("table.confirm_make_available_selected")))
+            .replace("'Revert selected items to draft? Only items with no circulation history can revert.'",
+                     _json.dumps(t("table.confirm_revert_to_draft_selected")))
+            .replace("'Delete selected items? This cannot be undone.'",
+                     _json.dumps(t("table.confirm_delete_selected")))
+            .replace("'Duplicate selected items? A copy of each will be created.'",
+                     _json.dumps(t("table.confirm_duplicate_selected")))
+            .replace("'Select exactly 1 item to split.'",
+                     _json.dumps(t("inv.select_exactly_1_item_to_split")))
+            .replace("'Select exactly 1 item to transform.'",
+                     _json.dumps(t("table.select_exactly_1_to_transform")))
+            .replace("'Select at least 2 items to merge.'",
+                     _json.dumps(t("inv.select_at_least_2_items_to_merge")))
+            .replace(
+                "'Some selected items still hold stock. Archiving retires the product but "
+                "leaves its stock on the books. What should happen to the remaining stock?'",
+                _json.dumps(t("table.stock_guard_prompt")),
+            )
+            .replace("'Keep stock on books'", _json.dumps(t("table.keep_stock_on_books")))
+            .replace("'Write off remaining stock'", _json.dumps(t("table.write_off_remaining_stock")))
+            .replace("'Cancel'", _json.dumps(t("btn.cancel")))
+            .replace("'Confirm'", _json.dumps(t("btn.confirm")))
+            .replace(
+                "msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';",
+                "msg.textContent=I18N_CONFIRM_MERGE.replace('{n}',n)"
+                ".replace('{target}',isNewSku?I18N_A_NEW_SKU:targetText);",
+            )
+            .replace(
+                "newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);",
+                "newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{type}',(docLabel||docType));",
+            )
+            .replace(
+                "if(countEl) countEl.textContent=n+' selected';",
+                "if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{n}',n);",
+            )
+        )
+        scripts.append(Script(_bulk_js_localized))
     if top_scroll:
         scripts.append(_top_scroll_js)
     return Div(
@@ -2257,7 +2366,7 @@ def pagination(page: int, total: int, per_page: int, base_url: str, extra_params
         *(([A("«", href=_href(page - 1), cls="page-btn")] if page > 1 else []) +
           pages +
           ([A("»", href=_href(page + 1), cls="page-btn")] if page < total_pages else [])),
-        Span(f"{total:,} {'record' if total == 1 else 'records'}", cls="page-count"),
+        Span(t("table.records_count", n=f"{total:,}"), cls="page-count"),
         _per_page_selector(per_page, base_url, extra_params),
         cls="pagination",
     )
@@ -2270,15 +2379,16 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
     # dropdown was dead on every page that isn't /inventory (e.g. /docs — issue #171).
     suffix = f"&{extra_params}" if extra_params else ""
     return Select(
-        *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
+        *[Option(t("table.per_page_option", n=n), value=str(n), selected=(n == current)) for n in options],
         name="per_page",
         onchange=f"window.location='{base_url}?per_page='+this.value+'&page=1{suffix}'",
         cls="filter-select per-page-select",
     )
 
 
-def search_bar(placeholder: str = "Search...", target: str = "#data-table", url: str = "",
+def search_bar(placeholder: str = "", target: str = "#data-table", url: str = "",
                help: FT | None = None, label: str = "") -> FT:
+    placeholder = placeholder or t("table.search_dots")
     # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
     # becoming a comma-separated OR query without submitting the form).
     enter_js = (
@@ -2302,7 +2412,7 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         cls="search-input",
         id="search-input",
         onkeydown=enter_js,
-        title="Use a comma (or Enter) for OR - e.g. scan multiple barcodes one after another",
+        title=t("table.search_barcode_hint"),
     )
     # Wrap only when a help affordance is attached (e.g. search_help from
     # ui.components.shell) so pages without one keep their exact markup.
@@ -2314,11 +2424,12 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
     return Div(Small(label, cls="search-scope-label"), inner, cls="search-scope")
 
 
-def table_search(table_id: str, placeholder: str = "Search…") -> FT:
+def table_search(table_id: str, placeholder: str = "") -> FT:
     """A client-side free-text filter for a bounded `js-table` (all rows already on
     the page). Typing hides non-matching rows in place and composes with the column
     funnels; ESC clears it. `table_id` is the id of the table it filters. Pair with
     COLUMN_FILTER_JS on the page (which owns the `.js-table-search` handler)."""
+    placeholder = placeholder or t("table.search_ellipsis")
     return Input(
         type="search",
         placeholder=placeholder,
@@ -2360,8 +2471,9 @@ def bank_account_options(bank_accounts: list[dict] | None, default_code: str | N
     ]
 
 
-def add_new_option(label: str = "+ Add new", redirect_url: str = "#") -> tuple:
+def add_new_option(label: str = "", redirect_url: str = "#") -> tuple:
     """Return (Option element, onchange JS snippet) for 'add new' in dynamic selects."""
+    label = label or t("label._add_new")
     option = Option(label, value="__new__")
     js = f"if(this.value==='__new__')window.location='{redirect_url}'"
     return option, js
