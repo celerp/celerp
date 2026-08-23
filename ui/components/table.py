@@ -681,11 +681,11 @@ def searchable_select(
         opt_els = [
             Div(label,
                 cls=_opt_cls(val) + (" combobox-option--selected" if val in chosen else ""),
-                data_value=val)
+                data_value=val, role="option")
             for val, label in normalized
         ]
     else:
-        opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
+        opt_els = [Div(label, cls=_opt_cls(val), data_value=val, role="option") for val, label in normalized]
     opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty", style="display:none"))
 
     wrap_attrs: dict = {"cls": "combobox-wrap"}
@@ -710,6 +710,14 @@ def searchable_select(
     # name belongs there rather than on the hidden value input.
     if aria_label:
         text_input_extra["aria_label"] = aria_label
+    # ARIA combobox semantics (rule i): a screen reader announces this as a
+    # combobox owning a popup listbox. The dynamic wiring - aria-controls to the
+    # list id, aria-expanded on open/close, aria-activedescendant to the focused
+    # option - is done by initCombobox() in shell.py, which owns the unique ids.
+    text_input_extra["role"] = "combobox"
+    text_input_extra["aria_expanded"] = "false"
+    text_input_extra["aria_haspopup"] = "listbox"
+    text_input_extra["aria_autocomplete"] = "list"
 
     if multiple:
         # The bag carries the submitted values; the sibling hidden input carries no
@@ -721,7 +729,7 @@ def searchable_select(
             Div(*[Input(type="hidden", name=name, value=v,
                         data_label=label_by_value.get(v, v)) for v in selected],
                 cls="combobox-selected"),
-            Div(*opt_els, cls="combobox-list"),
+            Div(*opt_els, cls="combobox-list", role="listbox"),
             **wrap_attrs,
         )
 
