@@ -16,67 +16,67 @@
 <button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>    </div>
     <div>
 <form enctype="multipart/form-data" method="get" action="/reports/statement" class="flex-row gap-sm"><label class="form-label">Account</label>        <div data-multiple="true" data-count-label="{n} selected" data-empty-label="Search customers, suppliers and accounts" data-search-url="1" hx-get="/reports/statement/subject-options?account=c%3Acontact%3A<uuid>&amp;account=a%3A1120" hx-trigger="input from:.combobox-input changed delay:300ms" hx-swap="innerHTML" hx-include="find .combobox-input" hx-target="find .combobox-list" class="combobox-wrap">
-          <input type="text" value="2 selected" placeholder="Search customers, suppliers and accounts" autocomplete="off" name="q" class="combobox-input">
+          <input type="text" value="2 selected" placeholder="Search customers, suppliers and accounts" autocomplete="off" name="q" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-autocomplete="list" class="combobox-input">
           <input type="hidden" data-name="account" value="">
           <div class="combobox-selected">
             <input type="hidden" name="account" value="c:contact:<uuid>" data-label="Riverside Supplies (customer)">
             <input type="hidden" name="account" value="a:1120" data-label="1120 Accounts Receivable">
           </div>
-          <div class="combobox-list">
-            <div data-value="c:contact:<uuid>" class="combobox-option">Owner (both)</div>
-            <div data-value="c:contact:<uuid>" class="combobox-option combobox-option--selected">Riverside Supplies (customer)</div>
-            <div data-value="a:1000" class="combobox-option">1000 Assets</div>
-            <div data-value="a:1100" class="combobox-option">1100 Current Assets</div>
-            <div data-value="a:1110" class="combobox-option">1110 Cash and Cash Equivalents</div>
-            <div data-value="a:1111" class="combobox-option">1111 Default Bank Account (Checking)</div>
-            <div data-value="a:1120" class="combobox-option combobox-option--selected">1120 Accounts Receivable</div>
-            <div data-value="a:1130" class="combobox-option">1130 Inventory</div>
-            <div data-value="a:1130-DTY" class="combobox-option">1130-DTY Inventory - Import Duty Clearing</div>
-            <div data-value="a:1130-FRT" class="combobox-option">1130-FRT Inventory - Freight Clearing</div>
-            <div data-value="a:1130-INS" class="combobox-option">1130-INS Inventory - Insurance Clearing</div>
-            <div data-value="a:1130-IVT" class="combobox-option">1130-IVT Inventory - Non-Recoverable Import VAT Clearing</div>
-            <div data-value="a:1130-OB" class="combobox-option">1130-OB Inventory - Opening Balance</div>
-            <div data-value="a:1130-P" class="combobox-option">1130-P Inventory - Purchased</div>
-            <div data-value="a:1140" class="combobox-option">1140 Prepaid Expenses</div>
-            <div data-value="a:1150" class="combobox-option">1150 VAT Receivable (Input VAT)</div>
-            <div data-value="a:1200" class="combobox-option">1200 Non-Current Assets</div>
-            <div data-value="a:1210" class="combobox-option">1210 Property, Plant and Equipment</div>
-            <div data-value="a:1220" class="combobox-option">1220 Accumulated Depreciation</div>
-            <div data-value="a:1230" class="combobox-option">1230 Intangible Assets</div>
-            <div data-value="a:2000" class="combobox-option">2000 Liabilities</div>
-            <div data-value="a:2100" class="combobox-option">2100 Current Liabilities</div>
-            <div data-value="a:2110" class="combobox-option">2110 Accounts Payable</div>
-            <div data-value="a:2120" class="combobox-option">2120 VAT Payable (Output VAT)</div>
-            <div data-value="a:2130" class="combobox-option">2130 Withholding Tax Payable</div>
-            <div data-value="a:2140" class="combobox-option">2140 Accrued Expenses</div>
-            <div data-value="a:2150" class="combobox-option">2150 Social Security Payable</div>
-            <div data-value="a:2200" class="combobox-option">2200 Non-Current Liabilities</div>
-            <div data-value="a:2210" class="combobox-option">2210 Long-term Loans</div>
-            <div data-value="a:3000" class="combobox-option">3000 Equity</div>
-            <div data-value="a:3100" class="combobox-option">3100 Registered Capital</div>
-            <div data-value="a:3200" class="combobox-option">3200 Retained Earnings</div>
-            <div data-value="a:3300" class="combobox-option">3300 Current Year Earnings</div>
-            <div data-value="a:4000" class="combobox-option">4000 Revenue</div>
-            <div data-value="a:4100" class="combobox-option">4100 Sales Revenue</div>
-            <div data-value="a:4200" class="combobox-option">4200 Service Revenue</div>
-            <div data-value="a:4300" class="combobox-option">4300 Other Income</div>
-            <div data-value="a:4400" class="combobox-option">4400 Interest Income</div>
-            <div data-value="a:5000" class="combobox-option">5000 Cost of Goods Sold</div>
-            <div data-value="a:5100" class="combobox-option">5100 Cost of Goods Sold</div>
-            <div data-value="a:5200" class="combobox-option">5200 Direct Labor</div>
-            <div data-value="a:5300" class="combobox-option">5300 Manufacturing Overhead</div>
-            <div data-value="a:6000" class="combobox-option">6000 Operating Expenses</div>
-            <div data-value="a:6100" class="combobox-option">6100 Salaries and Wages</div>
-            <div data-value="a:6200" class="combobox-option">6200 Rent</div>
-            <div data-value="a:6300" class="combobox-option">6300 Utilities</div>
-            <div data-value="a:6400" class="combobox-option">6400 Depreciation</div>
-            <div data-value="a:6500" class="combobox-option">6500 Professional Fees</div>
-            <div data-value="a:6600" class="combobox-option">6600 Marketing and Advertising</div>
-            <div data-value="a:6700" class="combobox-option">6700 Insurance</div>
-            <div data-value="a:6800" class="combobox-option">6800 Office Supplies</div>
-            <div data-value="a:6900" class="combobox-option">6900 Travel and Transportation</div>
-            <div data-value="a:6950" class="combobox-option">6950 Miscellaneous Expenses</div>
-            <div data-value="a:6960" class="combobox-option">6960 Foreign Exchange Difference</div>
+          <div role="listbox" class="combobox-list">
+            <div data-value="c:contact:<uuid>" role="option" class="combobox-option">Owner (both)</div>
+            <div data-value="c:contact:<uuid>" role="option" class="combobox-option combobox-option--selected">Riverside Supplies (customer)</div>
+            <div data-value="a:1000" role="option" class="combobox-option">1000 Assets</div>
+            <div data-value="a:1100" role="option" class="combobox-option">1100 Current Assets</div>
+            <div data-value="a:1110" role="option" class="combobox-option">1110 Cash and Cash Equivalents</div>
+            <div data-value="a:1111" role="option" class="combobox-option">1111 Default Bank Account (Checking)</div>
+            <div data-value="a:1120" role="option" class="combobox-option combobox-option--selected">1120 Accounts Receivable</div>
+            <div data-value="a:1130" role="option" class="combobox-option">1130 Inventory</div>
+            <div data-value="a:1130-DTY" role="option" class="combobox-option">1130-DTY Inventory - Import Duty Clearing</div>
+            <div data-value="a:1130-FRT" role="option" class="combobox-option">1130-FRT Inventory - Freight Clearing</div>
+            <div data-value="a:1130-INS" role="option" class="combobox-option">1130-INS Inventory - Insurance Clearing</div>
+            <div data-value="a:1130-IVT" role="option" class="combobox-option">1130-IVT Inventory - Non-Recoverable Import VAT Clearing</div>
+            <div data-value="a:1130-OB" role="option" class="combobox-option">1130-OB Inventory - Opening Balance</div>
+            <div data-value="a:1130-P" role="option" class="combobox-option">1130-P Inventory - Purchased</div>
+            <div data-value="a:1140" role="option" class="combobox-option">1140 Prepaid Expenses</div>
+            <div data-value="a:1150" role="option" class="combobox-option">1150 VAT Receivable (Input VAT)</div>
+            <div data-value="a:1200" role="option" class="combobox-option">1200 Non-Current Assets</div>
+            <div data-value="a:1210" role="option" class="combobox-option">1210 Property, Plant and Equipment</div>
+            <div data-value="a:1220" role="option" class="combobox-option">1220 Accumulated Depreciation</div>
+            <div data-value="a:1230" role="option" class="combobox-option">1230 Intangible Assets</div>
+            <div data-value="a:2000" role="option" class="combobox-option">2000 Liabilities</div>
+            <div data-value="a:2100" role="option" class="combobox-option">2100 Current Liabilities</div>
+            <div data-value="a:2110" role="option" class="combobox-option">2110 Accounts Payable</div>
+            <div data-value="a:2120" role="option" class="combobox-option">2120 VAT Payable (Output VAT)</div>
+            <div data-value="a:2130" role="option" class="combobox-option">2130 Withholding Tax Payable</div>
+            <div data-value="a:2140" role="option" class="combobox-option">2140 Accrued Expenses</div>
+            <div data-value="a:2150" role="option" class="combobox-option">2150 Social Security Payable</div>
+            <div data-value="a:2200" role="option" class="combobox-option">2200 Non-Current Liabilities</div>
+            <div data-value="a:2210" role="option" class="combobox-option">2210 Long-term Loans</div>
+            <div data-value="a:3000" role="option" class="combobox-option">3000 Equity</div>
+            <div data-value="a:3100" role="option" class="combobox-option">3100 Registered Capital</div>
+            <div data-value="a:3200" role="option" class="combobox-option">3200 Retained Earnings</div>
+            <div data-value="a:3300" role="option" class="combobox-option">3300 Current Year Earnings</div>
+            <div data-value="a:4000" role="option" class="combobox-option">4000 Revenue</div>
+            <div data-value="a:4100" role="option" class="combobox-option">4100 Sales Revenue</div>
+            <div data-value="a:4200" role="option" class="combobox-option">4200 Service Revenue</div>
+            <div data-value="a:4300" role="option" class="combobox-option">4300 Other Income</div>
+            <div data-value="a:4400" role="option" class="combobox-option">4400 Interest Income</div>
+            <div data-value="a:5000" role="option" class="combobox-option">5000 Cost of Goods Sold</div>
+            <div data-value="a:5100" role="option" class="combobox-option">5100 Cost of Goods Sold</div>
+            <div data-value="a:5200" role="option" class="combobox-option">5200 Direct Labor</div>
+            <div data-value="a:5300" role="option" class="combobox-option">5300 Manufacturing Overhead</div>
+            <div data-value="a:6000" role="option" class="combobox-option">6000 Operating Expenses</div>
+            <div data-value="a:6100" role="option" class="combobox-option">6100 Salaries and Wages</div>
+            <div data-value="a:6200" role="option" class="combobox-option">6200 Rent</div>
+            <div data-value="a:6300" role="option" class="combobox-option">6300 Utilities</div>
+            <div data-value="a:6400" role="option" class="combobox-option">6400 Depreciation</div>
+            <div data-value="a:6500" role="option" class="combobox-option">6500 Professional Fees</div>
+            <div data-value="a:6600" role="option" class="combobox-option">6600 Marketing and Advertising</div>
+            <div data-value="a:6700" role="option" class="combobox-option">6700 Insurance</div>
+            <div data-value="a:6800" role="option" class="combobox-option">6800 Office Supplies</div>
+            <div data-value="a:6900" role="option" class="combobox-option">6900 Travel and Transportation</div>
+            <div data-value="a:6950" role="option" class="combobox-option">6950 Miscellaneous Expenses</div>
+            <div data-value="a:6960" role="option" class="combobox-option">6960 Foreign Exchange Difference</div>
             <div class="combobox-option combobox-option--empty" style="display:none">No results</div>
           </div>
         </div>

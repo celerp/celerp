@@ -98,6 +98,11 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
     finally:
         i18n._registry.pop("xx", None)
         getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
+        # The browser_context is session-scoped (conftest), so the celerp_lang
+        # cookie this test set would otherwise leak 'xx' into every later test in
+        # the shard - clear it here, alongside the registry pop, so siblings start
+        # from the default language.
+        page.context.clear_cookies(name="celerp_lang")
 
 
 def test_combobox_type_without_select_then_blur_restores(page, ui_server):
@@ -108,7 +113,12 @@ def test_combobox_type_without_select_then_blur_restores(page, ui_server):
     change event fires, so the page does not reload to a wrong language."""
     from playwright.sync_api import expect
 
+    # The browser_context is session-scoped, so a prior test may have left a
+    # celerp_lang cookie behind; clear it and reload so this test's baseline is
+    # the real default (en) and independent of shard ordering.
     page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+    page.context.clear_cookies(name="celerp_lang")
+    page.reload(wait_until="domcontentloaded")
     combo = page.locator(".lang-switcher-wrap .combobox-input")
     hidden = page.locator('.lang-switcher-wrap input[type="hidden"][name="lang"]')
     expect(hidden).to_have_value("en")
