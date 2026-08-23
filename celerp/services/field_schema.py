@@ -80,6 +80,38 @@ _BASE_FIELDS: list[dict] = [
     {"key": "updated_at",        "label": "Updated",           "type": "date",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 108, "show_in_table": False, "label_key": "field.label.updated_at"},
 ]
 
+# Built-in fields keyed for O(1) lookup when rehydrating stripped metadata.
+_BASE_FIELD_BY_KEY: dict[str, dict] = {f["key"]: f for f in _BASE_FIELDS}
+
+
+def _rehydrate_builtin_metadata(schema: list[dict]) -> list[dict]:
+    """Reattach canonical label_key/tooltip_key to built-in fields.
+
+    The item schema PATCH model does not carry label_key or tooltip_key, so a
+    company that customizes its schema stores built-in fields stripped of both.
+    Reattach them from _BASE_FIELDS, keyed strictly on built-in membership so
+    custom fields and dynamic price columns are never touched. label_key is
+    restored only when the stored label still equals the canonical English label
+    (a user-renamed built-in keeps its literal label and is never translated);
+    tooltip_key is restored for every built-in key, since there is no
+    custom-tooltip edit path. Idempotent: a field that already carries a key is
+    left as-is."""
+    out: list[dict] = []
+    for f in schema:
+        base = _BASE_FIELD_BY_KEY.get(f.get("key"))
+        if base is None:
+            out.append(f)
+            continue
+        updated = dict(f)
+        if ("label_key" not in updated and base.get("label_key")
+                and updated.get("label") == base.get("label")):
+            updated["label_key"] = base["label_key"]
+        if "tooltip_key" not in updated and base.get("tooltip_key"):
+            updated["tooltip_key"] = base["tooltip_key"]
+        out.append(updated)
+    return out
+
+
 def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dict]:
     """Insert a money column for each price list after position 5 (location).
 
@@ -190,5 +222,5 @@ async def get_effective_field_schema(
             keys_in_cat = {f["key"] for f in cat_fields}
             merged = [f for f in base_schema if f["key"] not in keys_in_cat]
             merged.extend(cat_fields)
-            return merged
-    return base_schema
+            return _rehydrate_builtin_metadata(merged)
+    return _rehydrate_builtin_metadata(base_schema)
