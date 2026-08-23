@@ -59,6 +59,8 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
     the running ui_server process (the same thing the module loader does on boot),
     then removed afterwards so no other browser test sees the synthetic 'xx'
     language."""
+    from playwright.sync_api import expect
+
     from ui import i18n
 
     i18n.register_catalog(
@@ -67,21 +69,20 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
     try:
         page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
         switcher = page.locator("#lang-switcher")
-        assert switcher.count() == 1, "language switcher not rendered with >1 locale"
+        expect(switcher).to_have_count(1)
 
+        # The switcher writes the celerp_lang cookie and reloads the page. Use
+        # auto-retrying assertions that ride out the reload rather than reading
+        # page.content() mid-navigation. The header text 'Testish Dashboard' is
+        # rendered server-side from t('page.dashboard') under the xx cookie, so it
+        # only appears AFTER the reload - proving the full cookie -> get_lang ->
+        # t() -> production component -> browser chain, not just the picker state.
         switcher.select_option("xx")
-        page.wait_for_load_state("domcontentloaded")
+        expect(page.locator("body")).to_contain_text("Testish Dashboard")
+        expect(page.locator("#lang-switcher")).to_have_value("xx")
 
         cookies = {c["name"]: c["value"] for c in page.context.cookies()}
         assert cookies.get("celerp_lang") == "xx", f"cookie not set: {cookies}"
-
-        body = page.content()
-        assert "Internal Server Error" not in body
-        assert "Traceback" not in body
-        # After reload, get_lang reads the cookie and the switcher marks xx active.
-        assert page.locator("#lang-switcher").input_value() == "xx"
-        # The contributed catalog value actually renders in the page header.
-        assert "Testish Dashboard" in body
     finally:
         i18n._registry.pop("xx", None)
         getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
