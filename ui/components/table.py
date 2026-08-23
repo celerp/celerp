@@ -737,7 +737,7 @@ def searchable_select(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
               value=display_label, placeholder=placeholder, autocomplete="off", **text_input_extra),
         Input(type="hidden", name=name, data_name=name, value=value, **htmx_attrs),
-        Div(*opt_els, cls="combobox-list"),
+        Div(*opt_els, cls="combobox-list", role="listbox"),
         **wrap_attrs,
     )
 

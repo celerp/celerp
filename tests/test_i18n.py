@@ -220,7 +220,12 @@ def test_am_values_nonempty_valid():
 
 
 def test_am_no_em_dash():
-    """No em dash (U+2014) in any am value; Amharic uses its own punctuation."""
+    """No em dash (U+2014) in any am value; Amharic uses its own punctuation.
+
+    Deliberately scoped to am, the content this branch introduces. en.json and
+    every shipped locale already carry em dashes in a handful of legacy keys
+    (e.g. label._none, inv._select_a_preset), so a suite-wide invariant would
+    fail on pre-existing English copy unrelated to this change."""
     am = _load_locale("am")
     em_dash = "\u2014"  # U+2014 EM DASH
     offending = [k for k, v in am.items() if isinstance(v, str) and em_dash in v]
@@ -247,3 +252,23 @@ def test_switcher_is_searchable_combobox():
     """The switcher is the app's searchable_select combobox, not a native <select>."""
     html = _render_topbar()
     assert "combobox-input" in html, "topbar switcher must be the searchable combobox (combobox-input)"
+
+
+def test_switcher_renders_native_amharic_label():
+    """am.json ships with this branch, so the switcher must show its native name
+    'አማርኛ' rather than the upper-case code 'AM'."""
+    html = _render_topbar()
+    assert "አማርኛ" in html, "topbar switcher must render the native Amharic label 'አማርኛ', not 'AM'"
+
+
+def test_switcher_has_aria_combobox_semantics():
+    """The switcher exposes ARIA combobox semantics (rule i): the visible input is
+    a role=combobox owning a listbox of role=option items. The dynamic wiring
+    (aria-controls / aria-expanded / aria-activedescendant) is added by
+    initCombobox at runtime; these static roles are what the server must render."""
+    html = _render_topbar()
+    assert 'role="combobox"' in html, "combobox input must carry role=combobox"
+    assert 'aria-haspopup="listbox"' in html, "combobox input must declare aria-haspopup=listbox"
+    assert 'aria-autocomplete="list"' in html, "combobox input must declare aria-autocomplete=list"
+    assert 'role="listbox"' in html, "the option list must carry role=listbox"
+    assert 'role="option"' in html, "each option must carry role=option"

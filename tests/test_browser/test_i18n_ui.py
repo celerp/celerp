@@ -39,26 +39,34 @@ def test_language_setting_persists(page, ui_server, api):
 
 
 def test_lang_switcher_in_topbar(page, ui_server):
-    """I18N-03: Language switcher dropdown is present in the topbar when >1 locale available."""
+    """I18N-03: the language switcher is present in the topbar as the searchable
+    combobox (the app ships several disk locales, so it always renders)."""
+    from playwright.sync_api import expect
+
     page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
     body = page.content()
-    # The lang-switcher select exists (may be hidden if only 1 locale)
-    # With only en.json, it won't render. Just verify no crash.
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
+    # The switcher is the shared searchable combobox, not a native <select>.
+    expect(page.locator(".lang-switcher-wrap .combobox-input")).to_have_count(1)
+    expect(page.locator('.lang-switcher-wrap input[type="hidden"][name="lang"]')).to_have_count(1)
 
 
 def test_select_module_language_sets_cookie_and_renders(page, ui_server):
-    """I18N-04: selecting a module-contributed language in the topbar switcher
+    """I18N-04: selecting a module-contributed language in the topbar combobox
     sets the celerp_lang cookie, reloads, and the reloaded page renders that
-    language as selected - the real end-to-end contributed-language flow.
+    language - the real end-to-end contributed-language flow.
 
     The catalog overrides page.dashboard, a key the dashboard header actually
     renders, so the assertion proves the full chain: module catalog -> request
     language -> t() -> production component -> browser. It is pushed straight into
     the running ui_server process (the same thing the module loader does on boot),
     then removed afterwards so no other browser test sees the synthetic 'xx'
-    language."""
+    language.
+
+    The switcher is the shared searchable_select combobox (rule i: >10 locales),
+    so selection is a click on the option, not <select>.select_option - which is
+    exactly what the module-seam rebase changed."""
     from playwright.sync_api import expect
 
     from ui import i18n
@@ -68,21 +76,51 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
     )
     try:
         page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
-        switcher = page.locator("#lang-switcher")
-        expect(switcher).to_have_count(1)
+        combo = page.locator(".lang-switcher-wrap .combobox-input")
+        hidden = page.locator('.lang-switcher-wrap input[type="hidden"][name="lang"]')
+        expect(combo).to_have_count(1)
 
-        # The switcher writes the celerp_lang cookie and reloads the page. Use
-        # auto-retrying assertions that ride out the reload rather than reading
-        # page.content() mid-navigation. The header text 'Testish Dashboard' is
-        # rendered server-side from t('page.dashboard') under the xx cookie, so it
-        # only appears AFTER the reload - proving the full cookie -> get_lang ->
+        # Open the option list and pick the module-contributed language. Clicking
+        # the option fires the combobox's selectOpt, which sets the hidden value
+        # and dispatches change; the topbar's change listener then writes the
+        # celerp_lang cookie and reloads. Auto-retrying assertions ride out the
+        # reload rather than reading content mid-navigation. 'Testish Dashboard'
+        # is rendered server-side from t('page.dashboard') under the xx cookie, so
+        # it only appears AFTER the reload - proving the full cookie -> get_lang ->
         # t() -> production component -> browser chain, not just the picker state.
-        switcher.select_option("xx")
+        combo.click()
+        page.locator('.lang-switcher-wrap .combobox-option[data-value="xx"]').click()
         expect(page.locator("body")).to_contain_text("Testish Dashboard")
-        expect(page.locator("#lang-switcher")).to_have_value("xx")
+        expect(hidden).to_have_value("xx")
 
         cookies = {c["name"]: c["value"] for c in page.context.cookies()}
         assert cookies.get("celerp_lang") == "xx", f"cookie not set: {cookies}"
     finally:
         i18n._registry.pop("xx", None)
         getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
+
+
+def test_combobox_type_without_select_then_blur_restores(page, ui_server):
+    """I18N-05: typing a non-matching query into the switcher combobox and then
+    blurring without picking an option restores the committed label and value -
+    it must not strand the typed query in the box or leave the hidden value
+    emptied (the shared-combobox blur bug fixed alongside the module seam). No
+    change event fires, so the page does not reload to a wrong language."""
+    from playwright.sync_api import expect
+
+    page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+    combo = page.locator(".lang-switcher-wrap .combobox-input")
+    hidden = page.locator('.lang-switcher-wrap input[type="hidden"][name="lang"]')
+    expect(hidden).to_have_value("en")
+    committed_label = combo.input_value()
+
+    combo.click()
+    combo.fill("zzz not a language")  # filters to no match; hidden cleared while typing
+    # Blur by focusing another topbar control; the option list closes and restores.
+    page.locator(".global-search-input").click()
+
+    expect(combo).to_have_value(committed_label)
+    expect(hidden).to_have_value("en")
+    # No spurious navigation: the language did not change.
+    cookies = {c["name"]: c["value"] for c in page.context.cookies()}
+    assert cookies.get("celerp_lang", "en") == "en", f"blur must not switch language: {cookies}"
