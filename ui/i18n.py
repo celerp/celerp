@@ -58,6 +58,11 @@ def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
     module-vs-module clash for the same language and key, the FIRST registration
     wins. The load cache is invalidated so the new catalog is visible at once.
     """
+    if not isinstance(lang, str) or not lang.strip():
+        _log.warning(
+            "register_catalog: ignoring catalog with invalid language code %r", lang,
+        )
+        return
     if not isinstance(mapping, dict):
         _log.warning(
             "register_catalog: ignoring non-dict catalog for %r (%s)",
@@ -76,13 +81,16 @@ def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
     entry = _registry.setdefault(lang, {"catalog": {}, "rtl": False})
     # First-registered wins: existing keys overlay the incoming ones.
     entry["catalog"] = {**clean, **entry["catalog"]}
-    if rtl:
+    if rtl is True:
         entry["rtl"] = True
     _invalidate_cache()
 
 
 def clear_registry() -> None:
-    """Clear all module-contributed catalogs and drop the load cache. Tests only."""
+    """Clear all module-contributed catalogs and drop the load cache. Called by
+    the module loader at the start of every load_all() pass so the registry is
+    rebuilt from scratch (no stale/orphaned catalogs across re-scans), and by
+    tests for isolation."""
     _registry.clear()
     _invalidate_cache()
 
@@ -118,7 +126,7 @@ def get_lang(request) -> str:
     if request is None:
         return "en"
     lang = request.cookies.get("celerp_lang", "")
-    if lang:
+    if lang and (lang in _DISK_LANGS or lang in _registry):
         return lang
     accept = request.headers.get("accept-language", "")
     for part in accept.split(","):
@@ -144,5 +152,9 @@ def is_rtl(lang: str | None = None) -> bool:
     code = lang or _current_lang.get()
     if code in RTL_LANGS:
         return True
+    if code in _DISK_LANGS:
+        # A central language's direction is owned centrally: a module contributing
+        # extra keys for it (central wins for text) cannot flip its direction either.
+        return False
     entry = _registry.get(code)
     return bool(entry and entry.get("rtl"))
