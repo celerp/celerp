@@ -12,6 +12,7 @@ from fasthtml.common import *
 
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
+from ui.components.table import searchable_select
 from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
@@ -24,6 +25,18 @@ def _css_version() -> str:
         return "1"
 
 _CSS_VER = _css_version()
+
+# Native display name per language code, for the topbar switcher. Which languages
+# exist is decided by available_langs() (disk catalogs plus any a module contributes);
+# this map only supplies the human-readable label, falling back to the uppercased code
+# for a language with no entry here (e.g. one contributed by a module).
+_LANG_NATIVE_LABELS: dict[str, str] = {
+    "en": "English", "am": "አማርኛ", "th": "ไทย", "zh": "中文", "ja": "日本語",
+    "ko": "한국어", "es": "Español", "fr": "Français", "de": "Deutsch",
+    "pt": "Português", "it": "Italiano", "nl": "Nederlands", "ru": "Русский",
+    "ar": "العربية", "hi": "हिन्दी", "vi": "Tiếng Việt", "id": "Bahasa Indonesia",
+    "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
+}
 
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. Uniform
 # across direct and relay access (no token-TTL surgery), and it implements "15 minutes of inactivity"
@@ -240,6 +253,29 @@ function initCombobox(wrap) {
   var bag = isMulti ? wrap.querySelector('.combobox-selected') : null;
   var fieldName = hidden ? hidden.getAttribute('data-name') : '';
 
+  // ARIA wiring: give the list a unique id, point the input's aria-controls at
+  // it, and keep aria-expanded/aria-activedescendant in step with the popup. IDs
+  // are assigned here, not server-side, because one field name can appear on many
+  // rows and each instance needs its own unique id. A MutationObserver mirrors
+  // aria-expanded off the list's .open class so every open/close path stays in
+  // sync, including the global outside-click closer that never calls this scope.
+  var comboUid = (window.__comboUid = (window.__comboUid || 0) + 1);
+  var listId = 'combobox-list-' + comboUid;
+  list.id = listId;
+  input.setAttribute('aria-controls', listId);
+  function ensureOptId(opt, i) { if (!opt.id) opt.id = listId + '-opt-' + i; return opt.id; }
+  new MutationObserver(function() {
+    var open = list.classList.contains('open');
+    input.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) input.removeAttribute('aria-activedescendant');
+  }).observe(list, {attributes: true, attributeFilter: ['class']});
+
+  // Committed selection for a plain single-select: typing only filters the list,
+  // it never commits, so on blur without a pick we restore this rather than leave
+  // a stale search query in the box. selectOpt() updates it on every real pick.
+  var committedValue = hidden ? hidden.value : '';
+  var committedLabel = input.value;
+
   // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
   // We set top/left/width inline on open so it tracks the input position.
   list.style.position = 'fixed';
@@ -282,7 +318,10 @@ function initCombobox(wrap) {
     var next = cur + dir;
     if (next < 0) next = opts.length - 1;
     if (next >= opts.length) next = 0;
-    if (opts[next]) opts[next].classList.add('focused');
+    if (opts[next]) {
+      opts[next].classList.add('focused');
+      input.setAttribute('aria-activedescendant', ensureOptId(opts[next], next));
+    }
   }
   function syncMultiLabel() {
     var n = bag.querySelectorAll('input').length;
@@ -343,6 +382,8 @@ function initCombobox(wrap) {
     // Show human-readable label in the visible input; store actual value in hidden
     input.value = label;
     if (hidden) hidden.value = val;
+    committedValue = val;
+    committedLabel = label;
     list.classList.remove('open');
     currentOpts().forEach(function(o) { o.classList.remove('focused'); });
     // Use htmx.trigger() — synthetic dispatchEvent is ignored by HTMX 2.x
@@ -391,12 +432,24 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      // If allow-custom and user typed something not in list, commit typed value
-      if (allowCustom && input.value && !hidden.value) {
-        hidden.value = input.value;
-        if (typeof htmx !== 'undefined') htmx.trigger(hidden, 'change');
-        else hidden.dispatchEvent(new Event('change', {bubbles: true}));
+      // allow-custom keeps the hidden value in step with typing; if the box was
+      // cleared, commit whatever text stands as the value.
+      if (allowCustom) {
+        if (input.value && !hidden.value) {
+          hidden.value = input.value;
+          committedValue = input.value;
+          committedLabel = input.value;
+          if (typeof htmx !== 'undefined') htmx.trigger(hidden, 'change');
+          else hidden.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        return;
       }
+      // Plain single-select over a fixed option set: typing only filters, it
+      // never commits. Restore the committed label and value so blurring after a
+      // search that was not confirmed never leaves a stale query in the box or an
+      // emptied hidden value behind the visible text.
+      input.value = committedLabel;
+      if (hidden) hidden.value = committedValue;
     }, 150);
   });
   input.addEventListener('keydown', function(e) {
@@ -404,7 +457,17 @@ function initCombobox(wrap) {
     if (e.key === 'ArrowUp') { moveFocus(-1); e.preventDefault(); }
     if (e.key === 'Enter') {
       var focused = list.querySelector('.combobox-option.focused');
-      if (focused) { selectOpt(focused); e.preventDefault(); }
+      if (focused) { selectOpt(focused); e.preventDefault(); return; }
+      // No arrow-key focus: commit the exact visible label match, or the only
+      // visible option if the query narrowed the list to one, so a keyboard user
+      // who typed a full name and pressed Enter is not left with nothing selected.
+      var vis = currentOpts().filter(function(o) {
+        return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty');
+      });
+      var typed = input.value.trim().toLowerCase();
+      var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
+      var pick = exact.length === 1 ? exact[0] : (vis.length === 1 ? vis[0] : null);
+      if (pick) { selectOpt(pick); e.preventDefault(); }
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');
@@ -755,10 +818,10 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Language switcher ────────────────────────────────────────────── */
-  var sel = document.getElementById('lang-switcher');
-  if (sel) {
-    sel.addEventListener('change', function() {
-      document.cookie = 'celerp_lang=' + sel.value + ';path=/;max-age=' + (86400 * 365) + ';samesite=lax';
+  var langHidden = document.querySelector('.lang-switcher-wrap input[type="hidden"][name="lang"]');
+  if (langHidden) {
+    langHidden.addEventListener('change', function() {
+      document.cookie = 'celerp_lang=' + langHidden.value + ';path=/;max-age=' + (86400 * 365) + ';samesite=lax';
       window.location.reload();
     });
   }
@@ -1412,15 +1475,15 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             hx_swap="outerHTML",
         ),
     )
-    # Language switcher
+    # Language switcher: searchable combobox showing each locale's native name.
     parts.append(
         Div(
             Span("🌐", cls="lang-switcher__globe"),
-            Select(
-                *[Option(code.upper(), value=code, selected=(code == lang)) for code in available_langs()],
-                id="lang-switcher",
-                cls="lang-switcher",
-                title="Language",
+            searchable_select(
+                "lang",
+                [(code, _LANG_NATIVE_LABELS.get(code, code.upper())) for code in available_langs()],
+                value=lang,
+                aria_label=t("label.language", lang),
             ),
             cls="lang-switcher-wrap",
         ),

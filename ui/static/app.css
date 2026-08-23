@@ -2320,8 +2320,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* ── Language switcher ─────────────────────────────────────────────────── */
 .lang-switcher-wrap { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
 .lang-switcher__globe { font-size: 0.9rem; line-height: 1; }
-.lang-switcher { appearance: none; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); color: var(--c-text); font-size: 0.75rem; padding: 0.2rem 0.35rem; cursor: pointer; width: auto; min-width: 0; }
-.lang-switcher:hover { border-color: var(--c-text2); }
+/* Topbar language combobox: keep the shared searchable_select compact in the bar. */
+.lang-switcher-wrap .combobox-wrap { width: auto; }
+.lang-switcher-wrap .combobox-input { width: auto; min-width: 7ch; max-width: 12rem; font-size: 0.75rem; padding: 0.2rem 1.4rem 0.2rem 0.5rem; }
 /* When lang-switcher present, it takes the margin-left:auto; notif-wrap doesn't need it */
 .lang-switcher-wrap ~ .notif-wrap { margin-left: 0.5rem; }
 .topbar-user-email { font-size: 0.72rem; color: var(--c-text2); background: var(--c-bg3, var(--c-bg)); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.15rem 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; flex-shrink: 1; }

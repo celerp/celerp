@@ -160,3 +160,115 @@ def test_missing_key_with_kwargs_returns_key_formatted():
     """Missing key with kwargs — key itself is returned (no format attempted since key has no braces)."""
     result = t("nonexistent.key.xyz", "en", count=5)
     assert result == "nonexistent.key.xyz"
+
+
+# ---------------------------------------------------------------------------
+# Amharic (am) locale invariants
+#
+# am.json is a full mirror of en.json's keyset with native Amharic values.
+# These invariants guard the two hazards of adding a locale: a keyset drift
+# that silently drops UI copy, and a {name} placeholder mismatch that makes
+# t().format() raise KeyError at render time for am users.
+# ---------------------------------------------------------------------------
+
+import string
+
+
+def _load_locale(code: str) -> dict:
+    path = Path(_LOCALES_DIR) / f"{code}.json"
+    assert path.exists(), f"ui/locales/{code}.json must exist"
+    return json.loads(path.read_text())
+
+
+def _placeholders(value: str) -> set[str]:
+    """Named {placeholder} fields in a t() template, matching str.format()."""
+    return {
+        field for _, field, _, _ in string.Formatter().parse(value)
+        if field is not None
+    }
+
+
+def test_am_keyset_parity():
+    """am.json must contain exactly en.json's keyset: no missing, no extra key."""
+    en = _load_locale("en")
+    am = _load_locale("am")
+    missing = sorted(set(en) - set(am))
+    extra = sorted(set(am) - set(en))
+    assert not missing, f"am.json missing keys: {missing}"
+    assert not extra, f"am.json has keys absent from en.json: {extra}"
+
+
+def test_am_placeholder_parity():
+    """For every key, am's {name} placeholder set must equal en's; a mismatch
+    makes t(key, 'am', **kwargs).format() raise KeyError at render time."""
+    en = _load_locale("en")
+    am = _load_locale("am")
+    mismatched = {
+        key: (sorted(_placeholders(en[key])), sorted(_placeholders(am[key])))
+        for key in en
+        if key in am and _placeholders(en[key]) != _placeholders(am[key])
+    }
+    assert not mismatched, f"Placeholder mismatch (en, am) per key: {mismatched}"
+
+
+def test_am_values_nonempty_valid():
+    """am.json must be valid JSON with every value a non-empty string."""
+    am = _load_locale("am")
+    assert isinstance(am, dict)
+    bad = [k for k, v in am.items() if not isinstance(v, str) or not v.strip()]
+    assert bad == [], f"am.json keys with empty/non-string values: {bad}"
+
+
+def test_am_no_em_dash():
+    """No em dash (U+2014) in any am value; Amharic uses its own punctuation.
+
+    Deliberately scoped to am, the content this branch introduces. en.json and
+    every shipped locale already carry em dashes in a handful of legacy keys
+    (e.g. label._none, inv._select_a_preset), so a suite-wide invariant would
+    fail on pre-existing English copy unrelated to this change."""
+    am = _load_locale("am")
+    em_dash = "\u2014"  # U+2014 EM DASH
+    offending = [k for k, v in am.items() if isinstance(v, str) and em_dash in v]
+    assert offending == [], f"am.json values containing an em dash: {offending}"
+
+
+# ---------------------------------------------------------------------------
+# Topbar language switcher: native labels + searchable combobox
+# ---------------------------------------------------------------------------
+
+def _render_topbar() -> str:
+    from fasthtml.common import to_xml
+    from ui.components.shell import _topbar
+    return to_xml(_topbar([], lang="en"))
+
+
+def test_switcher_renders_native_labels():
+    """The switcher shows each locale's native name, not its upper-case code."""
+    html = _render_topbar()
+    assert "ไทย" in html, "topbar switcher must render the native locale label 'ไทย', not 'TH'"
+
+
+def test_switcher_is_searchable_combobox():
+    """The switcher is the app's searchable_select combobox, not a native <select>."""
+    html = _render_topbar()
+    assert "combobox-input" in html, "topbar switcher must be the searchable combobox (combobox-input)"
+
+
+def test_switcher_renders_native_amharic_label():
+    """am.json ships with this branch, so the switcher must show its native name
+    'አማርኛ' rather than the upper-case code 'AM'."""
+    html = _render_topbar()
+    assert "አማርኛ" in html, "topbar switcher must render the native Amharic label 'አማርኛ', not 'AM'"
+
+
+def test_switcher_has_aria_combobox_semantics():
+    """The switcher exposes ARIA combobox semantics (rule i): the visible input is
+    a role=combobox owning a listbox of role=option items. The dynamic wiring
+    (aria-controls / aria-expanded / aria-activedescendant) is added by
+    initCombobox at runtime; these static roles are what the server must render."""
+    html = _render_topbar()
+    assert 'role="combobox"' in html, "combobox input must carry role=combobox"
+    assert 'aria-haspopup="listbox"' in html, "combobox input must declare aria-haspopup=listbox"
+    assert 'aria-autocomplete="list"' in html, "combobox input must declare aria-autocomplete=list"
+    assert 'role="listbox"' in html, "the option list must carry role=listbox"
+    assert 'role="option"' in html, "each option must carry role=option"

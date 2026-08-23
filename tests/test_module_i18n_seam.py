@@ -410,16 +410,19 @@ def test_cookie_unavailable_language_falls_back():
 
 
 def test_switcher_marks_module_language_selected():
-    """The topbar switcher renders a module-contributed language as the SELECTED
-    option when it is the active language (render path)."""
+    """The topbar switcher shows a module-contributed language as the active one
+    when it is the current language (render path). The switcher is the searchable
+    combobox, so the active selection is the language code in the hidden value
+    input plus its label shown in the visible input - not an <option selected>."""
     from fasthtml.common import to_xml
 
     from ui.components.shell import _topbar
 
     i18n.register_catalog("xx", {"testlang.greeting": "Hi"})
     xml = to_xml(_topbar([], lang="xx"))
-    assert 'value="xx"' in xml
-    assert "selected" in xml
+    # xx has no native label, so its display label is the upper-cased code.
+    assert 'name="lang"' in xml and 'value="xx"' in xml  # hidden value holds the active code
+    assert 'value="XX"' in xml                            # visible input shows the active label
 
 
 # ---------------------------------------------------------------------------
