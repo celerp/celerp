@@ -128,7 +128,7 @@ def plain_error_response(e: APIError):
     if e.status == 403:
         return PlainTextResponse(t("acct.not_authorized"), status_code=403)
     status = e.status if 400 <= e.status < 500 else 500
-    return PlainTextResponse(f"Error: {e.detail}", status_code=status)
+    return PlainTextResponse(f"{t('shell.error_prefix')} {e.detail}", status_code=status)
 
 
 def date_params(d_from: str, d_to: str) -> dict:
@@ -148,10 +148,10 @@ def fname_date(v: str) -> str:
 def period_subtitle(d_from: str, d_to: str) -> str:
     parts = []
     if d_from:
-        parts.append(f"From: {d_from}")
+        parts.append(t("reports.period_from", date=d_from))
     if d_to:
-        parts.append(f"To: {d_to}")
-    return "  |  ".join(parts) if parts else "All periods"
+        parts.append(t("reports.period_to", date=d_to))
+    return "  |  ".join(parts) if parts else t("reports.all_periods")
 
 
 def totals_chips(total_debit, total_credit, balanced: bool, currency: str | None,
@@ -251,12 +251,12 @@ def report_header(company: dict, title: str, subtitle: str = "") -> FT:
         Div(
             H1(company.get("name", ""), cls="report-company-name"),
             P(company.get("address", ""), cls="report-company-address") if company.get("address") else None,
-            P(f"Tax ID: {company['tax_id']}", cls="report-company-taxid") if company.get("tax_id") else None,
+            P(f"{t('doc.tax_id')} {company['tax_id']}", cls="report-company-taxid") if company.get("tax_id") else None,
         ),
         Div(
             H2(title, cls="report-title"),
             P(subtitle, cls="report-subtitle") if subtitle else None,
-            P(f"Printed: {_date.today().isoformat()}", cls="report-print-date"),
+            P(t("reports.printed", date=_date.today().isoformat()), cls="report-print-date"),
         ),
         cls="report-header",
     )
@@ -278,7 +278,7 @@ def print_shell(company: dict, title: str, subtitle: str, body: FT,
         Body(
             report_header(company, title, subtitle) if header else None,
             body,
-            Div(NotStr('Powered by <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
+            Div(NotStr(f'{t("reports.powered_by")} <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )

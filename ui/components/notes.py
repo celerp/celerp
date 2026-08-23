@@ -103,7 +103,7 @@ def notes_tab(
         updated = n.get("updated_at")
         ts_display = _fmt_ts(created, zone)
         if updated:
-            ts_display += f" (edited {_fmt_ts(updated, zone)})"
+            ts_display += t("label.note_edited_suffix", ts=_fmt_ts(updated, zone))
         initials = "".join(w[0].upper() for w in author.split()[:2]) if author else "?"
         safe_note_id = _safe_id(note_id)
         timeline.append(Div(
@@ -130,7 +130,7 @@ def notes_tab(
                     hx_delete=delete_url.format(note_id=note_id),
                     hx_target=refresh_target,
                     hx_swap="innerHTML",
-                    hx_confirm=t("confirm.delete_note") if hasattr(t, "__call__") else "Delete this note?",
+                    hx_confirm=t("confirm.delete_note"),
                     cls="btn btn--ghost btn--xs btn--danger",
                 ),
                 cls="note-actions",

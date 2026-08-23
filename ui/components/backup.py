@@ -12,10 +12,12 @@ from fasthtml.common import A, Button, Div, Input
 from ui.i18n import t, get_lang
 
 
-_TOOLTIPS = {
-    "snapshot": "Upload an encrypted, deduplicated snapshot of your database and files to the cloud. Only changed files are uploaded.",
-    "download": "Download a complete backup archive (database + all files) to your computer. Not encrypted - store it securely.",
-    "import": "Restore from a previously downloaded .celerp-backup archive. This will overwrite your current data.",
+# Tooltip i18n keys, resolved at render time (see cloud_backup_buttons /
+# local_backup_buttons). Values here are keys, never English text (R1).
+_TOOLTIP_KEYS = {
+    "snapshot": "settings.backup_snapshot_tooltip",
+    "download": "settings.backup_download_tooltip",
+    "import": "settings.backup_import_tooltip",
 }
 
 
@@ -35,7 +37,7 @@ def cloud_backup_buttons(
             hx_disabled_elt="this",
             cls="btn btn--primary",
             disabled=not (enc_ok and gw_ok),
-            title=_TOOLTIPS["snapshot"],
+            title=t(_TOOLTIP_KEYS["snapshot"]),
         ),
         cls=cls,
     )
@@ -55,12 +57,12 @@ def local_backup_buttons(
         A(t("settings.download_backup"),
             href="/backup/export",
             cls=f"btn btn--secondary{size_cls}",
-            title=_TOOLTIPS["download"],
+            title=t(_TOOLTIP_KEYS["download"]),
         ),
         Button(t("btn.import_backup"),
             onclick=f"document.getElementById('{import_input_id}').click()",
             cls=f"btn btn--secondary{size_cls}",
-            title=_TOOLTIPS["import"],
+            title=t(_TOOLTIP_KEYS["import"]),
             id="backup-import-btn",
         ),
         Input(
@@ -69,7 +71,10 @@ def local_backup_buttons(
             hx_post="/backup/import", hx_encoding="multipart/form-data",
             hx_target=f"#{flash_target_id}", hx_swap="outerHTML",
             hx_disabled_elt="#backup-import-btn",
-            onchange="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent='Restoring\u2026';}",
+            # The translated in-progress label is passed via a data-* attribute (R2),
+            # never spliced into the JS source string.
+            data_restoring_text=t("auth.restoring"),
+            onchange="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent=this.dataset.restoringText;}",
             style="display:none",
         ),
     ]

@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import COOKIE_NAME
 from ui.i18n import t
 
@@ -25,8 +25,8 @@ _PURCHASING_DOC_TYPES = frozenset({"purchase_order", "bill", "consignment_in"})
 def _purchasing_tabs(active: str, lang: str = "en") -> FT:
     tabs: list[tuple[str, str]] = [
         ("taxes", t("settings.tab_taxes", lang)),
-        ("terms-conditions", "Terms & Conditions"),
-        ("numbering", "Numbering"),
+        ("terms-conditions", t("page.terms_conditions", lang)),
+        ("numbering", t("settings_sales.tab_numbering", lang)),
     ]
     return Div(
         *[
@@ -75,11 +75,11 @@ def setup_routes(app):
             tab = "taxes"
 
         return await base_shell(
-            _section_breadcrumb("Purchasing"),
-            page_header("Purchasing Documents Settings"),
+            _section_breadcrumb(t("subscriptions.purchasing", lang)),
+            page_header(t("settings_purchasing.page_title", lang)),
             _purchasing_tabs(tab, lang=lang),
             content,
-            title="Purchasing Settings - Celerp",
+            title=page_title("page.settings"),
             nav_active="settings",
             lang=lang,
             request=request,

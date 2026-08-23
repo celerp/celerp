@@ -374,7 +374,7 @@ def files_section(
                         hx_target=f"#files-section-{sid}",
                         hx_swap="outerHTML",
                         cls=f"btn btn--ghost btn--xs{'  btn--hero-active' if is_hero else ''}",
-                        title="Set as hero image" if not is_hero else "Hero image",
+                        title=t("label.hero_image") if is_hero else t("action.set_hero_image"),
                     ),
                 )
             else:
@@ -430,7 +430,7 @@ def files_section(
     if has_linked:
         header_cells.append(filter_th(t("label.linked_to"), 4))
     if can_set_hero:
-        header_cells.append(Th("Hero", style="text-align:center;width:48px;"))
+        header_cells.append(Th(t("th.hero"), style="text-align:center;width:48px;"))
     header_cells += [Th(t("th.size")), Th()]
 
     table = Table(
@@ -477,9 +477,9 @@ def files_section(
     function upload(file){{
       var fd=new FormData(); fd.append('file',file);
       var txt=zone.querySelector('.file-drop-text');
-      if(txt) txt.textContent='{t("msg.uploading")}...';
+      if(txt) txt.textContent=zone.dataset.uploadingText;
       fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
-        .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
+        .then(function(r){{if(!r.ok) throw new Error(zone.dataset.uploadFailedText); return r.text();}})
         .then(function(html){{
           var sec=document.getElementById('files-section-{sid}');
           if(sec){{
@@ -489,7 +489,7 @@ def files_section(
             if(window._celerpDZ['{sid}']) window._celerpDZ['{sid}']();
           }} else location.reload();
         }})
-        .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
+        .catch(function(e){{if(txt) txt.textContent=zone.dataset.dropText; alert(e.message);}});
     }}
     zone.addEventListener('click',function(e){{
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
@@ -517,6 +517,11 @@ def files_section(
         Script(drop_js),
         cls="file-drop-zone",
         id=f"file-drop-zone-{sid}",
+        # Translated strings the JS above reads via dataset instead of splicing
+        # into the script source (R2).
+        data_drop_text=t("msg.drop_files_here"),
+        data_uploading_text=t("msg.uploading"),
+        data_upload_failed_text=t("msg.upload_failed"),
     )
 
     children = [
