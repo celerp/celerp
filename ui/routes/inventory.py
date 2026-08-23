@@ -28,7 +28,7 @@ from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEY
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl
+from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 
@@ -5631,7 +5631,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     cat_pref = active_cat or "__all__"
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _cm_exclude]
+    col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
     col_data_js = _json.dumps(col_data)
     # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
     # Virtual total always follows its paired unit-price column (the primary).
@@ -5656,7 +5656,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 checked=f.get("key") in selected,
                 id=f"col-chk-{f.get('key', '')}",
             ),
-            Span(f.get("label", f.get("key"))),
+            Span(field_label(f)),
             cls="column-option",
             draggable="true",
             data_col=f.get("key", ""),
@@ -7278,7 +7278,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
                 label_map=_inventory_type_labels() if key == "inventory_type" else None,
             )
         return Tr(
-            Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
+            Td(field_label(f), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
             cell,
         )
     return Div(

@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t
+from ui.i18n import t, field_label
 from celerp.services.field_schema import MIXED_VALUE
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
@@ -1328,7 +1328,7 @@ def data_table(
         th_style = f"width:{default_width}"
         spec = (column_filters or {}).get(key)
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
-                                    f["label"]) if spec else ""
+                                    field_label(f)) if spec else ""
         th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
         if sort_url:
             params = {**(extra_params or {}), "sort": key}
@@ -1339,7 +1339,7 @@ def data_table(
             if sort_key == key:
                 indicator = " ▲" if sort_dir == "asc" else " ▼"
             return Th(
-                A(f["label"], indicator, href="#",
+                A(field_label(f), indicator, href="#",
                   hx_get=f"{sort_url}?{query}" if query else sort_url,
                   hx_target=sort_target,
                   hx_swap="outerHTML",
@@ -1350,7 +1350,7 @@ def data_table(
                 title=t("table.drag_to_reorder_columns"),
                 style=th_style,
             )
-        return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
+        return Th(field_label(f), funnel, cls=th_cls, data_key=key, draggable="true",
                    title=t("table.drag_to_reorder_columns"), style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
@@ -2228,13 +2228,13 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     """
     import json as _json
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
-    col_data = [{"key": f["key"], "label": f.get("label", f["key"])} for f in schema]
+    col_data = [{"key": f["key"], "label": field_label(f)} for f in schema]
     default_keys = _json.dumps([f["key"] for f in schema if f.get("show_in_table", True)])
 
     checkboxes = [
         Label(
             Input(type="checkbox", value=f["key"], checked=f["key"] in selected, id=f"col-chk-{f['key']}"),
-            Span(f.get("label", f["key"])),
+            Span(field_label(f)),
             cls="column-option",
             draggable="true",
             data_col=f["key"],
