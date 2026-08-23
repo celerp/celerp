@@ -549,6 +549,12 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
     """
     _loaded.clear()
     _load_errors.clear()
+    # Module-contributed i18n catalogs are rebuilt from scratch on every pass,
+    # exactly like _loaded above, so a re-scan (a module toggled off, or a
+    # catalog changed) never leaves a stale or orphaned catalog behind. Lazy
+    # import keeps ui.i18n the lowest leaf (it must not import this module).
+    from ui.i18n import clear_registry
+    clear_registry()
 
     # Support comma-separated module directories
     raw = str(module_dir)
@@ -581,8 +587,12 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
                 sys.path.insert(0, p_str)
             candidate_paths.append(p)
 
-    # Sort by dependency order (skip reasons land in _load_errors)
-    ordered = _topo_sort(candidate_paths, enabled, errors=_load_errors)
+    # Sort by dependency order (skip reasons land in _load_errors). Discovery is
+    # name-sorted first so load order - and therefore every first-registered-wins
+    # tie-break (slots and module i18n catalogs alike) - is deterministic, not
+    # dependent on the filesystem's iterdir() order.
+    ordered = _topo_sort(
+        sorted(candidate_paths, key=lambda p: p.name), enabled, errors=_load_errors)
 
     # Relay credentials for the premium-license gate, resolved lazily and ONCE
     # per load pass: the JWT is the same for every module, and there must be no
@@ -826,6 +836,52 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
         elif isinstance(contribution, list):
             for item in contribution:
                 register_slot(slot_name, {**item, "_module": pkg_name})
+
+    # Register module-contributed UI translation catalogs (the `locales`
+    # manifest key, mirroring `slots` above). Each entry maps a language code to
+    # {"file": <path>, "rtl": <bool>}. Pushed into ui.i18n through a lazy import
+    # so the i18n leaf never imports the module subsystem. A malformed or
+    # unreadable entry is logged and skipped; the module and its other locales
+    # still load.
+    locales = manifest.get("locales") or {}
+    if not isinstance(locales, dict):
+        log.error(
+            "Module %r 'locales' skipped: must be a dict, got %s",
+            pkg_name, type(locales).__name__,
+        )
+        locales = {}
+    for lang, entry in locales.items():
+        if not isinstance(lang, str) or not lang.strip():
+            log.error(
+                "Module %r locale skipped: language code must be a non-empty string (got %r)",
+                pkg_name, lang,
+            )
+            continue
+        if (not isinstance(entry, dict)
+                or not isinstance(entry.get("file"), str) or not entry["file"].strip()):
+            log.error(
+                "Module %r locale %r skipped: entry must be a dict with a non-empty string 'file'",
+                pkg_name, lang,
+            )
+            continue
+        rtl = entry.get("rtl", False)
+        if not isinstance(rtl, bool):
+            log.error(
+                "Module %r locale %r: 'rtl' must be a bool, got %s - treating as false",
+                pkg_name, lang, type(rtl).__name__,
+            )
+            rtl = False
+        cat_path = pkg_path / entry["file"]
+        try:
+            catalog = json.loads(cat_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.error(
+                "Module %r locale %r skipped: cannot read %s (%s: %s)",
+                pkg_name, lang, entry["file"], type(exc).__name__, exc,
+            )
+            continue
+        from ui.i18n import register_catalog
+        register_catalog(lang, catalog, rtl=rtl)
 
     log.info(
         "Module %r loaded (v%s, slots: %s)",

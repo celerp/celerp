@@ -6,13 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang
+from ui.i18n import t, get_lang, available_langs
 from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
@@ -25,25 +24,6 @@ def _css_version() -> str:
         return "1"
 
 _CSS_VER = _css_version()
-
-# Discover available locales at startup
-_LOCALE_LABELS: dict[str, str] = {
-    "en": "English", "th": "ไทย", "zh": "中文", "ja": "日本語",
-    "ko": "한국어", "es": "Español", "fr": "Français", "de": "Deutsch",
-    "pt": "Português", "it": "Italiano", "nl": "Nederlands", "ru": "Русский",
-    "ar": "العربية", "hi": "हिन्दी", "vi": "Tiếng Việt", "id": "Bahasa Indonesia",
-    "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
-}
-
-def _available_locales() -> list[tuple[str, str]]:
-    """Return [(code, label)] for all locales with a .json file, sorted by label."""
-    locales_dir = Path(__file__).parent.parent / "locales"
-    codes = sorted(
-        p.stem for p in locales_dir.glob("*.json")
-    )
-    return [(c, _LOCALE_LABELS.get(c, c.upper())) for c in codes]
-
-_LOCALES = _available_locales()
 
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. Uniform
 # across direct and relay access (no token-TTL surgery), and it implements "15 minutes of inactivity"
@@ -1437,7 +1417,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
         Div(
             Span("🌐", cls="lang-switcher__globe"),
             Select(
-                *[Option(code.upper(), value=code, selected=(code == lang)) for code, _label in _LOCALES],
+                *[Option(code.upper(), value=code, selected=(code == lang)) for code in available_langs()],
                 id="lang-switcher",
                 cls="lang-switcher",
                 title="Language",

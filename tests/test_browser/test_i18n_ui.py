@@ -48,16 +48,41 @@ def test_lang_switcher_in_topbar(page, ui_server):
     assert "Traceback" not in body
 
 
-def test_language_change_endpoint_no_crash(page, ui_server):
-    """I18N-04: POST /settings/company/language → no 500, renders updated picker."""
-    # Use HTMX-style POST (form data)
-    resp = page.request.post(
-        f"{ui_server}/settings/company/language",
-        form={"language": "en"},
+def test_select_module_language_sets_cookie_and_renders(page, ui_server):
+    """I18N-04: selecting a module-contributed language in the topbar switcher
+    sets the celerp_lang cookie, reloads, and the reloaded page renders that
+    language as selected - the real end-to-end contributed-language flow.
+
+    The catalog overrides page.dashboard, a key the dashboard header actually
+    renders, so the assertion proves the full chain: module catalog -> request
+    language -> t() -> production component -> browser. It is pushed straight into
+    the running ui_server process (the same thing the module loader does on boot),
+    then removed afterwards so no other browser test sees the synthetic 'xx'
+    language."""
+    from playwright.sync_api import expect
+
+    from ui import i18n
+
+    i18n.register_catalog(
+        "xx", {"testlang.greeting": "Hi from Testish", "page.dashboard": "Testish Dashboard"}
     )
-    assert resp.status != 500, \
-        f"POST /settings/company/language returned {resp.status}"
-    # Response should be a valid HTML fragment (not a full traceback)
-    body = resp.text()
-    assert "Internal Server Error" not in body
-    assert "Traceback" not in body
+    try:
+        page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+        switcher = page.locator("#lang-switcher")
+        expect(switcher).to_have_count(1)
+
+        # The switcher writes the celerp_lang cookie and reloads the page. Use
+        # auto-retrying assertions that ride out the reload rather than reading
+        # page.content() mid-navigation. The header text 'Testish Dashboard' is
+        # rendered server-side from t('page.dashboard') under the xx cookie, so it
+        # only appears AFTER the reload - proving the full cookie -> get_lang ->
+        # t() -> production component -> browser chain, not just the picker state.
+        switcher.select_option("xx")
+        expect(page.locator("body")).to_contain_text("Testish Dashboard")
+        expect(page.locator("#lang-switcher")).to_have_value("xx")
+
+        cookies = {c["name"]: c["value"] for c in page.context.cookies()}
+        assert cookies.get("celerp_lang") == "xx", f"cookie not set: {cookies}"
+    finally:
+        i18n._registry.pop("xx", None)
+        getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
