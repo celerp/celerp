@@ -19,12 +19,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# FastHTML element names whose first positional arg is typically user-visible text
+# FastHTML element names whose positional args are typically user-visible text,
+# plus the page_header helper whose first argument is a page title.
 _ELEMENTS = {
     "Div", "H1", "H2", "H3", "H4", "P", "Li", "Span", "Label", "Button",
     "A", "Small", "Td", "Th", "Strong", "Em", "Option", "Input", "Title",
     "Legend", "Summary", "Details", "Figcaption", "Nav", "Section",
-    "Footer", "Header",
+    "Footer", "Header", "page_header",
 }
 
 # Strings to exclude: CSS classes, HTML attributes, URLs, short tokens, etc.
@@ -38,22 +39,10 @@ _EXCLUDE_PATTERNS = [
 ]
 
 # Attribute kwargs that DO carry user-visible text (tooltips, placeholders,
-# confirm prompts, accessibility labels). These are checked for bare strings the
-# same way element content is - the value must go through t() at render time.
-_USER_FACING_ATTRS = {"placeholder", "title", "aria_label", "hx_confirm"}
-
-# Keywords that hint an argument is an HTML attribute rather than content
-_ATTR_KWARG_NAMES = {
-    "cls", "id", "type", "name", "method", "action", "href", "src",
-    "hx_get", "hx_post", "hx_put", "hx_delete", "hx_target", "hx_swap",
-    "hx_trigger", "hx_vals", "hx_confirm", "hx_include", "hx_push_url",
-    "hx_indicator", "hx_encoding", "hx_ext",
-    "data_group", "data_id", "data_value", "data_entity_id",
-    "autocomplete", "placeholder", "style", "role", "aria_label",
-    "value", "for_", "min", "max", "step", "pattern", "title",
-    "target", "rel", "width", "height", "alt", "onclick",
-    "onerror", "onchange", "onsubmit",
-}
+# confirm prompts, accessibility labels, image alt text). These are checked for
+# bare strings the same way element content is - the value must go through t()
+# at render time.
+_USER_FACING_ATTRS = {"placeholder", "title", "aria_label", "alt", "hx_confirm"}
 
 # Namespace inference from file path
 def _infer_namespace(filepath: str) -> str:
@@ -145,14 +134,17 @@ def _scan_source(source: str, rel: str) -> list[dict]:
             func_name = node.func.id
         elif isinstance(node.func, ast.Attribute):
             func_name = node.func.attr
-        # Positional element content (Div/Button/Th/Option/...): first arg.
-        if func_name in _ELEMENTS and node.args:
-            hit = _string_hit(node.args[0])
-            if hit:
+        # Positional element content (Div/Button/Th/Option/...): every positional
+        # child, so a bare string after the first argument is caught too.
+        if func_name in _ELEMENTS:
+            for arg in node.args:
+                hit = _string_hit(arg)
+                if not hit:
+                    continue
                 text, is_fstring = hit
                 results.append({
                     "file": rel,
-                    "line": node.args[0].lineno,
+                    "line": arg.lineno,
                     "text": text,
                     "suggested_key": f"{ns}.{_to_snake(text)}",
                     "element": func_name,
@@ -212,9 +204,13 @@ def _string_hit(arg: ast.expr) -> tuple[str, bool] | None:
     return None
 
 
-# The guardrail scope: the app's own rendered UI. default_modules ship their own
-# copy and are audited separately, so the permanent regression gate covers ui/.
-UI_SCAN_PATHS = [ROOT / "ui" / "routes", ROOT / "ui" / "components"]
+# The guardrail scope: the whole first-party UI surface - the app's own rendered
+# UI (ui/routes, ui/components, ui/app.py) and every first-party module's UI
+# package. A new hardcoded string anywhere here fails the guardrail.
+def guardrail_paths() -> list[Path]:
+    paths = [ROOT / "ui" / "routes", ROOT / "ui" / "components", ROOT / "ui" / "app.py"]
+    paths += sorted((ROOT / "default_modules").glob("*/celerp_*"))
+    return paths
 
 # Known strings that are legitimately NOT translated (format hints, example
 # values, credentials-shaped samples, brand names, unit abbreviations, magic
@@ -224,29 +220,42 @@ ALLOWLIST_PATH = ROOT / "scripts" / "i18n_allowlist.json"
 
 
 def _load_allowlist() -> set[tuple[str, str]]:
-    """Return the set of allowlisted (file, text) pairs; empty if none on disk."""
+    """Return the set of allowlisted (file, text) pairs; empty if none on disk.
+
+    Every entry must carry a non-empty ``reason`` so an exception cannot be added
+    silently; an entry missing one raises ValueError naming the offending pair.
+    """
     if not ALLOWLIST_PATH.exists():
         return set()
     data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
+    for e in data["entries"]:
+        if not str(e.get("reason", "")).strip():
+            raise ValueError(
+                f"allowlist entry needs a non-empty reason: "
+                f"{e.get('file')!r} {e.get('text')!r}"
+            )
     return {(e["file"], e["text"]) for e in data["entries"]}
 
 
 def scan(paths: list[Path] | None = None, apply_allowlist: bool = False) -> list[dict]:
     """Scan the given directories for hardcoded user-facing strings.
 
-    paths defaults to the whole audit surface (ui/ + default_modules). Pass
-    UI_SCAN_PATHS for the permanent guardrail scope. With apply_allowlist,
-    (file, text) pairs recorded in i18n_allowlist.json are removed, leaving only
-    NEW, un-triaged strings.
+    paths defaults to the guardrail scope (guardrail_paths()). Each path may be a
+    directory (its *.py files, excluding _-prefixed, are scanned) or a single .py
+    file. With apply_allowlist, (file, text) pairs recorded in i18n_allowlist.json
+    are removed, leaving only NEW, un-triaged strings.
     """
     if paths is None:
-        paths = list(UI_SCAN_PATHS)
-        paths += sorted((ROOT / "default_modules").glob("*/celerp_*"))
+        paths = guardrail_paths()
     results: list[dict] = []
-    for scan_dir in paths:
-        if not scan_dir.exists():
+    for scan_path in paths:
+        if scan_path.is_file():
+            if scan_path.suffix == ".py" and not scan_path.name.startswith("_"):
+                results.extend(_scan_file(scan_path))
             continue
-        for py_file in sorted(scan_dir.glob("*.py")):
+        if not scan_path.exists():
+            continue
+        for py_file in sorted(scan_path.glob("*.py")):
             if py_file.name.startswith("_"):
                 continue
             results.extend(_scan_file(py_file))
@@ -258,8 +267,9 @@ def scan(paths: list[Path] | None = None, apply_allowlist: bool = False) -> list
 
 def main():
     check = "--check" in sys.argv
-    # --check gates only the guardrail scope; the plain report covers everything.
-    all_results = scan(UI_SCAN_PATHS if check else None, apply_allowlist=check)
+    # Both the report and the --check gate cover the full guardrail scope; --check
+    # additionally removes allowlisted strings so only NEW leaks remain.
+    all_results = scan(guardrail_paths(), apply_allowlist=check)
 
     if "--json" in sys.argv:
         json.dump(all_results, sys.stdout, indent=2)

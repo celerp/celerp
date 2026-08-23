@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Delete template '{name}'?",
+  "labels.edit_name": "Edit: {name}",
+  "labels.height_example": "e.g. 30",
+  "labels.new_template_name": "New template name",
+  "labels.print_labels": "Print Labels",
+  "labels.print_labels_heading": "Print Labels - {n} item(s)",
+  "labels.remove_field": "Remove field",
+  "labels.selected": "Selected: {ids}{more}",
+  "labels.width_example": "e.g. 50"
+}

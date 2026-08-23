@@ -4788,6 +4788,14 @@ function celerpPrintLabel(entityId, templateId) {
         return Response("", status_code=204, headers={"HX-Refresh": "true"})
 
 
+def _slot_label(slot: dict, fallback: str = "") -> str:
+    """Display text for a module slot: its translated label_key when present,
+    else the raw manifest label, else the fallback. Mirrors the nav-slot
+    resolution in ui.components.shell so every slot label routes through t()."""
+    key = slot.get("label_key")
+    return t(key) if key else slot.get("label", fallback)
+
+
 def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
                   settings: dict | None = None, role: str = "owner") -> FT:
     """Sticky toolbar: [N selected] [Clear] [Action ▾] [context-area].
@@ -4818,7 +4826,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     for action in visible_bulk_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
         module_action_opts.append(
-            Option(action.get("label", "Action"), value=f"mod:{action_id}")
+            Option(_slot_label(action, t("inv.action")), value=f"mod:{action_id}")
         )
 
     # Build the main Action dropdown options
@@ -5002,7 +5010,7 @@ def _bulk_context_templates(
                     hx_swap="innerHTML",
                     hx_target="#bulk-labels-template-select",
                 ),
-                Button(action.get("label", t("btn._print_labels")), type="submit", cls="btn btn--primary btn--sm"),
+                Button(_slot_label(action, t("btn._print_labels")), type="submit", cls="btn btn--primary btn--sm"),
                 action="/labels/print-bulk/generate",
                 method="post",
                 target="_blank",
@@ -5012,7 +5020,7 @@ def _bulk_context_templates(
             module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         elif is_navigate:
             form = Form(
-                Button(action.get("label", t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
+                Button(_slot_label(action, t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
                 action=action["form_action"],
                 method="post",
                 target="_blank",
@@ -5022,7 +5030,7 @@ def _bulk_context_templates(
             module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         else:
             form = Form(
-                Button(action.get("label", t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
+                Button(_slot_label(action, t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
                 hx_post=action["form_action"],
                 hx_target="#bulk-action-result",
                 hx_swap="outerHTML",
@@ -7642,7 +7650,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
     for action in get_slot("item_action"):
         href = action.get("href_template", "").replace("{entity_id}", entity_id)
         module_item_actions.append(
-            A(action.get("label", "Action"), href=href, cls="btn btn--secondary btn--sm")
+            A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
         )
 
     safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)

@@ -3752,7 +3752,7 @@ def _tos_acceptance_card(required_version: str) -> FT:
             ),
             Label(t("label.i_agree_to_the"),
                 A(t("settings.terms_of_service"), href="https://relay.celerp.com/terms", target="_blank"),
-                " and ",
+                t("label._and"),
                 A(t("settings.privacy_policy"), href=PRIVACY_POLICY_URL, target="_blank"),
                 **{"for": "tos-agree-checkbox"},
             ),

@@ -119,7 +119,7 @@ def _backup_table(items: list[dict]):
                     Button(
                         t("btn.restore"),
                         hx_post=f"/backup/restore/{item['id']}",
-                        hx_confirm="This will replace your current database. Type RESTORE to confirm.",
+                        hx_confirm=t("bak.restore_type_confirm"),
                         hx_target="#backup-flash",
                         hx_swap="outerHTML",
                         cls="btn btn--xs btn--outline btn--danger",

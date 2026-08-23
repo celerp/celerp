@@ -324,9 +324,9 @@ def _templates_list(templates: list[dict], active_id: str | None = None) -> obje
                 hx_delete=f"/settings/labels/{tid}",
                 hx_target="#label-settings-root",
                 hx_swap="outerHTML",
-                hx_confirm=f"Delete template '{tpl['name']}'?",
+                hx_confirm=t("labels.delete_template_confirm", name=tpl['name']),
                 cls="btn btn--sm btn--icon btn--danger",
-                title="Delete",
+                title=t("btn.delete"),
             ),
             cls="template-list-entry",
         ))
@@ -334,7 +334,7 @@ def _templates_list(templates: list[dict], active_id: str | None = None) -> obje
         H3(t("page.templates"), cls="section-title"),
         Ul(*items, cls="template-list") if items else P(t("label.no_templates_yet"), cls="text-muted"),
         Form(
-            Input(name="name", placeholder="New template name", required=True, cls="form-input form-input--sm"),
+            Input(name="name", placeholder=t("labels.new_template_name"), required=True, cls="form-input form-input--sm"),
             Button(t("btn._add"), type="submit", cls="btn btn--sm btn--primary"),
             hx_post="/settings/labels",
             hx_target="#label-settings-root",
@@ -422,7 +422,7 @@ def _field_row_compact(
             type="button",
             onclick="this.closest('.field-row-compact').remove(); labelEditorUpdatePreview()",
             cls="btn btn--icon btn--danger",
-            title="Remove field",
+            title=t("labels.remove_field"),
         ),
         NotStr(
             f'<input type="hidden" name="fields[{idx}][type]" value="{ftype}" class="fld-type">'
@@ -895,7 +895,7 @@ def _editor_panel(
 """)
 
     return Div(
-        H3(f"Edit: {tpl['name']}", cls="section-title"),
+        H3(t("labels.edit_name", name=tpl['name']), cls="section-title"),
         Form(
             # Top bar: name then format (stacked, half-width)
             Div(
@@ -917,7 +917,7 @@ def _editor_panel(
                     Label(t("label.width_mm")),
                     Input(name="width_mm", type="number", step="0.5", min="5",
                           id="custom-w", value=str(w_mm) if w_mm else "",
-                          placeholder="e.g. 50", cls="form-input form-input--sm",
+                          placeholder=t("labels.width_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
                     cls="labels-form-field",
                 ),
@@ -925,7 +925,7 @@ def _editor_panel(
                     Label(t("label.height_mm")),
                     Input(name="height_mm", type="number", step="0.5", min="5",
                           id="custom-h", value=str(h_mm) if h_mm else "",
-                          placeholder="e.g. 30", cls="form-input form-input--sm",
+                          placeholder=t("labels.height_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
                     cls="labels-form-field",
                 ),
@@ -1011,8 +1011,9 @@ async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict],
 
     return await base_shell(
         Div(
-            H2(f"Print Labels - {len(entity_ids)} item(s)"),
-            P(f"Selected: {', '.join(entity_ids[:5])}{'...' if len(entity_ids) > 5 else ''}"),
+            H2(t("labels.print_labels_heading", n=len(entity_ids))),
+            P(t("labels.selected", ids=', '.join(entity_ids[:5]),
+              more=('...' if len(entity_ids) > 5 else ''))),
             Form(
                 *hidden_ids,
                 Div(

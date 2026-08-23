@@ -41,6 +41,7 @@ PLUGIN_MANIFEST = {
         },
         "bulk_action": {
             "label": "Print Labels",
+            "label_key": "labels.print_labels",
             "form_action": "/labels/print-bulk",
             "icon": "🖨",
             "action_type": "navigate",  # opens in new tab, not HTMX swap
@@ -51,6 +52,13 @@ PLUGIN_MANIFEST = {
             "href": "/settings/labels",
             "order": 60,
         },
+    },
+
+    # ── UI translation catalogs ───────────────────────────────────────────────
+    # Module-local English source, registered through the i18n `locales` seam
+    # under the module's own `labels.*` namespace (central `label.*` is separate).
+    "locales": {
+        "en": {"file": "celerp_labels/locales/en.json"},
     },
 
     # ── Python dependencies ───────────────────────────────────────────────────
