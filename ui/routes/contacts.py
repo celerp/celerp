@@ -17,7 +17,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
@@ -35,27 +35,31 @@ _EDITABLE = {"name", "company_name", "website", "currency", "phone", "email", "b
 
 # Contact table schemas - built from a shared base to stay DRY.
 # Only show_in_table differs: customers surface credit_limit; vendors surface payment_terms.
+# "label" holds a translation KEY, resolved to display text at render time in
+# _contact_schema (never at import - the request language is not known here).
 _CONTACT_SCHEMA_BASE = [
-    {"key": "name",             "label": "Name",             "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "company_name",     "label": "Company",          "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "email",            "label": "Email",            "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "phone",            "label": "Phone",            "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "website",          "label": "Website",          "type": "text",  "editable": True,  "show_in_table": False},
-    {"key": "billing_address",  "label": "Billing Address",  "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "shipping_address", "label": "Shipping Address", "type": "text",  "editable": True,  "show_in_table": False},
-    {"key": "tax_id",           "label": "Tax ID",           "type": "text",  "editable": True,  "show_in_table": False},
-    {"key": "currency",         "label": "Currency",         "type": "text",  "editable": True,  "show_in_table": False},
-    {"key": "credit_limit",     "label": "Credit Limit",     "type": "money", "editable": True,  "show_in_table": False},
-    {"key": "payment_terms",    "label": "Payment Terms",    "type": "text",  "editable": True,  "show_in_table": False},
-    {"key": "price_list",       "label": "Price List",       "type": "text",  "editable": True,  "show_in_table": True},
-    {"key": "tags",             "label": "Tags",             "type": "tags",  "editable": False, "show_in_table": True},
+    {"key": "name",             "label": "th.name",                        "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "company_name",     "label": "th.company",                     "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "email",            "label": "th.email",                       "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "phone",            "label": "th.phone",                       "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "website",          "label": "contacts.field_website",         "type": "text",  "editable": True,  "show_in_table": False},
+    {"key": "billing_address",  "label": "contacts.field_billing_address", "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "shipping_address", "label": "contacts.field_shipping_address","type": "text",  "editable": True,  "show_in_table": False},
+    {"key": "tax_id",           "label": "th.tax_id",                      "type": "text",  "editable": True,  "show_in_table": False},
+    {"key": "currency",         "label": "th.currency",                    "type": "text",  "editable": True,  "show_in_table": False},
+    {"key": "credit_limit",     "label": "th.credit_limit",                "type": "money", "editable": True,  "show_in_table": False},
+    {"key": "payment_terms",    "label": "label.payment_terms",            "type": "text",  "editable": True,  "show_in_table": False},
+    {"key": "price_list",       "label": "th.price_list",                  "type": "text",  "editable": True,  "show_in_table": True},
+    {"key": "tags",             "label": "page.tags",                      "type": "tags",  "editable": False, "show_in_table": True},
 ]
 
 def _contact_schema(contact_type: str) -> list[dict]:
-    """Return contact schema with show_in_table defaults appropriate for the contact_type."""
+    """Return contact schema with translated labels and show_in_table defaults
+    appropriate for the contact_type. Runs at render time, so ``t()`` resolves each
+    label key in the current request language."""
     extra_visible = {"credit_limit"} if contact_type == "customer" else {"payment_terms"}
     return [
-        {**f, "show_in_table": f["show_in_table"] or f["key"] in extra_visible}
+        {**f, "label": t(f["label"]), "show_in_table": f["show_in_table"] or f["key"] in extra_visible}
         for f in _CONTACT_SCHEMA_BASE
     ]
 
@@ -69,10 +73,10 @@ def _contact_display_cell(contact_id: str, field: str, value, trigger: str = "db
     elif field == "contact_type":
         display = format_value(value, "badge")
     elif field == "price_list":
-        display = str(value) if value and str(value).strip() else "Company Default"
+        display = str(value) if value and str(value).strip() else t("contacts.company_default")
     else:
         display = str(value) if value and str(value).strip() else EMPTY
-    title = "Double-click to edit"
+    title = t("label.dblclick_to_edit")
     return Td(
         display,
         title=title,
@@ -105,7 +109,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
                     hx_target="#contact-tags",
                     hx_swap="outerHTML",
                     cls="tag-remove",
-                    title=f"Remove tag {tag}",
+                    title=t("contacts.remove_tag_title", tag=tag),
                 ),
                 cls="tag-pill",
                 style=pill_style,
@@ -116,7 +120,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
     datalist = Datalist(*[Option(value=o) for o in options], id=f"tag-options-{contact_id}") if options else ""
     add_input = Form(
         Input(
-            type="text", name="tag", placeholder="+ Add tag",
+            type="text", name="tag", placeholder=t("contacts.add_tag_placeholder"),
             cls="tag-add-input", autocomplete="off",
             list=f"tag-options-{contact_id}" if options else None,
         ),
@@ -190,17 +194,17 @@ def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dic
         out.append(row)
 
     for f in (self_contact.get("files") or []):
-        _add(f, "Company", "/finance/company-details", "")
+        _add(f, t("th.company"), "/finance/company-details", "")
     for it in items:
         iid = it.get("id") or it.get("entity_id") or ""
-        ref = it.get("sku") or it.get("name") or "Item"
+        ref = it.get("sku") or it.get("name") or t("th.item")
         for f in (it.get("files") or []):
-            _add(f, f"Item: {ref}", f"/inventory/{iid}" if iid else "", f"/items/{iid}/files" if iid else "")
+            _add(f, t("contacts.file_source_item", ref=ref), f"/inventory/{iid}" if iid else "", f"/items/{iid}/files" if iid else "")
     for d in docs:
         did = d.get("id") or d.get("entity_id") or ""
-        ref = d.get("ref_id") or d.get("doc_number") or "Doc"
+        ref = d.get("ref_id") or d.get("doc_number") or t("contacts.doc_ref_fallback")
         for f in (d.get("files") or []):
-            _add(f, f"Doc: {ref}", f"/docs/{did}" if did else "", f"/docs/{did}/files" if did else "")
+            _add(f, t("contacts.file_source_doc", ref=ref), f"/docs/{did}" if did else "", f"/docs/{did}/files" if did else "")
     return out
 
 
@@ -216,9 +220,10 @@ def _contact_info_card(c: dict, *, oob: bool = False, hide_fields: tuple = ()) -
     Billing/Shipping text fields, which the dedicated two-column address book already covers)."""
     cid = c.get("entity_id") or c.get("id") or ""
     fields = [
-        ("name", "Name"), ("company_name", "Company"), ("email", "Email"), ("phone", "Phone"),
-        ("website", "Website"), ("billing_address", "Billing Address"), ("shipping_address", "Shipping Address"),
-        ("tax_id", "Tax ID"), ("currency", "Currency"),
+        ("name", t("th.name")), ("company_name", t("th.company")), ("email", t("th.email")), ("phone", t("th.phone")),
+        ("website", t("contacts.field_website")), ("billing_address", t("contacts.field_billing_address")),
+        ("shipping_address", t("contacts.field_shipping_address")),
+        ("tax_id", t("th.tax_id")), ("currency", t("th.currency")),
     ]
     fields = [(k, lbl) for k, lbl in fields if k not in hide_fields]
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
@@ -235,7 +240,7 @@ def _settings_card(c: dict) -> FT:
     """Right-column settings: price list, payment terms, credit limit."""
     cid = c.get("entity_id") or c.get("id") or ""
     fields = [
-        ("price_list", "Price List"), ("payment_terms", "Payment Terms"), ("credit_limit", "Credit Limit"),
+        ("price_list", t("th.price_list")), ("payment_terms", t("label.payment_terms")), ("credit_limit", t("th.credit_limit")),
     ]
     return Div(
         H3(t("page.settings"), cls="section-title"),
@@ -307,20 +312,20 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
     contact_filter = f"&contact_id={contact_id}" if contact_id else ""
 
     return Div(
-        _card("Total Invoiced", fmt_money(total_invoiced, None), sub_label="Year To Date",
+        _card(t("contacts.total_invoiced"), fmt_money(total_invoiced, None), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card("Total Paid", fmt_money(total_paid, None), sub_label="Year To Date",
+        _card(t("contacts.total_paid"), fmt_money(total_paid, None), sub_label=t("contacts.year_to_date"),
               href=f"/docs?type=invoice&status=paid{contact_filter}{ytd_filter}" if contact_id else ""),
-        _card("Outstanding", fmt_money(outstanding, None),
+        _card(t("th.outstanding"), fmt_money(outstanding, None),
               href=f"/docs?type=invoice&status=awaiting_payment{contact_filter}" if contact_id else ""),
-        _card("Avg Days to Pay", avg_dtp),
+        _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
         # as "this customer is holding nothing of ours".
-        _card("On Memo", fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
-              sub_label="Out to customer",
+        _card(t("contacts.on_memo"), fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
+              sub_label=t("contacts.out_to_customer"),
               href=f"/inventory?on_memo_to={contact_id}" if (contact_id and on_memo_total is not None) else ""),
-        _card("Consignment", fmt_money(total_consigned, None),
-              sub_label="Held from supplier" if consigned_total is not None else "",
+        _card(t("contacts.consignment"), fmt_money(total_consigned, None),
+              sub_label=t("contacts.held_from_supplier") if consigned_total is not None else "",
               href=(f"/inventory?consigned_from={contact_id}" if (contact_id and consigned_total is not None)
                     else (f"/docs?type=consignment_in{contact_filter}" if contact_id else ""))),
         cls="financial-cards",
@@ -356,27 +361,27 @@ def _address_card(cid: str, addr: dict) -> FT:
     if addr.get("country"):
         lines.append(P(addr["country"]))
     if addr.get("attn"):
-        lines.append(P(f"Attn: {addr['attn']}", cls="addr-attn"))
+        lines.append(P(t("contacts.attn_line", value=addr['attn']), cls="addr-attn"))
     if not lines:
         lines = [P(EMPTY)]
     primary_btn = (
-        Span(t("label._primary"), cls="badge badge--primary", title="This is the primary address")
+        Span(t("label._primary"), cls="badge badge--primary", title=t("contacts.primary_addr_title"))
         if is_default else
         Button(t("btn._make_primary"),
                hx_post=f"/contacts/{cid}/addresses/{addr_id}/make-primary",
                hx_target="#addresses-section",
                hx_swap="outerHTML",
                cls="btn btn--xs btn--ghost",
-               title="Set as primary address")
+               title=t("contacts.set_primary_title"))
     )
     return Div(
         *lines,
         Div(
             primary_btn,
-            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
+            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
             # The primary address can't be deleted - it keeps the contact (incl. the company) with a
             # billing address at all times; make another address primary first to remove this one.
-            (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm="Remove this address?", cls="btn btn--xs btn--danger", title="Remove")
+            (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_address"), cls="btn btn--xs btn--danger", title=t("btn.remove"))
              if not is_default else None),
             cls="addr-actions",
         ),
@@ -435,8 +440,8 @@ def _people_section(contact: dict) -> FT:
             Div(*name_parts),
             *extras,
             Div(
-                Button("✏", hx_get=f"/contacts/{cid}/people/{pid}/edit", hx_target=f"#person-{pid}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
-                Button("×", hx_delete=f"/contacts/{cid}/people/{pid}", hx_target="#people-section", hx_swap="outerHTML", hx_confirm="Remove this person?", cls="btn btn--xs btn--danger", title="Remove"),
+                Button("✏", hx_get=f"/contacts/{cid}/people/{pid}/edit", hx_target=f"#person-{pid}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
+                Button("×", hx_delete=f"/contacts/{cid}/people/{pid}", hx_target="#people-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_person"), cls="btn btn--xs btn--danger", title=t("btn.remove")),
                 cls="person-actions",
             ),
             cls="person-card", id=f"person-{pid}",
@@ -455,7 +460,7 @@ def _people_section(contact: dict) -> FT:
 def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
     tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key})."""
-    tabs = list(lead_tabs or []) + [("documents", "Documents", None), ("notes", "Notes", None), ("activity", "Activity", None)]
+    tabs = list(lead_tabs or []) + [("documents", t("page.documents"), None), ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
     return Div(
         *[A(
             label,
@@ -477,8 +482,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
     # Related documents table
     if not docs:
         docs_section = P(
-            "Invoices, quotes, receipts, bills and credit notes involving this contact appear here "
-            "automatically as you create them. None yet.",
+            t("contacts.docs_empty"),
             cls="empty-state-msg",
         )
     else:
@@ -549,14 +553,14 @@ def _contacts_bulk_toolbar(contact_type: str) -> FT:
                onclick=(
                    "CelerpSelection.clear();"
                    "CelerpSelection.syncCheckboxes();"
-                   "document.getElementById('contact-bulk-count').textContent='0 selected';"
+                   "document.getElementById('contact-bulk-count').textContent=" + _json.dumps(t("doc.0_selected")) + ";"
                    "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
                    "document.getElementById('contact-bulk-clear-btn').style.display='none';"
                    "_resetBulkActions();"
                )),
         Select(
             Option(t("inv.action"), value="", disabled=True, selected=True),
-            Option(t("btn.export_csv") + " (selected)", value="contact-export"),
+            Option(t("btn.export_csv") + t("contacts.selected_suffix"), value="contact-export"),
             Option(t("inv.merge"), value="contact-merge"),
             Option(t("btn.delete"), value="delete"),
             id="contact-bulk-select", cls="form-input form-input--sm",
@@ -575,9 +579,11 @@ def _contact_bulk_templates(contact_type: str) -> FT:
     from fasthtml.common import Template as _Tpl
     merge_tpl = _Tpl(
         Div(
-            P(f"Select the primary {contact_type} to keep. All others will be merged into it.",
+            P(t("contacts.merge_prompt", type=contact_type),
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
-            Div(id="contact-merge-radio-list"),
+            Div(id="contact-merge-radio-list",
+                data_merge_failed=t("contacts.merge_failed"),
+                data_merge_failed_prefix=t("contacts.merge_failed_prefix")),
             Button(t("btn.confirm_merge"), type="button", id="contact-merge-confirm-btn",
                    cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
                    disabled=True,
@@ -613,11 +619,11 @@ def _contact_bulk_templates(contact_type: str) -> FT:
         window.location.href = '/contacts/' + d.merged_into;
       } else {
         var res = document.getElementById('bulk-action-result');
-        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Merge failed') + '</p>';
+        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || list.dataset.mergeFailed) + '</p>';
       }
     }).catch(function(err) {
       var res = document.getElementById('bulk-action-result');
-      if (res) res.innerHTML = '<p class="flash flash--error">Merge failed: ' + err.message + '</p>';
+      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailedPrefix + err.message + '</p>';
     });
   };
   if (window.htmx) htmx.process(list.parentElement);
@@ -653,8 +659,8 @@ def _contacts_content(
     if not contacts:
         table_content = Div(
             empty_state_cta(
-                f"No {contact_type}s yet.",
-                f"Add {contact_type.title()}",
+                t("contacts.empty_none", type=contact_type),
+                t("contacts.add_type", type=contact_type.title()),
                 create_url,
                 hx_post=True,
             ),
@@ -688,8 +694,8 @@ def _contacts_content(
 
 async def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Request, q: str, page: int, total: int, per_page: int, sort: str, sort_dir: str, currency: str | None = None, settings: dict | None = None) -> FT:
     """Renders the full contact list page for customers or vendors."""
-    label = "Customers" if contact_type == "customer" else "Vendors"
     nav_key = "customers" if contact_type == "customer" else "vendors"
+    label = t(f"nav.{nav_key}")
     base_url = f"/contacts/{contact_type}s"
     create_url = f"/contacts/create?type={contact_type}"
     search_url = "/contacts/content"
@@ -700,12 +706,19 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     _role = _get_role(request)
     _can_edit = role_has_permission(_settings, _role, "edit_contacts")
     _can_import_export = role_has_permission(_settings, _role, "import_export_data")
+    _bulk_cfg = _json.dumps({
+        "selectedTpl": t("label.n_selected"),
+        "confirmDelete": t("contacts.confirm_bulk_delete"),
+        "deletedTpl": t("contacts.deleted_count"),
+        "deleteFailed": t("contacts.delete_failed"),
+        "deleteFailedPrefix": t("contacts.delete_failed_prefix"),
+    })
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=f"Search {label.lower()}...", target="#contacts-content", url=search_url,
-                       label=f"Search {label.lower()}"),
-            Button(f"New {label[:-1]}", hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
+            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url,
+                       label=t("contacts.search_scope", scope=label.lower())),
+            Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
             A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _can_import_export else "",
         ),
@@ -714,12 +727,13 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
         Script(f"""
 (function(){{
+  var CFG = {_bulk_cfg};
   function updateContactBulkToolbar(){{
     var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
     var toolbar = document.getElementById('contact-bulk-toolbar');
     var countEl = document.getElementById('contact-bulk-count');
     var clearBtn = document.getElementById('contact-bulk-clear-btn');
-    if (countEl) countEl.textContent = n + ' selected';
+    if (countEl) countEl.textContent = CFG.selectedTpl.replace('{{n}}', n);
     if (toolbar) toolbar.classList.toggle('is-active', n > 0);
     if (clearBtn) clearBtn.style.display = n > 0 ? '' : 'none';
   }}
@@ -735,7 +749,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       return;
     }}
     if (action === 'delete'){{
-      if (!confirm('Delete selected contacts? Contacts linked to open documents cannot be deleted.')) return;
+      if (!confirm(CFG.confirmDelete)) return;
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       fetch('/crm/contacts/bulk/delete', {{
         method: 'POST',
@@ -744,13 +758,13 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       }}).then(function(r){{ return r.json(); }}).then(function(d){{
         var res = document.getElementById('bulk-action-result');
         if (d.deleted !== undefined){{
-          res.innerHTML = '<p class="flash flash--success">Deleted ' + d.deleted + ' contact(s).</p>';
+          res.innerHTML = '<p class="flash flash--success">' + CFG.deletedTpl.replace('{{n}}', d.deleted) + '</p>';
           setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
         }} else {{
-          res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Delete failed') + '</p>';
+          res.innerHTML = '<p class="flash flash--error">' + (d.detail || CFG.deleteFailed) + '</p>';
         }}
       }}).catch(function(err){{
-        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">Delete failed: ' + err.message + '</p>';
+        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailedPrefix + err.message + '</p>';
       }});
       return;
     }}
@@ -777,7 +791,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
   updateContactBulkToolbar();
 }})();
 """),
-        title=f"{label} - Celerp",
+        title=page_title(f"nav.{nav_key}"),
         nav_active=nav_key,
         request=request,
     )
@@ -805,15 +819,15 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
     fork. The only differences are the conditional sections gated by the flags."""
-    contact_name = contact.get("name", "Contact")
+    contact_name = contact.get("name", t("contacts.contact_name_fallback"))
     contact_type = contact.get("contact_type", "")
     if back is not None:
         back_label, back_href = back
         nav_active_key = nav_active or back_label.lower()
     elif contact_type == "vendor":
-        back_label, back_href, nav_active_key = "Vendors", "/contacts/vendors", "vendors"
+        back_label, back_href, nav_active_key = t("nav.vendors"), "/contacts/vendors", "vendors"
     else:
-        back_label, back_href, nav_active_key = "Customers", "/contacts/customers", "customers"
+        back_label, back_href, nav_active_key = t("nav.customers"), "/contacts/customers", "customers"
     if nav_active:
         nav_active_key = nav_active
     cid = contact.get("entity_id") or contact.get("id") or contact_id
@@ -831,7 +845,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
   btn.addEventListener('click', function(){{
-    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
+    if (!confirm({_json.dumps(t("contacts.confirm_delete_contact"))})) return;
     fetch('/crm/contacts/bulk/delete', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
@@ -841,9 +855,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         sessionStorage.removeItem('celerp_contact_selection');
         window.location.href = {_json.dumps(back_href)};
       }} else {{
-        alert(d.detail || 'Delete failed.');
+        alert(d.detail || {_json.dumps(t("contacts.delete_failed_dot"))});
       }}
-    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
+    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed_prefix"))} + err.message); }});
   }});
 }})();
 """)
@@ -857,7 +871,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     )
 
     return await base_shell(
-        breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (page_title, None)]),
+        breadcrumbs([(t("nav.dashboard"), "/dashboard"), (back_label, back_href), (page_title, None)]),
         page_header(page_title),
         autofocus_script,
         action_bar,
@@ -1139,19 +1153,19 @@ def setup_routes(app):
             kanban = P(t("label.sales_funnel_module_not_installed"), cls="empty-state-msg")
             sfn_installed = False
         toggle = A(
-            "Hide closed" if show_closed else "Show closed",
+            t("contacts.hide_closed") if show_closed else t("contacts.show_closed"),
             href=f"/contacts/sales{'?show_closed=1' if not show_closed else ''}",
             cls="btn btn--secondary btn--sm",
         ) if sfn_installed else ""
         return await base_shell(
             page_header(
-                "Sales Funnel",
+                t("contacts.sales_funnel"),
                 A(t("page.new_deal"), href="/crm/deals/new", cls="btn btn--primary") if sfn_installed else "",
                 toggle,
             ),
             kanban,
             Span("", id="deal-error"),
-            title="Sales Funnel - Celerp",
+            title=page_title("contacts.sales_funnel"),
             nav_active="sales-funnel",
             request=request,
         )
@@ -1235,9 +1249,9 @@ def setup_routes(app):
         sid = await _resolve_self_contact_id(token)
         if not sid:
             return await base_shell(
-                page_header("🏢 Company Details"),
-                empty_state_cta("Your company's own contact record has not been initialised yet."),
-                title="Company Details - Celerp", nav_active="company-details", request=request,
+                page_header("🏢 " + t("settings.company_details")),
+                empty_state_cta(t("contacts.company_not_initialised")),
+                title=page_title("settings.company_details"), nav_active="company-details", request=request,
             )
         try:
             contact = await api.get_contact(token, sid)
@@ -1254,8 +1268,8 @@ def setup_routes(app):
         from ui.routes.settings import _company_settings_card
         from ui.i18n import get_lang
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
-            page_header("🏢 Company Details"),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
+            page_header("🏢 " + t("settings.company_details")),
             Div(
                 Div(_contact_info_card(contact, hide_fields=("currency", "billing_address", "shipping_address")),
                     cls="detail-col-left"),
@@ -1264,9 +1278,9 @@ def setup_routes(app):
             ),
             _addresses_section(contact),
             _tab_bar(sid, active="company-files",
-                     lead_tabs=[("company-files", "Files", "/finance/company-files/_section")]),
+                     lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")]),
             Div(await _company_files_section(token), id="tab-content"),
-            title="Company Details - Celerp", nav_active="company-details",
+            title=page_title("settings.company_details"), nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
         )
 
@@ -1295,7 +1309,7 @@ def setup_routes(app):
         return _shared_files_section(
             "company", "all", files, can_tag=False, can_describe=False, can_set_hero=False,
             can_upload=True, hide_product_images=True, show_linked=True, base_url="/finance/company-files",
-            title="Company files", **section_kwargs,
+            title=t("contacts.company_files_title"), **section_kwargs,
         )
 
     # Company files live as the first tab on the Company Details page (loaded via the _section route
@@ -1473,7 +1487,7 @@ def setup_routes(app):
                     Div(Label(t("label.state"), cls="form-label"), Input(type="text", name="state", cls="form-input"), cls="form-group"),
                     Div(Label(t("label.postal_code"), cls="form-label"), Input(type="text", name="postal_code", cls="form-input"), cls="form-group"),
                     Div(Label(t("label.country"), cls="form-label"), Input(type="text", name="country", cls="form-input"), cls="form-group"),
-                    Div(Label(t("label.attn"), cls="form-label"), Input(type="text", name="attn", placeholder="Attention / recipient name", cls="form-input"), cls="form-group"),
+                    Div(Label(t("label.attn"), cls="form-label"), Input(type="text", name="attn", placeholder=t("contacts.attn_placeholder"), cls="form-input"), cls="form-group"),
                     cls="form-row",
                 ),
                 Input(type="hidden", name="address_type", value=addr_type),
@@ -1533,7 +1547,7 @@ def setup_routes(app):
                     Div(Label(t("label.state"), cls="form-label"), Input(type="text", name="state", value=addr.get("state", ""), cls="form-input"), cls="form-group"),
                     Div(Label(t("label.postal_code"), cls="form-label"), Input(type="text", name="postal_code", value=addr.get("postal_code", ""), cls="form-input"), cls="form-group"),
                     Div(Label(t("label.country"), cls="form-label"), Input(type="text", name="country", value=addr.get("country", ""), cls="form-input"), cls="form-group"),
-                    Div(Label(t("label.attn"), cls="form-label"), Input(type="text", name="attn", value=addr.get("attn", ""), placeholder="Attention / recipient name", cls="form-input"), cls="form-group"),
+                    Div(Label(t("label.attn"), cls="form-label"), Input(type="text", name="attn", value=addr.get("attn", ""), placeholder=t("contacts.attn_placeholder"), cls="form-input"), cls="form-group"),
                     cls="form-row",
                 ),
                 Div(Label(t("label.default_address"), cls="form-label"),
@@ -1584,7 +1598,7 @@ def setup_routes(app):
         # a primary billing address. The UI hides the delete button on it; this guards the route too.
         target = next((a for a in (contact.get("addresses") or []) if str(a.get("address_id", "")) == address_id), None)
         if target is not None and target.get("is_default"):
-            return P("Make another address primary before removing this one.", cls="cell-error")
+            return P(t("contacts.primary_delete_guard"), cls="cell-error")
         try:
             await api.remove_contact_address(token, contact_id, address_id)
             contact = await api.get_contact(token, contact_id)
@@ -1624,13 +1638,13 @@ def setup_routes(app):
             Form(
                 Div(
                     Div(Label(t("th.name"), cls="form-label"), Input(type="text", name="name", cls="form-input", required=True), cls="form-group"),
-                    Div(Label(t("th.role"), cls="form-label"), Input(type="text", name="role", placeholder="e.g. Sales, AP", cls="form-input"), cls="form-group"),
+                    Div(Label(t("th.role"), cls="form-label"), Input(type="text", name="role", placeholder=t("contacts.role_placeholder"), cls="form-input"), cls="form-group"),
                     Div(Label(t("th.email"), cls="form-label"), Input(type="email", name="email", cls="form-input"), cls="form-group"),
                     cls="form-row",
                 ),
                 Div(
                     Div(Label(t("th.phone"), cls="form-label"), Input(type="text", name="phone", cls="form-input"), cls="form-group"),
-                    Div(Label(Input(type="checkbox", name="is_primary", value="true"), " Primary contact"), cls="form-group"),
+                    Div(Label(Input(type="checkbox", name="is_primary", value="true"), " " + t("contacts.primary_contact")), cls="form-group"),
                     cls="form-row",
                 ),
                 Div(
@@ -1688,7 +1702,7 @@ def setup_routes(app):
                 ),
                 Div(
                     Div(Label(t("th.phone"), cls="form-label"), Input(type="text", name="phone", value=person.get("phone", ""), cls="form-input"), cls="form-group"),
-                    Div(Label(Input(type="checkbox", name="is_primary", value="true", checked=bool(person.get("is_primary"))), " Primary contact"), cls="form-group"),
+                    Div(Label(Input(type="checkbox", name="is_primary", value="true", checked=bool(person.get("is_primary"))), " " + t("contacts.primary_contact")), cls="form-group"),
                     cls="form-row",
                 ),
                 Div(
@@ -1752,7 +1766,7 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("contacts.error_prefix", detail=e.detail), cls="cell-error")
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
 
@@ -1765,9 +1779,9 @@ def setup_routes(app):
 
         if field == "contact_type":
             input_el = Select(
-                Option("customer", value="customer", selected=val == "customer"),
-                Option("vendor", value="vendor", selected=val == "vendor"),
-                Option("both", value="both", selected=val == "both"),
+                Option(t("contacts.type_customer"), value="customer", selected=val == "customer"),
+                Option(t("contacts.type_vendor"), value="vendor", selected=val == "vendor"),
+                Option(t("contacts.type_both"), value="both", selected=val == "both"),
                 name="value",
                 hx_patch=f"/contacts/{contact_id}/field/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
@@ -1796,7 +1810,7 @@ def setup_routes(app):
                 terms = []
             term_names = [term.get("name", "") for term in terms]
             input_el = Select(
-                Option("-- Select --", value=""),
+                Option(t("contacts.select_prompt"), value=""),
                 *[Option(name, value=name, selected=(name == val)) for name in term_names],
                 Option(t("label._add_new"), value="__add_new__"),
                 name="value",
@@ -1872,7 +1886,7 @@ def setup_routes(app):
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
         if field == "currency" and value and value not in _CURRENCY_CODES:
-            return P(f"Invalid currency code: {value!r}", cls="cell-error")
+            return P(t("contacts.invalid_currency", code=repr(value)), cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
@@ -2137,14 +2151,14 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
-            page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_upload_form(
                 cols=_CONTACT_IMPORT_SPEC.cols,
                 template_href="/crm/import/contacts/template",
                 preview_action="/crm/import/contacts/preview",
                 has_mapping=True,
             ),
-            title="Import Contacts - Celerp",
+            title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
         )
@@ -2176,7 +2190,7 @@ def setup_routes(app):
         rows, err = await _csv_read_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
                     template_href="/crm/import/contacts/template",
@@ -2184,7 +2198,7 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Contacts - Celerp",
+                title=page_title("contacts.import_contacts"),
                 nav_active="customers",
                 request=request,
             )
@@ -2193,7 +2207,7 @@ def setup_routes(app):
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_column_mapping_form(
                 csv_cols=cols,
                 target_cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2203,7 +2217,7 @@ def setup_routes(app):
                 back_href="/crm/import/contacts",
                 required_targets=_CONTACT_IMPORT_SPEC.required,
             ),
-            title="Import Contacts - Celerp",
+            title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
         )
@@ -2219,15 +2233,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
                     template_href="/crm/import/contacts/template",
                     preview_action="/crm/import/contacts/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("contacts.csv_expired"),
                 ),
-                title="Import Contacts - Celerp",
+                title=page_title("contacts.import_contacts"),
                 nav_active="customers",
                 request=request,
             )
@@ -2238,7 +2252,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(_csv_mod.DictReader(_io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
                 _csv_column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2250,7 +2264,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Contacts - Celerp",
+                title=page_title("contacts.import_contacts"),
                 nav_active="customers",
                 request=request,
             )
@@ -2261,7 +2275,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Contacts", A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
             _csv_validation_result(
                 rows=rows,
                 cols=cols,
@@ -2272,7 +2286,7 @@ def setup_routes(app):
                 revalidate_action="/crm/import/contacts/revalidate",
                 has_mapping=True,
             ),
-            title="Import Contacts - Celerp",
+            title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
         )
@@ -2289,7 +2303,7 @@ def setup_routes(app):
                 cols=_CONTACT_IMPORT_SPEC.cols, template_href="/crm/import/contacts/template",
                 preview_action="/crm/import/contacts/preview",
                 has_mapping=True,
-                error="CSV data expired. Please re-upload.",
+                error=t("contacts.csv_expired"),
             )
         rows = list(_csv_mod.DictReader(_io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols
@@ -2393,7 +2407,7 @@ def setup_routes(app):
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return JSONResponse({"detail": t("error.unauthorized")}, status_code=401)
         try:
             body = await request.json()
             result = await api.bulk_delete_contacts(token, body.get("contact_ids", []))
@@ -2407,7 +2421,7 @@ def setup_routes(app):
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return JSONResponse({"detail": t("error.unauthorized")}, status_code=401)
         try:
             body = await request.json()
             result = await api.merge_contacts(

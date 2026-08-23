@@ -13,7 +13,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
@@ -82,11 +82,11 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "buckets": {}}
         content = [
-            page_header("AR Aging", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
+            page_header(t("page.ar_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
-        return await _page_or_fragment(request, *content, title="AR Aging - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title("page.ar_aging"), nav_active="reports")
 
     @app.get("/reports/ap-aging")
     async def ap_aging(request: Request):
@@ -104,11 +104,11 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "buckets": {}}
         content = [
-            page_header("AP Aging", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
+            page_header(t("page.ap_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
-        return await _page_or_fragment(request, *content, title="AP Aging - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title("page.ap_aging"), nav_active="reports")
 
     @app.get("/reports/sales")
     async def sales_report(request: Request):
@@ -134,7 +134,7 @@ def setup_routes(app):
 
         content = [
             page_header(
-                "Sales Report",
+                t("page.sales_report"),
                 _group_by_filter(group_by, "/reports/sales"),
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
@@ -144,7 +144,7 @@ def setup_routes(app):
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
         ]
-        return await _page_or_fragment(request, *content, title="Sales Report - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title("page.sales_report"), nav_active="reports")
 
     @app.get("/reports/purchases")
     async def purchases_report(request: Request):
@@ -170,7 +170,7 @@ def setup_routes(app):
 
         content = [
             page_header(
-                "Purchases Report",
+                t("page.purchases_report"),
                 _group_by_filter(group_by, "/reports/purchases", first_option="supplier"),
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
@@ -180,7 +180,7 @@ def setup_routes(app):
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
         ]
-        return await _page_or_fragment(request, *content, title="Purchases Report - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title("page.purchases_report"), nav_active="reports")
 
     @app.get("/reports/expiring")
     async def expiring_report(request: Request):
@@ -198,10 +198,10 @@ def setup_routes(app):
             data = {"count": 0, "days_threshold": days, "lines": []}
 
         content = [
-            page_header("Expiring Items", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
+            page_header(t("page.expiring_items"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _expiring_view(data, days=days),
         ]
-        return await _page_or_fragment(request, *content, title="Expiring Items - Celerp", nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title("page.expiring_items"), nav_active="reports")
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ def _date_presets(lang: str = "en") -> list[tuple[str, str]]:
         ("this_fy", t("filter.this_fy", lang)),
         ("last_fy", t("filter.last_fy", lang)),
         ("all", t("filter.all_time", lang)),
-        ("custom", "Custom"),
+        ("custom", t("filter.custom", lang)),
     ]
 
 
@@ -314,7 +314,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
         custom_form,
     ]
     if settings_link:
-        parts.append(A("⚙", href=settings_link, cls="settings-gear", title="Related settings"))
+        parts.append(A("⚙", href=settings_link, cls="settings-gear", title=t("reports.related_settings", lang)))
 
     return Div(*parts, cls="date-filter-bar")
 
@@ -347,7 +347,7 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
     lines = [l for l in raw_lines if _is_meaningful(l)]
 
     if not lines:
-        return empty_state_cta("No data for this period. Try adjusting the date range.")
+        return empty_state_cta(t("reports.no_data_period"))
 
     def _get_outstanding(l: dict) -> float:
         return float(l.get("total", 0) or l.get("outstanding", 0) or 0)
@@ -427,13 +427,13 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         bucket_totals,
         Table(
             Thead(Tr(
-                _th("Contact", "contact"),
-                _th("Current", "current"),
+                _th(t("th.contact"), "contact"),
+                _th(t("reports.aging_current"), "current"),
                 _th("1-30", "d30"),
                 _th("31-60", "d60"),
                 _th("61-90", "d90"),
                 _th("90+", "d90plus"),
-                _th("Total", "outstanding"),
+                _th(t("th.total"), "outstanding"),
             )),
             Tbody(*[_row(l) for l in lines]),
             cls="data-table",
@@ -517,18 +517,18 @@ def _summary_bar(data: dict, currency: str | None, group_by: str, show_margin: b
 
     kpis = []
     if is_purchases:
-        kpis.append(_kpi("Total Spend", fmt_money(total_rev, currency)))
+        kpis.append(_kpi(t("reports.total_spend"), fmt_money(total_rev, currency)))
     else:
-        kpis.append(_kpi("Total Revenue", fmt_money(total_rev, currency)))
+        kpis.append(_kpi(t("reports.total_revenue"), fmt_money(total_rev, currency)))
     if total_cost:
-        kpis.append(_kpi("Total Cost", fmt_money(total_cost, currency)))
+        kpis.append(_kpi(t("reports.total_cost"), fmt_money(total_cost, currency)))
     if gross_profit:
         gp_cls = " report-kpi__value--positive" if gross_profit >= 0 else " report-kpi__value--negative"
-        kpis.append(_kpi("Gross Profit", fmt_money(gross_profit, currency), gp_cls))
+        kpis.append(_kpi(t("acct.gross_profit"), fmt_money(gross_profit, currency), gp_cls))
         if total_rev and show_margin:
             margin = gross_profit / total_rev * 100
             margin_cls = " report-kpi__value--positive" if margin >= 0 else " report-kpi__value--negative"
-            kpis.append(_kpi("Margin %", f"{margin:.1f}%", margin_cls))
+            kpis.append(_kpi(t("reports.margin_pct"), f"{margin:.1f}%", margin_cls))
 
     return Div(*kpis, cls="report-summary-bar")
 
@@ -539,65 +539,65 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False, show_margin: 
         return cols if show_margin else [(h, k, c) for h, k, c in cols if k != "margin_pct"]
     if group_by == "customer":
         return _strip([
-            ("Customer", "label", ""),
-            ("# Invoices", "count", "cell--right"),
-            ("Revenue", "total", "cell--number"),
-            ("Cost", "total_cost", "cell--number"),
-            ("Gross Profit", "gross_profit", "cell--number"),
-            ("Margin %", "margin_pct", "cell--right"),
+            (t("th.customer"), "label", ""),
+            (t("reports.num_invoices"), "count", "cell--right"),
+            (t("acct.section_revenue"), "total", "cell--number"),
+            (t("th.cost"), "total_cost", "cell--number"),
+            (t("acct.gross_profit"), "gross_profit", "cell--number"),
+            (t("reports.margin_pct"), "margin_pct", "cell--right"),
         ])
     if group_by == "supplier":
         return _strip([
-            ("Supplier", "label", ""),
-            ("# Orders", "count", "cell--right"),
-            ("Spend", "total", "cell--number"),
+            (t("reports.supplier"), "label", ""),
+            (t("reports.num_orders"), "count", "cell--right"),
+            (t("reports.spend"), "total", "cell--number"),
         ])
     if group_by == "item":
         if is_purchases:
             return _strip([
-                ("Item", "label", ""),
-                ("Qty Purchased", "qty_purchased", "cell--right"),
-                ("Avg Unit Cost", "avg_unit_cost", "cell--number"),
-                ("Total Spend", "total", "cell--number"),
+                (t("th.item"), "label", ""),
+                (t("reports.qty_purchased"), "qty_purchased", "cell--right"),
+                (t("reports.avg_unit_cost"), "avg_unit_cost", "cell--number"),
+                (t("reports.total_spend"), "total", "cell--number"),
             ])
         return _strip([
-            ("Item", "label", ""),
-            ("Qty Sold", "qty_sold", "cell--right"),
-            ("Avg Price", "avg_price", "cell--number"),
-            ("Revenue", "total", "cell--number"),
-            ("Cost", "total_cost", "cell--number"),
-            ("Gross Profit", "gross_profit", "cell--number"),
-            ("Margin %", "margin_pct", "cell--right"),
+            (t("th.item"), "label", ""),
+            (t("reports.qty_sold"), "qty_sold", "cell--right"),
+            (t("reports.avg_price"), "avg_price", "cell--number"),
+            (t("acct.section_revenue"), "total", "cell--number"),
+            (t("th.cost"), "total_cost", "cell--number"),
+            (t("acct.gross_profit"), "gross_profit", "cell--number"),
+            (t("reports.margin_pct"), "margin_pct", "cell--right"),
         ])
     if group_by == "period":
-        label = "Period"
-        count_hdr = "# Orders" if is_purchases else "# Invoices"
-        amount_hdr = "Spend" if is_purchases else "Revenue"
+        label = t("reports.period")
+        count_hdr = t("reports.num_orders") if is_purchases else t("reports.num_invoices")
+        amount_hdr = t("reports.spend") if is_purchases else t("acct.section_revenue")
         cols = [(label, "label", ""), (count_hdr, "count", "cell--right"), (amount_hdr, "total", "cell--number")]
         if not is_purchases:
-            cols += [("Cost", "total_cost", "cell--number"), ("Gross Profit", "gross_profit", "cell--number")]
+            cols += [(t("th.cost"), "total_cost", "cell--number"), (t("acct.gross_profit"), "gross_profit", "cell--number")]
         return cols
     if group_by == "price_range":
         if is_purchases:
             return _strip([
-                ("Item", "label", ""),
-                ("Price Range", "price_range", ""),
-                ("Unit Price", "unit_price", "cell--number"),
-                ("Qty Purchased", "qty_purchased", "cell--right"),
-                ("Spend", "total", "cell--number"),
+                (t("th.item"), "label", ""),
+                (t("reports.price_range"), "price_range", ""),
+                (t("th.unit_price"), "unit_price", "cell--number"),
+                (t("reports.qty_purchased"), "qty_purchased", "cell--right"),
+                (t("reports.spend"), "total", "cell--number"),
             ])
         return _strip([
-            ("Item", "label", ""),
-            ("Price Range", "price_range", ""),
-            ("Unit Price", "unit_price", "cell--number"),
-            ("Qty Sold", "qty_sold", "cell--right"),
-            ("Revenue", "total", "cell--number"),
-            ("Cost", "total_cost", "cell--number"),
-            ("Gross Profit", "gross_profit", "cell--number"),
-            ("Margin %", "margin_pct", "cell--right"),
+            (t("th.item"), "label", ""),
+            (t("reports.price_range"), "price_range", ""),
+            (t("th.unit_price"), "unit_price", "cell--number"),
+            (t("reports.qty_sold"), "qty_sold", "cell--right"),
+            (t("acct.section_revenue"), "total", "cell--number"),
+            (t("th.cost"), "total_cost", "cell--number"),
+            (t("acct.gross_profit"), "gross_profit", "cell--number"),
+            (t("reports.margin_pct"), "margin_pct", "cell--right"),
         ])
     # fallback
-    return _strip([("Group", "label", ""), ("Count", "count", "cell--right"), ("Amount", "total", "cell--number")])
+    return _strip([(t("reports.group"), "label", ""), (t("reports.count"), "count", "cell--right"), (t("label.amount"), "total", "cell--number")])
 
 
 def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", currency: str | None = None, show_margin: bool = True) -> FT:
@@ -616,7 +616,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
     lines = [l for l in lines if _is_meaningful(l)]
 
     if not lines:
-        return empty_state_cta("No data for this period. Try adjusting the date range.")
+        return empty_state_cta(t("reports.no_data_period"))
 
     cols = _sales_view_columns(group_by, is_purchases, show_margin=show_margin)
 
@@ -668,7 +668,7 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
     threshold = data.get("days_threshold", days)
 
     days_select = Select(
-        *[Option(f"{d} days", value=str(d), selected=(d == threshold)) for d in [7, 14, 30, 60, 90]],
+        *[Option(t("reports.n_days", n=d), value=str(d), selected=(d == threshold)) for d in [7, 14, 30, 60, 90]],
         name="days",
         hx_get="/reports/expiring",
         hx_trigger="change",
@@ -681,7 +681,7 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
     if not items:
         return Div(
             Div(days_select, cls="filter-bar"),
-            empty_state_cta("No items expiring in this timeframe."),
+            empty_state_cta(t("reports.no_expiring")),
         )
 
     def _row(i: dict) -> FT:
@@ -702,13 +702,13 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
 
     return Div(
         Div(
-            Span(f"{count} items expiring within {threshold} days", cls="val-chip val-chip--alert"),
+            Span(t("reports.expiring_summary", count=count, days=threshold), cls="val-chip val-chip--alert"),
             days_select,
             cls="valuation-bar",
             style="gap:12px",
         ),
         Table(
-            Thead(Tr(Th("SKU"), Th(t("th.name")), Th(t("th.category")), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
+            Thead(Tr(Th(t("th.sku")), Th(t("th.name")), Th(t("th.category")), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
             Tbody(*[_row(i) for i in items]),
             cls="data-table",
         ),
@@ -721,7 +721,13 @@ def _group_by_filter(active: str, base_url: str, first_option: str = "customer")
         "supplier": ["supplier", "item", "period", "price_range"],
     }
     options = options_map.get(first_option, ["customer", "item", "period", "price_range"])
-    labels = {"customer": "Customer", "supplier": "Supplier", "item": "Item", "period": "Period", "price_range": "Price Range"}
+    labels = {
+        "customer": t("th.customer"),
+        "supplier": t("reports.supplier"),
+        "item": t("th.item"),
+        "period": t("reports.period"),
+        "price_range": t("reports.price_range"),
+    }
     return Select(
         *[Option(labels.get(o, o.title()), value=o, selected=(o == active)) for o in options],
         name="group_by",

@@ -12,9 +12,9 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, toast_header
+from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
-                                 bulk_toolbar, filter_th, COLUMN_FILTER_JS)
+                                 bulk_toolbar, filter_th, display_enum, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -23,25 +23,27 @@ logger = logging.getLogger(__name__)
 # Canonical run statuses; "incomplete" = still needs attention (default queue view).
 _INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
 
-# Plain-language help for the status indicators, shown as hover tooltips so users know what each means.
+# Plain-language help for the status indicators, shown as hover tooltips so users know what each
+# means. Values are i18n KEYS resolved at render time (R1), never frozen English at import.
 RUN_STATUS_HELP = {
-    "planned": "Created but not started - components not yet issued.",
-    "in_progress": "Started - components issued and the run is being worked.",
-    "on_hold": "Paused - work stopped for now; can be resumed.",
-    "completed": "Finished - components consumed and finished goods received into stock.",
-    "cancelled": "Stopped - this run will not be produced.",
+    "planned": "manufacturing.help_status_planned",
+    "in_progress": "manufacturing.help_status_in_progress",
+    "on_hold": "manufacturing.help_status_on_hold",
+    "completed": "manufacturing.help_status_completed",
+    "cancelled": "manufacturing.help_status_cancelled",
 }
 COVERAGE_HELP = {
-    "short": "Needed - no stock or in-progress run covers this order line; it must be made.",
-    "partial": "Partial - some stock or in-progress production covers it; the rest must be made.",
-    "covered": "Covered - fully covered by on-hand stock or in-progress runs; nothing to make.",
+    "short": "manufacturing.help_coverage_short",
+    "partial": "manufacturing.help_coverage_partial",
+    "covered": "manufacturing.help_coverage_covered",
 }
 
 
 def _badge(status: str) -> FT:
     raw = (status or "").lower()
-    label = (status or "").replace("_", " ").title()
-    help_txt = RUN_STATUS_HELP.get(raw, "")
+    label = display_enum(raw, domain="mfg_run_status")
+    key = RUN_STATUS_HELP.get(raw)
+    help_txt = t(key) if key else ""
     return Span(label or EMPTY, cls=f"badge badge--{raw.replace('_', '-')}",
                 **({"title": help_txt} if help_txt else {}))
 
@@ -51,26 +53,28 @@ def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> 
     (the default view). There is no 'All' card - we never show completed/cancelled and active runs
     together. Cards link within base_url (carrying the status) so the queue stays put when filtering."""
     _CARD_DEFS = [
-        ("active", "Active", "blue"),
-        ("planned", "Planned", "blue"),
-        ("in_progress", "In Progress", "yellow"),
-        ("on_hold", "On Hold", "orange"),
-        ("completed", "Completed", "green"),
-        ("cancelled", "Cancelled", "gray"),
+        ("active", "blue"),
+        ("planned", "blue"),
+        ("in_progress", "yellow"),
+        ("on_hold", "orange"),
+        ("completed", "green"),
+        ("cancelled", "gray"),
     ]
     statuses = [str(o.get("status") or "").lower() for o in orders]
     counts: dict[str, int] = {
         "active": sum(1 for s in statuses if s in _INCOMPLETE_STATUSES),
     }
-    for s, _, _ in _CARD_DEFS:
+    for s, _ in _CARD_DEFS:
         counts.setdefault(s, sum(1 for x in statuses if x == s))
-    card_help = {
-        "active": "Runs still needing attention: planned, in progress or on hold.",
-        **RUN_STATUS_HELP,
-    }
+    card_help = {"active": "manufacturing.help_active", **RUN_STATUS_HELP}
+
+    def _card_label(s: str) -> str:
+        return t("manufacturing.card_active") if s == "active" else display_enum(s, domain="mfg_run_status")
+
     cards = [
-        {"label": label, "count": counts[s], "status": s, "color": color, "title": card_help.get(s, "")}
-        for s, label, color in _CARD_DEFS
+        {"label": _card_label(s), "count": counts[s], "status": s, "color": color,
+         "title": t(card_help[s]) if s in card_help else ""}
+        for s, color in _CARD_DEFS
     ]
     return status_cards(cards, base_url, active_status or None, show_all_card=False)
 
@@ -83,7 +87,7 @@ def _priority_badge(priority: str | None) -> FT:
     p = (priority or "").lower()
     if p not in _PRIORITIES:
         return Span(EMPTY)
-    return Span(p.title(), cls=f"badge badge--prio-{p}")
+    return Span(display_enum(p, domain="mfg_priority"), cls=f"badge badge--prio-{p}")
 
 
 def _sched_sort(runs: list[dict]) -> list[dict]:
@@ -114,14 +118,14 @@ def _order_row(order: dict, today: str = "") -> FT:
         Div(due or EMPTY, cls="editable-cell" + (" cell--alert" if overdue else ""),
             hx_get=f"/manufacturing/runs/{rid}/edit/due_date?current={due or ''}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
-            title="Double-click to set a due date"),
+            title=t("manufacturing.set_due_date_hint")),
         cls="cell--center",
     )
     prio_cell = Td(
         Div(_priority_badge(order.get("priority")), cls="editable-cell",
             hx_get=f"/manufacturing/runs/{rid}/edit/priority?current={order.get('priority') or ''}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
-            title="Double-click to set priority"),
+            title=t("manufacturing.set_priority_hint")),
         cls="cell--center",
     )
     src_id, src_no = order.get("source_doc_id"), order.get("source_doc_number")
@@ -129,7 +133,7 @@ def _order_row(order: dict, today: str = "") -> FT:
         src_href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
         src_cell = A(src_no, href=src_href, cls="table-link")
     else:
-        src_cell = Span("To stock", cls="hint")
+        src_cell = Span(t("manufacturing.to_stock"), cls="hint")
     return Tr(
         Td(Input(type="checkbox", cls="bulk-select", name="selected", value=rid), cls="col-checkbox"),
         Td(name_cell),
@@ -139,7 +143,7 @@ def _order_row(order: dict, today: str = "") -> FT:
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
         Td(src_cell),
-        Td(A("Run sheet", href=f"/manufacturing/{rid}/run-sheet/print", target="_blank",
+        Td(A(t("manufacturing.run_sheet"), href=f"/manufacturing/{rid}/run-sheet/print", target="_blank",
              cls="btn btn--xs btn--secondary"), cls="cell--actions"),
         cls="data-row",
     )
@@ -152,16 +156,21 @@ def _qty(value, unit: str | None) -> str:
 
 
 # Demand-line coverage from FIFO pegging (supply = on hand + in progress), relabelled for the board.
-_STATUS_LABELS = {"short": "Needed", "partial": "Partial", "covered": "Covered"}
+# Values are i18n KEYS resolved at render (R1); "short" is deliberately relabelled "Needed".
+_STATUS_LABELS = {"short": "manufacturing.coverage_short", "partial": "manufacturing.coverage_partial",
+                  "covered": "manufacturing.coverage_covered"}
 _STATUS_ORDER = {"short": 0, "partial": 1, "covered": 2}  # needed-first sort
-_DTYPE_DEFS = [("all", "All"), ("invoice", "Invoices"),
-               ("production_order", "Production Orders"), ("list", "Lists")]
+# (raw doc-type value, display key); the type filter's counts key off the raw value.
+_DTYPE_DEFS = [("all", "doc.all"), ("invoice", "nav.invoices"),
+               ("production_order", "manufacturing.dtype_production_orders"), ("list", "nav.lists")]
 
 
 def _status_badge(coverage: str) -> FT:
-    help_txt = COVERAGE_HELP.get(coverage, "")
-    return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}",
-                **({"title": help_txt} if help_txt else {}))
+    help_key = COVERAGE_HELP.get(coverage)
+    label_key = _STATUS_LABELS.get(coverage)
+    label = t(label_key) if label_key else (coverage or EMPTY)
+    return Span(label, cls=f"badge badge--peg-{coverage}",
+                **({"title": t(help_key)} if help_key else {}))
 
 
 
@@ -204,7 +213,7 @@ def _demand_row(l: dict) -> FT:
            cls="col-checkbox"),
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
         Td(doc_cell),
-        Td(doc_type.replace("_", " ").title() or EMPTY),
+        Td(display_enum(doc_type, domain="doc_type") if doc_type else EMPTY),
         Td(l.get("contact_name") or EMPTY),
         Td(l.get("due") or EMPTY, cls="cell--center"),
         Td(_qty(l.get("quantity", 0), unit), cls="cell--number"),
@@ -217,18 +226,17 @@ def _demand_row(l: dict) -> FT:
 def _demand_table(lines: list[dict]) -> FT:
     if not lines:
         return Div(
-            P("Nothing to make for this view. Demand lines appear here when an open invoice, list or "
-              "production order needs more of a product than you have in stock or already in production.",
-              cls="hint"),
+            P(t("manufacturing.demand_empty"), cls="hint"),
             id="mfg-table",
         )
     return Table(
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
                 cls="col-checkbox"),
-            Th("Product"), Th("Document"), Th("Type"), filter_th("For", 4), Th("Due", cls="cell--center"),
-            Th("Ordered", cls="cell--number"), Th("Short", cls="cell--number"),
-            filter_th("Status", 8, center=True),
+            Th(t("manufacturing.th_product")), Th(t("th.document")), Th(t("th.type")),
+            filter_th(t("manufacturing.th_for"), 4), Th(t("manufacturing.th_due"), cls="cell--center"),
+            Th(t("th.ordered"), cls="cell--number"), Th(t("manufacturing.th_short"), cls="cell--number"),
+            filter_th(t("th.status"), 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
         cls="data-table", id="mfg-table",
@@ -248,10 +256,10 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
     counts = {"all": len(all_lines)}
     for key, _ in _DTYPE_DEFS[1:]:
         counts[key] = sum(1 for l in all_lines if l["doc_type"] == key)
-    cards = [{"label": lbl, "count": counts.get(k, 0), "status": k,
+    cards = [{"label": t(lbl_key), "count": counts.get(k, 0), "status": k,
               "color": "gray" if k == "all" else "blue",
               "_url": f"/manufacturing?type={k}", "_active_key": k}
-             for k, lbl in _DTYPE_DEFS]
+             for k, lbl_key in _DTYPE_DEFS]
     return status_cards(cards, "/manufacturing", dtype, show_all_card=False)
 
 
@@ -260,16 +268,19 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
 def _order_table(orders: list[dict], today: str = "") -> FT:
     if not orders:
         return Div(
-            empty_state_cta("Nothing in production yet.", "Go to Demand Planning", "/manufacturing"),
+            empty_state_cta(t("manufacturing.nothing_in_production"),
+                            t("manufacturing.go_to_demand_planning"), "/manufacturing"),
             id="mfg-table",
         )
     return Table(
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
                 cls="col-checkbox"),
-            filter_th("Product", 1), Th(t("th.status")), filter_th("Priority", 3, center=True),
-            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs"), cls="cell--number"),
-            Th("Source order"), Th("Run sheet", cls="cell--actions"),
+            filter_th(t("manufacturing.th_product"), 1), Th(t("th.status")),
+            filter_th(t("manufacturing.th_priority"), 3, center=True),
+            Th(t("manufacturing.th_due"), cls="cell--center"), Th(t("msg.created")),
+            Th(t("th.inputs"), cls="cell--number"),
+            Th(t("manufacturing.th_source_order")), Th(t("manufacturing.run_sheet"), cls="cell--actions"),
         )),
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
@@ -289,7 +300,8 @@ def _wc_cell(wc_id: str, field: str, value, *, align: str = "left") -> FT:
     return Td(
         Div(disp, cls="editable-cell",
             hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?current={'' if value is None else value}",
-            hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick", title="Double-click to edit"),
+            hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
+            title=t("label.dblclick_to_edit")),
         cls=f"cell--{align}",
     )
 
@@ -308,14 +320,16 @@ def _wc_row(wc: dict, loc_names: dict) -> FT:
         _wc_cell(wid, "labor_rate", _num(wc.get("labor_rate")), align="right"),
         _wc_cell(wid, "capacity", _num(wc.get("capacity")), align="right"),
         _wc_cell(wid, "hours_per_day", _num(wc.get("hours_per_day")), align="right"),
-        Td(Button("✓ Default" if is_default else "Set default", type="button",
+        Td(Button(t("manufacturing.wc_is_default") if is_default else t("manufacturing.wc_set_default"),
+                  type="button",
                   cls=f"btn btn--xs {'btn--primary' if is_default else 'btn--secondary'}",
                   hx_patch=f"/manufacturing/work-centers/{wid}/is_default",
                   hx_target="#wc-table", hx_swap="outerHTML", disabled=is_default),
            cls="cell--center"),
         Td(Button(t("btn.delete"), type="button", cls="btn btn--xs btn--secondary",
                   hx_post=f"/manufacturing/work-centers/{wid}/delete", hx_target="#wc-table",
-                  hx_swap="outerHTML", hx_confirm="Delete this work center?"), cls="cell--actions"),
+                  hx_swap="outerHTML", hx_confirm=t("manufacturing.wc_delete_confirm")),
+           cls="cell--actions"),
         cls="data-row",
     )
 
@@ -323,11 +337,14 @@ def _wc_row(wc: dict, loc_names: dict) -> FT:
 def _wc_table(centers: list[dict], loc_names: dict) -> FT:
     rows = [_wc_row(w, loc_names) for w in centers]
     return Table(
-        Thead(Tr(Th("Name"), Th("WIP location"),
-                 Th("Labor rate / hr", cls="cell--right"), Th("Capacity", cls="cell--right"),
-                 Th("Hours/day", cls="cell--right"), Th("Default", cls="cell--center"),
+        Thead(Tr(Th(t("th.name")), Th(t("manufacturing.th_wip_location")),
+                 Th(t("manufacturing.th_labor_rate"), cls="cell--right"),
+                 Th(t("manufacturing.th_capacity"), cls="cell--right"),
+                 Th(t("manufacturing.th_hours_per_day"), cls="cell--right"),
+                 Th(t("th.default"), cls="cell--center"),
                  Th("", cls="cell--actions"))),
-        Tbody(*rows) if rows else Tbody(Tr(Td("No work centers yet.", colspan="7", cls="empty-row"))),
+        Tbody(*rows) if rows else Tbody(Tr(Td(t("manufacturing.no_work_centers"),
+                                              colspan="7", cls="empty-row"))),
         cls="data-table", id="wc-table",
     )
 
@@ -392,19 +409,15 @@ def setup_routes(app):
         all_lines = _demand_lines(rows)
         lines = _dp_search(_demand_filter(all_lines, dtype), q)
         body = (
-            _intro("📊", "Every open order that needs something made, and how well current stock and "
-                         "in-progress runs cover it. Pick a document type below, or use the column "
-                         "filters to narrow by status or customer; tick the lines you want and choose "
-                         "Make to start a production run for each product that is short."),
+            _intro("📊", t("manufacturing.demand_intro")),
             _type_filter_bar(all_lines, dtype),
             bulk_toolbar("mfg-table", [
-                {"value": "make", "label": "Make selected",
+                {"value": "make", "label": t("manufacturing.action_make_selected"),
                  "method": "post", "url": f"/manufacturing/make-selected?type={dtype}"},
-                {"value": "make_complete", "label": "Make & complete",
+                {"value": "make_complete", "label": t("manufacturing.action_make_complete"),
                  "method": "post", "url": f"/manufacturing/make-selected?type={dtype}&complete=1",
-                 "confirm": "Build the selected products now - issue components and receive the "
-                            "finished goods? This updates stock and posts journal entries."},
-                {"value": "requirements", "label": "Print component requirements",
+                 "confirm": t("manufacturing.confirm_make_complete")},
+                {"value": "requirements", "label": t("manufacturing.action_print_requirements"),
                  "method": "open", "url": "/manufacturing/requirements"},
             ]),
             _demand_table(lines),
@@ -412,13 +425,13 @@ def setup_routes(app):
         )
         return await base_shell(
             page_header(
-                "Demand Planning",
-                search_bar(placeholder="Search product / document...", target="#mfg-table",
+                t("manufacturing.demand_planning"),
+                search_bar(placeholder=t("manufacturing.search_demand_placeholder"), target="#mfg-table",
                            url=f"/manufacturing/to-make-search?type={dtype}",
-                           label="Search demand planning"),
+                           label=t("manufacturing.search_demand_label")),
             ),
             *body,
-            title="Demand Planning - Celerp",
+            title=page_title("manufacturing.demand_planning"),
             nav_active="manufacturing",
             request=request,
         )
@@ -450,40 +463,36 @@ def setup_routes(app):
                      if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
-            _intro("🏭", "Production runs on the floor. Tick runs and choose an action to advance "
-                         "them - issue components to start, receive finished goods to restock. Runs you "
-                         "start from Demand Planning appear here. Double-click a due date or priority to "
-                         "edit; press Esc to cancel."),
+            _intro("🏭", t("manufacturing.wip_intro")),
             _mfg_status_cards(orders_all, active, "/manufacturing/production"),
             bulk_toolbar("mfg-table", [
-                {"value": "start", "label": "Start", "method": "post",
+                {"value": "start", "label": t("btn.start"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/start?status={active}"},
-                {"value": "issue", "label": "Issue components", "method": "post",
+                {"value": "issue", "label": t("manufacturing.action_issue"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/issue?status={active}"},
-                {"value": "complete", "label": "Complete", "method": "post",
+                {"value": "complete", "label": t("manufacturing.action_complete"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/complete?status={active}",
-                 "confirm": "Complete the selected runs now - issue any outstanding components and "
-                            "receive the finished goods? This updates stock and posts journal entries."},
-                {"value": "hold", "label": "Put on hold", "method": "post",
+                 "confirm": t("manufacturing.confirm_complete")},
+                {"value": "hold", "label": t("manufacturing.action_hold"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/hold?status={active}"},
-                {"value": "resume", "label": "Resume", "method": "post",
+                {"value": "resume", "label": t("btn.resume"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/resume?status={active}"},
-                {"value": "cancel", "label": "Cancel", "method": "post",
+                {"value": "cancel", "label": t("btn.cancel"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/cancel?status={active}",
-                 "confirm": "Cancel the selected production runs?"},
+                 "confirm": t("manufacturing.confirm_cancel_runs")},
             ]),
             _order_table(shown, today=date.today().isoformat()),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
             page_header(
-                "Work In Progress",
-                search_bar(placeholder="Search run / SKU...", target="#mfg-table",
+                t("manufacturing.work_in_progress"),
+                search_bar(placeholder=t("manufacturing.search_wip_placeholder"), target="#mfg-table",
                            url="/manufacturing/search",
-                           label="Search work in progress"),
+                           label=t("manufacturing.search_wip_label")),
             ),
             *body,
-            title="Work In Progress - Celerp",
+            title=page_title("manufacturing.work_in_progress"),
             nav_active="manufacturing",
             request=request,
         )
@@ -515,16 +524,16 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or "Could not create the selected work orders."
+            error = str(e.detail) or t("manufacturing.err_make")
         lines = _demand_filter(_demand_lines(rows), dtype)
         made = len(result.get("created", []))
-        verb = "Made and completed" if complete else "Created"
         if error:
             msg, kind = error, "error"
         elif made:
-            msg, kind = f"{verb} {made} work order(s).", "success"
+            key = "manufacturing.made_completed_n" if complete else "manufacturing.created_n"
+            msg, kind = t(key, n=made), "success"
         else:
-            msg, kind = "Nothing to make for the selected lines.", "info"
+            msg, kind = t("manufacturing.nothing_to_make_selected"), "info"
         return HTMLResponse(
             to_xml(_demand_table(lines)),
             headers=toast_header(msg, kind),
@@ -554,7 +563,7 @@ def setup_routes(app):
             return Div(
                 H2(title, cls="section-title"),
                 Table(
-                    Thead(Tr(Th("SKU"), Th("Item"), Th("Quantity", cls="cell--center"))),
+                    Thead(Tr(Th(t("th.sku")), Th(t("th.item")), Th(t("th.quantity"), cls="cell--center"))),
                     Tbody(*[Tr(Td(i.get("sku") or EMPTY), Td(i.get("name") or EMPTY),
                                Td(_qty(i.get("quantity", 0), i.get("unit")), cls="cell--number"))
                             for i in items]),
@@ -563,20 +572,20 @@ def setup_routes(app):
             )
 
         products = data.get("products", [])
-        head = P("Make: " + ", ".join(
+        head = (P(t("manufacturing.make_list", items=", ".join(
             f"{p.get('sku') or p.get('item_id')} ({_qty(p.get('quantity', 0), p.get('unit'))})"
-            for p in products), cls="hint") if products else P("No products with a shortfall in the selection.", cls="hint")
+            for p in products)), cls="hint") if products
+            else P(t("manufacturing.no_shortfall_selection"), cls="hint"))
         return await base_shell(
             page_header(
-                "Component Requirements",
-                Button("Print", type="button", cls="btn btn--primary", onclick="window.print()"),
+                t("manufacturing.component_requirements"),
+                Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
             ),
-            _intro("📋", "Raw materials and sub-assemblies needed to make the selected products' "
-                         "outstanding shortfall, exploded through the recipes and pooled."),
+            _intro("📋", t("manufacturing.requirements_intro")),
             head,
-            _need_table("Raw materials", data.get("raw_materials", [])),
-            _need_table("Sub-assemblies to make", data.get("sub_assemblies", [])),
-            title="Component Requirements - Celerp",
+            _need_table(t("manufacturing.raw_materials"), data.get("raw_materials", [])),
+            _need_table(t("manufacturing.sub_assemblies"), data.get("sub_assemblies", [])),
+            title=page_title("manufacturing.component_requirements"),
             nav_active="manufacturing",
             request=request,
         )
@@ -640,8 +649,10 @@ def setup_routes(app):
             orders = []
         return _order_table(_runs_for_status(orders, "active"), today=date.today().isoformat())
 
-    _BULK_RUN_VERB = {"start": "Started", "issue": "Issued components for", "complete": "Completed",
-                      "hold": "Put on hold", "resume": "Resumed", "cancel": "Cancelled"}
+    # Per-action success toast KEY (R1); each holds a count-neutral "...: {n}" template (R7).
+    _BULK_RUN_MSG = {"start": "manufacturing.bulk_started", "issue": "manufacturing.bulk_issued",
+                     "complete": "manufacturing.bulk_completed", "hold": "manufacturing.bulk_hold",
+                     "resume": "manufacturing.bulk_resumed", "cancel": "manufacturing.bulk_cancelled"}
 
     @app.post("/manufacturing/runs/bulk/{action}")
     async def bulk_run_action(request: Request, action: str):
@@ -662,15 +673,15 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or "Could not apply the action."
+            error = str(e.detail) or t("manufacturing.err_bulk_action")
         done = len(result.get("done", []))
         skipped = len(result.get("skipped", []))
         if error:
             msg, kind = error, "error"
         else:
-            msg = f"{_BULK_RUN_VERB.get(action, 'Updated')} {done} run(s)."
+            msg = t(_BULK_RUN_MSG.get(action, "manufacturing.bulk_updated"), n=done)
             if skipped:
-                msg += f" {skipped} skipped (not in a valid state)."
+                msg += " " + t("manufacturing.bulk_skipped", n=skipped)
             kind = "success" if done else "info"
         return HTMLResponse(
             to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
@@ -698,7 +709,8 @@ def setup_routes(app):
         if field == "priority":
             return Select(
                 Option("--", value="", selected=(current == "")),
-                *[Option(p.title(), value=p, selected=(p == current)) for p in _PRIORITIES],
+                *[Option(display_enum(p, domain="mfg_priority"), value=p, selected=(p == current))
+                  for p in _PRIORITIES],
                 name="priority", cls="cell-input cell-input--select", **common,
             )
         # default: due_date
@@ -832,7 +844,7 @@ def setup_routes(app):
             # caller without manage rights) must say why rather than silently
             # reverting the cell with no explanation.
             return await _wc_error_response(
-                token, str(e.detail) or "Could not save this work center.")
+                token, str(e.detail) or t("manufacturing.err_wc_save"))
         return await _wc_table_response(token)
 
     @app.patch("/manufacturing/work-centers/{wc_id}/is_default")
@@ -847,7 +859,7 @@ def setup_routes(app):
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
             return await _wc_error_response(
-                token, str(e.detail) or "Could not set the default work center.")
+                token, str(e.detail) or t("manufacturing.err_wc_default"))
         return await _wc_table_response(token)
 
     @app.post("/manufacturing/work-centers/{wc_id}/delete")
@@ -863,5 +875,5 @@ def setup_routes(app):
             # A refused delete (the last center, or the default one) must say why
             # rather than leaving the row sitting there with no explanation.
             return await _wc_error_response(
-                token, str(e.detail) or "Could not delete this work center.")
+                token, str(e.detail) or t("manufacturing.err_wc_delete"))
         return await _wc_table_response(token)
