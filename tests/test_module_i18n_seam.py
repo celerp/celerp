@@ -420,3 +420,101 @@ def test_switcher_marks_module_language_selected():
     xml = to_xml(_topbar([], lang="xx"))
     assert 'value="xx"' in xml
     assert "selected" in xml
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 decoding: catalogs are read as UTF-8 regardless of platform default
+# ---------------------------------------------------------------------------
+
+_UNICODE_SAMPLE = {
+    "testlang.greeting": "ሰላም",   # Amharic
+    "testlang.hello": "مرحبا",    # Arabic
+    "testlang.city": "东京",       # CJK
+}
+
+
+def _patch_ascii_default_read_text(monkeypatch):
+    """Simulate a platform whose default text encoding is not UTF-8: Path.read_text
+    with no explicit encoding decodes as ascii. Code that reads catalogs correctly
+    must pass encoding='utf-8'; code that relies on the platform default raises
+    UnicodeDecodeError on any non-ASCII catalog. (The Amharic/Arabic/CJK bytes are
+    written UTF-8 with an explicit encoding, so authoring the fixture is unaffected.)"""
+    real_read_text = Path.read_text
+
+    def _ascii_default(self, encoding=None, errors=None):
+        return real_read_text(self, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", _ascii_default)
+
+
+def test_module_catalog_read_as_utf8(tmp_path, monkeypatch):
+    """A module catalog carrying non-ASCII values (Amharic, Arabic, CJK) loads
+    and round-trips exactly on a non-UTF-8-default platform. Without an explicit
+    utf-8 read the catalog raises UnicodeDecodeError (a ValueError) and the loader
+    skips the whole language - the portability bug this guards against."""
+    from celerp.modules.loader import load_all
+
+    (tmp_path / "celerp-amharic").mkdir()
+    (tmp_path / "celerp-amharic" / "__init__.py").write_text(
+        "PLUGIN_MANIFEST = {'name': 'celerp-amharic', 'version': '1.0.0', "
+        "'locales': {'am': {'file': 'locales/am.json'}}}\n"
+    )
+    (tmp_path / "celerp-amharic" / "locales").mkdir()
+    (tmp_path / "celerp-amharic" / "locales" / "am.json").write_text(
+        json.dumps(_UNICODE_SAMPLE, ensure_ascii=False), encoding="utf-8"
+    )
+
+    _patch_ascii_default_read_text(monkeypatch)
+    load_all(tmp_path, {"celerp-amharic"})
+    assert "am" in i18n.available_langs()
+    assert i18n.t("testlang.greeting", "am") == "ሰላም"
+    assert i18n.t("testlang.city", "am") == "东京"
+
+
+def test_central_catalog_read_as_utf8(tmp_path, monkeypatch):
+    """The central catalog loader (_load) also reads as UTF-8 regardless of the
+    platform default, so a non-ASCII central language renders its own strings."""
+    (tmp_path / "zz.json").write_text(
+        json.dumps({"testlang.greeting": "ሰላም"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(i18n, "_LOCALES_DIR", tmp_path)
+    _patch_ascii_default_read_text(monkeypatch)
+    i18n._invalidate_cache()
+    assert i18n.t("testlang.greeting", "zz") == "ሰላም"
+
+
+# ---------------------------------------------------------------------------
+# Regional locale negotiation and case-insensitive language codes
+# ---------------------------------------------------------------------------
+
+def test_accept_language_matches_regional_then_base():
+    """Accept-Language negotiation tries the full regional tag before its base:
+    a module-contributed regional catalog (pt-br) is reachable, and plain base
+    negotiation (de-AT -> de) still resolves."""
+    i18n.register_catalog("pt-br", {"testlang.greeting": "Ola"})
+    i18n.register_catalog("de", {"testlang.greeting": "Hallo"})
+    assert i18n.get_lang(_StubRequest(accept_language="pt-BR,pt;q=0.9")) == "pt-br"
+    assert i18n.get_lang(_StubRequest(accept_language="de-AT")) == "de"
+
+
+def test_language_code_normalized_lowercase():
+    """A module registering a mixed-case regional code is normalized to lower
+    case (tags are case-insensitive), so the switcher value, the cookie, and
+    Accept-Language all resolve one key."""
+    i18n.register_catalog("PT-BR", {"testlang.greeting": "Ola"})
+    assert "pt-br" in i18n.available_langs()
+    assert "PT-BR" not in i18n._registry
+    assert i18n.get_lang(_StubRequest(cookie="pt-BR")) == "pt-br"
+    assert i18n.t("testlang.greeting", "pt-br") == "Ola"
+
+
+def test_rtl_first_registration_wins():
+    """A language's reading direction is fixed by its FIRST registration: a later
+    module cannot flip an established LTR language to RTL, nor an RTL one to LTR."""
+    i18n.register_catalog("xx", {"testlang.k": "v"}, rtl=False)
+    i18n.register_catalog("xx", {"testlang.k2": "v2"}, rtl=True)
+    assert i18n.is_rtl("xx") is False
+    i18n.register_catalog("yy", {"testlang.k": "v"}, rtl=True)
+    i18n.register_catalog("yy", {"testlang.k2": "v2"}, rtl=False)
+    assert i18n.is_rtl("yy") is True

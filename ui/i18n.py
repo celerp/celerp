@@ -35,7 +35,7 @@ def _load(lang: str) -> dict:
     file, so the central copy wins for an existing language. A language with no
     central file (a wholly module-owned language) returns the module catalog."""
     path = _LOCALES_DIR / f"{lang}.json"
-    central = json.loads(path.read_text()) if path.exists() else {}
+    central = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     mod = _registry.get(lang, {}).get("catalog", {})
     return {**mod, **central}
 
@@ -63,6 +63,10 @@ def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
             "register_catalog: ignoring catalog with invalid language code %r", lang,
         )
         return
+    # Language tags are case-insensitive (BCP-47); normalize to lower case so a
+    # module registering "pt-BR" and a browser sending "pt-BR" resolve to the
+    # same key, and the code matches the lower-case central files on disk.
+    lang = lang.strip().lower()
     if not isinstance(mapping, dict):
         _log.warning(
             "register_catalog: ignoring non-dict catalog for %r (%s)",
@@ -78,11 +82,18 @@ def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
                 "register_catalog: dropping non-str value for key %r in %r (%s)",
                 key, lang, type(value).__name__,
             )
-    entry = _registry.setdefault(lang, {"catalog": {}, "rtl": False})
-    # First-registered wins: existing keys overlay the incoming ones.
+    is_new = lang not in _registry
+    entry = _registry.setdefault(lang, {"catalog": {}, "rtl": rtl is True})
+    # First-registered wins for both keys and direction: existing keys overlay the
+    # incoming ones, and direction is fixed by the first registration (a language's
+    # reading direction is intrinsic, not something a later module may OR on).
     entry["catalog"] = {**clean, **entry["catalog"]}
-    if rtl is True:
-        entry["rtl"] = True
+    if not is_new and (rtl is True) != entry["rtl"]:
+        _log.warning(
+            "register_catalog: language %r already registered rtl=%s; ignoring "
+            "conflicting rtl=%s (first registration wins)",
+            lang, entry["rtl"], rtl is True,
+        )
     _invalidate_cache()
 
 
@@ -125,14 +136,18 @@ def get_lang(request) -> str:
     """Extract language from cookie, falling back to Accept-Language header, then 'en'."""
     if request is None:
         return "en"
-    lang = request.cookies.get("celerp_lang", "")
+    lang = request.cookies.get("celerp_lang", "").strip().lower()
     if lang and (lang in _DISK_LANGS or lang in _registry):
         return lang
     accept = request.headers.get("accept-language", "")
     for part in accept.split(","):
-        code = part.split(";")[0].strip().split("-")[0].lower()
-        if code and (code in _DISK_LANGS or code in _registry):
-            return code
+        # Try the full regional tag first (pt-br), then its base language (pt),
+        # so a module contributing a regional catalog is reachable while plain
+        # base-language negotiation still works.
+        tag = part.split(";")[0].strip().lower()
+        for code in (tag, tag.split("-")[0]):
+            if code and (code in _DISK_LANGS or code in _registry):
+                return code
     return "en"
 
 

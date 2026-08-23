@@ -873,7 +873,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
             rtl = False
         cat_path = pkg_path / entry["file"]
         try:
-            catalog = json.loads(cat_path.read_text())
+            catalog = json.loads(cat_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             log.error(
                 "Module %r locale %r skipped: cannot read %s (%s: %s)",

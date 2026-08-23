@@ -53,12 +53,17 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
     sets the celerp_lang cookie, reloads, and the reloaded page renders that
     language as selected - the real end-to-end contributed-language flow.
 
-    The catalog is pushed straight into the running ui_server process (the same
-    thing the module loader does on boot), then removed afterwards so no other
-    browser test sees the synthetic 'xx' language."""
+    The catalog overrides page.dashboard, a key the dashboard header actually
+    renders, so the assertion proves the full chain: module catalog -> request
+    language -> t() -> production component -> browser. It is pushed straight into
+    the running ui_server process (the same thing the module loader does on boot),
+    then removed afterwards so no other browser test sees the synthetic 'xx'
+    language."""
     from ui import i18n
 
-    i18n.register_catalog("xx", {"testlang.greeting": "Hi from Testish"})
+    i18n.register_catalog(
+        "xx", {"testlang.greeting": "Hi from Testish", "page.dashboard": "Testish Dashboard"}
+    )
     try:
         page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
         switcher = page.locator("#lang-switcher")
@@ -75,6 +80,8 @@ def test_select_module_language_sets_cookie_and_renders(page, ui_server):
         assert "Traceback" not in body
         # After reload, get_lang reads the cookie and the switcher marks xx active.
         assert page.locator("#lang-switcher").input_value() == "xx"
+        # The contributed catalog value actually renders in the page header.
+        assert "Testish Dashboard" in body
     finally:
         i18n._registry.pop("xx", None)
         getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
