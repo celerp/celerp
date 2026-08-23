@@ -14,7 +14,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header, flash, toast_header
+from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
@@ -93,19 +93,20 @@ def _tz_offset_str(tz_name: str) -> str:
 # Precompute search strings: "Asia/Bangkok UTC+7" - built once at startup
 _TZ_SEARCH: dict[str, str] = {tz: f"{tz} {_tz_offset_str(tz)}" for tz in _TIMEZONES}
 
+# (raw fiscal-year-start value -> translation key); labels resolved at render (R1)
 _FISCAL_MONTHS: list[tuple[str, str]] = [
-    ("01-01", "January 1"),
-    ("02-01", "February 1"),
-    ("03-01", "March 1"),
-    ("04-01", "April 1"),
-    ("05-01", "May 1"),
-    ("06-01", "June 1"),
-    ("07-01", "July 1"),
-    ("08-01", "August 1"),
-    ("09-01", "September 1"),
-    ("10-01", "October 1"),
-    ("11-01", "November 1"),
-    ("12-01", "December 1"),
+    ("01-01", "settings.fiscal_month_jan"),
+    ("02-01", "settings.fiscal_month_feb"),
+    ("03-01", "settings.fiscal_month_mar"),
+    ("04-01", "settings.fiscal_month_apr"),
+    ("05-01", "settings.fiscal_month_may"),
+    ("06-01", "settings.fiscal_month_jun"),
+    ("07-01", "settings.fiscal_month_jul"),
+    ("08-01", "settings.fiscal_month_aug"),
+    ("09-01", "settings.fiscal_month_sep"),
+    ("10-01", "settings.fiscal_month_oct"),
+    ("11-01", "settings.fiscal_month_nov"),
+    ("12-01", "settings.fiscal_month_dec"),
 ]
 _FISCAL_VALUES: frozenset[str] = frozenset(v for v, _ in _FISCAL_MONTHS)
 
@@ -140,14 +141,14 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             try:
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"Error: {e.detail}", cls="cell-error")
+                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
             val = str(tax.get(field, "") or "")
             if field == "tax_type":
                 return Td(
                     Select(
-                        *[Option(label, value=v, selected=(v == val))
-                          for v, label in [("sales", "Sales"), ("purchase", "Purchase"), ("both", "Both")]],
+                        *[Option(t(label), value=v, selected=(v == val))
+                          for v, label in [("sales", "settings.tax_type_sales"), ("purchase", "settings.tax_type_purchase"), ("both", "settings.tax_type_both")]],
                         name="value",
                         hx_patch=f"/settings/{pfx}/{idx}/{field}",
                         hx_target="closest td", hx_swap="outerHTML", hx_include="this",
@@ -179,7 +180,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             form = await request.form()
             value = str(form.get("value", ""))
             if field == "tax_type" and value not in {"sales", "purchase", "both"}:
-                return P(f"Invalid tax type: {value!r}", cls="cell-error")
+                return P(t("error.invalid_tax_type", value=repr(value)), cls="cell-error")
             if field == "rate":
                 try:
                     float(value)
@@ -250,7 +251,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
             try:
                 terms = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"Error: {e.detail}", cls="cell-error")
+                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
             term = terms[idx] if idx < len(terms) else {}
             val = str(term.get(field, "") or "")
             input_type = "number" if field == "days" else "text"
@@ -363,7 +364,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
             try:
                 price_lists = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"Error: {e.detail}", cls="cell-error")
+                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
             pl = price_lists[idx] if idx < len(price_lists) else {}
             val = str(pl.get(field, "") or "")
             if field == "multiplier":
@@ -562,10 +563,9 @@ def _factory_reset_card() -> FT:
 
     return Div(
         Div(id="reset-flash"),
-        P("Permanently delete all company data and return to the initial setup wizard. "
-          "Installed modules and server settings will be preserved.",
+        P(t("settings.factory_reset_desc"),
           cls="settings-help-text"),
-        Button("Reset All Data",
+        Button(t("settings.reset_all_data"),
                type="button",
                cls="btn btn--outline btn--danger",
                onclick=f"document.getElementById('{modal_id}').showModal()"),
@@ -575,25 +575,23 @@ def _factory_reset_card() -> FT:
                 Div(
                     Div(
                         Span("⚠", cls="reset-modal__icon"),
-                        H3("Reset all data?", cls="modal-dialog__title reset-modal__title--danger"),
+                        H3(t("settings.reset_all_data_q"), cls="modal-dialog__title reset-modal__title--danger"),
                         cls="reset-modal__title-row",
                     ),
-                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
                            onclick=close_js),
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P("This will permanently delete all business data — contacts, items, "
-                      "transactions, documents, and all other records."),
-                    P(Strong("Your app settings and installed modules will be preserved. "
-                             "This cannot be undone.")),
+                    P(t("settings.factory_reset_warning")),
+                    P(Strong(t("settings.factory_reset_preserved"))),
                     Div(
-                        A("Download backup first",
+                        A(t("settings.download_backup_first"),
                           href="/backup/export",
                           cls="btn btn--sm btn--ghost",
                           onclick=to_step2_js,
                           download=True),
-                        Button("Skip — continue",
+                        Button(t("settings.skip_continue"),
                                type="button",
                                cls="btn btn--sm btn--secondary",
                                onclick=to_step2_js),
@@ -606,18 +604,18 @@ def _factory_reset_card() -> FT:
             # Step 2: type-to-confirm
             Div(
                 Div(
-                    H3("Confirm deletion", cls="modal-dialog__title reset-modal__title--danger"),
-                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                    H3(t("settings.confirm_deletion"), cls="modal-dialog__title reset-modal__title--danger"),
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
                            onclick=close_js),
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P("Type ", Strong("RESET"), " to confirm. This cannot be undone."),
+                    P(t("settings.type_reset_prefix"), Strong("RESET"), t("settings.type_reset_suffix")),
                     Input(type="text", id=input_id, placeholder="RESET",
                           autocomplete="off", cls="form-input",
                           oninput=validate_js),
                     Div(
-                        Button("Delete everything",
+                        Button(t("settings.delete_everything"),
                                type="submit",
                                id=btn_id,
                                cls="btn btn--danger",
@@ -626,7 +624,7 @@ def _factory_reset_card() -> FT:
                                hx_target="#reset-flash",
                                hx_swap="innerHTML",
                                onclick=success_js),
-                        Button("Cancel",
+                        Button(t("btn.cancel"),
                                type="button",
                                cls="btn btn--ghost",
                                onclick=close_js),
@@ -691,13 +689,13 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         current = str(company.get(key, "") or "")
         lang = get_lang(request)
         if key == "docs_default_preset":
             options = [
                 ("last_12m", t("filter.last_12m", lang)),
-                ("this_year", "This calendar year"),
+                ("this_year", t("settings.this_calendar_year", lang)),
                 ("all", t("filter.all_time", lang)),
             ]
             return Td(
@@ -813,7 +811,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         val = str(company.get(field, "") or "")
 
         if field == "phone":
@@ -835,7 +833,7 @@ def setup_routes(app):
         if field == "fiscal_year_start":
             return Td(
                 Select(
-                    *[Option(label, value=v, selected=(v == val)) for v, label in _FISCAL_MONTHS],
+                    *[Option(t(label), value=v, selected=(v == val)) for v, label in _FISCAL_MONTHS],
                     name="value",
                     id=f"company-{field}-input",
                     cls="cell-input cell-input--select", autofocus=True,
@@ -857,7 +855,7 @@ def setup_routes(app):
             return Td(
                 Div(
                     Input(
-                        type="text", value=val, placeholder="Search timezone or UTC offset…",
+                        type="text", value=val, placeholder=t("msg.search_timezone_placeholder"),
                         cls="cell-input combobox-input", autofocus=True,
                     ),
                     Input(type="hidden", name="value", value=val,
@@ -921,7 +919,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         return _company_display_cell(field, company.get(field))
 
     @app.patch("/settings/company/{field}")
@@ -941,14 +939,14 @@ def setup_routes(app):
             if not value.strip() or not _re.fullmatch(r"[a-z0-9][a-z0-9\-]*", value.strip()):
                 return P(t("error.invalid_slug"), cls="cell-error")
         if field == "currency" and value not in CURRENCY_CODES:
-            return P(f"Invalid currency: {value!r}", cls="cell-error")
+            return P(t("error.invalid_currency", value=repr(value)), cls="cell-error")
         if field == "fiscal_year_start" and value not in _FISCAL_VALUES:
-            return P(f"Invalid fiscal year start: {value!r}", cls="cell-error")
+            return P(t("error.invalid_fiscal_year", value=repr(value)), cls="cell-error")
         if field == "timezone":
             try:
                 _zi.ZoneInfo(value)
             except (_zi.ZoneInfoNotFoundError, KeyError):
-                return P(f"Unknown timezone: {value!r}", cls="cell-error")
+                return P(t("error.invalid_timezone", value=repr(value)), cls="cell-error")
 
         try:
             await api.patch_company(token, {field: value})
@@ -967,13 +965,13 @@ def setup_routes(app):
         try:
             users = (await api.get_users(token)).get("items", [])
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         user = next((u for u in users if u.get("id") == user_id), {})
         val = str(user.get(field, "") or "")
         if field == "role":
             return Td(
                 Select(
-                    *[Option(r.title(), value=r, selected=(r == val)) for r in ["owner", "admin", "manager", "operator", "viewer"]],
+                    *[Option(t(f"settings.{r}"), value=r, selected=(r == val)) for r in ["owner", "admin", "manager", "operator", "viewer"]],
                     name="value",
                     hx_patch=f"/settings/users/{user_id}/{field}",
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
@@ -1057,7 +1055,7 @@ def setup_routes(app):
         granted = str(form.get("granted", "")).lower() == "true"
         perm = next((p for p in PERMISSIONS if p.key == perm_key), None)
         if perm is None:
-            return P(f"Unknown permission '{perm_key}'", cls="cell-error")
+            return P(t("settings.unknown_permission", perm_key=perm_key), cls="cell-error")
         try:
             await api.patch_role_permission(token, perm_key, role_key, granted)
             company = await api.get_company(token)
@@ -1079,11 +1077,11 @@ def setup_routes(app):
                 Form(
                     Table(
                         Tr(Td(t("label.name", lang), cls="detail-label"),
-                           Td(Input(type="text", name="name", placeholder="Full name", cls="cell-input", required=True))),
+                           Td(Input(type="text", name="name", placeholder=t("settings.full_name"), cls="cell-input", required=True))),
                         Tr(Td(t("label.email", lang), cls="detail-label"),
                            Td(Input(type="email", name="email", placeholder="user@example.com", cls="cell-input", required=True))),
                         Tr(Td(t("label.password", lang), cls="detail-label"),
-                           Td(Input(type="password", name="password", placeholder="Temporary password", cls="cell-input", required=True))),
+                           Td(Input(type="password", name="password", placeholder=t("settings.temporary_password"), cls="cell-input", required=True))),
                         Tr(Td(t("label.role", lang), cls="detail-label"),
                            Td(Select(
                                Option(t("settings.owner"), value="owner"),
@@ -1107,7 +1105,7 @@ def setup_routes(app):
                 ),
                 cls="settings-card",
             ),
-            title="Create User - Celerp",
+            title=page_title("btn.create_user"),
             nav_active="settings",
             lang=lang,
             request=request,
@@ -1198,7 +1196,7 @@ def setup_routes(app):
         try:
             schema = await api.get_item_schema(token)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         sorted_schema = sorted(schema, key=lambda x: x.get("position", 0))
         f = sorted_schema[idx] if idx < len(sorted_schema) else {}
         val = str(f.get(field, "") or "")
@@ -1251,7 +1249,7 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         _SCHEMA_TYPES = frozenset({"text", "number", "money", "select", "date", "boolean", "weight", "status", "image"})
         if field == "type" and value not in _SCHEMA_TYPES:
-            return P(f"Invalid field type: {value!r}", cls="cell-error")
+            return P(t("settings.invalid_field_type", value=repr(value)), cls="cell-error")
         if field == "position":
             try:
                 int(value)
@@ -1287,7 +1285,7 @@ def setup_routes(app):
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
         return _cat_schema_display_cell(category, idx, field, f)
@@ -1301,7 +1299,7 @@ def setup_routes(app):
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
         # Key is auto-managed - clicking the hidden key cell should never open an editor
@@ -1375,7 +1373,7 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         _SCHEMA_TYPES = frozenset({"text", "number", "money", "select", "date", "boolean", "weight", "status", "image"})
         if field == "type" and value not in _SCHEMA_TYPES:
-            return P(f"Invalid field type: {value!r}", cls="cell-error")
+            return P(t("settings.invalid_field_type", value=repr(value)), cls="cell-error")
         if field == "position":
             try:
                 int(value)
@@ -1476,14 +1474,14 @@ def setup_routes(app):
         try:
             locations = (await api.get_locations(token)).get("items", [])
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         loc = next((l for l in locations if l.get("id") == location_id), {})
         val = str(loc.get(field, "") or "")
 
         if field == "type":
             return Td(
                 Select(
-                    *[Option(label, value=v, selected=(v == val)) for v, label in _LOC_TYPES],
+                    *[Option(t(label), value=v, selected=(v == val)) for v, label in _LOC_TYPES],
                     name="value",
                     hx_patch=f"/settings/locations/{location_id}/{field}",
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
@@ -1513,7 +1511,7 @@ def setup_routes(app):
         form = await request.form()
         value = str(form.get("value", ""))
         if field == "type" and value not in _LOC_TYPE_VALUES:
-            return P(f"Invalid location type: {value!r}", cls="cell-error")
+            return P(t("error.invalid_location_type", value=repr(value)), cls="cell-error")
         patch_val: str | bool | dict = value
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
@@ -1592,7 +1590,7 @@ def setup_routes(app):
                 cls="bulk-result-summary",
             ),
             Table(
-                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th(t("th.hero"), style="text-align:center;"))),
+                Thead(Tr(Th(t("th.sku")), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th(t("th.hero"), style="text-align:center;"))),
                 Tbody(*[_row(r) for r in report]),
                 cls="data-table",
             ) if report else "",
@@ -1650,12 +1648,12 @@ def setup_routes(app):
             last_backup = data.get("last_backup")
             email_quota = data.get("email_quota", 0)
             email_used = data.get("email_used", 0)
-            backup_text = f" - Last backup: {last_backup}" if last_backup else ""
+            backup_text = t("settings.cloud_status_last_backup", last_backup=last_backup) if last_backup else ""
             return Div(
                 Span(t("settings._connected"), cls="text-connected"),
-                Span(f" - {tier} plan{backup_text}", cls="settings-hint"),
+                Span(t("settings.cloud_status_tier_plan", tier=tier, backup_text=backup_text), cls="settings-hint"),
                 Br(),
-                Span(f"Email: {email_used} / {email_quota} sent this period", cls="settings-hint"),
+                Span(t("settings.cloud_status_email_usage", email_used=email_used, email_quota=email_quota), cls="settings-hint"),
                 Br(),
                 A(t("settings.manage_subscription"), href="/settings/billing-portal", target="_blank", cls="auth-link"),
                 cls="cloud-status-connected",
@@ -1701,7 +1699,7 @@ def setup_routes(app):
         try:
             data = await _api.activate_relay(ui_token)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
 
         # Use instance_id from API response if present (canonical process)
         iid = data.get("instance_id") or iid
@@ -1843,12 +1841,12 @@ def setup_routes(app):
         tos_version = str(form.get("_reconnect_tos_version", "")).strip() or None
         iid = ensure_instance_id()
         if not gw_token:
-            return _cloud_relay_unconnected(iid, error="Reconnect token missing. Please try again.")
+            return _cloud_relay_unconnected(iid, error=t("settings.reconnect_token_missing"))
         ui_token = _token(request)
         try:
             data = await _api.apply_relay_token(ui_token, {"gateway_token": gw_token, "public_url": public_url, "tos_version": tos_version})
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
         # Same as cloud_activate: connecting changes the whole page, reload it.
@@ -1869,10 +1867,10 @@ def setup_routes(app):
             status = m.get("status", "")
             if slug:
                 primary = f"{slug}.celerp.com"
-                secondary = "Previously linked to an installation"
+                secondary = t("settings.previously_linked")
             else:
-                primary = "Not yet linked"
-                secondary = "No installation connected yet"
+                primary = t("settings.not_yet_linked")
+                secondary = t("settings.no_installation_connected")
             return Label(
                 Input(
                     type="radio",
@@ -1936,7 +1934,7 @@ def setup_routes(app):
         children: list = [
             H3(t("page.check_your_email"), cls="settings-section-title"),
             P(
-                f"We sent a 6-digit code to {email}. Enter it below:",
+                t("settings.otp_sent_hint", email=email),
                 cls="settings-hint",
                 style="margin-bottom:12px;",
             ),
@@ -2002,13 +2000,13 @@ def setup_routes(app):
 
         if not email:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
+            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.please_enter_email"))
 
         try:
             data = await _api.send_otp(ui_token, email)
         except Exception as exc:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
+            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
 
         iid = data.get("instance_id", "")
         if err := data.get("error"):
@@ -2034,7 +2032,7 @@ def setup_routes(app):
 
         if not email:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
+            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.please_enter_email"))
 
         claim_payload: dict = {"email": email}
         if subscription_id:
@@ -2046,7 +2044,7 @@ def setup_routes(app):
             data = await _api.cloud_claim(ui_token, claim_payload)
         except Exception as exc:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
+            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
 
         iid = data.get("instance_id", "")
 
@@ -2056,9 +2054,9 @@ def setup_routes(app):
             if code == "otp_invalid":
                 return _cloud_claim_otp_form(
                     email, iid,
-                    error=f"Incorrect code. {attempts_left} attempt{'s' if attempts_left != 1 else ''} left.",
+                    error=t("settings.incorrect_code_attempts", n=attempts_left),
                 )
-            return _cloud_relay_unconnected(iid, error="Code expired or too many wrong attempts. Request a new code.")
+            return _cloud_relay_unconnected(iid, error=t("settings.code_expired"))
 
         if data.get("otp_required"):
             return _cloud_claim_otp_form(email, iid)
@@ -2077,7 +2075,7 @@ def setup_routes(app):
         return _cloud_relay_unconnected(
             iid,
             error=None,
-            info="Subscription linked. Click Connect to finish activating.",
+            info=t("settings.subscription_linked_info"),
             show_email_form=False,
         )
 
@@ -2109,7 +2107,7 @@ def setup_routes(app):
         try:
             data = await _api.accept_relay_tos(ui_token)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
         return _cloud_relay_tab(
             relay_status=data.get("relay_status", "connecting"),
             public_url=data.get("public_url", ""),
@@ -2134,7 +2132,7 @@ def setup_routes(app):
             return P(str(e.detail), cls="error-banner")
         n = result.get("categories", 0)
         return Div(
-            Span(f"✓ Applied '{result.get('applied', vertical)}' - {n} categor{'y' if n == 1 else 'ies'} seeded",
+            Span(t("settings.vertical_applied", name=result.get("applied", vertical), n=n),
                  cls="flash flash--success"),
             id="verticals-apply-result",
         )
@@ -2155,7 +2153,7 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         return Div(
-            Span(f"✓ '{result.get('display_name', name)}' added to your schema",
+            Span(t("settings.category_added", name=result.get("display_name", name)),
                  cls="flash flash--success"),
             id="verticals-apply-result",
         )
@@ -2179,7 +2177,7 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("new_category_name", "")).strip()
         if not name:
-            return P(t("settings.new_category_name") + " is required", cls="error-banner")
+            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
         try:
             await api.create_category(token, name)
         except APIError as e:
@@ -2197,7 +2195,7 @@ def setup_routes(app):
             detail = e.detail
             if isinstance(detail, dict):
                 item_count = detail.get("item_count", "?")
-                msg = f"Can't delete - {item_count} item(s) use this category."
+                msg = t("settings.cant_delete_category_in_use", n=item_count)
             else:
                 msg = str(detail)
             return Tr(
@@ -2271,7 +2269,7 @@ def setup_routes(app):
         form = await request.form()
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
-            return P(t("settings.new_category_name") + " is required", cls="error-banner")
+            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
         try:
             await api.rename_category(token, category_key, new_name)
         except APIError as e:
@@ -2292,7 +2290,7 @@ def setup_routes(app):
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
-            return Div("Owner role required.", cls="flash flash--error")
+            return Div(t("settings.owner_role_required"), cls="flash flash--error")
         from ui.config import API_BASE, COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -2300,10 +2298,10 @@ def setup_routes(app):
             async with httpx.AsyncClient(base_url=API_BASE, timeout=30.0) as c:
                 r = await c.post("/system/factory-reset", headers=headers)
             if r.status_code != 200:
-                detail = r.json().get("detail", "Reset failed.") if r.headers.get("content-type", "").startswith("application/json") else "Reset failed."
+                detail = r.json().get("detail", t("settings.reset_failed")) if r.headers.get("content-type", "").startswith("application/json") else t("settings.reset_failed")
                 return Div(detail, cls="flash flash--error")
         except Exception as exc:
-            return Div(f"Error: {exc}", cls="flash flash--error")
+            return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
         from celerp.config import settings as _celerp_settings
         _secure = getattr(_celerp_settings, "cookie_secure", False)
@@ -2320,7 +2318,7 @@ def setup_routes(app):
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
-            return Div("Only the company owner can deactivate this company.", cls="flash flash--error")
+            return Div(t("settings.only_owner_can_deactivate"), cls="flash flash--error")
         from ui.config import API_BASE
         token = _token(request)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -2328,9 +2326,9 @@ def setup_routes(app):
             async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
                 r = await c.delete("/companies/me", headers=headers)
             if r.status_code != 200:
-                return Div(r.json().get("detail", "Deactivation failed."), cls="flash flash--error")
+                return Div(r.json().get("detail", t("settings.deactivation_failed")), cls="flash flash--error")
         except Exception as exc:
-            return Div(f"Error: {exc}", cls="flash flash--error")
+            return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import RedirectResponse
         # Check if the user has other active companies
         try:
@@ -2428,7 +2426,7 @@ def setup_routes(app):
                       cls="btn btn--xs btn--secondary"),
                     Button(t("btn.restore"),
                         hx_post=f"/backup/restore/{bid}",
-                        hx_confirm="This restores the database AND files, replacing current data. Continue?",
+                        hx_confirm=t("settings.confirm_restore_backup"),
                         hx_target="#backup-flash", hx_swap="outerHTML",
                         cls="btn btn--xs btn--outline btn--danger ml-sm"),
                     cls="cell",
@@ -2598,21 +2596,17 @@ def _preference_display_cell(key: str, value, lang: str = "en") -> FT:
     label_map = {
         "docs_default_preset": {
             "last_12m": t("filter.last_12m", lang),
-            "this_year": "This calendar year",
+            "this_year": t("settings.this_calendar_year", lang),
             "all": t("filter.all_time", lang),
         },
         "default_per_page": {
-            "25": "25 per page",
-            "50": "50 per page",
-            "100": "100 per page",
-            "250": "250 per page",
-            "500": "500 per page",
+            n: t("settings.per_page", lang, n=n) for n in ("25", "50", "100", "250", "500")
         },
     }.get(key, {})
     display = label_map.get(str(value or ""), str(value) if value else EMPTY)
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to change",
+        title=t("settings.click_to_change"),
         hx_get=f"/settings/preferences/{key}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2625,13 +2619,13 @@ def _company_display_cell(field: str, value) -> FT:
         # Show "USD – US Dollar" if we know it, else just the code
         display = currency_label(raw)
     elif field == "fiscal_year_start" and raw:
-        label_map = {v: label for v, label in _FISCAL_MONTHS}
+        label_map = {v: t(label) for v, label in _FISCAL_MONTHS}
         display = label_map.get(raw, raw)
     else:
         display = raw or EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/company/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2643,13 +2637,13 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
         inner = Span(str(value or ""), cls=f"badge badge--{str(value or '').lower()}")
     elif field == "is_active":
         is_active = value if isinstance(value, bool) else str(value).lower() == "true"
-        inner = Span("Active" if is_active else "Inactive",
+        inner = Span(t("th.active") if is_active else t("settings.inactive"),
                      cls="badge badge--active" if is_active else "badge badge--inactive")
     else:
         inner = Span(str(value) if value and str(value).strip() else EMPTY, cls="cell-text")
     return Td(
         inner,
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/users/{user_id}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2661,12 +2655,12 @@ def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") ->
     if field == "rate":
         display = f"{val}%" if val else EMPTY
     elif field == "is_default":
-        display = "Yes" if val else "No"
+        display = t("settings.yes") if val else t("settings.no")
     else:
         display = str(val) if val and str(val).strip() else EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2678,7 +2672,7 @@ def _term_display_cell(idx: int, field: str, term: dict, prefix: str = "terms") 
     display = str(val) if val is not None and str(val).strip() else EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2690,7 +2684,7 @@ def _price_list_display_cell(idx: int, field: str, pl: dict, prefix: str = "pric
     display = str(val) if val and str(val).strip() else EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2701,14 +2695,14 @@ def _schema_display_cell(idx: int, field: str, f: dict) -> FT:
     if field == "options":
         val = ", ".join(f.get("options", []))
     elif field in ("required", "editable"):
-        val = "Yes" if f.get(field) else "No"
+        val = t("settings.yes") if f.get(field) else t("settings.no")
     else:
         val = f.get(field, "")
     display = str(val) if val and str(val).strip() else EMPTY
     cls_extra = " cell--mono" if field == "key" else ""
     return Td(
         Span(display, cls=f"cell-text{cls_extra}"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/schema/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2748,7 +2742,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
         icon = Span("✓", cls="cell-bool-check") if checked else Span("–", cls="cell-bool-dash")
         return Td(
             icon,
-            title="Click to edit",
+            title=t("settings.click_to_edit"),
             hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
             cls="cell cell--clickable",
@@ -2761,7 +2755,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
         display = label_val if label_val.strip() else EMPTY
         return Td(
             Span(display, cls="cell-text"),
-            title="Click to edit",
+            title=t("settings.click_to_edit"),
             hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
             cls="cell cell--clickable",
@@ -2777,7 +2771,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
         if f.get("type") not in _OPTIONS_TYPES:
             return Td(
                 Span("–", cls="cell-bool-dash"),
-                title="Options only apply to select/status fields",
+                title=t("settings.options_only_apply"),
                 cls="cell",
                 style="text-align:center",
             )
@@ -2792,7 +2786,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
             display_content = Span(*pills)
         return Td(
             display_content,
-            title="Click to edit",
+            title=t("settings.click_to_edit"),
             hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
             cls="cell cell--clickable",
@@ -2803,7 +2797,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
     display = str(val) if val and str(val).strip() else EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2811,12 +2805,13 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
 
 # Location type options: single source of truth.
 # "address" = company From-address (created via Settings > General > Addresses).
+# (raw location-type value -> translation key); labels resolved at render (R1)
 _LOC_TYPES: list[tuple[str, str]] = [
-    ("warehouse", "Warehouse"),
-    ("store", "Store"),
-    ("office", "Office"),
-    ("virtual", "Virtual"),
-    ("address", "Company Address"),
+    ("warehouse", "settings.loc_type_warehouse"),
+    ("store", "settings.loc_type_store"),
+    ("office", "settings.loc_type_office"),
+    ("virtual", "settings.loc_type_virtual"),
+    ("address", "settings.loc_type_address"),
 ]
 _LOC_TYPE_VALUES: frozenset[str] = frozenset(v for v, _ in _LOC_TYPES)
 _LOC_TYPE_LABELS: dict[str, str] = {v: lbl for v, lbl in _LOC_TYPES}
@@ -2826,14 +2821,18 @@ def _location_display_cell(location_id: str, field: str, value) -> FT:
     if field == "address":
         display = unwrap_address(value)
     elif field == "type":
-        display = _LOC_TYPE_LABELS.get(str(value), str(value)) if value else EMPTY
+        if value:
+            _lk = _LOC_TYPE_LABELS.get(str(value))
+            display = t(_lk) if _lk else str(value)
+        else:
+            display = EMPTY
     else:
         display = str(value) if value and str(value).strip() else EMPTY
     if not display:
         display = EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/locations/{location_id}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2946,7 +2945,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                     Button(t("btn.deactivate_company"),
                         cls="btn btn--danger",
                         hx_delete="/settings/company/deactivate",
-                        hx_confirm="Are you sure? All users will be logged out and the company will be deactivated.",
+                        hx_confirm=t("settings.confirm_deactivate_company"),
                         hx_target="body",
                         hx_push_url="true",
                     ),
@@ -2957,26 +2956,27 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                     [
                         Div(
                             Div(
-                                Strong("Uninstall Celerp"),
-                                P("Quit the app. Your data is preserved and can be re-imported later. Drag Celerp from Applications to Trash to complete removal.",
+                                Strong(t("settings.uninstall_celerp")),
+                                P(t("settings.uninstall_keep_desc"),
                                   cls="settings-help-text"),
                                 cls="danger-zone-desc",
                             ),
-                            Button("Uninstall (keep data)",
+                            Button(t("settings.uninstall_keep_data"),
                                 cls="btn btn--outline btn--danger",
                                 onclick="window.celerp?.uninstallKeepData()"),
                             cls="settings-card settings-card--danger",
                         ),
                         Div(
                             Div(
-                                Strong("Uninstall and Delete All Data"),
-                                P("Permanently deletes all company data and removes Celerp. This cannot be undone.",
+                                Strong(t("settings.uninstall_delete_title")),
+                                P(t("settings.uninstall_delete_desc"),
                                   cls="settings-help-text"),
                                 cls="danger-zone-desc",
                             ),
-                            Button("Uninstall and delete all data",
+                            Button(t("settings.uninstall_delete_data"),
                                 cls="btn btn--danger",
-                                onclick="if(confirm('This will permanently delete all your data and cannot be undone. Are you sure?')){window.celerp?.uninstallDeleteData()}"),
+                                data_confirm=t("settings.uninstall_confirm_js"),
+                                onclick="if(confirm(this.dataset.confirm)){window.celerp?.uninstallDeleteData()}"),
                             cls="settings-card settings-card--danger",
                         ),
                     ]
@@ -3075,9 +3075,7 @@ def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = 
             cls="data-table role-ref-table",
         ),
         P(
-            "Each role's permissions are set independently: granting or removing a "
-            "permission for one role never changes any other role. There must always "
-            "be at least one Owner.",
+            t("settings.role_permissions_note"),
             cls="role-ref-note",
         ),
         cls="role-ref-details mt-lg",
@@ -3095,7 +3093,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
             Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",
-                       hx_confirm=f"Delete tax '{tax.get('name', '')}'?",
+                       hx_confirm=t("settings.confirm_delete_tax", name=tax.get("name", "")),
                        hx_swap="none",
                        hx_on__after_request=f"window.location.reload()"),
                 cls="cell",
@@ -3131,7 +3129,7 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", impor
             Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",
-                       hx_confirm=f"Delete term '{term.get('name', '')}'?",
+                       hx_confirm=t("settings.confirm_delete_term", name=term.get("name", "")),
                        hx_swap="none",
                        hx_on__after_request="window.location.reload()"),
                 cls="cell",
@@ -3159,13 +3157,15 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", impor
 
 
 # All valid doc types for T&C association
+# (raw doc-type value -> translation key); labels resolved at render (R1)
 _TC_DOC_TYPES_SALES = [
-    ("invoice", "Invoice"), ("receipt", "Receipt"), ("credit_note", "Credit Note"),
-    ("memo", "Consignment Out"),
+    ("invoice", "settings.doc_type_invoice"), ("receipt", "settings.doc_type_receipt"),
+    ("credit_note", "settings.doc_type_credit_note"),
+    ("memo", "settings.doc_type_memo"),
 ]
 _TC_DOC_TYPES_PURCHASING = [
-    ("purchase_order", "Purchase Order"), ("bill", "Bill"),
-    ("consignment_in", "Consignment In"),
+    ("purchase_order", "settings.doc_type_purchase_order"), ("bill", "settings.doc_type_bill"),
+    ("consignment_in", "settings.doc_type_consignment_in"),
 ]
 _TC_DOC_TYPES_ALL = _TC_DOC_TYPES_SALES + _TC_DOC_TYPES_PURCHASING
 _TC_DOC_TYPE_LABELS = dict(_TC_DOC_TYPES_ALL)
@@ -3175,10 +3175,10 @@ def _tc_display_cell(idx: int, field: str, template: dict, prefix: str = "terms-
     """Display cell for a T&C template field."""
     if field == "doc_types":
         doc_types = template.get("doc_types") or []
-        value = ", ".join(_TC_DOC_TYPE_LABELS.get(dt, dt) for dt in doc_types) or "--"
+        value = ", ".join(t(_TC_DOC_TYPE_LABELS[dt]) if dt in _TC_DOC_TYPE_LABELS else dt for dt in doc_types) or "--"
     elif field == "default_for":
         default_for = template.get("default_for") or []
-        value = ", ".join(_TC_DOC_TYPE_LABELS.get(dt, dt) for dt in default_for) or "--"
+        value = ", ".join(t(_TC_DOC_TYPE_LABELS[dt]) if dt in _TC_DOC_TYPE_LABELS else dt for dt in default_for) or "--"
     elif field == "text":
         raw = str(template.get("text") or "")
         value = (raw[:80] + "...") if len(raw) > 80 else raw or "--"
@@ -3189,7 +3189,7 @@ def _tc_display_cell(idx: int, field: str, template: dict, prefix: str = "terms-
             value,
             hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
             hx_target="closest td", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=t("settings.click_to_edit"), cls="editable-cell",
         ),
         cls="cell",
     )
@@ -3216,7 +3216,7 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
             Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{global_idx}",
-                       hx_confirm=f"Delete T&C '{tpl.get('name', '')}'?",
+                       hx_confirm=t("settings.confirm_delete_tc", name=tpl.get("name", "")),
                        hx_swap="none",
                        hx_on__after_request="window.location.reload()"),
                 cls="cell",
@@ -3257,7 +3257,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
             try:
                 templates = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"Error: {e.detail}", cls="cell-error")
+                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
             tmpl = templates[idx] if idx < len(templates) else {}
 
             if field == "doc_types":
@@ -3265,7 +3265,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                 checkboxes = [
                     Div(
                         Input(type="checkbox", name="doc_types", value=dt, checked=(dt in current), id=f"dt-{idx}-{dt}"),
-                        Label(label, For=f"dt-{idx}-{dt}"),
+                        Label(t(label), For=f"dt-{idx}-{dt}"),
                         cls="checkbox-inline",
                     )
                     for dt, label in allowed_doc_types
@@ -3294,7 +3294,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
                 checkboxes = [
                     Div(
                         Input(type="checkbox", name="default_for", value=dt, checked=(dt in current_defaults), id=f"df-{idx}-{dt}"),
-                        Label(label, For=f"df-{idx}-{dt}"),
+                        Label(t(label), For=f"df-{idx}-{dt}"),
                         cls="checkbox-inline",
                     )
                     for dt, label in available
@@ -3433,7 +3433,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
         delete_cell = Td(cls="cell") if is_protected else Td(
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
-                   hx_confirm=f"Delete price list '{name}'?",
+                   hx_confirm=t("settings.confirm_delete_price_list", name=name),
                    hx_swap="none"),
             cls="cell",
         )
@@ -3505,7 +3505,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
         return A(label, href=href, cls=f"sub-tab {'sub-tab--active' if active else ''}")
 
     cat_selector = Div(
-        _cat_tab_link("", "Global"),
+        _cat_tab_link("", t("settings.global")),
         *[_cat_tab_link(c, c) for c in categories],
         cls="sub-tabs",
     ) if categories else ""
@@ -3514,7 +3514,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
 
     if is_cat:
         active_schema = cat_schemas[cat_tab]
-        hint = f"Attribute columns for the '{cat_tab}' category. Click a cell to edit. Auto-populated from CSV imports."
+        hint = t("settings.attr_columns_hint", cat_tab=cat_tab)
         enc = quote(cat_tab, safe="")
         sorted_schema = sorted(active_schema, key=lambda x: x.get("position", 0))
 
@@ -3531,7 +3531,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
                 Td(
                     Button("✕", cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
-                           hx_confirm=f"Delete field '{f.get('key', idx)}'?",
+                           hx_confirm=t("settings.confirm_delete_field", name=f.get("key", idx)),
                            hx_swap="none",
                            hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={cat_tab}'"),
                     cls="cell",
@@ -3554,7 +3554,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             cat_selector,
             P(hint, cls="settings-hint"),
             Table(
-                Thead(Tr(Th("Order", title="Display order - click to change"), Th("Name"), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
+                Thead(Tr(Th(t("settings.th_order"), title=t("settings.display_order_hint")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("settings.th_req")), Th(t("settings.edit")), Th(t("settings.th_in_table")), Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
                 cls="data-table sticky-head",
             ),
@@ -3563,7 +3563,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
 
     # Global schema - display only (structural fields, not attribute-driven)
     active_schema = schema
-    hint = "Global columns shown for all items. Order matches display order."
+    hint = t("msg.schema_hint")
     sorted_schema = sorted(active_schema, key=lambda x: x.get("position", 0))
 
     def _row(idx: int, f: dict) -> FT:
@@ -3601,7 +3601,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             _location_display_cell(lid, "address", loc.get("address")),
             Td(
                 Button(
-                    "✓ Default" if is_default else "Set default",
+                    t("settings.is_default_badge") if is_default else t("settings.set_default"),
                     cls=f"btn btn--xs {'btn--primary' if is_default else 'btn--secondary'}",
                     hx_patch=f"/settings/locations/{lid}/is_default",
                     hx_vals='{"value": "true"}',
@@ -3614,7 +3614,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             Td(cls="cell") if is_default else Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/locations/{lid}",
-                       hx_confirm=f"Delete location '{loc.get('name', '')}'? Items must be unassigned first.",
+                       hx_confirm=t("settings.confirm_delete_location", name=loc.get("name", "")),
                        hx_swap="none",
                        hx_on__after_request="if(event.detail.successful) window.location.href='/settings/inventory?tab=locations'"),
                 cls="cell",
@@ -3711,8 +3711,7 @@ def _cloud_relay_unconnected(
     if show_email_form:
         children += [
             P(
-                "If you subscribed on the website and the payment isn't linking automatically, "
-                "enter the email address you used at checkout:",
+                t("settings.claim_email_hint"),
                 cls="settings-hint",
                 style="margin-top:16px;",
             ),
@@ -3720,7 +3719,7 @@ def _cloud_relay_unconnected(
                 Input(
                     type="email",
                     name="claim_email",
-                    placeholder="Email used at checkout",
+                    placeholder=t("settings.email_used_at_checkout"),
                     required=True,
                     cls="input input--sm",
                     style="width:260px;",
@@ -3813,7 +3812,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             hx_post="/settings/cloud-disconnect",
             hx_target="#cloud-relay-tab",
             hx_swap="outerHTML",
-            hx_confirm="Disconnect web access? You can reconnect anytime.",
+            hx_confirm=t("settings.confirm_disconnect_web"),
         ),
         style="margin-top:12px;",
     )
@@ -3824,8 +3823,8 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # tier content render once authentication succeeds; a failed connection
         # offers disconnect as the recovery path.
         badge_cls = "badge--warning" if relay_status == "connecting" else "badge--error"
-        status_hint = ("Establishing connection..." if relay_status == "connecting"
-                       else "Connection failed. Try disconnecting and reconnecting.")
+        status_hint = (t("settings.establishing_connection") if relay_status == "connecting"
+                       else t("settings.connection_failed"))
         # While connecting, the card polls itself so the outcome (account view
         # or the failure card) appears without a manual reload; the swap
         # replaces the element, so a terminal state stops the polling.
@@ -3849,7 +3848,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if is_connected:
         badge_cls = "badge--active" if relay_status == "active" else "badge--inactive"
         # Status explanation for the signed-in-without-tunnel state
-        status_hint = "Initializing connection..." if relay_status == "inactive" else ""
+        status_hint = t("settings.initializing_connection") if relay_status == "inactive" else ""
 
         rows = [
             Tr(Td(t("th.status"), cls="detail-label"), Td(
@@ -3943,15 +3942,15 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
 
     def _time_until(iso: str | None) -> str:
         if iso is None:
-            return "not scheduled"
+            return t("settings.not_scheduled")
         from datetime import datetime, timezone
         dt = datetime.fromisoformat(iso)
         delta = dt - datetime.now(timezone.utc)
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
         if hours > 0:
-            return f"in {hours}h {mins}m"
-        return f"in {mins}m"
+            return t("settings.time_in_hm", hours=hours, mins=mins)
+        return t("settings.time_in_m", mins=mins)
 
     status_rows = [
         Tr(Td(t("settings.scheduler"), cls="detail-label"), Td(
@@ -3966,7 +3965,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     if db_ok is not None:
         if db_ok:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
-                Span("OK", cls="badge badge--active"),
+                Span(t("connectors.status_ok"), cls="badge badge--active"),
                 Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB uploaded", cls="settings-hint"),
             )))
         else:
@@ -3985,8 +3984,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     key_section = Div(
         H4(t("page.encryption_key"), cls="settings-section-title"),
         P(
-            "Your backups are encrypted with this key. Save it in a password manager - "
-            "we cannot recover your backups without it.",
+            t("settings.enc_key_hint"),
             cls="settings-hint",
         ),
         Div(
@@ -4032,11 +4030,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         H4(t("page.how_cloud_backup_works"), cls="settings-section-title"),
         P(t("settings.celerp_runs"),
             Code("pg_dump"),
-            " locally and content-addresses every file, encrypts each piece with AES-256-GCM "
-            "using your key (we never see it), then uploads only what changed to DigitalOcean "
-            "Spaces. A daily snapshot captures the database and all files together; unchanged "
-            "files are never re-uploaded. Oldest snapshots are auto-pruned per your plan. "
-            "After cancellation, backups remain accessible for 30 days.",
+            t("settings.cloud_backup_detail"),
             cls="settings-hint",
         ),
         cls="mb-lg",
@@ -4075,7 +4069,7 @@ def _import_history_tab(batches: list[dict]) -> FT:
                 Button(t("btn.undo"),
                     cls="btn btn--danger btn--xs",
                     hx_post=f"/settings/import-history/{bid}/undo",
-                    hx_confirm=f"Undo this import? This will remove {b.get('row_count', 0)} item(s).",
+                    hx_confirm=t("settings.confirm_undo_import", n=b.get("row_count", 0)),
                     hx_swap="none",
                 ) if status == "active" else Span(undone_display, cls="settings-hint"),
                 cls="cell",
@@ -4086,9 +4080,7 @@ def _import_history_tab(batches: list[dict]) -> FT:
     return Div(
         H3(t("settings.tab_import_history"), cls="settings-section-title"),
         P(
-            "All item CSV imports are tracked here. "
-            "You can undo an import to remove the items it created. "
-            "Items modified since import will be flagged but not protected.",
+            t("settings.import_history_hint"),
             cls="settings-hint",
         ),
         Table(
@@ -4206,7 +4198,7 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
                 Form(
                     Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                           cls="form-input form-input--sm cat-add-input"),
-                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                    Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
                     hx_post="/settings/categories",
                     hx_target="#vert-applied-panel",
                     hx_swap="outerHTML",
@@ -4226,7 +4218,7 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
             Form(
                 Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                       cls="form-input form-input--sm cat-add-input"),
-                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
                 hx_post="/settings/categories",
                 hx_target="#vert-applied-panel",
                 hx_swap="outerHTML",

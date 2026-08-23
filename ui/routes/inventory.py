@@ -20,8 +20,8 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, page_header, search_help, toast_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
+from ui.components.shell import base_shell, page_header, search_help, toast_header, page_title
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
@@ -456,13 +456,13 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         show_weight = has_weight
         show_pieces = has_pieces
 
-    weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
+    weight_col_header = t("inventory.weight_with_unit", unit=weight_display) if weight_display else t("th.weight")
     # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); SKU stays text.
-    headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th sp-th--num")]
+    headers = [Th(""), Th(t("th.sku"), cls="sp-th"), Th(t("inventory.qty_with_unit", unit=sell_by_display), cls="sp-th sp-th--num")]
     if show_weight:
         headers.append(Th(weight_col_header, cls="sp-th sp-th--num"))
     if show_pieces:
-        headers.append(Th("Pieces", cls="sp-th sp-th--num"))
+        headers.append(Th(t("inventory.th_pieces"), cls="sp-th sp-th--num"))
     if allow_add_child:
         headers.append(Th("", cls="sp-th-remove"))
 
@@ -533,7 +533,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
     # column may render), so this input carries the delta marker instead of the span above.
     _mother_qty_dw = {"data_delta_weight": "1"} if sell_by_type == "weight" else {}
     mother_row = _parcel_row(
-        "Mother",
+        t("inventory.mother"),
         _sp_static_td(preview["parent_sku"]),
         Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
                  step=str(10 ** -decimals if decimals > 0 else 1), min="0",
@@ -566,22 +566,22 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         # single permanent child carries the gutter "+" in its leading label cell. Both only
         # when add-child is enabled (item-detail card); bulk passes allow_add_child=False.
         if removable:
-            label = "Child"
+            label = t("inventory.child")
             trailing = Td(
                 Button("✕", type="button", cls="btn btn--ghost btn--xs split-remove-child-btn",
-                       title="Remove child",
+                       title=t("inventory.remove_child"),
                        onclick="var f=this.closest('form');var tr=this.closest('tr');if(tr)tr.remove();splitRecalc(f);"),
                 cls="sp-td sp-remove-td",
             )
         elif allow_add_child:
             label = Span(
                 Button("+", type="button", cls="btn btn--ghost btn--xs split-add-child-btn",
-                       title="Add another child", onclick="splitAddChild(this)"),
-                " Child",
+                       title=t("inventory.add_another_child"), onclick="splitAddChild(this)"),
+                " ", t("inventory.child"),
             )
             trailing = None
         else:
-            label = "Child"
+            label = t("inventory.child")
             trailing = None
         return _parcel_row(
             label,
@@ -616,7 +616,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
 
     # Totals footer: mother qty (initial) + child qty (0) for QTY column; weight/pieces use
     # parent totals since the children start at 0.
-    tfoot_cells: list = [Td("Total", cls="sp-row-label sp-total-label"), Td("")]
+    tfoot_cells: list = [Td(t("th.total"), cls="sp-row-label sp-total-label"), Td("")]
     tfoot_cells.append(Td(
         fmt.format(preview["parent_qty"]),
         cls="sp-td sp-total-val sp-total-qty",
@@ -669,7 +669,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         ),
         *add_child_controls,
         Div(
-            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            Button(t("btn.confirm"), type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
             *(
                 [Span(
                     Span("Δ ", cls="sp-delta-label"),
@@ -793,15 +793,15 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
     if not (on_memo or consigned):
         return ""
     if on_memo:
-        label, basis = "Out on memo to this customer", "Value shown is the price quoted to the customer."
+        label, basis = t("inventory.memo_scope_label"), t("inventory.memo_scope_basis")
     else:
-        label, basis = "Held on consignment from this supplier", "Value shown is cost."
+        label, basis = t("inventory.consign_scope_label"), t("inventory.consign_scope_basis")
     total_el = (Span(fmt_money(holdings_total, currency), cls="holdings-scope-total")
                 if holdings_total is not None else "")
     return Div(
         Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
         Div(basis, cls="holdings-scope-basis"),
-        A("Clear filter", href="/inventory", cls="btn btn--xs btn--secondary"),
+        A(t("table.clear_filter_btn"), href="/inventory", cls="btn btn--xs btn--secondary"),
         cls="holdings-scope-banner",
     )
 
@@ -944,9 +944,9 @@ async def _inventory_content(
     #   wholesale/retail prices for direct comparison (derived server-side, list_items).
     scope_value_label = ""
     if p.get("on_memo_to"):
-        scope_value_label = "Quoted"
+        scope_value_label = t("inventory.col_quoted")
     elif p.get("consigned_from"):
-        scope_value_label = "Cost"
+        scope_value_label = t("th.cost")
     if not (scope_value_label and any(i.get("holding_value") is not None for i in items)):
         scope_value_label = ""
     sold_view = "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}
@@ -955,7 +955,7 @@ async def _inventory_content(
     if scope_value_label:
         derived_money_cols.append(("holding_value", scope_value_label, 99))
     if show_sold_price:
-        derived_money_cols.append(("sold_price", "Sold", 98))
+        derived_money_cols.append(("sold_price", t("chip.sold"), 98))
     for _key, _label, _position in derived_money_cols:
         eff_schema = eff_schema + [{
             "key": _key, "label": _label, "type": "money",
@@ -1115,7 +1115,7 @@ def setup_routes(app):
                     target="#inventory-content",
                     url=_search_url,
                     help=search_help(lang, panel_id="page-search-help-panel"),
-                    label=f"Search {(p.get('status') or 'available').replace('_', ' ')} inventory",
+                    label=t("inventory.search_label", status=display_enum(p.get('status') or 'available', domain='item_status').lower()),
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
@@ -1126,7 +1126,7 @@ def setup_routes(app):
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
             Script(_BULK_TRANSFORM_JS),
-            title="Inventory - Celerp",
+            title=page_title("nav.inventory"),
             nav_active="inventory",
             lang=lang,
             request=request,
@@ -1267,7 +1267,7 @@ def setup_routes(app):
                 A(t("btn.download_template", lang), href="/inventory/import/template", cls="btn btn--secondary"),
             ),
             _import_upload_form(),
-            title="Import Inventory - Celerp",
+            title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
             request=request,
@@ -1316,7 +1316,7 @@ def setup_routes(app):
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
                 _import_upload_form(error=err),
-                title="Import Inventory - Celerp",
+                title=page_title("page.import_inventory"),
                 nav_active="inventory",
                 lang=lang,
                 request=request,
@@ -1326,8 +1326,8 @@ def setup_routes(app):
         if not cols:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
-                _import_upload_form(error="CSV file has no columns."),
-                title="Import Inventory - Celerp",
+                _import_upload_form(error=t("inventory.csv_no_columns")),
+                title=page_title("page.import_inventory"),
                 nav_active="inventory",
                 lang=lang,
                 request=request,
@@ -1360,7 +1360,7 @@ def setup_routes(app):
                 col_labels=_import_price_col_labels(price_lists),
                 mutex_groups=_import_price_mutex_groups(price_lists),
             ),
-            title="Import Inventory - Celerp",
+            title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
             request=request,
@@ -1380,8 +1380,8 @@ def setup_routes(app):
         if not csv_text:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
-                _import_upload_form(error="CSV data expired. Please re-upload."),
-                title="Import Inventory - Celerp",
+                _import_upload_form(error=t("inventory.csv_expired")),
+                title=page_title("page.import_inventory"),
                 nav_active="inventory",
                 lang=lang,
                 request=request,
@@ -1422,7 +1422,7 @@ def setup_routes(app):
                     col_labels=_import_price_col_labels(price_lists),
                     mutex_groups=_import_price_mutex_groups(price_lists),
                 ),
-                title="Import Inventory - Celerp",
+                title=page_title("page.import_inventory"),
                 nav_active="inventory",
                 lang=lang,
                 request=request,
@@ -1448,10 +1448,10 @@ def setup_routes(app):
                 back_href="/inventory/import",
                 revalidate_action="/inventory/import/revalidate",
                 has_mapping=True,
-                upsert_label="SKU or barcode",
+                upsert_label=t("inventory.upsert_sku_barcode"),
                 cell_renderers=cell_renderers,
             ),
-            title="Import Inventory - Celerp",
+            title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
             request=request,
@@ -1468,7 +1468,7 @@ def setup_routes(app):
         form = await request.form()
         csv_data = _resolve_csv_text(form)
         if not csv_data:
-            return _import_upload_form(error="CSV data expired. Please re-upload.")
+            return _import_upload_form(error=t("inventory.csv_expired"))
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
         rows = _apply_fixes(form, rows, cols)
@@ -1484,7 +1484,7 @@ def setup_routes(app):
             back_href="/inventory/import",
             revalidate_action="/inventory/import/revalidate",
             has_mapping=True,
-            upsert_label="SKU or barcode",
+            upsert_label=t("inventory.upsert_sku_barcode"),
             cell_renderers=cell_renderers,
         )
 
@@ -1620,11 +1620,7 @@ def setup_routes(app):
             # name is in spec.required and would have been caught at revalidate time.
             if not location_id:
                 return import_abort_panel(
-                    message=(
-                        "Import aborted: could not determine a location for one or more rows. "
-                        "Your CSV has no location_name column and there are multiple locations configured. "
-                        "Please add a location_name column or set a default location in Settings → Inventory."
-                    ),
+                    message=t("inventory.import_no_location"),
                     import_more_href="/inventory/import",
                     back_href="/inventory",
                     has_mapping=True,
@@ -1741,7 +1737,7 @@ def setup_routes(app):
                     has_mapping=True,
                 )
             return import_abort_panel(
-                message=f"Import failed: {e.detail}",
+                message=t("inventory.import_failed", detail=e.detail),
                 import_more_href="/inventory/import",
                 back_href="/inventory",
                 has_mapping=True,
@@ -1759,7 +1755,7 @@ def setup_routes(app):
                     cat_names = ", ".join(sorted(inferred.keys()))
                     schema_info = Div(
                         P(
-                            f"{total_new} new attribute field(s) added to: {cat_names}. ",
+                            t("inventory.attrs_added", n=total_new, cats=cat_names),
                             A(t("inv.review"), href="/settings/inventory?tab=category-library"),
                             cls="flash flash--info",
                         ),
@@ -1905,7 +1901,7 @@ def setup_routes(app):
         _item_settings = company.get("settings") or {}
         _make_available_btn = (
             Button(
-                "Make Available",
+                t("inventory.make_available"),
                 onclick=f"event.preventDefault();htmx.ajax('POST','/api/items/{entity_id}/make-available',{{target:'#item-header-error',swap:'outerHTML'}});",
                 cls="btn btn--primary",
             )
@@ -1913,14 +1909,14 @@ def setup_routes(app):
             else ""
         )
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.inventory"), "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
             page_header(item.get("name") or item.get("sku") or entity_id),
             Div(
                 Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
                     Div(
                         A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
-                          cls="btn btn--ghost btn--icon", title="Print production worksheet"),
+                          cls="btn btn--ghost btn--icon", title=t("inventory.print_production_worksheet")),
                         _print_label_dropdown(entity_id),
                         A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
                         cls="doc-actions-print",
@@ -1933,7 +1929,7 @@ def setup_routes(app):
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
             _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
-            title="Inventory Item - Celerp",
+            title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
         )
@@ -1971,14 +1967,14 @@ def setup_routes(app):
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"),
-                         (name, f"/inventory/{entity_id}"), ("History", None)]),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.inventory"), "/inventory"),
+                         (name, f"/inventory/{entity_id}"), (t("inventory.breadcrumb_history"), None)]),
             page_header(
-                f"History: {name}",
-                A("Back to item", href=f"/inventory/{entity_id}", cls="btn btn--secondary"),
+                t("inventory.history_of", name=name),
+                A(t("inventory.back_to_item"), href=f"/inventory/{entity_id}", cls="btn btn--secondary"),
             ),
             Div(table, pager, cls="page-body"),
-            title="Item History - Celerp",
+            title=page_title("inventory.page_item_history"),
             nav_active="inventory",
             request=request,
         )
@@ -2030,8 +2026,8 @@ function celerpPrintLabel(entityId, templateId) {
         return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
                                show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind)
 
-    def _recipe_saved_status(msg: str = "Saved ✓", kind: str = "saved"):
-        return Div(msg, id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
+    def _recipe_saved_status(msg: str | None = None, kind: str = "saved"):
+        return Div(msg if msg is not None else t("inventory.saved_check"), id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
 
     @app.get("/api/items/{entity_id}/recipe-section")
     async def recipe_section(request: Request, entity_id: str):
@@ -2174,7 +2170,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             output_qty = float(str(form.get("output_qty", "1")) or 1)
         except ValueError:
-            return _recipe_saved_status("Not saved: output quantity must be a number.", "error")
+            return _recipe_saved_status(t("inventory.not_saved_output_qty_number"), "error")
         try:
             item = await api.get_item(token, entity_id)
             recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
@@ -2185,7 +2181,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            return _recipe_saved_status(f"Not saved: {e.detail}", "error")
+            return _recipe_saved_status(t("inventory.not_saved_detail", detail=e.detail), "error")
 
     @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit")
     async def recipe_cell_edit(request: Request, entity_id: str, section: str, idx: int, field: str):
@@ -2196,7 +2192,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         cell_type = _RECIPE_CELLS.get(section, {}).get(field)
         if cell_type is None:
-            return P("Unknown recipe field", cls="cell-error")
+            return P(t("inventory.unknown_recipe_field"), cls="cell-error")
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
@@ -2206,9 +2202,9 @@ function celerpPrintLabel(entityId, templateId) {
         return editable_cell(
             entity_id=entity_id, field=f"recipe__{section}__{idx}__{field}", value=value,
             cell_type=cell_type,
-            options=list(_LABOR_KIND_LABELS) if field == "kind" else None,
+            options=list(_LABOR_KINDS) if field == "kind" else None,
             restore_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display",
-            label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+            label_map=_labor_kind_labels() if field == "kind" else None,
         )
 
     @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display")
@@ -2217,7 +2213,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         if _RECIPE_CELLS.get(section, {}).get(field) is None:
-            return P("Unknown recipe field", cls="cell-error")
+            return P(t("inventory.unknown_recipe_field"), cls="cell-error")
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
@@ -2290,7 +2286,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         cell_type = _WORKFLOW_CELLS.get(field)
         if cell_type is None:
-            return P("Unknown workflow field", cls="cell-error")
+            return P(t("inventory.unknown_workflow_field"), cls="cell-error")
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
@@ -2306,7 +2302,7 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError:
                 centers = []
             options = [c.get("name") for c in centers if c.get("name")] + [
-                ("__new__:/settings/manufacturing#work-centers", "+ Add new work center")]
+                ("__new__:/settings/manufacturing#work-centers", t("inventory.add_new_work_center"))]
             allow_custom = True
         return editable_cell(
             entity_id=entity_id, field=f"workflow__{idx}__{field}", value=value, cell_type=cell_type,
@@ -2320,7 +2316,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         if _WORKFLOW_CELLS.get(field) is None:
-            return P("Unknown workflow field", cls="cell-error")
+            return P(t("inventory.unknown_workflow_field"), cls="cell-error")
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
@@ -2374,7 +2370,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_company(token),
             )
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory"):
             # Without the edit permission, swap back a non-editable display cell
             # (a role granted the write in the matrix keeps its input).
@@ -2434,7 +2430,7 @@ function celerpPrintLabel(entityId, templateId) {
             except Exception:
                 label_map = None
         elif field == "inventory_type":
-            label_map = _INVENTORY_TYPE_LABELS
+            label_map = _inventory_type_labels()
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
@@ -2459,7 +2455,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Td(
                 Select(
                     *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
-                    Option("+ Add new location", value="__add_new__"),
+                    Option(t("inventory.add_new_location"), value="__add_new__"),
                     name="value", **swap, hx_trigger="change[this.value!='__add_new__']",
                     cls="cell-input cell-input--select", autofocus=True,
                     onkeydown=escape_js,
@@ -2489,7 +2485,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_company(token),
             )
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
         locations = locs.get("items", [])
         # ESC restore inherits the same amount read-only state as the static cell, so a
         # restored amount cell never re-offers click-to-edit without the permission.
@@ -2503,7 +2499,7 @@ function celerpPrintLabel(entityId, templateId) {
             except Exception:
                 label_map = None
         elif field == "inventory_type":
-            label_map = _INVENTORY_TYPE_LABELS
+            label_map = _inventory_type_labels()
         # Virtual total fields store no value in item state; derive from primitives
         virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
         if field in virtual_fields:
@@ -2551,11 +2547,11 @@ function celerpPrintLabel(entityId, templateId) {
                 _, idx_s, fname = field.split("__", 2)
                 idx = int(idx_s)
             except ValueError:
-                return P("Bad workflow field", cls="cell-error")
+                return P(t("inventory.bad_workflow_field"), cls="cell-error")
             restore_url = f"/api/items/{entity_id}/workflow-cell/{idx}/{fname}/display"
             cell_type = _WORKFLOW_CELLS.get(fname)
             if cell_type is None:
-                return P("Unknown workflow field", cls="cell-error")
+                return P(t("inventory.unknown_workflow_field"), cls="cell-error")
             if cell_type == "number":
                 try:
                     value = float(str(value) or 0)
@@ -2568,7 +2564,7 @@ function celerpPrintLabel(entityId, templateId) {
                 item = await api.get_item(token, entity_id)
                 steps = list((item.get("workflow") or {}).get("steps") or [])
                 if not (0 <= idx < len(steps)):
-                    return P("Step no longer exists. Reload the tab.", cls="cell-error")
+                    return P(t("inventory.step_gone_reload"), cls="cell-error")
                 steps[idx][fname] = value
                 await api.set_item_workflow(token, entity_id, {"steps": steps})
                 item = await api.get_item(token, entity_id)
@@ -2582,7 +2578,7 @@ function celerpPrintLabel(entityId, templateId) {
                                         cell_type=_WORKFLOW_CELLS.get(fname, "text"), restore_url=restore_url,
                                         options=list(_WORKFLOW_TIME_UNITS) if fname == "time_unit" else None)
                 edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
-                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                edit_td.attrs["title"] = t("inventory.not_saved_detail", detail=e.detail)
                 return edit_td
 
         # Recipe cells (field = recipe__{section}__{idx}__{name}): patch one value on the
@@ -2593,10 +2589,10 @@ function celerpPrintLabel(entityId, templateId) {
                 _, section, idx_s, fname = field.split("__", 3)
                 idx = int(idx_s)
             except ValueError:
-                return P("Bad recipe field", cls="cell-error")
+                return P(t("inventory.bad_recipe_field"), cls="cell-error")
             cell_type = _RECIPE_CELLS.get(section, {}).get(fname)
             if cell_type is None:
-                return P("Unknown recipe field", cls="cell-error")
+                return P(t("inventory.unknown_recipe_field"), cls="cell-error")
             restore_url = f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{fname}/display"
             if cell_type == "number":
                 try:
@@ -2611,7 +2607,7 @@ function celerpPrintLabel(entityId, templateId) {
                 recipe = item.get("recipe") or {}
                 rows_ = recipe.get(section) or []
                 if not (0 <= idx < len(rows_)):
-                    return P("Row no longer exists. Reload the tab.", cls="cell-error")
+                    return P(t("inventory.row_gone_reload"), cls="cell-error")
                 rows_[idx][fname] = value
                 await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
                 item = await api.get_item(token, entity_id)
@@ -2626,10 +2622,10 @@ function celerpPrintLabel(entityId, templateId) {
                 # Keep the user in the editor with the system-standard error styling.
                 edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
                                         cell_type=cell_type, restore_url=restore_url,
-                                        options=list(_LABOR_KIND_LABELS) if fname == "kind" else None,
-                                        label_map=_LABOR_KIND_LABELS if fname == "kind" else None)
+                                        options=list(_LABOR_KINDS) if fname == "kind" else None,
+                                        label_map=_labor_kind_labels() if fname == "kind" else None)
                 edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
-                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                edit_td.attrs["title"] = t("inventory.not_saved_detail", detail=e.detail)
                 return edit_td
 
         # Convert bool fields from string to proper bool
@@ -2677,7 +2673,7 @@ function celerpPrintLabel(entityId, templateId) {
                 locs = (await api.get_locations(token)).get("items", [])
                 loc = next((l for l in locs if l.get("name") == value), None)
                 if loc is None:
-                    return P(f"Unknown location: {value}", cls="cell-error")
+                    return P(t("inventory.unknown_location", value=value), cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             elif field.endswith("_price_total"):
                 # Virtual total field: patch cost_total directly; back-calculate unit for other price lists.
@@ -2974,7 +2970,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return price_td, total_td
             return price_td
         from ui.components.table import display_cell
-        label_map = _INVENTORY_TYPE_LABELS if field == "inventory_type" else None
+        label_map = _inventory_type_labels() if field == "inventory_type" else None
         if field == "category":
             try:
                 label_map = await api.get_category_display_names(token)
@@ -3029,7 +3025,7 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             pass
         return Div(
-            _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+            _detail_table(entity_id, item, right, title=t("inventory.attributes"), currency=currency),
             id="item-attributes-section",
         )
 
@@ -3197,14 +3193,14 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         if field not in _PAIRED_FIELDS:
-            return P("Not a paired field", cls="cell-error")
+            return P(t("inventory.not_paired_field"), cls="cell-error")
         try:
             schema, item, cat_schemas, locs = await asyncio.gather(
                 api.get_item_schema(token), api.get_item(token, entity_id),
                 api.get_all_category_schemas(token), api.get_locations(token),
             )
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
         locations = locs.get("items", [])
         if field in AMOUNT_EDIT_GATED_KEYS and str(item.get("status") or "").lower() != "draft":
             # The paired cell is a second inline-edit entry point for amount fields
@@ -3245,7 +3241,7 @@ function celerpPrintLabel(entityId, templateId) {
                       (field == "pieces" and is_pieces_unit(sell_by, _umap))
             if derived:
                 return Td(
-                    Span("Derived from Qty column", cls="cell-derived"),
+                    Span(t("inventory.derived_from_qty"), cls="cell-derived"),
                     cls="cell",
                     data_col=field,
                 )
@@ -3262,7 +3258,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         if field not in _PAIRED_FIELDS:
-            return P("Not a paired field", cls="cell-error")
+            return P(t("inventory.not_paired_field"), cls="cell-error")
         try:
             _pd_company = await api.get_company(token)
         except Exception:
@@ -3270,7 +3266,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             return await _paired_display(token, entity_id, field, _get_role(request), _pd_company.get("settings") or {})
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
@@ -3320,7 +3316,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(f"{updated} item(s) updated to '{status}'.")
+        return _bulk_destructive_success(t("inventory.bulk_status_updated", n=updated, status=display_enum(status, domain="item_status")))
 
     @app.post("/api/items/bulk/make-available")
     async def bulk_item_make_available(request: Request):
@@ -3336,7 +3332,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(f"{updated} item(s) made available.")
+        return _bulk_destructive_success(t("inventory.bulk_made_available", n=updated))
 
     @app.post("/api/items/bulk/revert-to-draft")
     async def bulk_item_revert_to_draft(request: Request):
@@ -3352,7 +3348,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(f"{updated} item(s) reverted to draft.")
+        return _bulk_destructive_success(t("inventory.bulk_reverted_draft", n=updated))
 
     @app.post("/api/items/bulk/shopify-sync/{action}")
     async def bulk_item_shopify_sync(request: Request, action: str):
@@ -3371,7 +3367,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
         verb = t("connectors.enable_shopify_sync") if enable else t("connectors.disable_shopify_sync")
-        return _bulk_destructive_success(f"{verb}: {updated} item(s).")
+        return _bulk_destructive_success(t("inventory.bulk_verb_count", verb=verb, n=updated))
 
     @app.post("/api/items/bulk/transfer")
     async def bulk_item_transfer(request: Request):
@@ -3390,7 +3386,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return _bulk_destructive_success(f"{updated} item(s) transferred.")
+        return _bulk_destructive_success(t("inventory.bulk_transferred", n=updated))
 
     @app.post("/api/items/bulk/delete")
     async def bulk_item_delete(request: Request):
@@ -3406,7 +3402,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         deleted = result.get("deleted", len(entity_ids))
-        return _bulk_destructive_success(f"{deleted} item(s) deleted.")
+        return _bulk_destructive_success(t("inventory.bulk_deleted", n=deleted))
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
@@ -3424,7 +3420,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         expired = result.get("expired", len(entity_ids))
-        return _bulk_destructive_success(f"{expired} item(s) expired.")
+        return _bulk_destructive_success(t("inventory.bulk_expired", n=expired))
 
     # ── Bulk write-off (seed a write-off list from the selection, then open it) ──
     @app.post("/api/items/bulk/write-off")
@@ -3473,8 +3469,8 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError:
                 failed += 1
         if ok == 0:
-            return Div(P(f"Failed to duplicate {failed} item(s).", cls="flash flash--error"), id="bulk-action-result")
-        msg = f"{ok} item(s) duplicated, {failed} failed." if failed else f"{ok} item(s) duplicated."
+            return Div(P(t("inventory.bulk_duplicate_failed", n=failed), cls="flash flash--error"), id="bulk-action-result")
+        msg = t("inventory.bulk_duplicated_partial", ok=ok, failed=failed) if failed else t("inventory.bulk_duplicated", n=ok)
         return _bulk_destructive_success(msg, cls="flash--warning" if failed else "flash--success")
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
@@ -3567,7 +3563,7 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--warning"))
 
         if preview.get("cannot_split"):
-            return Div(P("Cannot split - only 1 piece", cls="flash flash--warning"))
+            return Div(P(t("inventory.cannot_split_one_piece"), cls="flash flash--warning"))
 
         return _split_table_form(
             preview,
@@ -3609,7 +3605,7 @@ function celerpPrintLabel(entityId, templateId) {
 
         current_qty = float(item.get("quantity", 0) or 0)
         if child_qty >= current_qty:
-            return Div(P(f"Split quantity must be less than current quantity ({current_qty}).", cls="flash flash--warning"), id="bulk-action-result")
+            return Div(P(t("inventory.split_qty_too_high", qty=current_qty), cls="flash flash--warning"), id="bulk-action-result")
 
         orig_sku = str(item.get("sku", "") or "")
 
@@ -3631,7 +3627,7 @@ function celerpPrintLabel(entityId, templateId) {
             parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
             parent_pieces_val = float(parent_pieces_raw) if parent_pieces_raw is not None else None
             if parent_pieces_val is not None and child_pieces >= parent_pieces_val:
-                return Div(P(f"Child pieces ({int(child_pieces)}) must be less than parent pieces ({int(parent_pieces_val)}).", cls="flash flash--warning"), id="bulk-action-result")
+                return Div(P(t("inventory.child_pieces_too_high", child=int(child_pieces), parent=int(parent_pieces_val)), cls="flash flash--warning"), id="bulk-action-result")
 
         child: dict = {"quantity": child_qty}
         if child_sku_input:
@@ -3656,7 +3652,7 @@ function celerpPrintLabel(entityId, templateId) {
         remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - child_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
-            f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({child_qty}).",
+            t("inventory.split_success", orig=orig_sku, remaining=remaining_qty, child=child_sku, child_qty=child_qty),
             f"?skus={exact_skus}&status=all",
         )
 
@@ -3728,7 +3724,7 @@ function celerpPrintLabel(entityId, templateId) {
         # Weight and pieces columns always shown (may be empty if item has no value)
         parent_name = item.get("name") or ""
         mother_cells = [
-            Td("Mother", cls="sp-row-label"),
+            Td(t("inventory.mother"), cls="sp-row-label"),
             _sp_static_td(item.get("sku", "")),
             _sp_static_td(parent_name),
             _sp_static_td(parent_category),
@@ -3763,7 +3759,7 @@ function celerpPrintLabel(entityId, templateId) {
         )
 
         child_cells = [
-            Td("Child", cls="sp-row-label"),
+            Td(t("inventory.child"), cls="sp-row-label"),
             Td(Input(type="text", name="child_sku", value=child_sku, cls="form-input sp-sku-input"), cls="sp-td"),
             Td(Input(type="text", name="child_name", value=parent_name, cls="form-input sp-sku-input"), cls="sp-td"),
             Td(cat_select, cls="sp-td"),
@@ -3783,12 +3779,12 @@ function celerpPrintLabel(entityId, templateId) {
 
         # Numeric/currency headers right-align over their figures (HTML/CSS rule 4a); text stays left.
         headers = [
-            Th(""), Th("SKU", cls="sp-th"), Th("Name", cls="sp-th"), Th("Category", cls="sp-th"),
-            Th("Qty + Unit", cls="sp-th sp-th--num"), Th("Weight", cls="sp-th sp-th--num"),
-            Th("Pieces", cls="sp-th sp-th--num"),
+            Th(""), Th(t("th.sku"), cls="sp-th"), Th(t("th.name"), cls="sp-th"), Th(t("th.category"), cls="sp-th"),
+            Th(t("inventory.th_qty_unit"), cls="sp-th sp-th--num"), Th(t("th.weight"), cls="sp-th sp-th--num"),
+            Th(t("inventory.th_pieces"), cls="sp-th sp-th--num"),
         ]
         if can_see_cost:
-            headers.append(Th("Cost Total", cls="sp-th sp-th--num"))
+            headers.append(Th(t("inventory.th_cost_total"), cls="sp-th sp-th--num"))
 
         # Live delta badge next to Confirm: processing yield = mother weight - child weight.
         # A pieces-sold parent with no weight carries no reconciliation and shows no badge.
@@ -3814,7 +3810,7 @@ function celerpPrintLabel(entityId, templateId) {
                 cls="split-preview-table",
             ),
             Div(
-                Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+                Button(t("btn.confirm"), type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
                 *(
                     [Span(
                         Span("Δ ", cls="sp-delta-label"),
@@ -3846,7 +3842,7 @@ function celerpPrintLabel(entityId, templateId) {
         form = await request.form()
         entity_id = str(form.get("entity_id", "")).strip()
         if not entity_id:
-            return Div(P("No item selected.", cls="flash flash--warning"), id="bulk-action-result")
+            return Div(P(t("inventory.no_item_selected"), cls="flash flash--warning"), id="bulk-action-result")
 
         cost_raw = form.get("child_cost_total")
         cost_present = cost_raw is not None and str(cost_raw).strip() != ""
@@ -3854,7 +3850,7 @@ function celerpPrintLabel(entityId, templateId) {
             child_qty = float(str(form.get("child_qty", "0")).strip())
             child_cost_total = float(str(cost_raw).strip()) if cost_present else None
         except ValueError:
-            return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
+            return Div(P(t("inventory.invalid_numeric_input"), cls="flash flash--warning"), id="bulk-action-result")
 
         child_weight_raw = str(form.get("child_weight", "")).strip()
         child_pieces_raw = str(form.get("child_pieces", "")).strip()
@@ -3880,7 +3876,7 @@ function celerpPrintLabel(entityId, templateId) {
         from urllib.parse import quote
         exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
-            f"Transformed: {parent_sku} → {child_sku}",
+            t("inventory.transformed", parent=parent_sku, child=child_sku),
             f"?skus={exact_skus}&status=all",
         )
 
@@ -4227,7 +4223,7 @@ function celerpPrintLabel(entityId, templateId) {
                     pass  # best-effort propagation; the cost itself is already saved
         except APIError as e:
             # OOB so the message lands in the save-status (inputs use hx_swap="none").
-            return Div(f"Not saved: {e.detail}", id="pricing-save-status",
+            return Div(t("inventory.not_saved_detail", detail=e.detail), id="pricing-save-status",
                        cls="recipe-save-status hint error", hx_swap_oob="true")
         # Derived lists recompute from the base at read time; push their fresh values into
         # the open pricing form as out-of-band swaps (inputs save with hx_swap="none", so
@@ -4251,7 +4247,7 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError:
                 pass  # refresh is cosmetic; the save itself already succeeded
         # Autosave: a transient saved indicator, no page reload (consistent with the rest of the UI).
-        return (Div("Saved ✓", id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
+        return (Div(t("inventory.saved_check"), id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
                 *oob_cells)
 
     @app.post("/api/items/{entity_id}/status")
@@ -4528,11 +4524,11 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             batch_count = int(raw_count)
         except (ValueError, TypeError):
-            return Span("Count must be a whole number.", cls="flash flash--error", id="item-action-error")
+            return Span(t("inventory.count_whole_number"), cls="flash flash--error", id="item-action-error")
         if batch_qty <= 0:
             return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
         if batch_count < 2:
-            return Span("Count must be at least 2.", cls="flash flash--error", id="item-action-error")
+            return Span(t("inventory.count_min_two"), cls="flash flash--error", id="item-action-error")
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
@@ -4540,7 +4536,7 @@ function celerpPrintLabel(entityId, templateId) {
         available = float(item.get("quantity") or 0)
         if batch_qty * batch_count > available:
             return Span(
-                f"Total ({batch_qty * batch_count}) exceeds available ({available}).",
+                t("inventory.total_exceeds_available", total=batch_qty * batch_count, available=available),
                 cls="flash flash--error", id="item-action-error",
             )
         orig_sku = str(item.get("sku", "") or "")
@@ -4800,7 +4796,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     """
     from celerp.modules.slots import get as get_slot
 
-    _loc_opt, _loc_js = add_new_option("+ Add new location", "/settings/inventory?tab=locations")
+    _loc_opt, _loc_js = add_new_option(t("inventory.add_new_location"), "/settings/inventory?tab=locations")
     loc_opts = [Option(loc.get("name", ""), value=loc.get("location_id") or loc.get("id", "")) for loc in locations]
 
     # Send-to targets from modules (e.g. Invoice, List, Consignment Out)
@@ -4849,15 +4845,16 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         action_options.append(Option(t("btn.delete"), value="delete"))
     # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
     if role_has_permission(settings or {}, role, "edit_inventory"):
-        action_options.append(Option("Make Available", value="make_available"))
+        action_options.append(Option(t("inventory.make_available"), value="make_available"))
     if role_has_permission(settings or {}, role, "revert_items_to_draft"):
-        action_options.append(Option("Revert to Draft", value="revert_to_draft"))
+        action_options.append(Option(t("doc.revert_to_draft"), value="revert_to_draft"))
 
     return Div(
-        Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count"),
+        Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count",
+             **{"data-zero-label": t("doc.0_selected")}),
         Button(t("btn.clear"), id="bulk-clear-btn", cls="btn btn--ghost btn--sm",
                onclick="CelerpSelection.clear();CelerpSelection.syncCheckboxes();"
-                       "document.getElementById('bulk-count').textContent='0 selected';"
+                       "var _bc=document.getElementById('bulk-count');_bc.textContent=_bc.getAttribute('data-zero-label');"
                        "document.getElementById('bulk-toolbar').classList.remove('is-active');"
                        "this.style.display='none';"
                        "_resetBulkActions();",
@@ -5015,7 +5012,7 @@ def _bulk_context_templates(
             module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         elif is_navigate:
             form = Form(
-                Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
+                Button(action.get("label", t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
                 action=action["form_action"],
                 method="post",
                 target="_blank",
@@ -5025,7 +5022,7 @@ def _bulk_context_templates(
             module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         else:
             form = Form(
-                Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
+                Button(action.get("label", t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
                 hx_post=action["form_action"],
                 hx_target="#bulk-action-result",
                 hx_swap="outerHTML",
@@ -5048,93 +5045,95 @@ def _bulk_context_templates(
 # ---------------------------------------------------------------------------
 # Vertical-specific status configuration
 # ---------------------------------------------------------------------------
-# Status filter tabs (value, label) shown in the tab bar per vertical.
+# Status filter tabs (value, label_key) shown in the tab bar per vertical; the
+# label key is resolved with t() at render so the active request language wins.
 # "memo" verticals (gems, watches, art, coins, wine) use memo_out + expired.
 # "perishable" verticals (food, agricultural) use expired but not memo_out.
 # Generic verticals show just available/reserved/sold.
 _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
     "gemstones": [
-        ("", "Available"), ("reserved", "Reserved"), ("memo_out", "On Memo"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "watches_accessories": [
-        ("", "Available"), ("reserved", "Reserved"), ("memo_out", "On Memo"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "artwork": [
-        ("", "Available"), ("reserved", "Reserved"), ("memo_out", "On Memo"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "coins_precious_metals": [
-        ("", "Available"), ("reserved", "Reserved"), ("memo_out", "On Memo"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "wine_spirits": [
-        ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "food_beverage": [
-        ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
     "agricultural": [
-        ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
+        ("", "chip.available"), ("reserved", "inventory.status_reserved"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
     ],
 }
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
-    ("", "Available"), ("reserved", "Reserved"), ("sold", "Sold"),
-    ("archived", "Archived"), ("all", "All"),
+    ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("sold", "chip.sold"),
+    ("archived", "chip.archived"), ("all", "doc.all"),
 ]
 
-# Status card definitions (key, label, color) per vertical.
+# Status card definitions (status_key, label_key, color) per vertical; the label
+# key is resolved with t() at render so the active request language wins.
 _VERTICAL_STATUS_CARDS: dict[str, list[tuple[str, str, str]]] = {
     "gemstones": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("memo_out", "On Memo", "yellow"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("memo_out", "inventory.status_on_memo", "yellow"),
+        ("draft", "status.drafts", "gray"),
     ],
     "wine_spirits": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("draft", "status.drafts", "gray"),
     ],
     "food_beverage": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("expired", "Expired", "red"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("expired", "chip.expired", "red"),
+        ("draft", "status.drafts", "gray"),
     ],
     "agricultural": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("expired", "Expired", "red"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("expired", "chip.expired", "red"),
+        ("draft", "status.drafts", "gray"),
     ],
     "watches_accessories": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("memo_out", "On Memo", "yellow"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("memo_out", "inventory.status_on_memo", "yellow"),
+        ("draft", "status.drafts", "gray"),
     ],
     "artwork": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("memo_out", "On Memo", "yellow"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("memo_out", "inventory.status_on_memo", "yellow"),
+        ("draft", "status.drafts", "gray"),
     ],
     "coins_precious_metals": [
-        ("available", "Available", "green"),
-        ("reserved", "Reserved", "blue"),
-        ("memo_out", "On Memo", "yellow"),
-        ("draft", "Drafts", "gray"),
+        ("available", "chip.available", "green"),
+        ("reserved", "inventory.status_reserved", "blue"),
+        ("memo_out", "inventory.status_on_memo", "yellow"),
+        ("draft", "status.drafts", "gray"),
     ],
 }
 _DEFAULT_STATUS_CARDS: list[tuple[str, str, str]] = [
-    ("available", "Available", "green"),
-    ("reserved", "Reserved", "blue"),
-    ("draft", "Drafts", "gray"),
+    ("available", "chip.available", "green"),
+    ("reserved", "inventory.status_reserved", "blue"),
+    ("draft", "status.drafts", "gray"),
 ]
 
 
@@ -5168,8 +5167,8 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
 
     _CARD_DEFS = _vertical_status_card_defs(vertical)
     cards = [
-        {"label": label, "count": count_by_status.get(key, 0), "status": key, "color": color}
-        for key, label, color in _CARD_DEFS
+        {"label": t(label_key, lang), "count": count_by_status.get(key, 0), "status": key, "color": color}
+        for key, label_key, color in _CARD_DEFS
     ]
     return status_cards(cards, base_url, active_status or None)
 
@@ -5179,11 +5178,11 @@ def _inventory_empty_state(p: dict) -> FT:
     active_status = p.get("status", "")
     active_q = p.get("q", "")
     if active_status:
-        label = active_status.replace("_", " ").title()
-        return Div(P(f"No {label.lower()} items.", cls="empty-state-msg"), cls="empty-state", id="data-table")
+        label = display_enum(active_status, domain="item_status")
+        return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_q:
-        return Div(P(f"No results for '{active_q}'.", cls="search-empty--table"), cls="empty-state", id="data-table")
-    return empty_state_cta("No items in inventory.", "Import from CSV", "/inventory/import")
+        return Div(P(t("inventory.no_results_for", q=active_q), cls="search-empty--table"), cls="empty-state", id="data-table")
+    return empty_state_cta(t("msg.no_items_inventory"), t("inventory.import_from_csv"), "/inventory/import")
 
 
 def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None,
@@ -5211,7 +5210,7 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
         )
 
     total = total_scoped if total_scoped is not None else sum(category_counts.values())
-    tabs = [_tab(f"All ({total})", "", not p.get("category"))]
+    tabs = [_tab(f"{t('doc.all')} ({total})", "", not p.get("category"))]
     for cat, count in sorted(category_counts.items()):
         # cat is the schema key (a slug); show its human display label, keep the slug as the filter value.
         tabs.append(_tab(f"{label_map.get(cat, cat)} ({count})", cat, p.get("category") == cat))
@@ -5232,7 +5231,7 @@ def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en
     elif status == "archived":
         count_label = t("chip.archived", lang)
     elif status and status != "all":
-        count_label = status.replace("_", " ").title()
+        count_label = display_enum(status, domain="item_status")
     else:
         count_label = t("chip.available", lang)
     chips = [Span(f"{count_label}: {active_count:,}", cls="val-chip")]
@@ -5269,26 +5268,26 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
             hx_push_url=page_url,
         )
 
-    tabs = [_tab(s, label) for s, label in _TABS]
+    tabs = [_tab(s, t(label_key)) for s, label_key in _TABS]
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
-# Human labels for the inventory_type slugs. "Inventory" is spelled out on stocked/non-stocked
+# Human labels for the inventory_type slugs, resolved at render time so the active
+# request language is honoured (i18n). "Inventory" is spelled out on stocked/non-stocked
 # so they aren't confused with the Component type (added with the manufacturing module).
-_INVENTORY_TYPE_LABELS: dict[str, str] = {
-    "stocked": "Stocked Inventory",
-    "component": "Component",
-    "service": "Service",
-    "non_stocked": "Non-Stocked Inventory",
-    "freight": "Freight",
-}
+_INVENTORY_TYPE_SLUGS: tuple[str, ...] = ("stocked", "component", "service", "non_stocked", "freight")
+
+
+def _inventory_type_labels() -> dict[str, str]:
+    """Raw inventory_type slug -> translated display label, built per request."""
+    return {raw: display_enum(raw, domain="inventory_type") for raw in _INVENTORY_TYPE_SLUGS}
 
 
 def _inventory_type_tabs(p: dict) -> FT:
     """Filter tabs for inventory_type (all / stocked / component / service / non_stocked)."""
     active = p.get("inventory_type", "")
-    _TABS = [("", "All Types")] + [(k, _INVENTORY_TYPE_LABELS[k])
-                                   for k in ("stocked", "component", "service", "non_stocked", "freight")]
+    _TABS = [("", t("inventory.all_types"))] + [(k, display_enum(k, domain="inventory_type"))
+                                   for k in _INVENTORY_TYPE_SLUGS]
     base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
     def _tab(it: str, label: str) -> FT:
@@ -5326,7 +5325,7 @@ def _label_price_cols(schema: list[dict]) -> list[dict]:
     result = []
     for f in schema:
         if f.get("type") == "money" and not f.get("virtual"):
-            result.append({**f, "label": f"{f.get('label', f['key'])} (Unit Price)"})
+            result.append({**f, "label": t("inventory.import_col_unit_price", name=f.get('label', f['key']))})
         else:
             result.append(f)
     return result
@@ -5435,7 +5434,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 return Td(
                     Span(
                         f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
-                        title="Derived from Qty column",
+                        title=t("inventory.derived_from_qty"),
                         cls="cell-derived",
                     ),
                     id=f"cell-{_safe_id}-weight",
@@ -5464,7 +5463,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 return Td(
                     Span(
                         fmt if fmt not in ("", None) else EMPTY,
-                        title="Derived from Qty column",
+                        title=t("inventory.derived_from_qty"),
                         cls="cell-derived",
                     ),
                     id=f"cell-{_safe_id}-pieces",
@@ -5890,7 +5889,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         Div(
             *checkboxes,
             Button(
-                "Reset column settings",
+                t("inventory.reset_columns"),
                 id="col-mgr-reset",
                 cls="btn btn--sm btn--ghost col-mgr-reset-btn",
                 type="button",
@@ -5904,7 +5903,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 title=t("btn.reset_columns_title"),
             ),
             A(
-                ("+ Add custom column" if active_cat else "+ Manage category columns"),
+                (t("inventory.add_custom_column") if active_cat else t("inventory.manage_category_columns")),
                 href=(
                     f"/settings/inventory?tab=category-library&cat={active_cat}"
                     if active_cat
@@ -5945,14 +5944,14 @@ def _apply_unit_field_override(
     if field in ("sell_by", "purchase_unit"):
         return (
             "select",
-            [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            [*unit_names, ("__new__:/settings/inventory?tab=units", t("inventory.add_new_unit"))],
             True,
         )
     if field in ("weight_unit", "gross_weight_unit"):
         opts = weight_unit_names or unit_names
         return (
             "select",
-            [*opts, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            [*opts, ("__new__:/settings/inventory?tab=units", t("inventory.add_new_unit"))],
             True,
         )
     return cell_type, options, allow_custom
@@ -6041,12 +6040,14 @@ def _item_files_preview(request: Request) -> bool:
     return "tab=manufacturing" not in request.headers.get("HX-Current-URL", "")
 
 
-def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images", show_preview: bool = False, tag_filter: str = "", search: str = "", sort_dir: str = "desc", page: int = 1, date_from: str = "", date_to: str = "") -> FT:
+def _item_files_section(entity_id: str, item: dict, *, title: str | None = None, show_preview: bool = False, tag_filter: str = "", search: str = "", sort_dir: str = "desc", page: int = 1, date_from: str = "", date_to: str = "") -> FT:
     """Render the shared files section for an item, with hero toggle enabled.
 
     Titled "Production documents & images" everywhere it appears (Details +
     Manufacturing tabs) so the heading stays consistent across every HTMX refresh
     (all the file mutation routes funnel through here) and describes what it is."""
+    if title is None:
+        title = t("inventory.production_docs_images")
     files = item.get("files") or []
     if not files and item.get("attachments"):
         # Display-side adapter: convert old attachment format for display until
@@ -6100,7 +6101,12 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
     "overhead": {"description": "text", "amount": "number"},
 }
 # Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
-_LABOR_KIND_LABELS = {"hourly": "Hourly", "daily": "Daily", "fixed": "Fixed"}
+_LABOR_KINDS: tuple[str, ...] = ("hourly", "daily", "fixed")
+
+
+def _labor_kind_labels() -> dict[str, str]:
+    """Raw labor-kind slug -> translated display label, built per request."""
+    return {k: display_enum(k, domain="labor_kind") for k in _LABOR_KINDS}
 # Kinds whose cost is quantity x rate (vs a flat fixed total).
 _LABOR_RATE_KINDS = frozenset({"hourly", "daily"})
 
@@ -6147,7 +6153,7 @@ def _recipe_cell(entity_id: str, section: str, idx: int, field: str, value) -> F
         value=value,
         cell_type=_RECIPE_CELLS[section][field],
         edit_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit",
-        label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+        label_map=_labor_kind_labels() if field == "kind" else None,
     )
 
 
@@ -6165,13 +6171,13 @@ def _recipe_cost_card(entity_id: str, item: dict, currency: str | None) -> FT:
         return Tr(Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
                   Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"))
 
-    hint = ("Rolled up from current component costs and applied to this item's cost price automatically."
+    hint = (t("inventory.cost_rollup_hint")
             if has_recipe else
-            "The standard cost will appear here as you add components below.")
+            t("inventory.cost_standard_hint"))
     children = [
-        H3("Cost summary", cls="section-title"),
-        Table(Tbody(_row("Materials", "materials_cost"), _row("Labor", "labor_cost"),
-                    _row("Overhead", "overhead_cost"), _row("Unit cost", "unit_cost", total=True)), cls="detail-table"),
+        H3(t("inventory.cost_summary"), cls="section-title"),
+        Table(Tbody(_row(t("inventory.materials"), "materials_cost"), _row(t("inventory.labor"), "labor_cost"),
+                    _row(t("inventory.overhead"), "overhead_cost"), _row(t("inventory.unit_cost"), "unit_cost", total=True)), cls="detail-table"),
         P(hint, cls="hint"),
     ]
     return Div(*children, id="recipe-cost-card", cls="detail-card recipe-cost-summary")
@@ -6202,8 +6208,8 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     images = _item_image_files(item)
     if not images:
         return Div(
-            H3("Product images", cls="section-title"),
-            P("No product images yet. Add them in Production documents below.", cls="hint"),
+            H3(t("inventory.product_images"), cls="section-title"),
+            P(t("inventory.no_product_images"), cls="hint"),
             cls="detail-card wf-gallery wf-gallery--empty",
             id="wf-gallery",
         )
@@ -6216,7 +6222,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     thumbs = (
         Div(*[
             Button(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
-                   type="button", title="Set as main image",
+                   type="button", title=t("inventory.set_main_image"),
                    hx_post=f"/api/items/{entity_id}/gallery-hero/{f['id']}",
                    hx_target="#wf-gallery", hx_swap="outerHTML",
                    cls="wf-thumb" + (" wf-thumb--active" if f is hero else ""))
@@ -6225,10 +6231,10 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
         if len(images) > 1 else ""
     )
     return Div(
-        H3("Product images", cls="section-title"),
+        H3(t("inventory.product_images"), cls="section-title"),
         Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
         thumbs,
-        P("Click a thumbnail to make it the main image.", cls="hint") if len(images) > 1 else "",
+        P(t("inventory.click_thumb_main"), cls="hint") if len(images) > 1 else "",
         cls="detail-card wf-gallery",
         id="wf-gallery",
     )
@@ -6247,15 +6253,15 @@ def _fmt_minutes(mins) -> str:
     """Human elapsed time from canonical minutes: '90 min' -> '1 h 30 min', exact days/hours kept."""
     m = int(round(float(mins or 0)))
     if m <= 0:
-        return "0 min"
+        return t("inventory.dur_zero")
     if m % 1440 == 0:
-        return f"{m // 1440} d"
+        return t("inventory.dur_days", n=m // 1440)
     if m % 60 == 0:
-        return f"{m // 60} h"
+        return t("inventory.dur_hours", n=m // 60)
     if m >= 60:
         h, mm = divmod(m, 60)
-        return f"{h} h {mm} min"
-    return f"{m} min"
+        return t("inventory.dur_h_min", h=h, m=mm)
+    return t("inventory.dur_min", n=m)
 
 
 def _workflow_cell(entity_id: str, idx: int, field: str, value) -> FT:
@@ -6292,7 +6298,7 @@ WORKFLOW_JS = """
       var u=(tu?tu.textContent.trim():'min'), f=u==='day'?1440:(u==='hr'?60:1);
       total+=v*f;
     });
-    var el=sec.querySelector('.wf-summary'); if(el) el.textContent='Total time '+fmtMin(total);
+    var el=sec.querySelector('.wf-summary'); if(el) el.textContent=(sec.getAttribute('data-total-label')||'Total time')+' '+fmtMin(total);
   }
   sec.addEventListener('htmx:afterSettle', recalc);
   var dragId=null;
@@ -6345,7 +6351,7 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
     _struct = {"hx_post": base, "hx_target": "#workflow-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
     total = sum(float(s.get("time_minutes") or 0) for s in steps)
-    summary = f"Total time {_fmt_minutes(total)}"
+    summary = f"{t('inventory.total_time_label')} {_fmt_minutes(total)}"
 
     def _ref_cell(idx: int, step: dict) -> FT:
         ref = files_by_id.get(step.get("ref_file_id")) if step.get("ref_file_id") else None
@@ -6354,23 +6360,23 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
             inner = [
                 A(Img(src=src, alt=ref.get("filename", ""), cls="wf-ref-img", loading="lazy"),
                   href=src, target="_blank", title=ref.get("filename", "")),
-                Button("×", type="button", title="Remove reference", cls="btn btn--xs btn--ghost",
+                Button("×", type="button", title=t("inventory.remove_reference"), cls="btn btn--xs btn--ghost",
                        hx_post=f"{base}?action=clear_ref&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
             ]
         else:
-            inner = [Span("Drop image", cls="wf-ref-hint")]
+            inner = [Span(t("inventory.drop_image"), cls="wf-ref-hint")]
         return Td(*inner, cls="wf-ref-drop", **{"data-idx": str(idx)})
 
     def _row(idx: int, step: dict) -> FT:
         # Cell order must match the filter/sort column indices below (0-based, drag handle is 0).
         return Tr(
-            Td(Span("⠿", cls="wf-drag", draggable="true", title="Drag to reorder"), cls="wf-col-drag"),
+            Td(Span("⠿", cls="wf-drag", draggable="true", title=t("inventory.drag_reorder")), cls="wf-col-drag"),
             _workflow_cell(entity_id, idx, "station", step.get("station")),
             _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
             _workflow_cell(entity_id, idx, "time_value", step.get("time_value")),
             _workflow_cell(entity_id, idx, "time_unit", step.get("time_unit") or "min"),
             _ref_cell(idx, step),
-            Td(Button("×", type="button", title="Remove step", cls="btn btn--xs btn--ghost",
+            Td(Button("×", type="button", title=t("inventory.remove_step"), cls="btn btn--xs btn--ghost",
                       hx_post=f"{base}?action=remove&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
                cls="cell--actions"),
             cls="wf-row data-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
@@ -6381,34 +6387,33 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
     # is a client-side view (COLUMN_FILTER_JS/ENHANCED_TABLE_JS) over the manual drag order.
     head = Tr(
         Th("", cls="wf-col-drag"),
-        filter_th("Station", 1, sortable=True),
-        filter_th("Instructions", 2, sortable=True),
-        sortable_th("Time", 3, right=True),
-        filter_th("Unit", 4, sortable=True, center=True),
-        Th("Reference"), Th("", cls="cell--actions"),
+        filter_th(t("inventory.th_station"), 1, sortable=True),
+        filter_th(t("inventory.th_instructions"), 2, sortable=True),
+        sortable_th(t("inventory.th_time"), 3, right=True),
+        filter_th(t("th.unit"), 4, sortable=True, center=True),
+        Th(t("label.reference")), Th("", cls="cell--actions"),
     )
     body = [_row(i, s) for i, s in enumerate(steps)]
     table = Table(Thead(head), Tbody(*body), cls="data-table js-table wf-table") if steps else ""
-    empty = P("No steps yet. Add the build steps a worker follows; drag the handle to reorder.",
+    empty = P(t("inventory.no_steps_yet"),
               cls="hint") if not steps else ""
 
     return Div(
         Div(
-            H3("Production workflow", cls="section-title"),
+            H3(t("inventory.production_workflow"), cls="section-title"),
             Span(summary, cls="wf-summary") if steps else "",
             cls="recipe-section-head",
         ),
-        P("The ordered steps to build this item, by work center. Double-click a cell to edit; drag a "
-          "row to reorder; sort or filter any column; drop an image on Reference to illustrate a step.",
+        P(t("inventory.workflow_intro"),
           cls="hint"),
         table,
         empty,
-        Button("+ Add step", type="button", cls="btn btn--sm btn--secondary",
+        Button(t("inventory.add_step"), type="button", cls="btn btn--sm btn--secondary",
                hx_post=f"{base}?action=add", **{k: v for k, v in _struct.items() if k != "hx_post"}),
         Script(COLUMN_FILTER_JS), Script(ENHANCED_TABLE_JS), Script(WORKFLOW_JS),
         id="workflow-section",
         cls="detail-card recipe-block",
-        **{"data-base": base},
+        **{"data-base": base, "data-total-label": t("inventory.total_time_label")},
     )
 
 
@@ -6463,7 +6468,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
     images = _item_image_files(item)
     img_section = (
         Div(
-            H2("Product images"),
+            H2(t("inventory.product_images")),
             Div(*[Img(src=f"/items/{entity_id}/files/{f['id']}/download", alt=f.get("filename", ""))
                   for f in images[:6]], cls="ws-images"),
             cls="ws-section",
@@ -6474,9 +6479,9 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
     comps = recipe.get("components", []) or []
     materials = (
         Div(
-            H2("Materials"),
+            H2(t("inventory.materials")),
             Table(
-                Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"))),
+                Thead(Tr(Th(t("inventory.th_component")), Th(t("th.qty"), cls="ws-num"), Th(t("th.unit")))),
                 Tbody(*[Tr(
                     Td(_component_label(c, by_id)),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
@@ -6504,10 +6509,10 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
 
     workflow = (
         Div(
-            H2("Production workflow"),
+            H2(t("inventory.production_workflow")),
             Table(
-                Thead(Tr(Th("#", cls="ws-num"), Th("Station"), Th("Instructions"),
-                         Th("Time", cls="ws-num"), Th("Ref"))),
+                Thead(Tr(Th("#", cls="ws-num"), Th(t("inventory.th_station")), Th(t("inventory.th_instructions")),
+                         Th(t("inventory.th_time"), cls="ws-num"), Th(t("th.ref")))),
                 Tbody(*[Tr(
                     Td(str(i + 1), cls="ws-num"),
                     Td(s.get("station") or EM),
@@ -6527,19 +6532,19 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
         Head(
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
-            Title(f"Worksheet - {name}"),
+            Title(t("inventory.worksheet_title", name=name)),
             Style(_WORKSHEET_PRINT_CSS),
         ),
         Body(
             Div(
                 Div(
                     Div(name, cls="ws-title"),
-                    Div(f"SKU {sku}" + (f"  ·  {item.get('category')}" if item.get("category") else ""), cls="ws-sub"),
+                    Div(t("inventory.ws_sku", sku=sku) + (f"  ·  {item.get('category')}" if item.get("category") else ""), cls="ws-sub"),
                     cls="ws-headl",
                 ),
                 Div(
-                    Div("Production Worksheet"),
-                    Div(f"Output {float(recipe.get('output_qty') or 1):g} / batch"),
+                    Div(t("inventory.production_worksheet_title")),
+                    Div(t("inventory.ws_output", qty=f"{float(recipe.get('output_qty') or 1):g}")),
                     Div(today, cls="ws-muted"),
                     cls="ws-meta",
                 ),
@@ -6548,7 +6553,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
             img_section,
             materials,
             workflow,
-            Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
+            Div(Span(f"{sku} - {name}"), Span(t("inventory.powered_by")), cls="ws-foot"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )
@@ -6574,12 +6579,12 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
         )
 
     table = Table(
-        Thead(Tr(Th("SKU"), Th("Name"), Th("Required", cls="ws-num"), Th("Issued", cls="ws-num"))),
+        Thead(Tr(Th(t("th.sku")), Th(t("th.name")), Th(t("th.required"), cls="ws-num"), Th(t("status.issued"), cls="ws-num"))),
         Tbody(*[_row(inp) for inp in inputs]),
         cls="ws-tbl",
-    ) if inputs else P("No inputs on this run.", cls="ws-muted")
+    ) if inputs else P(t("inventory.no_inputs_run"), cls="ws-muted")
 
-    title = f"Run - build qty {build_qty:g}"
+    title = t("inventory.run_sheet_title", qty=f"{build_qty:g}")
     return Html(
         Head(
             Meta(charset="utf-8"),
@@ -6590,11 +6595,11 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
         Body(
             Div(
                 Div(Div(title, cls="ws-title"), cls="ws-headl"),
-                Div(Div("Run Sheet"), Div(today, cls="ws-muted"), cls="ws-meta"),
+                Div(Div(t("inventory.run_sheet_label")), Div(today, cls="ws-muted"), cls="ws-meta"),
                 cls="ws-header",
             ),
-            Div(H2("Inputs"), table, cls="ws-section"),
-            Div(Span(title), Span("Powered by celerp.com"), cls="ws-foot"),
+            Div(H2(t("th.inputs")), table, cls="ws-section"),
+            Div(Span(title), Span(t("inventory.powered_by")), cls="ws-foot"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )
@@ -6638,14 +6643,14 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # Already-added components stay in the picker: a process recipe can use the same
     # ingredient in more than one step, so an added item must remain addable again.
     base_opts = [o for o in item_opts if show_all or o[0] in component_ids]
-    scope_opt = ("__scope__components", "Show components only…") if show_all else ("__scope__all", "Search all items…")
-    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", "+ Add new component")]
+    scope_opt = ("__scope__components", t("inventory.scope_components")) if show_all else ("__scope__all", t("inventory.scope_all_items"))
+    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", t("inventory.add_new_component"))]
 
     def _comp_row(i, c):
         cid = c.get("item_id", "")
         it = by_id.get(cid)
         orphan = it is None
-        label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else f"{c.get('sku') or cid} (unavailable)"
+        label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else t("inventory.unavailable_suffix", name=c.get('sku') or cid)
         return Tr(
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
@@ -6653,7 +6658,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             # Unit cost + extended cost are read-only: they come from the component's catalog cost.
             Td(_recipe_money(c.get("unit_cost"), currency), cls="recipe-amount"),
             Td(_recipe_money(c.get("line_cost"), currency), cls="recipe-amount"),
-            Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
+            Td(Button("×", type="button", title=t("inventory.remove_component"), cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row recipe-row--orphan" if orphan else "data-row",
         )
@@ -6664,7 +6669,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         # The Total column therefore always shows a value — never a hidden "--".
         kind = l.get("kind") or "hourly"
         rate_based = kind in _LABOR_RATE_KINDS
-        _na = lambda: Td(EMPTY, cls="recipe-cell--na", title="Not used for this labor type")
+        _na = lambda: Td(EMPTY, cls="recipe-cell--na", title=t("inventory.not_used_labor_type"))
         if rate_based:
             qty_cell = _recipe_cell(entity_id, "labor", i, "hours", l.get("hours"))
             rate_cell = _recipe_cell(entity_id, "labor", i, "rate", l.get("rate"))
@@ -6677,7 +6682,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             _recipe_cell(entity_id, "labor", i, "operation", l.get("operation")),
             _recipe_cell(entity_id, "labor", i, "kind", kind),
             qty_cell, rate_cell, total_cell,
-            Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
+            Td(Button("×", type="button", title=t("inventory.remove_operation"), cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
         )
@@ -6686,7 +6691,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         return Tr(
             _recipe_cell(entity_id, "overhead", i, "description", o.get("description")),
             _recipe_cell(entity_id, "overhead", i, "amount", o.get("amount")),
-            Td(Button("×", type="button", title="Remove cost", cls="btn btn--xs btn--ghost",
+            Td(Button("×", type="button", title=t("inventory.remove_cost"), cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_overhead&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
         )
@@ -6704,7 +6709,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # Materials: selecting a SKU adds the line in one action (the docs item-picker pattern);
     # quantity defaults to 1 and is edited in place. The scope toggle lives in the dropdown.
     comp_add_row = Tr(
-        Td(searchable_select("comp_new", comp_opts, value="", placeholder="Search to add a component…",
+        Td(searchable_select("comp_new", comp_opts, value="", placeholder=t("inventory.ph_search_component"),
                              hx_post=f"{sec}?action=add_component", hx_trigger="change",
                              hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
         Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
@@ -6735,40 +6740,40 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                      "setTimeout(function(){q.classList.remove('field-flash-error');},1500);"
                      "event.stopImmediatePropagation();event.preventDefault();return false;}")
     labor_add_row = Tr(
-        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…", cls="recipe-req", onkeydown=_add_enter)),
-        Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _LABOR_KIND_LABELS.items()],
+        Td(Input(type="text", name="labor_new_op", value="", placeholder=t("inventory.ph_add_operation"), cls="recipe-req", onkeydown=_add_enter)),
+        Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _labor_kind_labels().items()],
                   name="labor_new_kind", cls="labor-kind", onchange=_kind_toggle)),
         Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
         Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
         # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
         Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", readonly=True, onkeydown=_add_enter), cls="cell--number"),
-        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+        Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     oh_add_row = Tr(
-        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", cls="recipe-req", onkeydown=_add_enter)),
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="recipe-req", onkeydown=_add_enter)),
         Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter), cls="cell--number"),
-        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+        Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     materials = Table(
-        Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"),
-                 Th(f"Unit cost{cur_label}", cls="cell--number"), Th(f"Cost{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th(f"{t('th.cost')}{cur_label}", cls="cell--number"),
                  Th("", cls="cell--actions"))),
         Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
         cls="data-table",
     )
     labor = Table(
-        Thead(Tr(Th("Operation"), Th("Type"), Th("Qty", cls="cell--number"),
-                 Th(f"Rate{cur_label}", cls="cell--number"), Th(f"Total{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_operation")), Th(t("th.type")), Th(t("th.qty"), cls="cell--number"),
+                 Th(f"{t('th.rate')}{cur_label}", cls="cell--number"), Th(f"{t('th.total')}{cur_label}", cls="cell--number"),
                  Th("", cls="cell--actions"))),
         Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
         cls="data-table",
     )
     overhead = Table(
-        Thead(Tr(Th("Description"), Th(f"Amount{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th(t("th.description")), Th(f"{t('label.amount')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
         Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )
@@ -6800,13 +6805,13 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     clear_action = ""
     if has_rows:
         clear_action = Div(
-            Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
+            Button(t("inventory.clear_recipe"), type="button", cls="btn btn--ghost btn--danger",
                    onclick="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"),
             Span(
-                Span("Clear all rows?", cls="confirm-label"),
-                Button("Yes, clear", type="button", cls="btn btn--danger btn--xs",
+                Span(t("inventory.clear_all_rows"), cls="confirm-label"),
+                Button(t("inventory.yes_clear"), type="button", cls="btn btn--danger btn--xs",
                        hx_post=f"{sec}?action=clear", **_htmx),
-                Button("Cancel", type="button", cls="btn btn--ghost btn--xs",
+                Button(t("btn.cancel"), type="button", cls="btn btn--ghost btn--xs",
                        onclick="var w=this.closest('.clear-confirm');w.style.display='none';w.previousElementSibling.style.display='';"),
                 cls="clear-confirm", style="display:none;",
             ),
@@ -6824,18 +6829,18 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Form(
             flash_el,
             scope_state,
-            Div("All changes save automatically. Double-click a value to edit it.",
+            Div(t("inventory.autosave_hint"),
                 id="recipe-save-status", cls="recipe-save-status hint"),
             Div(
-                Label("Output quantity per batch", For="output_qty"),
+                Label(t("inventory.output_qty_label"), For="output_qty"),
                 Input(type="number", id="output_qty", name="output_qty",
                       value=f"{recipe.get('output_qty', 1) or 1:g}", min="0.001", step="any", cls="cell--number", **_save),
-                P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
+                P(t("inventory.unit_cost_formula"), cls="hint"),
                 cls="detail-card recipe-block",
             ),
-            Div(_section_head("Materials", "materials_cost"), materials, cls="detail-card recipe-block"),
-            Div(_section_head("Labor", "labor_cost"), labor, cls="detail-card recipe-block"),
-            Div(_section_head("Overhead", "overhead_cost"), overhead, cls="detail-card recipe-block"),
+            Div(_section_head(t("inventory.materials"), "materials_cost"), materials, cls="detail-card recipe-block"),
+            Div(_section_head(t("inventory.labor"), "labor_cost"), labor, cls="detail-card recipe-block"),
+            Div(_section_head(t("inventory.overhead"), "overhead_cost"), overhead, cls="detail-card recipe-block"),
             # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
             Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
             clear_action,
@@ -6881,14 +6886,14 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         for d in demand
     ]
     demand_tbl = Div(
-        date_range_filter("wo-demand-table", 4, "Due date") if demand_rows else "",
+        date_range_filter("wo-demand-table", 4, t("field.due_date")) if demand_rows else "",
         Table(
             Thead(Tr(
-                sortable_th("Document", 0), filter_th("Type", 1, sortable=True),
-                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
-                sortable_th("Due", 4, center=True), filter_th("Coverage", 5, sortable=True, center=True),
+                sortable_th(t("th.document"), 0), filter_th(t("th.type"), 1, sortable=True),
+                filter_th(t("th.customer"), 2, sortable=True), sortable_th(t("th.qty"), 3, right=True),
+                sortable_th(t("inventory.th_due"), 4, center=True), filter_th(t("inventory.th_coverage"), 5, sortable=True, center=True),
             )),
-            Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td("No open demand.", colspan="6", cls="empty-row"))),
+            Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td(t("inventory.no_open_demand"), colspan="6", cls="empty-row"))),
             cls="data-table js-table", id="wo-demand-table", **{"data-page-size": "25"},
         ),
         table_pager("wo-demand-table"),
@@ -6905,15 +6910,15 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
                     **({"title": help_txt} if help_txt else {}))
 
     def _wo_action_select(rid: str, status: str) -> FT:
-        opts = [Option("Action…", value="", disabled=True, selected=True)]
+        opts = [Option(t("inventory.wo_action"), value="", disabled=True, selected=True)]
         if status == "planned":
-            opts.append(Option("Start", value="start"))
+            opts.append(Option(t("btn.start"), value="start"))
         if status == "in_progress":
-            opts += [Option("Complete", value="complete"), Option("Put on hold", value="hold")]
+            opts += [Option(t("inventory.wo_complete"), value="complete"), Option(t("inventory.wo_hold"), value="hold")]
         if status == "on_hold":
-            opts.append(Option("Resume", value="resume"))
+            opts.append(Option(t("btn.resume"), value="resume"))
         if status not in ("completed", "cancelled"):
-            opts.append(Option("Cancel", value="cancel"))
+            opts.append(Option(t("btn.cancel"), value="cancel"))
         if len(opts) == 1:  # closed run - no further actions
             return Span(EMPTY)
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
@@ -6925,7 +6930,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         if src_id and src_no:
             href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
             return A(src_no, href=href, cls="table-link")
-        return Span("To stock", cls="hint")  # no linked order = made to stock
+        return Span(t("inventory.to_stock"), cls="hint")  # no linked order = made to stock
 
     def _wo_row(run: dict) -> FT:
         rid, status = run.get("id"), run.get("status", "planned")
@@ -6942,31 +6947,29 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         )
 
     runs_view = (Div(
-        date_range_filter("wo-orders-table", 4, "Due date"),
+        date_range_filter("wo-orders-table", 4, t("field.due_date")),
         Table(
             Thead(Tr(
-                sortable_th("Work order", 0), filter_th("Source order", 1, sortable=True),
-                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
-                sortable_th("Due", 4, center=True),
-                filter_th("Status", 5, sortable=True, default_exclude=["Completed", "Cancelled"]),
+                sortable_th(t("inventory.th_work_order"), 0), filter_th(t("inventory.th_source_order"), 1, sortable=True),
+                filter_th(t("th.customer"), 2, sortable=True), sortable_th(t("th.qty"), 3, right=True),
+                sortable_th(t("inventory.th_due"), 4, center=True),
+                filter_th(t("th.status"), 5, sortable=True, default_exclude=["Completed", "Cancelled"]),
                 Th("", cls="cell--actions"),
             )),
             Tbody(*[_wo_row(r) for r in runs]),
             cls="data-table js-table", id="wo-orders-table", **{"data-page-size": "25"},
         ),
         table_pager("wo-orders-table"),
-    ) if runs else P("No work orders to show. Create them from an order or on the Demand Planning page.", cls="hint"))
+    ) if runs else P(t("inventory.no_work_orders"), cls="hint"))
 
     return Div(
         flash_el,
-        Div(H3("Open demand", cls="section-title"),
-            P("Orders that have this item on order, with how well current supply covers each.", cls="hint"),
+        Div(H3(t("inventory.open_demand"), cls="section-title"),
+            P(t("inventory.open_demand_hint"), cls="hint"),
             demand_tbl, cls="detail-card recipe-block"),
         Div(
-            H3("Work orders", cls="section-title"),
-            P("Production tasks for this item, each shown with the order it fulfils. Completed and "
-              "cancelled work orders are hidden by default - re-check them in the Status filter to "
-              "show them. Advance one with its Action menu.", cls="hint"),
+            H3(t("inventory.work_orders_title"), cls="section-title"),
+            P(t("inventory.work_orders_hint"), cls="hint"),
             runs_view, cls="detail-card recipe-block"),
         Script(COLUMN_FILTER_JS),
         Script(ENHANCED_TABLE_JS),
@@ -6993,7 +6996,7 @@ def _item_detail_tabs(
     settings: dict | None = None,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
-    tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
+    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")), ("manufacturing", t("nav.manufacturing")), ("activity", t("inventory.tab_activity"))]
     tab_bar = Div(
         *[
             A(
@@ -7011,7 +7014,7 @@ def _item_detail_tabs(
             panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list)
         else:
             panel = Div(
-                _detail_table(entity_id, item, pricing_fields, title="Pricing", currency=currency),
+                _detail_table(entity_id, item, pricing_fields, title=t("page.pricing"), currency=currency),
                 cls="detail-grid detail-grid--single",
             )
     elif active_tab == "manufacturing":
@@ -7020,12 +7023,12 @@ def _item_detail_tabs(
         # the cost summary, then the production hub (demand + runs).
         panel = Div(
             Div(
-                P("Loading…", cls="hint"),
+                P(t("inventory.loading"), cls="hint"),
                 hx_get=f"/api/items/{entity_id}/recipe-section",
                 hx_trigger="load", hx_swap="outerHTML", id="recipe-section",
             ),
             Div(
-                P("Loading…", cls="hint"),
+                P(t("inventory.loading"), cls="hint"),
                 hx_get=f"/api/items/{entity_id}/workflow-section",
                 hx_trigger="load", hx_swap="outerHTML", id="workflow-section",
             ),
@@ -7044,9 +7047,9 @@ def _item_detail_tabs(
         left = [f for f in detail_fields if f.get("key") in _ITEM_CORE_KEYS]
         right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         panel = Div(
-            _detail_table(entity_id, item, left, title="Core Details", currency=currency, cell_renderers=cell_renderers),
+            _detail_table(entity_id, item, left, title=t("inventory.core_details"), currency=currency, cell_renderers=cell_renderers),
             Div(
-                _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+                _detail_table(entity_id, item, right, title=t("inventory.attributes"), currency=currency),
                 id="item-attributes-section",
             ) if right else Div(id="item-attributes-section"),
             cls="detail-grid",
@@ -7142,8 +7145,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     from celerp.services.money import currency_dp as _currency_dp, rate_dp as _rate_dp
     cdp, rdp = _currency_dp(currency or "USD"), _rate_dp(currency or "USD")
 
-    unit_hdr = f"Unit ({cur_sym} / {sell_by})" if cur_sym else f"Unit / {sell_by}"
-    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else "Total (no stock)"
+    unit_hdr = t("inventory.pricing_unit_hdr", sym=cur_sym, sell_by=sell_by) if cur_sym else t("inventory.pricing_unit_hdr_nosym", sell_by=sell_by)
+    total_hdr = t("inventory.pricing_total_hdr", qty=f"{qty:g}", sell_by=sell_by) if has_qty else t("inventory.pricing_total_hdr_nostock")
 
     def _cur(v):
         return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
@@ -7202,25 +7205,25 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
 
     cards = []
     if cost_lists:
-        note = "Rolled up from the recipe and kept in sync automatically. Edit it on the Manufacturing tab." if has_recipe else None
-        cards.append(_card("Cost", cost_lists, editable=not has_recipe, note=note))
+        note = t("inventory.cost_rollup_note") if has_recipe else None
+        cards.append(_card(t("th.cost"), cost_lists, editable=not has_recipe, note=note))
     if sell_lists:
         derived_lists = [pl for pl in sell_lists if is_derived(pl)]
         if derived_lists:
-            base_label = base_price_list or "the base price list"
+            base_label = base_price_list or t("inventory.the_base_price_list")
             sentences = []
             for pl in derived_lists:
-                s = f"{pl.get('name', '')} is {base_label} × {float(pl['multiplier']):g}"
+                s = t("inventory.derived_price_sentence", name=pl.get('name', ''), base=base_label, mult=f"{float(pl['multiplier']):g}")
                 if pl.get("rounding") is not None:
-                    s += f", rounded to the nearest {float(pl['rounding']):g}"
+                    s += t("inventory.rounded_to_nearest", value=f"{float(pl['rounding']):g}")
                 sentences.append(s)
-            note = ". ".join(sentences) + ". Derived prices update automatically when the base price changes. Factors are edited in Settings under Price Lists."
+            note = ". ".join(sentences) + t("inventory.derived_prices_suffix")
         elif pricing_fields and any(price_key(pl.get("name", "")) not in schema_editable for pl in sell_lists):
             # Factors are manager-only, but a read-only sell row still gets an explanation.
-            note = "Computed automatically from the base price list."
+            note = t("inventory.computed_from_base")
         else:
             note = None
-        cards.append(_card("Sell prices", sell_lists, editable=True, note=note))
+        cards.append(_card(t("inventory.card_sell_prices"), sell_lists, editable=True, note=note))
 
     return Div(
         Script("""
@@ -7247,15 +7250,17 @@ function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
   uEl.value = out;
 }
 """),
-        Div("Prices save automatically.", id="pricing-save-status", cls="recipe-save-status hint"),
+        Div(t("inventory.prices_autosave"), id="pricing-save-status", cls="recipe-save-status hint"),
         Div(*cards, cls="pricing-grid"),
         cls="pricing-tab",
     )
 
 
-def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "Details", currency: str | None = None, cell_renderers: dict | None = None) -> FT:
+def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | None = None, currency: str | None = None, cell_renderers: dict | None = None) -> FT:
     if not fields:
         return ""
+    if title is None:
+        title = t("th.details")
     from ui.components.table import display_cell
     def _row(f):
         key = f.get("key", "")
@@ -7270,7 +7275,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
                 options=f.get("options"),
                 editable=f.get("editable", True),
                 currency=currency,
-                label_map=_INVENTORY_TYPE_LABELS if key == "inventory_type" else None,
+                label_map=_inventory_type_labels() if key == "inventory_type" else None,
             )
         return Tr(
             Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
@@ -7373,8 +7378,8 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     for pl in _importable_price_lists(price_lists):
         name = pl.get("name", "")
         key = price_key(name)
-        labels[key] = f"{name} (Unit Price)"
-        labels[f"{key}_total"] = f"{name} (Total)"
+        labels[key] = t("inventory.import_col_unit_price", name=name)
+        labels[f"{key}_total"] = t("inventory.import_col_total", name=name)
     return labels
 
 
@@ -7467,16 +7472,16 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
                 # When value is unrecognised, inject it as a pre-selected invalid option
                 # so the user can see what they had and choose a replacement.
                 unknown_opt = (
-                    Option(f"⚠ \"{val_stripped}\" (unknown)", value=val_stripped,
+                    Option(t("inventory.unit_unknown_option", value=val_stripped), value=val_stripped,
                            selected=True, cls="unit-unknown-option")
                     if val_stripped and not matched
                     else None
                 )
                 return Select(
-                    Option("-- select unit --", value="", selected=(not val_stripped and not matched)),
+                    Option(t("inventory.select_unit"), value="", selected=(not val_stripped and not matched)),
                     *([unknown_opt] if unknown_opt else []),
                     *[Option(u, value=u, selected=(matched and u.lower() == val_lower)) for u in _opts],
-                    Option("+ Add new unit", value="__add_new__"),
+                    Option(t("inventory.add_new_unit"), value="__add_new__"),
                     data_col=col,
                     data_row=str(ri),
                     cls=err_cls,
@@ -7656,12 +7661,12 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
         _is_pieces = is_pieces_unit(sell_by, _default_umap)
         if _is_weight:
             _comp_name   = "split_pieces"
-            _comp_ph     = "Pieces (optional)"
+            _comp_ph     = t("inventory.ph_pieces_optional")
             _comp_title  = t("inv.tooltip.split_pieces_opt")
             _comp_step   = "1"
         elif _is_pieces:
             _comp_name   = "split_weight"
-            _comp_ph     = "Weight (optional)"
+            _comp_ph     = t("inventory.ph_weight_optional")
             _comp_title  = t("inv.tooltip.split_weight_opt")
             _comp_step   = "0.001"
         else:
@@ -7689,7 +7694,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                 Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
                 Div(
                     Input(type="number", name="batch_qty",
-                          placeholder=f"{sell_by_label} per child",
+                          placeholder=t("inventory.ph_per_child", unit=sell_by_label),
                           title=_batch_qty_title,
                           step="any", min="0.001",
                           cls="form-input form-input--sm split-qty-main",
@@ -7702,12 +7707,12 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                       if _comp_name else []),
                     Span("×", cls="batch-split-sep"),
                     Input(type="number", name="batch_count",
-                          placeholder="Count",
+                          placeholder=t("inventory.ph_count"),
                           title=_batch_count_title,
                           step="1", min="2",
                           cls="form-input form-input--sm batch-split-count",
                           oninput=f"batchSplitPreview_{safe_id}(this.form)"),
-                    Button("Batch", type="button",
+                    Button(t("th.batch"), type="button",
                            title=t("inv.tooltip.batch_submit"),
                            cls="btn btn--primary btn--xs btn--batch-submit",
                            onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
@@ -7727,13 +7732,13 @@ function batchSplitPreview_{safe_id}(form) {{
   var over  = total > avail;
   el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
     + ' = ' + total.toFixed(2) + '\u00a0' + unit
-    + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
+    + (over ? ' <span class="batch-split-over">' + (form.getAttribute('data-exceeds-label') || '').replace('{{avail}}', avail) + '</span>' : '');
 }}
 function batchSplitSubmit_{safe_id}(form) {{
   var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
   var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
-  if (!qty || qty <= 0) {{ alert('Enter a valid quantity per child.'); return; }}
-  if (!count || count < 2) {{ alert('Count must be at least 2.'); return; }}
+  if (!qty || qty <= 0) {{ alert(form.getAttribute('data-alert-qty')); return; }}
+  if (!count || count < 2) {{ alert(form.getAttribute('data-alert-count')); return; }}
   var btn = form.querySelector('.btn--batch-submit');
   if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
   var compEl = form.querySelector('[name=batch_complement]');
@@ -7744,6 +7749,11 @@ function batchSplitSubmit_{safe_id}(form) {{
 }}
 """),
                 onsubmit="return false;",
+                **{
+                    "data-exceeds-label": t("inventory.js_exceeds_available"),
+                    "data-alert-qty": t("inventory.js_enter_valid_qty"),
+                    "data-alert-count": t("inventory.count_min_two"),
+                },
             ),
             cls="action-card",
         )
@@ -7758,7 +7768,7 @@ function batchSplitSubmit_{safe_id}(form) {{
         Form(
             Strong(t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
             Div(
-                Input(type="text", name="new_sku", placeholder="New SKU (optional)", cls="form-input form-input--sm"),
+                Input(type="text", name="new_sku", placeholder=t("inventory.ph_new_sku"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),
@@ -7773,7 +7783,7 @@ function batchSplitSubmit_{safe_id}(form) {{
         Form(
             Strong(t("inv.u23f3_expire"), cls="action-card-title"),
             Div(
-                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
@@ -7788,7 +7798,7 @@ function batchSplitSubmit_{safe_id}(form) {{
         Form(
             Strong(t("inv.u1f4e6_archive"), cls="action-card-title"),
             Div(
-                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
@@ -7803,7 +7813,7 @@ function batchSplitSubmit_{safe_id}(form) {{
         Form(
             Strong(t("inv.u21a9_restore"), cls="action-card-title"),
             Div(
-                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),
@@ -7826,13 +7836,13 @@ function batchSplitSubmit_{safe_id}(form) {{
         if role_has_permission(settings or {}, role, "revert_items_to_draft"):
             revert_to_draft_card = Div(
                 Form(
-                    Strong("Revert to Draft", cls="action-card-title"),
+                    Strong(t("doc.revert_to_draft"), cls="action-card-title"),
                     Div(
-                        Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                        Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                         Button(t("btn.go"), type="submit", cls="btn btn--secondary btn--xs"),
                         cls="action-card-row",
                     ),
-                    P("Only an item with no circulation history can revert.", cls="action-card-hint"),
+                    P(t("inventory.revert_no_history"), cls="action-card-hint"),
                     hx_post=f"/api/items/{entity_id}/revert-to-draft",
                     hx_target="#item-action-error",
                     hx_swap="outerHTML",
