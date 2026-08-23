@@ -15,7 +15,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -52,7 +52,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
             page_header(
-                "Import Lists",
+                t("lists_import.import_lists"),
                 A(t("btn.back_to_settings"), href="/lists", cls="btn btn--secondary"),
                 A(t("btn.download_template"), href="/lists/import/template", cls="btn btn--secondary"),
             ),
@@ -62,7 +62,7 @@ def setup_routes(app):
                 preview_action="/lists/import/preview",
                 has_mapping=True,
             ),
-            title="Import Lists - Celerp",
+            title=page_title("lists_import.import_lists"),
             nav_active="lists",
             request=request,
         )
@@ -93,7 +93,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Lists"),
+                page_header(t("lists_import.import_lists")),
                 upload_form(
                     cols=_LIST_IMPORT_SPEC.cols,
                     template_href="/lists/import/template",
@@ -101,7 +101,7 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Lists - Celerp",
+                title=page_title("lists_import.import_lists"),
                 nav_active="lists",
                 request=request,
             )
@@ -109,7 +109,7 @@ def setup_routes(app):
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Lists"),
+            page_header(t("lists_import.import_lists")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_LIST_IMPORT_SPEC.cols,
@@ -119,7 +119,7 @@ def setup_routes(app):
                 back_href="/lists/import",
                 required_targets=_LIST_IMPORT_SPEC.required,
             ),
-            title="Import Lists - Celerp",
+            title=page_title("lists_import.import_lists"),
             nav_active="lists",
             request=request,
         )
@@ -134,15 +134,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Lists"),
+                page_header(t("lists_import.import_lists")),
                 upload_form(
                     cols=_LIST_IMPORT_SPEC.cols,
                     template_href="/lists/import/template",
                     preview_action="/lists/import/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("import.csv_expired"),
                 ),
-                title="Import Lists - Celerp",
+                title=page_title("lists_import.import_lists"),
                 nav_active="lists",
                 request=request,
             )
@@ -153,7 +153,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Lists"),
+                page_header(t("lists_import.import_lists")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_LIST_IMPORT_SPEC.cols,
@@ -165,7 +165,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Lists - Celerp",
+                title=page_title("lists_import.import_lists"),
                 nav_active="lists",
                 request=request,
             )
@@ -176,7 +176,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _LIST_IMPORT_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Lists"),
+            page_header(t("lists_import.import_lists")),
             validation_result(
                 rows=rows,
                 cols=cols,
@@ -186,9 +186,9 @@ def setup_routes(app):
                 back_href="/lists/import",
                 revalidate_action="/lists/import/revalidate",
                 has_mapping=True,
-                upsert_label="ref ID",
+                upsert_label=t("lists_import.upsert_label"),
             ),
-            title="Import Lists - Celerp",
+            title=page_title("lists_import.import_lists"),
             nav_active="lists",
             request=request,
         )
@@ -205,7 +205,7 @@ def setup_routes(app):
                 template_href="/lists/import/template",
                 preview_action="/lists/import/preview",
                 has_mapping=True,
-                error="CSV data expired. Please re-upload.",
+                error=t("import.csv_expired"),
             )
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _LIST_IMPORT_SPEC.cols
@@ -219,7 +219,7 @@ def setup_routes(app):
             back_href="/lists/import",
             revalidate_action="/lists/import/revalidate",
             has_mapping=True,
-            upsert_label="ref ID",
+            upsert_label=t("lists_import.upsert_label"),
         )
 
     @app.post("/lists/import/errors")
@@ -289,7 +289,7 @@ def setup_routes(app):
             skipped=skipped,
             updated=updated,
             errors=errors,
-            entity_label="lists",
+            entity_label=t("lists_import.entity_lists"),
             back_href="/lists",
             import_more_href="/lists/import",
             has_mapping=True,

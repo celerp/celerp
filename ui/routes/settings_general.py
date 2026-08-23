@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, flash
+from ui.components.shell import base_shell, page_header, flash, page_title
 from ui.config import COOKIE_NAME, get_role as _get_role
 from ui.i18n import t, get_lang
 from celerp.services.permissions import role_has_permission
@@ -57,11 +57,11 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
 
 
 
-def _section_breadcrumb(section: str) -> FT:
+def _section_breadcrumb(section_key: str) -> FT:
     return Div(
         A(t("nav.settings"), href="/settings/general", cls="breadcrumb-link"),
         Span(" / ", cls="breadcrumb-sep"),
-        Span(section, cls="breadcrumb-current"),
+        Span(t(section_key), cls="breadcrumb-current"),
         cls="settings-breadcrumb",
     )
 
@@ -136,12 +136,12 @@ def setup_routes(app):
         ) if setup_done else None
 
         return await base_shell(
-            _section_breadcrumb("General"),
+            _section_breadcrumb("settings_general.breadcrumb_general"),
             page_header(t("page.settings", lang)),
             *([setup_banner] if setup_banner else []),
             _general_tabs(tab, lang=lang, is_admin=is_admin),
             content,
-            title="Settings - Celerp",
+            title=page_title("page.settings"),
             nav_active="settings",
             lang=lang,
             extra_head=_phone_head_items(),

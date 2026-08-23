@@ -12,8 +12,9 @@ from starlette.responses import PlainTextResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
+from ui.i18n import t
 from ui.routes.csv_import import (
     CsvImportSpec,
     _resolve_csv_text,
@@ -60,15 +61,15 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
-            page_header("Import Chart of Accounts"),
+            page_header(t("accounting_import.header_chart")),
             upload_form(
                 cols=_CHART_SPEC.cols,
                 template_href="/accounting/import/chart/template",
                 preview_action="/accounting/import/chart/preview",
                 has_mapping=True,
-                hint="Upload a CSV to add accounts to your chart. Existing codes will be skipped.",
+                hint=t("accounting_import.chart_hint"),
             ),
-            title="Import Chart - Celerp",
+            title=page_title("accounting_import.title_chart"),
             nav_active="accounting",
             request=request,
         )
@@ -90,7 +91,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Chart of Accounts"),
+                page_header(t("accounting_import.header_chart")),
                 upload_form(
                     cols=_CHART_SPEC.cols,
                     template_href="/accounting/import/chart/template",
@@ -98,7 +99,7 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Chart - Celerp",
+                title=page_title("accounting_import.title_chart"),
                 nav_active="accounting",
                 request=request,
             )
@@ -106,7 +107,7 @@ def setup_routes(app):
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Chart of Accounts"),
+            page_header(t("accounting_import.header_chart")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_CHART_SPEC.cols,
@@ -116,7 +117,7 @@ def setup_routes(app):
                 back_href="/accounting/import/chart",
                 required_targets=_CHART_SPEC.required,
             ),
-            title="Import Chart - Celerp",
+            title=page_title("accounting_import.title_chart"),
             nav_active="accounting",
             request=request,
         )
@@ -131,15 +132,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Chart of Accounts"),
+                page_header(t("accounting_import.header_chart")),
                 upload_form(
                     cols=_CHART_SPEC.cols,
                     template_href="/accounting/import/chart/template",
                     preview_action="/accounting/import/chart/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("import.csv_expired"),
                 ),
-                title="Import Chart - Celerp",
+                title=page_title("accounting_import.title_chart"),
                 nav_active="accounting",
                 request=request,
             )
@@ -150,7 +151,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Chart of Accounts"),
+                page_header(t("accounting_import.header_chart")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_CHART_SPEC.cols,
@@ -162,7 +163,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Chart - Celerp",
+                title=page_title("accounting_import.title_chart"),
                 nav_active="accounting",
                 request=request,
             )
@@ -173,7 +174,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CHART_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Chart of Accounts"),
+            page_header(t("accounting_import.header_chart")),
             validation_result(
                 rows=rows,
                 cols=cols,
@@ -184,7 +185,7 @@ def setup_routes(app):
                 revalidate_action="/accounting/import/chart/revalidate",
                 has_mapping=True,
             ),
-            title="Import Chart - Celerp",
+            title=page_title("accounting_import.title_chart"),
             nav_active="accounting",
             request=request,
         )
@@ -201,7 +202,7 @@ def setup_routes(app):
                 template_href="/accounting/import/chart/template",
                 preview_action="/accounting/import/chart/preview",
                 has_mapping=True,
-                error="CSV data expired. Please re-upload.",
+                error=t("import.csv_expired"),
             )
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _CHART_SPEC.cols
@@ -255,7 +256,7 @@ def setup_routes(app):
                 created=0,
                 skipped=0,
                 errors=[e.detail],
-                entity_label="accounts",
+                entity_label=t("accounting_import.entity_accounts"),
                 back_href="/settings/accounting?tab=chart",
                 import_more_href="/accounting/import/chart",
                 has_mapping=True,
@@ -264,13 +265,13 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
-        errors = [f"{failed} record(s) failed"] if failed else []
+        errors = [t("settings_import.records_failed", n=failed)] if failed else []
 
         return import_result_panel(
             created=created,
             skipped=skipped,
             errors=errors,
-            entity_label="accounts",
+            entity_label=t("accounting_import.entity_accounts"),
             back_href="/settings/accounting?tab=chart",
             import_more_href="/accounting/import/chart",
             has_mapping=True,
