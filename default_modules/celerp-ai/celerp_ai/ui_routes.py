@@ -519,7 +519,8 @@ def _bill_preview(bills: list[dict]) -> FT:
 
     bills_json = json.dumps(bills)
     return Div(
-        H4(t("ai.draft_bills_ready", n=len(bills)), cls="ai-bills__title"),
+        H4(t("ai.draft_bills_ready_one" if len(bills) == 1 else "ai.draft_bills_ready_other",
+             n=len(bills)), cls="ai-bills__title"),
         Div(*rows, cls="ai-bills__list"),
         Div(
             Form(
