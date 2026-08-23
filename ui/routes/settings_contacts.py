@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import COOKIE_NAME
 
 from ui.routes.settings import _token, _check_permission, _terms_tab, _price_lists_tab
@@ -21,10 +21,10 @@ from ui.i18n import t, get_lang
 
 def _contacts_tabs(active: str) -> FT:
     tabs: list[tuple[str, str]] = [
-        ("payment-terms", "Payment Terms"),
-        ("price-lists", "Price Lists"),
-        ("tags", "Tags"),
-        ("defaults", "Defaults"),
+        ("payment-terms", t("settings.tab_terms")),
+        ("price-lists", t("page.price_lists")),
+        ("tags", t("page.tags")),
+        ("defaults", t("settings_contacts.tab_defaults")),
     ]
     return Div(
         *[
@@ -46,8 +46,8 @@ def _tags_tab(tags: list[dict]) -> FT:
         color_swatch = Span("", cls="tag-swatch", style=f"background:{color}" if color else "background:#ccc")
         rows.append(Tr(
             Td(name),
-            Td(color_swatch, Span(color or "—", cls="text--muted" if not color else "")),
-            Td(category or "—", cls="text--muted" if not category else ""),
+            Td(color_swatch, Span(color or "--", cls="text--muted" if not color else "")),
+            Td(category or "--", cls="text--muted" if not category else ""),
             Td(
                 Button(t("btn.edit"),
                        hx_get=f"/settings/contacts/tags/{name}/edit",
@@ -58,7 +58,7 @@ def _tags_tab(tags: list[dict]) -> FT:
                        hx_delete=f"/settings/contacts/tags/{name}",
                        hx_target="#tags-table-container",
                        hx_swap="innerHTML",
-                       hx_confirm=f"Delete tag '{name}'?",
+                       hx_confirm=t("settings_contacts.confirm_delete_tag", name=name),
                        cls="btn btn--ghost btn--xs btn--danger"),
             ),
             cls="data-row", id=f"tag-row-{name.replace(' ', '-')}",
@@ -74,7 +74,7 @@ def _tags_tab(tags: list[dict]) -> FT:
         Div(
             Div(Label(t("th.name"), cls="form-label"), Input(type="text", name="name", required=True, cls="form-input"), cls="form-group"),
             Div(Label(t("th.color"), cls="form-label"), Input(type="color", name="color", value="#6366f1", cls="form-input"), cls="form-group"),
-            Div(Label(t("th.category"), cls="form-label"), Input(type="text", name="category", placeholder="e.g. Status, Region", cls="form-input"), cls="form-group"),
+            Div(Label(t("th.category"), cls="form-label"), Input(type="text", name="category", placeholder=t("settings_contacts.tag_category_placeholder"), cls="form-input"), cls="form-group"),
             Button(t("btn.add_tag"), type="submit", cls="btn btn--primary btn--sm"),
             cls="form-row",
         ),
@@ -183,11 +183,11 @@ def setup_routes(app):
             content = _terms_tab(terms, prefix="terms", import_path=None)
 
         return await base_shell(
-            _section_breadcrumb("Contacts"),
-            page_header("Contacts Settings"),
+            _section_breadcrumb(t("dashboard.contacts")),
+            page_header(t("settings_contacts.page_header")),
             _contacts_tabs(tab),
             content,
-            title="Contacts Settings - Celerp",
+            title=page_title("settings_contacts.page_header"),
             nav_active="settings",
             request=request,
         )

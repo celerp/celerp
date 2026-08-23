@@ -15,7 +15,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -58,7 +58,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
             page_header(
-                "Import Documents",
+                t("docs_import.import_documents"),
                 A(t("btn.back_to_settings"), href="/docs", cls="btn btn--secondary"),
                 A(t("btn.download_template"), href="/docs/import/template", cls="btn btn--secondary"),
             ),
@@ -68,7 +68,7 @@ def setup_routes(app):
                 preview_action="/docs/import/preview",
                 has_mapping=True,
             ),
-            title="Import Documents - Celerp",
+            title=page_title("docs_import.import_documents"),
             nav_active="docs",
             request=request,
         )
@@ -116,7 +116,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Documents"),
+                page_header(t("docs_import.import_documents")),
                 upload_form(
                     cols=_DOC_IMPORT_SPEC.cols,
                     template_href="/docs/import/template",
@@ -124,7 +124,7 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Documents - Celerp",
+                title=page_title("docs_import.import_documents"),
                 nav_active="docs",
                 request=request,
             )
@@ -132,7 +132,7 @@ def setup_routes(app):
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Documents"),
+            page_header(t("docs_import.import_documents")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_DOC_IMPORT_SPEC.cols,
@@ -142,7 +142,7 @@ def setup_routes(app):
                 back_href="/docs/import",
                 required_targets=_DOC_IMPORT_SPEC.required,
             ),
-            title="Import Documents - Celerp",
+            title=page_title("docs_import.import_documents"),
             nav_active="docs",
             request=request,
         )
@@ -157,15 +157,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Documents"),
+                page_header(t("docs_import.import_documents")),
                 upload_form(
                     cols=_DOC_IMPORT_SPEC.cols,
                     template_href="/docs/import/template",
                     preview_action="/docs/import/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("import.csv_expired"),
                 ),
-                title="Import Documents - Celerp",
+                title=page_title("docs_import.import_documents"),
                 nav_active="docs",
                 request=request,
             )
@@ -176,7 +176,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Documents"),
+                page_header(t("docs_import.import_documents")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_DOC_IMPORT_SPEC.cols,
@@ -188,7 +188,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Documents - Celerp",
+                title=page_title("docs_import.import_documents"),
                 nav_active="docs",
                 request=request,
             )
@@ -199,7 +199,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _DOC_IMPORT_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Documents"),
+            page_header(t("docs_import.import_documents")),
             validation_result(
                 rows=rows,
                 cols=cols,
@@ -209,9 +209,9 @@ def setup_routes(app):
                 back_href="/docs/import",
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
-                upsert_label="document number",
+                upsert_label=t("docs_import.upsert_label"),
             ),
-            title="Import Documents - Celerp",
+            title=page_title("docs_import.import_documents"),
             nav_active="docs",
             request=request,
         )
@@ -228,7 +228,7 @@ def setup_routes(app):
                 template_href="/docs/import/template",
                 preview_action="/docs/import/preview",
                 has_mapping=True,
-                error="CSV data expired. Please re-upload.",
+                error=t("import.csv_expired"),
             )
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _DOC_IMPORT_SPEC.cols
@@ -242,7 +242,7 @@ def setup_routes(app):
             back_href="/docs/import",
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
-            upsert_label="document number",
+            upsert_label=t("docs_import.upsert_label"),
         )
 
     @app.post("/docs/import/errors")
@@ -349,7 +349,7 @@ def setup_routes(app):
             skipped=skipped,
             updated=updated,
             errors=errors,
-            entity_label="documents",
+            entity_label=t("docs_import.entity_documents"),
             back_href="/docs",
             import_more_href="/docs/import",
             has_mapping=True,

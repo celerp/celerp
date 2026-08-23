@@ -350,10 +350,8 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
         ),
     ]
     if safe_authorize:
-        parts.append(P(t("account.google_open_hint", lang,
-                         default="If a browser tab did not open automatically, open this link to finish signing in with Google:"),
-                       cls="text-muted"))
-        parts.append(A(t("account.google_open_link", lang, default="Open Google sign-in"),
+        parts.append(P(t("account.google_open_hint", lang), cls="text-muted"))
+        parts.append(A(t("account.google_open_link", lang),
                        href=safe_authorize, target="_blank", rel="noopener",
                        cls="btn btn--sm btn--outline"))
     if n < POLL_MAX:
