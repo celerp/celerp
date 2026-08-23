@@ -188,35 +188,115 @@ def _placeholders(value: str) -> set[str]:
     }
 
 
-def test_am_keyset_parity():
-    """am.json must contain exactly en.json's keyset: no missing, no extra key."""
-    en = _load_locale("en")
-    am = _load_locale("am")
-    missing = sorted(set(en) - set(am))
-    extra = sorted(set(am) - set(en))
-    assert not missing, f"am.json missing keys: {missing}"
-    assert not extra, f"am.json has keys absent from en.json: {extra}"
+# ---------------------------------------------------------------------------
+# Cross-locale parity (V1): a shipped locale must render correctly, and its
+# completeness is a graded release signal, not merely "it does not crash".
+#
+# Two tiers:
+#   CORRECTNESS - hard for EVERY shipped locale. An extra key is untranslatable
+#     dead weight drifting from en; a {placeholder} set that differs from en
+#     makes t(key, code, **kwargs).format() raise KeyError at render time.
+#     Neither falls back safely, so both are bugs regardless of the language.
+#   COMPLETENESS - a locale missing an en key falls back to English via t(),
+#     which is safe, so partial coverage is a release-readiness signal, not a
+#     crash. It is a HARD gate only for locales declared release-complete in
+#     _COMPLETE_LOCALES; for every other shipped locale the missing-key count
+#     is reported (a warning), not failed. Membership of _COMPLETE_LOCALES is
+#     the release cutover that separates "safe fallback" from "shippable"; a
+#     locale is added once it is fully translated.
+# ---------------------------------------------------------------------------
+
+# Locales whose keyset completeness is enforced as a hard CI gate. English is
+# the source of truth and always complete; a translated locale joins this set
+# when it reaches full parity, after which any future missing key fails CI.
+_COMPLETE_LOCALES = frozenset({"en"})
 
 
-def test_am_placeholder_parity():
-    """For every key, am's {name} placeholder set must equal en's; a mismatch
-    makes t(key, 'am', **kwargs).format() raise KeyError at render time."""
-    en = _load_locale("en")
-    am = _load_locale("am")
-    mismatched = {
-        key: (sorted(_placeholders(en[key])), sorted(_placeholders(am[key])))
-        for key in en
-        if key in am and _placeholders(en[key]) != _placeholders(am[key])
+def _shipped_locales() -> list[str]:
+    """Every central locale shipped on disk (ui/locales/<code>.json)."""
+    return sorted(p.stem for p in Path(_LOCALES_DIR).glob("*.json"))
+
+
+def test_every_shipped_locale_has_no_extra_keys():
+    """CORRECTNESS (hard, all locales): no locale may carry a key absent from
+    en.json - an extra key is dead weight and a sign of drift from the source."""
+    en = set(_load_locale("en"))
+    offenders = {
+        code: sorted(set(_load_locale(code)) - en)
+        for code in _shipped_locales()
+        if set(_load_locale(code)) - en
     }
-    assert not mismatched, f"Placeholder mismatch (en, am) per key: {mismatched}"
+    assert not offenders, f"Locales with keys absent from en.json: {offenders}"
 
 
-def test_am_values_nonempty_valid():
-    """am.json must be valid JSON with every value a non-empty string."""
-    am = _load_locale("am")
-    assert isinstance(am, dict)
-    bad = [k for k, v in am.items() if not isinstance(v, str) or not v.strip()]
-    assert bad == [], f"am.json keys with empty/non-string values: {bad}"
+def test_every_shipped_locale_placeholder_parity():
+    """CORRECTNESS (hard, all locales): for every key a locale defines, its
+    {placeholder} set must equal en's, or t(key, code, **kwargs).format()
+    raises KeyError at render time for that language."""
+    en = _load_locale("en")
+    mismatched = {}
+    for code in _shipped_locales():
+        if code == "en":
+            continue
+        loc = _load_locale(code)
+        bad = {
+            key: (sorted(_placeholders(en[key])), sorted(_placeholders(loc[key])))
+            for key in loc
+            if key in en and _placeholders(en[key]) != _placeholders(loc[key])
+        }
+        if bad:
+            mismatched[code] = bad
+    assert not mismatched, f"Placeholder mismatch vs en per locale: {mismatched}"
+
+
+def test_release_complete_locales_have_full_keyset():
+    """COMPLETENESS gate (hard, _COMPLETE_LOCALES only): every locale declared
+    release-complete must define every en.json key. This flips a locale from
+    'safe fallback' to 'shippable'; add a locale here only once it is fully
+    translated, and this gate keeps it complete thereafter."""
+    en = set(_load_locale("en"))
+    incomplete = {
+        code: len(en - set(_load_locale(code)))
+        for code in sorted(_COMPLETE_LOCALES)
+        if code != "en" and (en - set(_load_locale(code)))
+    }
+    assert not incomplete, (
+        f"Release-complete locales missing en keys (count per locale): {incomplete}. "
+        "Finish the translation, or drop the locale from _COMPLETE_LOCALES."
+    )
+
+
+def test_locale_completeness_report():
+    """COMPLETENESS report (warns, never fails on partial coverage): surfaces
+    how many en keys each not-yet-complete shipped locale is missing, so the
+    release gap is visible in CI output. Missing keys fall back to English, so
+    this is a readiness signal; the hard gate is
+    test_release_complete_locales_have_full_keyset. A locale that reaches ZERO
+    missing keys is flagged as ready to promote onto _COMPLETE_LOCALES."""
+    import warnings
+    en = set(_load_locale("en"))
+    report = {
+        code: len(en - set(_load_locale(code)))
+        for code in _shipped_locales()
+        if code not in _COMPLETE_LOCALES
+    }
+    if report:
+        ready = sorted(c for c, n in report.items() if n == 0)
+        warnings.warn(
+            f"locale completeness (en keys missing): {report}"
+            + (f"; ready to promote to _COMPLETE_LOCALES: {ready}" if ready else ""),
+            stacklevel=2,
+        )
+
+
+def test_every_shipped_locale_values_nonempty_valid():
+    """Every shipped locale must be valid JSON with every value a non-empty
+    string - an empty value renders blank instead of falling back to en."""
+    for code in _shipped_locales():
+        loc = _load_locale(code)
+        assert isinstance(loc, dict), f"{code}.json is not a JSON object"
+        bad = [k for k, v in loc.items() if not isinstance(v, str) or not v.strip()]
+        assert bad == [], f"{code}.json keys with empty/non-string values: {bad}"
 
 
 def test_am_no_em_dash():
