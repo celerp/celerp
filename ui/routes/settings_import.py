@@ -12,8 +12,9 @@ from starlette.responses import PlainTextResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
+from ui.i18n import t
 from ui.routes.settings import _check_permission
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -79,15 +80,15 @@ def setup_routes(app):
         if (r := await _check_permission(request, "import_export_data")):
             return r
         return await base_shell(
-            page_header("Import Locations"),
+            page_header(t("settings_import.hdr_locations")),
             upload_form(
                 cols=_LOCATION_SPEC.cols,
                 template_href="/settings/import/locations/template",
                 preview_action="/settings/import/locations/preview",
                 has_mapping=True,
-                hint="Upload locations. Existing names will be skipped.",
+                hint=t("settings_import.hint_locations"),
             ),
-            title="Import Locations - Celerp",
+            title=page_title("settings_import.hdr_locations"),
             nav_active="settings",
             request=request,
         )
@@ -106,7 +107,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Locations"),
+                page_header(t("settings_import.hdr_locations")),
                 upload_form(
                     cols=_LOCATION_SPEC.cols,
                     template_href="/settings/import/locations/template",
@@ -114,14 +115,14 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Locations - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_locations"), nav_active="settings",
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Locations"),
+            page_header(t("settings_import.hdr_locations")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_LOCATION_SPEC.cols,
@@ -131,7 +132,7 @@ def setup_routes(app):
                 back_href="/settings/import/locations",
                 required_targets=_LOCATION_SPEC.required,
             ),
-            title="Import Locations - Celerp", nav_active="settings",
+            title=page_title("settings_import.hdr_locations"), nav_active="settings",
             request=request,
         )
 
@@ -144,15 +145,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Locations"),
+                page_header(t("settings_import.hdr_locations")),
                 upload_form(
                     cols=_LOCATION_SPEC.cols,
                     template_href="/settings/import/locations/template",
                     preview_action="/settings/import/locations/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("inventory.csv_expired"),
                 ),
-                title="Import Locations - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_locations"), nav_active="settings",
                 request=request,
             )
 
@@ -162,7 +163,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Locations"),
+                page_header(t("settings_import.hdr_locations")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_LOCATION_SPEC.cols,
@@ -174,7 +175,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Locations - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_locations"), nav_active="settings",
                 request=request,
             )
 
@@ -184,7 +185,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _LOCATION_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Locations"),
+            page_header(t("settings_import.hdr_locations")),
             validation_result(
                 rows=rows, cols=cols, validate=_loc_validate,
                 confirm_action="/settings/import/locations/confirm",
@@ -193,7 +194,7 @@ def setup_routes(app):
                 revalidate_action="/settings/import/locations/revalidate",
                 has_mapping=True,
             ),
-            title="Import Locations - Celerp", nav_active="settings",
+            title=page_title("settings_import.hdr_locations"), nav_active="settings",
             request=request,
         )
 
@@ -242,7 +243,7 @@ def setup_routes(app):
         except APIError as e:
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
-                entity_label="locations",
+                entity_label=t("settings.tab_locations"),
                 back_href="/settings/inventory?tab=locations",
                 import_more_href="/settings/import/locations",
                 has_mapping=True,
@@ -250,10 +251,10 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
-        errors = [f"{failed} record(s) failed"] if failed else []
+        errors = [t("settings_import.records_failed", n=failed)] if failed else []
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
-            entity_label="locations",
+            entity_label=t("settings.tab_locations"),
             back_href="/settings/inventory?tab=locations",
             import_more_href="/settings/import/locations",
             has_mapping=True,
@@ -268,15 +269,15 @@ def setup_routes(app):
         if (r := await _check_permission(request, "import_export_data")):
             return r
         return await base_shell(
-            page_header("Import Taxes"),
+            page_header(t("settings_import.hdr_taxes")),
             upload_form(
                 cols=_TAX_SPEC.cols,
                 template_href="/settings/import/taxes/template",
                 preview_action="/settings/import/taxes/preview",
                 has_mapping=True,
-                hint="Upload tax rates. Existing names will be skipped.",
+                hint=t("settings_import.hint_taxes"),
             ),
-            title="Import Taxes - Celerp", nav_active="settings",
+            title=page_title("settings_import.hdr_taxes"), nav_active="settings",
             request=request,
         )
 
@@ -294,7 +295,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Taxes"),
+                page_header(t("settings_import.hdr_taxes")),
                 upload_form(
                     cols=_TAX_SPEC.cols,
                     template_href="/settings/import/taxes/template",
@@ -302,14 +303,14 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Taxes - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_taxes"), nav_active="settings",
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Taxes"),
+            page_header(t("settings_import.hdr_taxes")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_TAX_SPEC.cols,
@@ -319,7 +320,7 @@ def setup_routes(app):
                 back_href="/settings/import/taxes",
                 required_targets=_TAX_SPEC.required,
             ),
-            title="Import Taxes - Celerp", nav_active="settings",
+            title=page_title("settings_import.hdr_taxes"), nav_active="settings",
             request=request,
         )
 
@@ -332,15 +333,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Taxes"),
+                page_header(t("settings_import.hdr_taxes")),
                 upload_form(
                     cols=_TAX_SPEC.cols,
                     template_href="/settings/import/taxes/template",
                     preview_action="/settings/import/taxes/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("inventory.csv_expired"),
                 ),
-                title="Import Taxes - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_taxes"), nav_active="settings",
                 request=request,
             )
 
@@ -350,7 +351,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Taxes"),
+                page_header(t("settings_import.hdr_taxes")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_TAX_SPEC.cols,
@@ -362,7 +363,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Taxes - Celerp", nav_active="settings",
+                title=page_title("settings_import.hdr_taxes"), nav_active="settings",
                 request=request,
             )
 
@@ -372,7 +373,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TAX_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Taxes"),
+            page_header(t("settings_import.hdr_taxes")),
             validation_result(
                 rows=rows, cols=cols, validate=_tax_validate,
                 confirm_action="/settings/import/taxes/confirm",
@@ -381,7 +382,7 @@ def setup_routes(app):
                 revalidate_action="/settings/import/taxes/revalidate",
                 has_mapping=True,
             ),
-            title="Import Taxes - Celerp", nav_active="settings",
+            title=page_title("settings_import.hdr_taxes"), nav_active="settings",
             request=request,
         )
 
@@ -435,7 +436,7 @@ def setup_routes(app):
         except APIError as e:
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
-                entity_label="taxes",
+                entity_label=t("settings.tab_taxes"),
                 back_href="/settings/sales?tab=taxes",
                 import_more_href="/settings/import/taxes",
                 has_mapping=True,
@@ -443,10 +444,10 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
-        errors = [f"{failed} record(s) failed"] if failed else []
+        errors = [t("settings_import.records_failed", n=failed)] if failed else []
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
-            entity_label="taxes",
+            entity_label=t("settings.tab_taxes"),
             back_href="/settings/sales?tab=taxes",
             import_more_href="/settings/import/taxes",
             has_mapping=True,
@@ -461,15 +462,15 @@ def setup_routes(app):
         if (r := await _check_permission(request, "import_export_data")):
             return r
         return await base_shell(
-            page_header("Import Payment Terms"),
+            page_header(t("settings_import.hdr_payment_terms")),
             upload_form(
                 cols=_TERMS_SPEC.cols,
                 template_href="/settings/import/payment-terms/template",
                 preview_action="/settings/import/payment-terms/preview",
                 has_mapping=True,
-                hint="Upload payment terms. Existing names will be skipped.",
+                hint=t("settings_import.hint_terms"),
             ),
-            title="Import Terms - Celerp", nav_active="settings",
+            title=page_title("settings_import.title_terms"), nav_active="settings",
             request=request,
         )
 
@@ -487,7 +488,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Payment Terms"),
+                page_header(t("settings_import.hdr_payment_terms")),
                 upload_form(
                     cols=_TERMS_SPEC.cols,
                     template_href="/settings/import/payment-terms/template",
@@ -495,14 +496,14 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Terms - Celerp", nav_active="settings",
+                title=page_title("settings_import.title_terms"), nav_active="settings",
                 request=request,
             )
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Payment Terms"),
+            page_header(t("settings_import.hdr_payment_terms")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_TERMS_SPEC.cols,
@@ -512,7 +513,7 @@ def setup_routes(app):
                 back_href="/settings/import/payment-terms",
                 required_targets=_TERMS_SPEC.required,
             ),
-            title="Import Terms - Celerp", nav_active="settings",
+            title=page_title("settings_import.title_terms"), nav_active="settings",
             request=request,
         )
 
@@ -525,15 +526,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Payment Terms"),
+                page_header(t("settings_import.hdr_payment_terms")),
                 upload_form(
                     cols=_TERMS_SPEC.cols,
                     template_href="/settings/import/payment-terms/template",
                     preview_action="/settings/import/payment-terms/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("inventory.csv_expired"),
                 ),
-                title="Import Terms - Celerp", nav_active="settings",
+                title=page_title("settings_import.title_terms"), nav_active="settings",
                 request=request,
             )
 
@@ -543,7 +544,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Payment Terms"),
+                page_header(t("settings_import.hdr_payment_terms")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_TERMS_SPEC.cols,
@@ -555,7 +556,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Terms - Celerp", nav_active="settings",
+                title=page_title("settings_import.title_terms"), nav_active="settings",
                 request=request,
             )
 
@@ -565,7 +566,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _TERMS_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Payment Terms"),
+            page_header(t("settings_import.hdr_payment_terms")),
             validation_result(
                 rows=rows, cols=cols, validate=_terms_validate,
                 confirm_action="/settings/import/payment-terms/confirm",
@@ -574,7 +575,7 @@ def setup_routes(app):
                 revalidate_action="/settings/import/payment-terms/revalidate",
                 has_mapping=True,
             ),
-            title="Import Terms - Celerp", nav_active="settings",
+            title=page_title("settings_import.title_terms"), nav_active="settings",
             request=request,
         )
 
@@ -626,7 +627,7 @@ def setup_routes(app):
         except APIError as e:
             return import_result_panel(
                 created=0, skipped=0, errors=[e.detail],
-                entity_label="payment terms",
+                entity_label=t("settings.tab_terms"),
                 back_href="/settings/sales?tab=terms",
                 import_more_href="/settings/import/payment-terms",
                 has_mapping=True,
@@ -634,10 +635,10 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
-        errors = [f"{failed} record(s) failed"] if failed else []
+        errors = [t("settings_import.records_failed", n=failed)] if failed else []
         return import_result_panel(
             created=created, skipped=skipped, errors=errors,
-            entity_label="payment terms",
+            entity_label=t("settings.tab_terms"),
             back_href="/settings/sales?tab=terms",
             import_more_href="/settings/import/payment-terms",
             has_mapping=True,

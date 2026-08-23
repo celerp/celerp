@@ -24,7 +24,7 @@ from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
-from ui.components.shell import auth_shell, flash, star_supporter_card, toast_header
+from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from celerp.config import settings as _settings
@@ -52,7 +52,7 @@ def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
     from celerp.services.backup_import import missing_modules_sentence
     company = notice.get("company_name") or "backup"
-    parts = [f"Backup from {company} restored. Sign in with the credentials from the backup."]
+    parts = [t("auth.restore_notice_message", company=company)]
     if notice.get("schema_warning"):
         parts.append(str(notice["schema_warning"]))
     warnings = list(notice.get("warnings") or [])
@@ -95,7 +95,7 @@ def setup_routes(app):
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if not bootstrapped:
             return RedirectResponse("/setup", status_code=302)
         deactivated = request.query_params.get("deactivated")
@@ -108,32 +108,26 @@ def setup_routes(app):
         except ValueError:
             by_ip = ""
         if deactivated:
-            notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
+            notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":
-            ip_note = f" from ({by_ip})" if by_ip else ""
+            ip_note = t("auth.evicted_from_ip", ip=by_ip) if by_ip else ""
             notice = flash(
-                (
-                    f"You were signed out because a new session was started{ip_note}. "
-                    "Celerp's native infrastructure only supports a single login at a time. "
-                    "If you need multiple people to use the system at the same time, we provide an inexpensive "
-                    '<a href="https://celerp.com/pricing" target="_blank" rel="noopener noreferrer">relay service</a> '
-                    "which creates a tunnel to your system and securely allows multiple users to access it simultaneously."
-                ),
+                t("auth.evicted_message", ip_note=ip_note),
                 kind="warning",
                 raw=True,
             )
         elif reason == "expired":
-            notice = flash("Your session expired. Please sign in again.", kind="warning")
+            notice = flash(t("auth.session_expired_signin"), kind="warning")
         elif reason == "idle":
-            notice = flash("You were signed out after a period of inactivity. Please sign in again.", kind="warning")
+            notice = flash(t("auth.signed_out_idle"), kind="warning")
         elif (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
                            kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
         elif request.query_params.get("imported"):
-            notice = flash("Backup restored. Sign in with the credentials from the backup.", kind="success")
+            notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:
             notice = ""
-        resp = auth_shell(_login_form(notice=notice, next_url=nxt), title="Sign in - Celerp")
+        resp = auth_shell(_login_form(notice=notice, next_url=nxt), title=page_title("btn.sign_in"))
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp
@@ -151,18 +145,18 @@ def setup_routes(app):
         password = str(form.get("password", ""))
         nxt = _safe_next(form.get("next"))
         if not email or not password:
-            return auth_shell(_login_form(email=email, error="Email and password required", next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=t("auth.email_password_required"), next_url=nxt), title=page_title("btn.sign_in"))
         try:
             access_token, refresh_token = await api_login(email, password)
         except APIError as e:
             if e.status == 409 and e.detail == "direct_connection_limit":
                 return auth_shell(
                     _direct_connection_gate(email, password),
-                    title="Sign in - Celerp",
+                    title=page_title("btn.sign_in"),
                 )
-            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
-            return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
@@ -174,13 +168,13 @@ def setup_routes(app):
         password = str(form.get("password", ""))
         nxt = _safe_next(form.get("next"))
         if not email or not password:
-            return auth_shell(_login_form(email=email, error="Email and password required", next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=t("auth.email_password_required"), next_url=nxt), title=page_title("btn.sign_in"))
         try:
             access_token, refresh_token = await api_login_force(email, password)
         except APIError as e:
-            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
-            return auth_shell(_login_form(email=email, error=f"Server error: {e}", next_url=nxt), title="Sign in - Celerp")
+            return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
@@ -194,11 +188,11 @@ def setup_routes(app):
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
         from ui.api_client import setup_code_required as _code_req
-        return auth_shell(_setup_form(setup_code_required=await _code_req()), title="Set up Celerp")
+        return auth_shell(_setup_form(setup_code_required=await _code_req()), title=t("page.setup"))
 
     @app.get("/setup/import-backup")
     async def setup_import_page(request: Request):
@@ -207,10 +201,10 @@ def setup_routes(app):
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
-        return auth_shell(_setup_import_form(), title="Restore from backup - Celerp")
+        return auth_shell(_setup_import_form(), title=page_title("page.restore_from_backup"))
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
@@ -219,16 +213,16 @@ def setup_routes(app):
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         file = form.get("backup_file")
         if not file or not hasattr(file, "read"):
-            return auth_shell(_setup_import_form(error="Please select a .celerp-backup file."), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
         raw = await file.read()
         if not raw:
-            return auth_shell(_setup_import_form(error="File is empty."), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error=t("auth.file_empty")), title=page_title("page.restore_from_backup"))
         try:
             async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as c:
                 r = await c.post(
@@ -239,12 +233,12 @@ def setup_routes(app):
                 ct = r.headers.get("content-type", "")
                 if ct.startswith("application/json"):
                     try:
-                        detail = r.json().get("detail", "Import failed.")
+                        detail = r.json().get("detail", t("auth.import_failed"))
                     except Exception:
-                        detail = "Import failed (unreadable response)."
+                        detail = t("auth.import_failed_unreadable")
                 else:
-                    detail = r.text[:300] or "Import failed."
-                return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
+                    detail = r.text[:300] or t("auth.import_failed")
+                return auth_shell(_setup_import_form(error=detail), title=page_title("page.restore_from_backup"))
             # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
             schema_warning: str | None = None
@@ -265,22 +259,19 @@ def setup_routes(app):
                     from celerp.services.backup_import import missing_modules_sentence
                     parts.append(missing_modules_sentence(warnings))
                 if restart_scheduled:
-                    parts.append(
-                        "The app is restarting to load the restored modules; if this page "
-                        "stops responding, these notes are shown again at the login screen."
-                    )
-                warn_msg = "Restore complete, but: " + " ".join(parts)
+                    parts.append(t("auth.restore_restart_note"))
+                warn_msg = t("auth.restore_complete_but") + " ".join(parts)
                 return auth_shell(
                     _setup_import_form(
                         warning=warn_msg,
                         continue_to="/login?imported=1",
                     ),
-                    title="Restore from backup - Celerp",
+                    title=page_title("page.restore_from_backup"),
                 )
         except httpx.TimeoutException:
-            return auth_shell(_setup_import_form(error="Import timed out. The file may be too large or the server is busy."), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error=t("auth.import_timed_out")), title=page_title("page.restore_from_backup"))
         except Exception as exc:
-            return auth_shell(_setup_import_form(error=f"Connection error: {exc!r}"), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error=t("auth.connection_error", exc=repr(exc))), title=page_title("page.restore_from_backup"))
         return RedirectResponse("/login?imported=1", status_code=302)
 
     @app.post("/setup")
@@ -288,7 +279,7 @@ def setup_routes(app):
         try:
             bootstrapped = await bootstrap_status()
         except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
@@ -304,23 +295,23 @@ def setup_routes(app):
 
         def _fail(msg):
             return auth_shell(_setup_form(company_name=company_name, name=name, email=email, error=msg,
-                                          setup_code_required=code_required), title="Set up Celerp")
+                                          setup_code_required=code_required), title=t("page.setup"))
 
         if not all([company_name, name, email, password]):
-            return _fail("All fields are required")
+            return _fail(t("settings.all_fields_required"))
         if password != confirm:
-            return _fail("Passwords do not match")
+            return _fail(t("settings.passwords_do_not_match"))
         if len(password) < 8:
-            return _fail("Password must be at least 8 characters")
+            return _fail(t("settings.password_min_length"))
         if code_required and not setup_code:
-            return _fail("Setup code is required")
+            return _fail(t("auth.setup_code_required"))
         try:
             access_token, refresh_token = await api_register(company_name, email, name, password,
                                                              setup_code=setup_code or None)
         except APIError as e:
             return _fail(e.detail)
         except Exception as e:
-            return _fail(f"Server error: {e}")
+            return _fail(t("auth.server_error", e=e))
         resp = RedirectResponse("/setup/company", status_code=302)
         set_session_cookies(resp, access_token, refresh_token, request)
         return resp
@@ -333,7 +324,7 @@ def setup_routes(app):
         if not token:
             bootstrapped = await bootstrap_status()
             return RedirectResponse("/setup" if not bootstrapped else "/login", status_code=302)
-        # Validate token — stale cookies (e.g. after init --force) must not
+        # Validate token - stale cookies (e.g. after init --force) must not
         # skip setup when the DB has been wiped.
         try:
             await api_get_company(token)
@@ -363,7 +354,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
             _onboarding_view(),
-            title="Get started - Celerp",
+            title=page_title("page.get_started"),
         )
 
     @app.get("/onboarding/upload/items")
@@ -505,15 +496,14 @@ def setup_routes(app):
         is_htmx = request.headers.get("HX-Request") == "true"
         if not has_email:
             if is_htmx:
-                msg = ("To reset your password, open a terminal on this machine and run: "
-                       "celerp reset-password --email you@example.com")
+                msg = t("auth.reset_password_cli")
                 return Response("", headers=toast_header(msg, "info", persist=True))
             # Direct URL entry with no JS: send back to login (the link there toasts).
             return RedirectResponse("/login", status_code=302)
         if is_htmx:
             # HTMX click on an email-capable install: full-navigate to render the form.
             return Response("", headers={"HX-Redirect": "/forgot-password"})
-        return auth_shell(_forgot_password_form(), title="Forgot password - Celerp")
+        return auth_shell(_forgot_password_form(), title=page_title("page.forgot_password"))
 
     @app.post("/forgot-password")
     async def forgot_password_submit(request: Request):
@@ -528,13 +518,13 @@ def setup_routes(app):
             pass
         return auth_shell(
             _forgot_password_sent(),
-            title="Forgot password - Celerp",
+            title=page_title("page.forgot_password"),
         )
 
     @app.get("/reset-password")
     async def reset_password_page(request: Request):
         token = request.query_params.get("token", "")
-        return auth_shell(_reset_password_form(token=token), title="Reset password - Celerp")
+        return auth_shell(_reset_password_form(token=token), title=page_title("page.reset_password"))
 
     @app.post("/reset-password")
     async def reset_password_submit(request: Request):
@@ -544,17 +534,17 @@ def setup_routes(app):
         new_password = str(form.get("new_password", ""))
         confirm = str(form.get("confirm_password", ""))
         if new_password != confirm:
-            return auth_shell(_reset_password_form(token=token, error="Passwords do not match"), title="Reset password - Celerp")
+            return auth_shell(_reset_password_form(token=token, error=t("settings.passwords_do_not_match")), title=page_title("page.reset_password"))
         import httpx
         try:
             async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
                 r = await c.post("/auth/password-reset/confirm", json={"token": token, "new_password": new_password})
             if r.status_code == 200:
                 return RedirectResponse("/login", status_code=302)
-            detail = r.json().get("detail", "Reset failed")
-            return auth_shell(_reset_password_form(token=token, error=detail), title="Reset password - Celerp")
+            detail = r.json().get("detail", t("auth.reset_failed"))
+            return auth_shell(_reset_password_form(token=token, error=detail), title=page_title("page.reset_password"))
         except Exception as e:
-            return auth_shell(_reset_password_form(token=token, error=f"Server error: {e}"), title="Reset password - Celerp")
+            return auth_shell(_reset_password_form(token=token, error=t("auth.server_error", e=e)), title=page_title("page.reset_password"))
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +620,7 @@ def _setup_form(
                 cls="form-group"),
             Div(Label(t("label.password", lang), For="password", cls="form-label"),
                 Input(type="password", id="password", name="password",
-                      placeholder="Min 8 characters", required=True, cls="form-input"),
+                      placeholder=t("auth.ph_min_8_chars"), required=True, cls="form-input"),
                 cls="form-group"),
             Div(Label(t("label.confirm_password", lang), For="confirm_password", cls="form-label"),
                 Input(type="password", id="confirm_password", name="confirm_password",
@@ -641,8 +631,8 @@ def _setup_form(
             method="post", action="/setup", cls="auth-form",
         ),
         P(
-            "Already have data? ",
-            A("Restore from a Celerp backup", href="/setup/import-backup", cls="auth-link"),
+            t("auth.already_have_data"),
+            A(t("auth.restore_from_celerp_backup"), href="/setup/import-backup", cls="auth-link"),
             ".",
             cls="auth-alt-action",
         ),
@@ -656,24 +646,24 @@ def _setup_import_form(
     continue_to: str | None = None,
 ) -> FT:
     # When a warning is present, show a non-blocking "Continue" button instead
-    # of re-rendering the form. The user can decide to proceed (GDR — never
+    # of re-rendering the form. The user can decide to proceed (GDR - never
     # restrict the UI; warn-and-continue is the rule).
     if warning:
         return Div(
             Div(
                 Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-                H1("Restore complete", cls="auth-title"),
+                H1(t("auth.restore_complete"), cls="auth-title"),
                 P(warning, cls="auth-subtitle"),
                 cls="auth-header",
             ),
             Div(
                 A(
-                    "Continue to login",
+                    t("auth.continue_to_login"),
                     href=continue_to or "/login?imported=1",
                     cls="btn btn--primary btn--full",
                 ),
                 A(
-                    "Cancel",
+                    t("btn.cancel"),
                     href="/setup",
                     cls="btn btn--secondary btn--full mt-sm",
                 ),
@@ -684,24 +674,25 @@ def _setup_import_form(
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1("Restore from backup", cls="auth-title"),
-            P("Upload a .celerp-backup file to restore your data.", cls="auth-subtitle"),
+            H1(t("page.restore_from_backup"), cls="auth-title"),
+            P(t("auth.upload_backup_desc"), cls="auth-subtitle"),
             cls="auth-header",
         ),
         Form(
             flash(error) if error else "",
             Div(
-                Label("Backup file (.celerp-backup)", For="backup_file", cls="form-label"),
+                Label(t("auth.backup_file_label"), For="backup_file", cls="form-label"),
                 Input(type="file", id="backup_file", name="backup_file",
                       accept=".celerp-backup", required=True, cls="form-input"),
                 cls="form-group",
             ),
-            Button("Restore backup", type="submit", id="restore-btn", cls="btn btn--primary btn--full"),
+            Button(t("auth.restore_backup_btn"), type="submit", id="restore-btn",
+                   data_loading_label=t("auth.restoring"), cls="btn btn--primary btn--full"),
             Script("""
 document.querySelector('#restore-btn').closest('form').addEventListener('submit', function() {
   var btn = document.getElementById('restore-btn');
   btn.disabled = true;
-  btn.textContent = 'Restoring\u2026';
+  btn.textContent = btn.getAttribute('data-loading-label');
   btn.classList.add('btn--loading');
 });
 """),
@@ -709,7 +700,7 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
             enctype="multipart/form-data", cls="auth-form",
         ),
         P(
-            A("← Back to setup", href="/setup", cls="auth-link"),
+            A(t("auth.back_to_setup"), href="/setup", cls="auth-link"),
             cls="auth-alt-action",
         ),
         cls="auth-card",
@@ -718,10 +709,10 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
 
 def _onboarding_view() -> FT:
     integrations = [
-        ("/onboarding/upload/items", "Import Inventory", "Upload CSV or JSON", "items"),
-        ("/onboarding/upload/contacts", "Import Customers", "Upload CSV or connect CRM", "crm"),
-        ("/onboarding/upload/invoices", "Import Invoices", "Historical sales data", "docs"),
-        ("/onboarding/upload/cif", "Import from CIF", "Celerp Import Format bundle", "cif"),
+        ("/onboarding/upload/items", t("page.import_inventory"), t("auth.upload_csv_or_json"), "items"),
+        ("/onboarding/upload/contacts", t("auth.import_customers"), t("auth.upload_csv_or_crm"), "crm"),
+        ("/onboarding/upload/invoices", t("auth.import_invoices"), t("auth.historical_sales_data"), "docs"),
+        ("/onboarding/upload/cif", t("auth.import_from_cif"), t("auth.cif_bundle_desc"), "cif"),
     ]
     return Div(
         Div(
@@ -777,10 +768,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
             H2(t("page.direct_connections_are_one_at_a_time"),
                style="font-size:18px;"),
             P(
-                "Direct connections can only serve one authenticated user at a time. "
-                "If you require simultaneous multiple user access, Celerp Connect can "
-                "route your connections through a persistent relay allowing any number "
-                "of users to access the system simultaneously.",
+                t("auth.direct_connection_gate_body"),
                 cls="auth-subtitle",
                 style="text-align:left;",
             ),
@@ -893,7 +881,7 @@ def _reset_password_form(token: str = "", error: str | None = None) -> FT:
             Input(type="hidden", name="token", value=token),
             Div(Label(t("label.new_password"), For="new_password", cls="form-label"),
                 Input(type="password", id="new_password", name="new_password",
-                      placeholder="Min 8 characters", required=True, autofocus=True, cls="form-input"),
+                      placeholder=t("auth.ph_min_8_chars"), required=True, autofocus=True, cls="form-input"),
                 cls="form-group"),
             Div(Label(t("label.confirm_password"), For="confirm_password", cls="form-label"),
                 Input(type="password", id="confirm_password", name="confirm_password",
