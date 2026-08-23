@@ -134,3 +134,93 @@ def test_combobox_type_without_select_then_blur_restores(page, ui_server):
     # No spurious navigation: the language did not change.
     cookies = {c["name"]: c["value"] for c in page.context.cookies()}
     assert cookies.get("celerp_lang", "en") == "en", f"blur must not switch language: {cookies}"
+
+
+def test_switcher_keyboard_aria_expanded_and_active_option(page, ui_server):
+    """I18N-06: the switcher combobox keeps its ARIA state in step with keyboard
+    use - opening sets aria-expanded=true and aria-controls resolves to the open
+    listbox; ArrowDown activates an option and points aria-activedescendant at it;
+    Escape collapses it back to aria-expanded=false and clears the active
+    descendant. This is the runtime wiring initCombobox adds on top of the static
+    roles the unit test test_switcher_has_aria_combobox_semantics already covers."""
+    import re
+
+    from playwright.sync_api import expect
+
+    page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+    page.context.clear_cookies(name="celerp_lang")
+    page.reload(wait_until="domcontentloaded")
+    combo = page.locator(".lang-switcher-wrap .combobox-input")
+    expect(combo).to_have_count(1)
+
+    # aria-controls is wired at init and must resolve to the switcher's own list.
+    list_id = combo.get_attribute("aria-controls")
+    assert list_id, "combobox input must carry aria-controls"
+    controlled = page.locator(f"#{list_id}")
+    expect(controlled).to_have_count(1)
+    expect(controlled).to_have_class(re.compile(r"\bcombobox-list\b"))
+
+    # Focus opens the list; the observer flips aria-expanded to true.
+    combo.click()
+    expect(controlled).to_have_class(re.compile(r"\bopen\b"))
+    expect(combo).to_have_attribute("aria-expanded", "true")
+
+    # ArrowDown activates an option and points aria-activedescendant at it.
+    page.keyboard.press("ArrowDown")
+    active_id = combo.get_attribute("aria-activedescendant")
+    assert active_id, "ArrowDown must set aria-activedescendant on the input"
+    active = page.locator(f"#{active_id}")
+    expect(active).to_have_class(re.compile(r"\bcombobox-option\b"))
+    expect(active).to_have_class(re.compile(r"\bfocused\b"))
+
+    # Escape collapses the list; aria-expanded returns to false and the active
+    # descendant is cleared.
+    page.keyboard.press("Escape")
+    expect(combo).to_have_attribute("aria-expanded", "false")
+    assert combo.get_attribute("aria-activedescendant") is None, \
+        "closing the list must clear aria-activedescendant"
+
+
+def test_switcher_enter_selects_focused_module_language(page, ui_server):
+    """I18N-07: keyboard commit path. Typing to isolate a module-contributed
+    language, ArrowDown to focus it, then Enter selects it - the same
+    cookie -> get_lang -> t() -> production render chain as a click (I18N-04), but
+    driven entirely from the keyboard, which is the path a keyboard-only user
+    depends on. The synthetic 'xx' catalog is pushed into the running ui_server
+    exactly as the module loader does on boot, then removed afterwards."""
+    from playwright.sync_api import expect
+
+    from ui import i18n
+
+    i18n.register_catalog(
+        "xx", {"testlang.greeting": "Hi from Testish", "page.dashboard": "Testish Dashboard"}
+    )
+    try:
+        page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+        page.context.clear_cookies(name="celerp_lang")
+        page.reload(wait_until="domcontentloaded")
+        combo = page.locator(".lang-switcher-wrap .combobox-input")
+        hidden = page.locator('.lang-switcher-wrap input[type="hidden"][name="lang"]')
+        expect(combo).to_have_count(1)
+
+        # Filter to the synthetic language so ArrowDown lands on it deterministically,
+        # independent of how many locales the app ships or their sort order.
+        combo.click()
+        combo.fill("XX")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+
+        # Enter commits the focused option exactly as a click would: the topbar
+        # change listener writes the celerp_lang cookie and reloads into 'xx', so
+        # 'Testish Dashboard' (t('page.dashboard') under xx) only appears server-side
+        # after the reload - proving the full keyboard commit chain.
+        expect(page.locator("body")).to_contain_text("Testish Dashboard")
+        expect(hidden).to_have_value("xx")
+        cookies = {c["name"]: c["value"] for c in page.context.cookies()}
+        assert cookies.get("celerp_lang") == "xx", f"Enter did not commit the language: {cookies}"
+    finally:
+        i18n._registry.pop("xx", None)
+        getattr(getattr(i18n, "_cached_load", None), "cache_clear", lambda: None)()
+        # Session-scoped browser_context (conftest): clear the cookie so the 'xx'
+        # language does not leak into later tests in the shard.
+        page.context.clear_cookies(name="celerp_lang")
