@@ -2782,7 +2782,7 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
             overflow = len(opts) - _OPTIONS_PILL_LIMIT
             pills: list[Any] = [Span(o, cls="attr-pill") for o in visible]
             if overflow > 0:
-                pills.append(Span(f"+{overflow} more", cls="attr-pill attr-pill--more"))
+                pills.append(Span(t("settings.attr_overflow_more", n=overflow), cls="attr-pill attr-pill--more"))
             display_content = Span(*pills)
         return Td(
             display_content,
@@ -3966,7 +3966,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         if db_ok:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span(t("connectors.status_ok"), cls="badge badge--active"),
-                Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB uploaded", cls="settings-hint"),
+                Span(t("settings.db_backup_size_uploaded", mb=f"{(_db.get('size_bytes') or 0) / 1024**2:.1f}"), cls="settings-hint"),
             )))
         else:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(

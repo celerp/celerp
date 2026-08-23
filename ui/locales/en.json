@@ -2992,5 +2992,9 @@
   "settings.backup_download_tooltip": "Download a complete backup archive (database + all files) to your computer. Not encrypted - store it securely.",
   "settings.backup_import_tooltip": "Restore from a previously downloaded .celerp-backup archive. This will overwrite your current data.",
   "settings_purchasing.page_title": "Purchasing Documents Settings",
-  "currency.search_placeholder": "Search currency..."
+  "currency.search_placeholder": "Search currency...",
+  "settings.attr_overflow_more": "+{n} more",
+  "settings.db_backup_size_uploaded": " - {mb} MB uploaded",
+  "table.daterange_from_aria": "{label} from",
+  "table.daterange_to_aria": "{label} to"
 }

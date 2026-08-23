@@ -302,9 +302,9 @@ def date_range_filter(table_id: str, col: int, label: str) -> FT:
     via COLUMN_FILTER_JS). `col` is the 0-based cell index holding an ISO date (YYYY-MM-DD)."""
     return Span(
         Span(f"{label}:", cls="daterange-label"),
-        Input(type="date", cls="daterange-input", aria_label=f"{label} from", **{"data-bound": "from"}),
+        Input(type="date", cls="daterange-input", aria_label=t("table.daterange_from_aria", label=label), **{"data-bound": "from"}),
         Span(t("table.daterange_to"), cls="daterange-sep"),
-        Input(type="date", cls="daterange-input", aria_label=f"{label} to", **{"data-bound": "to"}),
+        Input(type="date", cls="daterange-input", aria_label=t("table.daterange_to_aria", label=label), **{"data-bound": "to"}),
         cls="daterange", **{"data-daterange-table": table_id, "data-daterange-col": str(col)},
     )
 
