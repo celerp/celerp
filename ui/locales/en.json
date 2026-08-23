@@ -1053,7 +1053,7 @@
   "msg.accepted_formats_csv_utf8": "Accepted formats: .csv (UTF-8)",
   "msg.agentic_record_creation": "Agentic record creation",
   "msg.api_server_not_running": "Make sure the API server is running before opening the UI:",
-  "msg.ask_anything_about_your_business_data": "Ask anything about your business data...",
+  "msg.ask_anything_about_your_business_data": "Ask anything about your business data…",
   "msg.automated_daily_backups": "Automated daily backups",
   "msg.batch_invoice_pdf_processing": "Batch invoice & PDF processing",
   "msg.bulk_fix_tools": "Bulk fix tools",
