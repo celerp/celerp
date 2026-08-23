@@ -4,8 +4,9 @@
 """Permanent guardrail against new hardcoded user-facing strings in ui/.
 
 The i18n sweep routed the app's rendered text through ``t()``. This test keeps it
-that way: it scans ui/routes and ui/components for bare English in element
-content and in the user-facing attributes (placeholder, title, aria_label,
+that way: it scans the whole first-party UI surface (ui/routes, ui/components,
+ui/app.py, and each first-party module's UI package) for bare English in element
+content and in the user-facing attributes (placeholder, title, aria_label, alt,
 hx_confirm), and fails if any string is neither wrapped in ``t()`` nor listed,
 with a reason, in ``scripts/i18n_allowlist.json``. The allowlist may only shrink.
 
@@ -17,7 +18,10 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location(
@@ -96,12 +100,46 @@ def test_scan_source_ignores_fully_translated():
     assert ei._scan_source(src, "ui/routes/fake.py") == []
 
 
+def test_scanner_flags_nonfirst_positional_child():
+    """A bare string in a non-first positional slot (a text child after an
+    element) is flagged, not only the first argument."""
+    src = 'x = Div(Span(cls="a"), "Totals overview")'
+    texts = {r["text"] for r in ei._scan_source(src, "ui/routes/fake.py")}
+    assert "Totals overview" in texts
+
+
+def test_scanner_flags_alt_attr():
+    """The image alt attribute carries user-visible text and is flagged."""
+    src = 'x = Img(src="/x.png", alt="Company logo")'
+    hits = {(r["attr"], r["text"]) for r in ei._scan_source(src, "ui/routes/fake.py")}
+    assert ("alt", "Company logo") in hits
+
+
+def test_scanner_flags_page_header_title():
+    """page_header's title argument is scanned like any element content."""
+    src = 'x = page_header("Reports")'
+    texts = {r["text"] for r in ei._scan_source(src, "ui/routes/fake.py")}
+    assert "Reports" in texts
+
+
+def test_allowlist_entry_requires_nonempty_reason(tmp_path, monkeypatch):
+    """An allowlist entry with an empty or missing reason is rejected at load, so
+    a silent exception cannot be added without documenting why."""
+    bad = tmp_path / "allowlist.json"
+    bad.write_text(json.dumps(
+        {"entries": [{"file": "ui/routes/x.py", "text": "Hi", "reason": ""}]}
+    ))
+    monkeypatch.setattr(ei, "ALLOWLIST_PATH", bad)
+    with pytest.raises(ValueError):
+        ei._load_allowlist()
+
+
 # --------------------------------------------------------------------------
 # The permanent guardrail
 # --------------------------------------------------------------------------
 
 def test_no_new_hardcoded_ui_strings():
-    leaks = ei.scan(ei.UI_SCAN_PATHS, apply_allowlist=True)
+    leaks = ei.scan(ei.guardrail_paths(), apply_allowlist=True)
     detail = "\n".join(
         f"  {r['file']}:{r['line']} {r['element']} "
         f"{(r.get('attr') or 'text')}={r['text']!r}"
@@ -117,6 +155,6 @@ def test_allowlist_has_no_dead_entries():
     """Every allowlist entry must still match a real string in ui/, so a string
     that gets translated cannot leave a stale exception behind. The list shrinks,
     never ossifies."""
-    live = {(r["file"], r["text"]) for r in ei.scan(ei.UI_SCAN_PATHS)}
+    live = {(r["file"], r["text"]) for r in ei.scan(ei.guardrail_paths())}
     stale = sorted(ei._load_allowlist() - live)
     assert not stale, f"Stale allowlist entries (string no longer present): {stale}"
