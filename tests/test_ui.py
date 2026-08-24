@@ -4779,6 +4779,46 @@ class TestSprint5ItemActions:
         assert "id" not in captured
 
     @pytest.mark.asyncio
+    async def test_duplicate_item_drops_barcode_and_requests_fresh(self, ui_client):
+        """Single duplicate must not inherit the source barcode; it flags the create
+        path to mint a fresh unique one (barcodes are globally unique)."""
+        src = {"entity_id": "gc:123", "name": "Ruby", "sku": "GEM-001",
+               "status": "available", "barcode": "123456"}
+        captured = {}
+        async def _mock_create(token, data):
+            captured.update(data)
+            return {"id": "item:copy", "event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=src)),
+            patch("ui.api_client.create_item", new=_mock_create),
+        ):
+            await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": "GEM-001-copy"}, cookies=_authed())
+        assert "barcode" not in captured, f"source barcode must not be copied top-level: {captured!r}"
+        assert "barcode" not in captured.get("attributes", {}), f"source barcode must not be copied via attributes: {captured!r}"
+        assert captured.get("auto_barcode") is True
+
+    @pytest.mark.asyncio
+    async def test_bulk_duplicate_drops_barcode_and_requests_fresh(self, ui_client):
+        """Bulk duplicate uses the same helper: each copy drops the source barcode
+        and requests a fresh unique one."""
+        src = {"entity_id": "gc:123", "name": "Ruby", "sku": "GEM-001",
+               "status": "available", "barcode": "123456"}
+        captured = []
+        async def _mock_create(token, data):
+            captured.append(dict(data))
+            return {"id": "item:copy", "event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=src)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.create_item", new=_mock_create),
+        ):
+            await ui_client.post("/api/items/bulk/duplicate", data={"selected": "gc:123"}, cookies=_authed())
+        assert len(captured) == 1, f"expected one copy, got {captured!r}"
+        assert "barcode" not in captured[0], f"source barcode must not be copied top-level: {captured[0]!r}"
+        assert "barcode" not in captured[0].get("attributes", {}), f"source barcode must not be copied via attributes: {captured[0]!r}"
+        assert captured[0].get("auto_barcode") is True
+
+    @pytest.mark.asyncio
     async def test_duplicate_item_route_missing_sku(self, ui_client):
         """Empty new_sku → auto-generates a copy SKU and creates the item."""
         with (

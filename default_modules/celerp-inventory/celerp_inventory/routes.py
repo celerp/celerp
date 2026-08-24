@@ -210,6 +210,7 @@ class ItemCreate(BaseModel):
     description: str | None = None
     unit: str | None = None
     barcode: str | None = None             # digits only if provided
+    auto_barcode: bool = False             # duplicate/clone: mint a fresh unique barcode from the shared sequence, never inherit one
     hs_code: str | None = None             # Harmonized System code for trade/customs
     tax_codes: list[str] = Field(default_factory=list)
     purchase_sku: str | None = None        # vendor's SKU / part number
@@ -1248,13 +1249,19 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if not payload.sku:
         payload = payload.model_copy(update={"sku": str(await _next_seq(session, company_id)).zfill(6)})
 
+    # Duplicate/clone: mint a fresh unique barcode from the shared SKU/barcode
+    # sequence and discard any inherited one. Mirrors the split child, which
+    # resets barcode for the same reason - a new entity needs a new unique
+    # barcode (barcode is globally unique, so a copy must never carry the source's).
+    if payload.auto_barcode:
+        payload = payload.model_copy(update={"barcode": str(await _next_seq(session, company_id)).zfill(6)})
     # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
     # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
     # if another item already uses that barcode (e.g. a second item deliberately
     # sharing a numeric SKU), assign a fresh sequential barcode instead so the
     # duplicate-SKU create does not 409 on barcode. Single-SKU behaviour is
     # unchanged (the first/only item still gets barcode == sku).
-    if payload.barcode is None and payload.sku.isdigit():
+    elif payload.barcode is None and payload.sku.isdigit():
         clash = (await session.execute(
             select(Projection).where(
                 Projection.company_id == company_id,
@@ -1283,6 +1290,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     entity_id = f"item:{uuid.uuid4()}"
     data = payload.model_dump(exclude_none=True)
+    data.pop("auto_barcode", None)  # request-only signal; never persisted onto the item
     if payload.location_id is not None:
         data["location_id"] = str(payload.location_id)
 

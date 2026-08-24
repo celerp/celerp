@@ -1815,6 +1815,44 @@ async def test_new_item_non_numeric_sku_no_barcode(client):
 
 
 @pytest.mark.asyncio
+async def test_auto_barcode_mints_fresh_unique_barcode(client):
+    """A create with auto_barcode=True (the duplicate/clone path) mints a fresh
+    unique barcode from the shared sequence and never inherits the one passed in -
+    barcode is globally unique, mirroring the split child's reset."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Source item carrying a barcode.
+    r0 = await client.post("/items", json={"status": "available", "sku": "SRC-1", "name": "Src", "quantity": 1, "sell_by": "piece", "barcode": "700001"}, headers=h)
+    assert r0.status_code == 200, r0.text
+    src = (await client.get(f"/items/{r0.json()['id']}", headers=h)).json()
+    assert src["barcode"] == "700001"
+    # Duplicate: same barcode passed with auto_barcode=True -> fresh, distinct barcode
+    # (and no 409 on the source's barcode).
+    r1 = await client.post("/items", json={"status": "available", "sku": "SRC-1-copy", "name": "Src", "quantity": 1, "sell_by": "piece", "barcode": "700001", "auto_barcode": True}, headers=h)
+    assert r1.status_code == 200, r1.text
+    dup = (await client.get(f"/items/{r1.json()['id']}", headers=h)).json()
+    assert dup.get("barcode") is not None, "duplicate must receive a fresh barcode"
+    assert dup["barcode"] != src["barcode"], f"duplicate barcode must differ from source; both={dup['barcode']!r}"
+    assert dup["barcode"].isdigit()
+    # A second duplicate gets its own distinct barcode too.
+    r2 = await client.post("/items", json={"status": "available", "sku": "SRC-1-copy2", "name": "Src", "quantity": 1, "sell_by": "piece", "auto_barcode": True}, headers=h)
+    assert r2.status_code == 200, r2.text
+    dup2 = (await client.get(f"/items/{r2.json()['id']}", headers=h)).json()
+    assert dup2["barcode"] not in (None, src["barcode"], dup["barcode"])
+
+
+@pytest.mark.asyncio
+async def test_auto_barcode_not_persisted_as_field(client):
+    """auto_barcode is a request-only signal; it must not be stored on the item."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"status": "available", "sku": "AB-1", "name": "AB", "quantity": 1, "sell_by": "piece", "auto_barcode": True}, headers=h)
+    assert r.status_code == 200, r.text
+    item = (await client.get(f"/items/{r.json()['id']}", headers=h)).json()
+    assert "auto_barcode" not in item, f"auto_barcode leaked onto stored item: {item!r}"
+
+
+@pytest.mark.asyncio
 async def test_split_children_get_unique_barcodes(client):
     """Each split child must receive a unique auto-assigned barcode from the shared sequence."""
     token = await _token(client)
