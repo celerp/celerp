@@ -705,7 +705,9 @@ _LITERAL_PATTERNS = [
     re.compile(r"/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-{}]+)+"),  # multi-segment routes
     re.compile(r"--[a-z][a-z0-9-]+"),                        # long CLI flags
     re.compile(r"\b[a-z_]+\.[a-z_]+:[a-z_]+\b"),             # module:app targets
-    re.compile(r"\.celerp-backup\b"),                        # backup filename
+    re.compile(r"\.celerp-backup\b"),                        # backup filename (leading dot)
+    re.compile(r"\b[A-Z][A-Z0-9_]{2,}=[A-Za-z0-9_./\-]+"),   # environment assignments
+    re.compile(r"\b[A-Za-z0-9_\-]*[A-Za-z][A-Za-z0-9_\-]*\.[A-Za-z][A-Za-z0-9]{1,4}\b"),  # filenames and domains
 ]
 
 
