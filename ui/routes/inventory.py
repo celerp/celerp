@@ -1020,12 +1020,15 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
 def _duplicate_payload(source: dict, new_sku: str) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
-    path). Core columns and any *_price stay top-level; everything else goes into
-    attributes. Shared by the single-item and bulk duplicate paths."""
-    _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
+    path) and barcode. Barcode is globally unique, so a copy never inherits the
+    source's: auto_barcode tells the create path to mint a fresh unique one from the
+    shared sequence (the same reset a split child gets). Core columns and any *_price
+    stay top-level; everything else goes into attributes. Shared by the single-item
+    and bulk duplicate paths."""
+    _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode"}
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes"}
-    payload: dict = {"sku": new_sku}
+    payload: dict = {"sku": new_sku, "auto_barcode": True}
     attrs: dict = {}
     for k, v in source.items():
         if k in _SKIP or k == "sku" or v is None:
