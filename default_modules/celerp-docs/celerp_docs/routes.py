@@ -5619,6 +5619,11 @@ async def create_audit_list(
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
+# A single scan run submits its whole accumulated comma list at once; this bounds one submission
+# so a pathological paste can never build an unbounded in-memory line set behind one write.
+MAX_SCAN_BATCH = 200
+
+
 @lists_router.post("/{entity_id}/scan")
 async def scan_list(
     entity_id: str, payload: ListScanBody,
@@ -5645,6 +5650,9 @@ async def scan_list(
     codes = [c.strip() for c in (payload.barcode or "").split(",") if c.strip()]
     if not codes:
         raise HTTPException(status_code=422, detail="Empty scan")
+    if len(codes) > MAX_SCAN_BATCH:
+        raise HTTPException(status_code=422,
+                            detail=f"Too many codes in one scan ({len(codes)}); the limit is {MAX_SCAN_BATCH}")
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
     scan_mode = behavior(lt).scan_finalized if status == FINALIZED else None

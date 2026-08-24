@@ -399,6 +399,18 @@ async def test_barcode_must_be_digits(client):
 
 
 @pytest.mark.asyncio
+async def test_sku_cannot_contain_comma(client):
+    """A comma is the OR operator in the SKU/search syntax (the scan bar splits its batch on it, the
+    `skus=` filter splits on it), so a SKU carrying a comma would split into separate codes wherever it
+    is matched and become unresolvable. Reject it at creation so an unscannable SKU can never exist."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"status": "available", "sku": "AB,CD", "name": "A", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 422
+    assert "comma" in r.text.lower()
+
+
+@pytest.mark.asyncio
 async def test_split_single_child_keeps_parent_remainder(client):
     """One split child: parent keeps remainder qty and cost; child gets proportional cost.
 

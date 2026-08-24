@@ -159,6 +159,22 @@ async def test_scan_batch_adds_every_code_in_one_submit_and_reports_failures(cli
     assert {l["sku"] for l in (await _state(client, t, audit))["line_items"]} == {"AAA", "BBB"}
 
 
+@pytest.mark.asyncio
+async def test_scan_batch_rejects_oversized_submit(client):
+    """One submit carries its whole accumulated comma list, so an unbounded paste is bounded at the
+    route: past MAX_SCAN_BATCH codes the whole submit is refused with 422 before any line is written,
+    rather than building an arbitrarily large in-memory set behind one write."""
+    from celerp_docs.routes import MAX_SCAN_BATCH
+    t = await _register(client)
+    loc = await _location(client, t)
+    audit = (await _audit(client, t, loc))["id"]
+    codes = ",".join(f"X{i}" for i in range(MAX_SCAN_BATCH + 1))
+    r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": codes})
+    assert r.status_code == 422
+    # Nothing was written: the batch is refused whole, not partially applied.
+    assert (await _state(client, t, audit))["line_items"] == []
+
+
 # --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
 
 @pytest.mark.asyncio

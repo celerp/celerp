@@ -662,8 +662,9 @@ async def test_doc_line_add_rejects_draft_item(client, session):
 
 
 async def test_list_scan_rejects_draft_item(client, session):
-    """Scanning a draft item's barcode onto a building list answers with the
-    draft reason instead of silently adding a line."""
+    """Scanning a draft item's barcode onto a building list reports the draft reason in the batch's
+    `failed` list instead of silently adding a line. It is a per-code resolution failure, not a
+    list-level rejection, so it rides back 200 in the body and never aborts the good codes in the run."""
     ctx = await perm_setup(client, session)
     body = _draft_item_body(ctx["location_id"], "SCN-DFT") | {"barcode": "999888777666"}
     r = await client.post("/items", json=body, headers=ctx["admin_h"])
@@ -673,8 +674,11 @@ async def test_list_scan_rejects_draft_item(client, session):
     assert lst.status_code == 200, lst.text
     scan = await client.post(f"/lists/{lst.json()['id']}/scan",
                              json={"barcode": "999888777666"}, headers=ctx["admin_h"])
-    assert scan.status_code == 422, scan.text
-    assert "draft" in str(scan.json()["detail"]).lower()
+    assert scan.status_code == 200, scan.text
+    body = scan.json()
+    assert body["scanned"] == 0
+    assert [f["code"] for f in body["failed"]] == ["999888777666"]
+    assert "draft" in str(body["failed"][0]["detail"]).lower()
 
 
 # ── Merge rejects draft sources ────────────────────────────────────────────────

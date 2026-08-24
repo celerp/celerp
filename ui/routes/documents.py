@@ -4654,16 +4654,19 @@ celerpUpdateBulkAlloc();
         """One scan endpoint for every list type (the client fork is gone, DRY). The scan bar
         accumulates codes client-side (Enter appends a comma, never a per-scan request) and submits
         the whole run here as one comma-separated batch. The backend dispatches on (list_type, status)
-        and adds every resolvable code against a single write; codes that fail to resolve ride back in
-        headers so the good ones still land. Here we only choose the response shape:
+        and adds every resolvable code against a single write; codes that fail to resolve come back in
+        the JSON body so the good ones still land. The reply is always JSON:
 
-        - a finalized audit (the rapid check-off case): swap the re-rendered #line-body tbody for speed;
-        - everything else, including a DRAFT audit building its manifest: plain 204 - the client pulls
-          the fresh tbody out of a background page fetch, so the correct (editable) column layout still
-          renders through the same detail renderer (no duplicated row builder) without a page reload,
-          and the scan bar keeps focus so the operator can scan the next run.
+        - `html`: for a finalized audit (the rapid check-off case), the re-rendered #line-body tbody
+          the client swaps in for speed; empty for every other list, where the client pulls the fresh
+          tbody from a background page fetch so the editable column layout renders through the same
+          detail renderer (no duplicated row builder) without a page reload;
+        - `failed`: the per-code failures (code + detail) - the client repopulates the field with just
+          those to retry. It is deliberately not returned in a response header: a code or detail can be
+          a non-Latin SKU, and Starlette encodes headers as Latin-1, which would 500 after the good
+          scans had already committed and leave the client able to re-submit and duplicate them.
         """
-        from starlette.responses import Response as _R
+        from starlette.responses import JSONResponse as _JSON, Response as _R
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
@@ -4672,28 +4675,22 @@ celerpUpdateBulkAlloc();
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
         if not barcode:
-            return _R("", status_code=204)
+            return _JSON({"scanned": 0, "failed": [], "html": ""})
         try:
             res = await api.scan_list(token, entity_id, barcode, price_list)
         except APIError as e:
             # A LIST-LEVEL rejection (closed/void, or a finalized list whose type disables scanning):
             # the scan bar reads resp.text() on a non-2xx response and shows it, so return the real
-            # reason + status. Per-code failures are NOT this - they come back 200 in the body/headers.
+            # reason + status. Per-code failures are NOT this - they come back 200 in the JSON body.
             return _R(str(e.detail), status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
         # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
         # audit is editable, so it reloads like every other building list to keep its inputs.
+        html = ""
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            resp = HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
-        else:
-            resp = _R("", status_code=204)
-        # Report any codes that did not resolve without aborting the ones that did: the codes let the
-        # client repopulate the field with just the failures to retry, the details name each reason.
-        failed = (res or {}).get("failed") or []
-        if failed:
-            resp.headers["X-Scan-Failed-Codes"] = ", ".join(str(f.get("code", "")) for f in failed)
-            resp.headers["X-Scan-Failed"] = "; ".join(str(f.get("detail", "")) for f in failed)
-        return resp
+            html = to_xml(await _audit_line_tbody(token, entity_id))
+        return _JSON({"scanned": (res or {}).get("scanned", 0),
+                      "failed": (res or {}).get("failed") or [], "html": html})
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -6998,12 +6995,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # Scan-bar wording follows what a scan actually does for this (type, state): a finalized
         # audit's manifest is locked, so scanning checks items OFF the list (it never adds); a draft
         # audit is still being built, so scanning ADDS; other lists just add a line.
+        # The submit button and its done-confirmation follow the same wording: a finalized audit
+        # CHECKS items off its locked manifest (nothing is added), everything else ADDS.
         if pol["audit"] and status == _LF:
             _scan_placeholder = t("documents.scan_check_off")
+            _scan_btn = t("documents.scan_check_off_btn")
+            _scan_done = t("documents.scan_checked_off_prefix")
         elif pol["audit"]:
             _scan_placeholder = t("documents.scan_add_count")
+            _scan_btn = t("documents.scan_add_btn")
+            _scan_done = t("documents.scan_added_prefix")
         else:
             _scan_placeholder = t("documents.scan_barcode")
+            _scan_btn = t("documents.scan_add_btn")
+            _scan_done = t("documents.scan_added_prefix")
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
@@ -7015,7 +7020,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # Lists accumulate scans as a comma list (Enter appends a comma, never a request) and
                 # submit the whole run with this one button. Documents look each scan up on the spot,
                 # so they need no submit button.
-                (Button(t("documents.scan_add_btn"), type="button", id="scan-bar-add",
+                (Button(_scan_btn, type="button", id="scan-bar-add",
                         cls="btn btn--primary btn--sm") if is_list else None),
                 Span("", id="scan-bar-status", cls="scan-bar-status"),
                 cls="scan-bar",
@@ -7094,8 +7099,8 @@ const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
 const _L = {_json.dumps({
     "scanning": t("documents.scanning"),
     "scan_error": t("documents.scan_error"),
-    "scan_add_btn": t("documents.scan_add_btn"),
-    "scan_added": t("documents.scan_added_prefix"),
+    "scan_add_btn": _scan_btn,
+    "scan_added": _scan_done,
     "scanned": t("documents.scanned_prefix"),
     "not_found": t("documents.not_found_prefix"),
     "lookup_error": t("documents.lookup_error"),
@@ -7146,10 +7151,10 @@ function _celerpDocTypeParam() {{
     const addBtn = document.getElementById('scan-bar-add');
 
     // LISTS: submit the whole accumulated comma list in ONE request. Every resolvable code is added
-    // against a single write; codes that fail come back in headers, so the good ones still land and
-    // only the failures are left in the field to retry. The response is either a re-rendered tbody
-    // (finalized-audit fast path) or a 204 whose fresh tbody comes from a background page fetch, so
-    // the editable columns still render through the same detail renderer - never a reload.
+    // against a single write; codes that fail come back in the JSON body, so the good ones still land
+    // and only the failures are left in the field to retry. The body's `html` is either a re-rendered
+    // tbody (finalized-audit fast path) or empty, in which case the fresh tbody comes from a background
+    // page fetch so the editable columns still render through the same detail renderer - never a reload.
     async function submitList() {{
         const raw = scanInput.value.trim();
         if (!raw) return;
@@ -7167,7 +7172,8 @@ function _celerpDocTypeParam() {{
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
                 return;
             }}
-            let html = await resp.text();
+            const data = await resp.json();
+            let html = data.html || '';
             if (!html) {{
                 const page = await fetch(location.href);
                 const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
@@ -7183,12 +7189,11 @@ function _celerpDocTypeParam() {{
                 celerpUpdateTotals();
                 _celerpHadLines = true;
             }}
-            const failedCodes = (resp.headers.get('X-Scan-Failed-Codes') || '')
-                .split(',').map(s => s.trim()).filter(Boolean);
-            if (failedCodes.length) {{
+            const failed = data.failed || [];
+            if (failed.length) {{
                 // Keep only the failures in the field so the operator can re-scan or fix them.
-                scanInput.value = failedCodes.join(', ');
-                scanStatus.textContent = '✗ ' + (resp.headers.get('X-Scan-Failed') || _L.scan_error);
+                scanInput.value = failed.map(f => f.code).join(', ');
+                scanStatus.textContent = '✗ ' + failed.map(f => f.detail).join('; ');
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }} else {{
                 scanInput.value = '';

@@ -1215,6 +1215,14 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     return ResolveResult("none", [])
 
 
+def _validate_sku(sku: str | None) -> None:
+    """A comma is the OR operator in the SKU/search syntax, so a SKU may never contain one: it would
+    split into separate codes wherever SKUs are matched (the scan bar, the ``skus=`` filter), making
+    the SKU unresolvable. Reject it at every write so an unscannable SKU can never exist."""
+    if sku is not None and "," in sku:
+        raise HTTPException(status_code=422, detail="SKU cannot contain a comma")
+
+
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: setting cost fields on creation requires set_inventory_prices, except that a
@@ -1244,6 +1252,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # Validate barcode format (digits only)
     if payload.barcode is not None and not payload.barcode.isdigit():
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
+
+    _validate_sku(payload.sku)
 
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
@@ -1454,6 +1464,10 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             _new = _fc.get("new")
             if _new is not None and coerce_price(_new) is None:
                 raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
+
+    # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
+    if "sku" in changed_keys:
+        _validate_sku((payload.fields_changed["sku"] or {}).get("new"))
 
     # Validate sell_by change
     if "sell_by" in changed_keys:
@@ -1903,6 +1917,8 @@ async def split_preview(
 
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    for _child in payload.children:
+        _validate_sku(_child.sku)
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -2482,6 +2498,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _validate_sku(payload.child_sku)
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -2677,6 +2694,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
 

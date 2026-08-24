@@ -10532,13 +10532,19 @@ class TestListScanInPlace:
     }
 
     @pytest.mark.asyncio
-    async def test_building_list_scan_answers_204_without_refresh(self, ui_client):
+    async def test_building_list_scan_answers_json_without_refresh(self, ui_client):
+        # A building list answers with the JSON scan result (scanned count, no failures, empty html so
+        # the client refetches the editable tbody itself), never a full-page refresh.
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
-        assert r.status_code == 204
+        assert r.status_code == 200
         assert "HX-Refresh" not in r.headers
+        body = r.json()
+        assert body["scanned"] == 1
+        assert body["failed"] == []
+        assert body["html"] == ""
 
     @pytest.mark.asyncio
     async def test_list_page_scan_script_swaps_tbody_in_place(self, ui_client):
@@ -10559,17 +10565,24 @@ class TestListScanInPlace:
         assert 'id="scan-bar-add"' in r.text
 
     @pytest.mark.asyncio
-    async def test_scan_failures_ride_back_in_headers_not_a_hard_error(self, ui_client):
-        # A batch with a bad code still succeeds (200/204) and lands the good ones; the failure rides
-        # back in headers so the client can repopulate just the failed codes, never aborting the run.
+    async def test_scan_failures_ride_back_in_json_body_not_headers(self, ui_client):
+        # A batch with a bad code still succeeds (200) and lands the good ones; the failures ride back
+        # in the JSON body so the client can repopulate just the failed codes without aborting the run.
+        # The failed code is a non-Latin SKU on purpose: returning it in a response header would raise
+        # UnicodeEncodeError under Starlette's Latin-1 header encoding and 500 AFTER the good scans had
+        # committed, letting a retry duplicate them. The body carries any Unicode safely.
+        _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
-                "failed": [{"code": "NOPE", "detail": "Unknown barcode or SKU: NOPE"}]}
+                "failed": [{"code": _bad, "detail": f"Unknown barcode or SKU: {_bad}"}]}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
-            r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1, NOPE"}, cookies=_authed())
-        assert r.status_code == 204
-        assert r.headers.get("X-Scan-Failed-Codes") == "NOPE"
-        assert "NOPE" in r.headers.get("X-Scan-Failed", "")
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
+        assert r.status_code == 200
+        assert "X-Scan-Failed-Codes" not in r.headers
+        body = r.json()
+        assert body["scanned"] == 1
+        assert [f["code"] for f in body["failed"]] == [_bad]
+        assert _bad in body["failed"][0]["detail"]
 
 
 class TestAuditColumnAlignment:
