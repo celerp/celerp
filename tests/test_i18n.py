@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -188,6 +189,17 @@ def _placeholders(value: str) -> set[str]:
     }
 
 
+def _placeholder_counts(value: str) -> Counter:
+    """Named {placeholder} fields WITH their occurrence counts, matching
+    str.format(). A duplicated, omitted, or added placeholder relative to en
+    all change this multiset, so equality here is stricter than set equality
+    and catches the duplicate-{author} class of bug that a set would miss."""
+    return Counter(
+        field for _, field, _, _ in string.Formatter().parse(value)
+        if field is not None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cross-locale parity (V1): a shipped locale must render correctly, and its
 # completeness is a graded release signal, not merely "it does not crash".
@@ -209,7 +221,9 @@ def _placeholders(value: str) -> set[str]:
 # Locales whose keyset completeness is enforced as a hard CI gate. English is
 # the source of truth and always complete; a translated locale joins this set
 # when it reaches full parity, after which any future missing key fails CI.
-_COMPLETE_LOCALES = frozenset({"en"})
+_COMPLETE_LOCALES = frozenset(
+    {"en", "am", "ar", "de", "es", "fr", "id", "it", "ja", "pt", "th", "vi"}
+)
 
 
 def _shipped_locales() -> list[str]:
@@ -231,8 +245,10 @@ def test_every_shipped_locale_has_no_extra_keys():
 
 def test_every_shipped_locale_placeholder_parity():
     """CORRECTNESS (hard, all locales): for every key a locale defines, its
-    {placeholder} set must equal en's, or t(key, code, **kwargs).format()
-    raises KeyError at render time for that language."""
+    {placeholder} MULTISET must equal en's (Counter, not set), or
+    t(key, code, **kwargs).format() raises KeyError at render time, or a
+    duplicated placeholder silently doubles interpolated content. Counting
+    occurrences catches a placeholder that is duplicated, omitted, or added."""
     en = _load_locale("en")
     mismatched = {}
     for code in _shipped_locales():
@@ -240,13 +256,13 @@ def test_every_shipped_locale_placeholder_parity():
             continue
         loc = _load_locale(code)
         bad = {
-            key: (sorted(_placeholders(en[key])), sorted(_placeholders(loc[key])))
+            key: (dict(_placeholder_counts(en[key])), dict(_placeholder_counts(loc[key])))
             for key in loc
-            if key in en and _placeholders(en[key]) != _placeholders(loc[key])
+            if key in en and _placeholder_counts(en[key]) != _placeholder_counts(loc[key])
         }
         if bad:
             mismatched[code] = bad
-    assert not mismatched, f"Placeholder mismatch vs en per locale: {mismatched}"
+    assert not mismatched, f"Placeholder multiset mismatch vs en per locale: {mismatched}"
 
 
 def test_release_complete_locales_have_full_keyset():
@@ -310,6 +326,249 @@ def test_am_no_em_dash():
     em_dash = "\u2014"  # U+2014 EM DASH
     offending = [k for k, v in am.items() if isinstance(v, str) and em_dash in v]
     assert offending == [], f"am.json values containing an em dash: {offending}"
+
+
+# ---------------------------------------------------------------------------
+# Source-equality: no untranslated UI prose left identical to English
+#
+# A value in a translated locale that is byte-identical to en is untranslated
+# UI copy UNLESS the pair is a reviewed exception (a brand/product name, a
+# URL/email, a shell command, a symbol/currency-only label, or an intentional
+# acronym). Those exceptions are enumerated per (locale, key) in the reviewed
+# allowlist file; there is deliberately NO blanket English-word exemption, so a
+# newly added untranslated string fails until it is either translated or
+# explicitly reviewed into the allowlist.
+# ---------------------------------------------------------------------------
+
+_SOURCE_IDENTICAL_ALLOWLIST = (
+    Path(__file__).parent / "i18n_source_identical_allowlist.json"
+)
+
+
+def _load_source_identical_allowlist() -> dict[str, set[str]]:
+    data = json.loads(_SOURCE_IDENTICAL_ALLOWLIST.read_text())
+    return {code: set(keys) for code, keys in data.items()}
+
+
+def test_no_untranslated_prose_in_complete_locales():
+    """Every release-complete locale must translate every key: a value identical
+    to en is only allowed when its (locale, key) pair is in the reviewed
+    allowlist (brands, URLs, commands, symbols/currency, intentional acronyms).
+    No global English-word exemption exists."""
+    en = _load_locale("en")
+    allow = _load_source_identical_allowlist()
+    offenders = {}
+    for code in sorted(_COMPLETE_LOCALES):
+        if code == "en":
+            continue
+        loc = _load_locale(code)
+        allowed = allow.get(code, set())
+        identical = [
+            k for k, v in loc.items()
+            if k in en and v == en[k] and k not in allowed
+        ]
+        if identical:
+            offenders[code] = sorted(identical)
+    assert not offenders, (
+        "Untranslated values identical to English (translate them, or add the "
+        f"reviewed (locale, key) pair to {_SOURCE_IDENTICAL_ALLOWLIST.name}): {offenders}"
+    )
+
+
+def test_source_identical_allowlist_has_no_stale_entries():
+    """The reviewed allowlist may not carry a (locale, key) that is no longer
+    source-identical (the translation was added) or no longer exists - stale
+    exceptions hide future regressions."""
+    en = _load_locale("en")
+    allow = _load_source_identical_allowlist()
+    stale = {}
+    for code, keys in allow.items():
+        loc = _load_locale(code)
+        bad = sorted(k for k in keys if k not in loc or k not in en or loc[k] != en[k])
+        if bad:
+            stale[code] = bad
+    assert not stale, f"Stale allowlist entries (translated or removed): {stale}"
+
+
+# ---------------------------------------------------------------------------
+# Bundled module catalogs: release-complete locales are keyset-exact
+#
+# celerp-labels is a first-party bundled module. Every locale declared
+# release-complete must ship the module's full keyset, exactly - no missing and
+# no extra keys - the same bar as the central catalogs. Partial module catalogs
+# are only acceptable for third-party modules explicitly allowed to be partial,
+# which the bundled celerp-labels is not.
+# ---------------------------------------------------------------------------
+
+_BUNDLED_MODULE_LOCALE_DIRS = [
+    Path(__file__).parent.parent
+    / "default_modules" / "celerp-labels" / "celerp_labels" / "locales",
+]
+
+
+def test_bundled_module_locales_keyset_exact_for_complete_locales():
+    """Every release-complete locale must have EXACTLY the module en.json keyset
+    for each bundled module catalog (no missing, no extra keys)."""
+    problems = {}
+    for locdir in _BUNDLED_MODULE_LOCALE_DIRS:
+        en_keys = set(json.loads((locdir / "en.json").read_text()))
+        for code in sorted(_COMPLETE_LOCALES):
+            if code == "en":
+                continue
+            path = locdir / f"{code}.json"
+            if not path.exists():
+                problems[f"{locdir.parent.name}:{code}"] = "missing catalog file"
+                continue
+            keys = set(json.loads(path.read_text()))
+            missing = sorted(en_keys - keys)
+            extra = sorted(keys - en_keys)
+            if missing or extra:
+                problems[f"{locdir.parent.name}:{code}"] = {
+                    "missing": missing, "extra": extra
+                }
+    assert not problems, f"Bundled module catalog keyset drift: {problems}"
+
+
+def test_bundled_module_locale_values_nonempty_with_placeholder_parity():
+    """Bundled module locale values are non-empty and preserve the en
+    placeholder multiset, exactly as the central catalogs are held."""
+    bad = {}
+    for locdir in _BUNDLED_MODULE_LOCALE_DIRS:
+        en = json.loads((locdir / "en.json").read_text())
+        for code in sorted(_COMPLETE_LOCALES):
+            if code == "en":
+                continue
+            loc = json.loads((locdir / f"{code}.json").read_text())
+            for k, v in loc.items():
+                if not isinstance(v, str) or not v.strip():
+                    bad[f"{code}:{k}"] = "empty/non-string"
+                elif k in en and _placeholder_counts(v) != _placeholder_counts(en[k]):
+                    bad[f"{code}:{k}"] = "placeholder mismatch"
+    assert not bad, f"Bundled module locale value problems: {bad}"
+
+
+# ---------------------------------------------------------------------------
+# Terminology regressions: accounting false friends, line items, journal
+# entries, and the fulfillment family must use the correct domain sense.
+# ---------------------------------------------------------------------------
+
+# Outstanding-balance false friends (the "remarkable/exceptional" sense) that
+# must never appear in the outstanding-balance keys.
+_OUTSTANDING_KEYS = ["doc.outstanding", "th.outstanding"]
+_OUTSTANDING_FALSE_FRIENDS = {
+    "ar": ["متميز"], "fr": ["Exceptionnel"], "id": ["Luar biasa"],
+    "ja": ["並外れた"], "pt": ["Fora do comum"], "th": ["โดดเด่น"], "vi": ["Nổi bật"],
+}
+
+# Line-item false friends (the advertising "line item" sense).
+_LINE_ITEM_KEYS = ["page.line_items"]
+_LINE_ITEM_FALSE_FRIENDS = {
+    "fr": ["Éléments de campagne"], "es": ["Artículos de línea"], "th": ["รายการโฆษณา"],
+}
+
+# Fulfillment family: keys about order fulfillment. Generic execution/perform
+# terms are the wrong sense and must not appear in these keys.
+_FULFILL_FALSE_FRIENDS = {
+    "ar": ["التنفيذ"], "de": ["Erfüllung", "Ausführung"], "es": ["cumplimiento"],
+    "fr": ["exécution"], "id": ["pemenuhan"], "ja": ["履行"],
+    "pt": ["atendimento", "faturamento"], "vi": ["thực hiện"],
+}
+
+
+# Keys whose English prose contains "fulfil" in a non-order-fulfillment sense:
+# a work-order hint sentence and a marketplace privacy note about performing a
+# purchase. They are not fulfillment-status UI labels, so the order-fulfillment
+# terminology check must not sweep them in.
+_FULFILL_NON_FAMILY_PROSE = {
+    "inventory.work_orders_hint",
+    "marketplace.third_party_data_note",
+}
+
+
+def _fulfillment_family_keys(en: dict) -> list[str]:
+    explicit = {
+        "btn.fulfill_deduct_inventory", "btn.revert_fulfillment", "doc.fulfilled",
+        "doc.partially_fulfilled", "status.unfulfilled", "event.item.fulfilled",
+        "event.item.fulfillment_reversed", "event.doc.fulfilled",
+        "event.doc.partially_fulfilled", "event.doc.fulfillment_reversed",
+        "activity.change.fulfilled_items",
+    }
+    return sorted(
+        k for k in en
+        if k not in _FULFILL_NON_FAMILY_PROSE
+        and (k in explicit or "fulfil" in en[k].lower())
+    )
+
+
+def test_outstanding_balance_false_friends_absent():
+    """No outstanding-balance key uses the 'remarkable/exceptional' false friend."""
+    hits = {}
+    for code, terms in _OUTSTANDING_FALSE_FRIENDS.items():
+        loc = _load_locale(code)
+        for key in _OUTSTANDING_KEYS:
+            v = loc.get(key, "")
+            found = [tm for tm in terms if tm in v]
+            if found:
+                hits[f"{code}:{key}"] = found
+    assert not hits, f"Outstanding-balance false friends present: {hits}"
+
+
+def test_line_item_false_friends_absent():
+    """No line-items key uses the advertising 'line item' false friend."""
+    hits = {}
+    for code, terms in _LINE_ITEM_FALSE_FRIENDS.items():
+        loc = _load_locale(code)
+        for key in _LINE_ITEM_KEYS:
+            v = loc.get(key, "")
+            found = [tm for tm in terms if tm in v]
+            if found:
+                hits[f"{code}:{key}"] = found
+    assert not hits, f"Line-item false friends present: {hits}"
+
+
+def test_fulfillment_family_false_friends_absent():
+    """No order-fulfillment key uses a generic execution/perform false friend."""
+    en = _load_locale("en")
+    fam = _fulfillment_family_keys(en)
+    hits = {}
+    for code, terms in _FULFILL_FALSE_FRIENDS.items():
+        loc = _load_locale(code)
+        for key in fam:
+            v = loc.get(key, "")
+            found = [tm for tm in terms if tm in v]
+            if found:
+                hits[f"{code}:{key}"] = found
+    assert not hits, f"Fulfillment false friends present: {hits}"
+
+
+def test_mandated_accounting_terminology_applied():
+    """The reviewed accounting corrections are present verbatim: outstanding
+    balance, line items, empty-line-items, and create-journal-entry copy."""
+    expected = {
+        "ar": {"doc.outstanding": "مستحق:", "page.line_items": "البنود",
+               "doc.no_line_items": "لا توجد بنود.", "page.create_journal_entry": "إنشاء قيد يومية"},
+        "es": {"page.line_items": "Líneas", "doc.no_line_items": "No hay líneas.",
+               "page.create_journal_entry": "Crear asiento contable"},
+        "fr": {"doc.outstanding": "Solde dû :", "page.line_items": "Lignes",
+               "doc.no_line_items": "Aucune ligne.", "page.create_journal_entry": "Créer une écriture comptable"},
+        "id": {"doc.outstanding": "Belum dibayar:", "page.line_items": "Baris item",
+               "doc.no_line_items": "Tidak ada baris item.", "page.create_journal_entry": "Buat entri jurnal"},
+        "ja": {"doc.outstanding": "未決済：", "page.line_items": "明細行",
+               "doc.no_line_items": "明細行はありません。", "page.create_journal_entry": "仕訳を作成"},
+        "pt": {"doc.outstanding": "Em aberto:", "page.line_items": "Itens",
+               "doc.no_line_items": "Nenhum item."},
+        "th": {"doc.outstanding": "ยอดคงค้าง:", "page.line_items": "รายการ",
+               "doc.no_line_items": "ไม่มีรายการ", "page.create_journal_entry": "บันทึกรายการสมุดรายวัน"},
+        "vi": {"doc.outstanding": "Chưa thanh toán:", "page.line_items": "Dòng chi tiết",
+               "doc.no_line_items": "Không có dòng chi tiết.", "page.create_journal_entry": "Tạo bút toán"},
+    }
+    wrong = {}
+    for code, kv in expected.items():
+        loc = _load_locale(code)
+        for key, val in kv.items():
+            if loc.get(key) != val:
+                wrong[f"{code}:{key}"] = {"want": val, "got": loc.get(key)}
+    assert not wrong, f"Mandated accounting terminology not applied: {wrong}"
 
 
 # ---------------------------------------------------------------------------
