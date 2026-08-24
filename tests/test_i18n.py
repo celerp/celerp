@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -466,15 +467,6 @@ _LINE_ITEM_FALSE_FRIENDS = {
     "fr": ["Éléments de campagne"], "es": ["Artículos de línea"], "th": ["รายการโฆษณา"],
 }
 
-# Fulfillment family: keys about order fulfillment. Generic execution/perform
-# terms are the wrong sense and must not appear in these keys.
-_FULFILL_FALSE_FRIENDS = {
-    "ar": ["التنفيذ"], "de": ["Erfüllung", "Ausführung"], "es": ["cumplimiento"],
-    "fr": ["exécution"], "id": ["pemenuhan"], "ja": ["履行"],
-    "pt": ["atendimento", "faturamento"], "vi": ["thực hiện"],
-}
-
-
 # Keys whose English prose contains "fulfil" in a non-order-fulfillment sense:
 # a work-order hint sentence and a marketplace privacy note about performing a
 # purchase. They are not fulfillment-status UI labels, so the order-fulfillment
@@ -526,19 +518,96 @@ def test_line_item_false_friends_absent():
     assert not hits, f"Line-item false friends present: {hits}"
 
 
-def test_fulfillment_family_false_friends_absent():
-    """No order-fulfillment key uses a generic execution/perform false friend."""
+# A blacklist of wrong synonyms is inadequate: a different wrong synonym slips
+# through it. The fulfillment family is instead pinned to its exact reviewed
+# translation, per (locale, key), for the five locales this branch reworked.
+# event.item.fulfilled ("Sold") and event.item.fulfillment_reversed ("Sale
+# reversed") are the SALE-level pair and keep the sale sense; the doc-level keys
+# carry the order-processing sense.
+_FULFILL_EXPECTED = {
+    "am": {
+        "btn.fulfill_deduct_inventory": "ትዕዛዝ ፈጽም / ክምችት ቀንስ",
+        "btn.revert_fulfillment": "የትዕዛዝ አፈጻጸምን ቀልብስ",
+        "doc.fulfilled": "ተፈጽሟል",
+        "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
+        "status.unfulfilled": "ያልተፈጸመ",
+        "event.item.fulfilled": "ተሽጧል",
+        "event.item.fulfillment_reversed": "ሽያጭ ተቀልብሷል",
+        "event.doc.fulfilled": "ተፈጽሟል",
+        "event.doc.partially_fulfilled": "በከፊል ተፈጽሟል",
+        "event.doc.fulfillment_reversed": "የትዕዛዝ አፈጻጸም ተቀልብሷል",
+        "activity.change.fulfilled_items": "የተፈጸሙ እቃዎች ተዘምነዋል",
+    },
+    "ar": {
+        "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
+        "btn.revert_fulfillment": "التراجع عن تنفيذ الطلب",
+        "doc.fulfilled": "تم تنفيذه",
+        "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
+        "status.unfulfilled": "لم يُنفَّذ",
+        "event.item.fulfilled": "مباع",
+        "event.item.fulfillment_reversed": "تم التراجع عن البيع",
+        "event.doc.fulfilled": "تم تنفيذه",
+        "event.doc.partially_fulfilled": "تم تنفيذه جزئيًا",
+        "event.doc.fulfillment_reversed": "تم التراجع عن تنفيذ الطلب",
+        "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
+    },
+    "es": {
+        "btn.fulfill_deduct_inventory": "Procesar pedido / Descontar inventario",
+        "btn.revert_fulfillment": "Revertir procesamiento",
+        "doc.fulfilled": "Procesado",
+        "doc.partially_fulfilled": "Procesado parcialmente",
+        "status.unfulfilled": "Sin procesar",
+        "event.item.fulfilled": "Vendido",
+        "event.item.fulfillment_reversed": "Venta revertida",
+        "event.doc.fulfilled": "Procesado",
+        "event.doc.partially_fulfilled": "Procesado parcialmente",
+        "event.doc.fulfillment_reversed": "Procesamiento revertido",
+        "activity.change.fulfilled_items": "Artículos procesados actualizados",
+    },
+    "id": {
+        "btn.fulfill_deduct_inventory": "Proses pesanan / Kurangi inventori",
+        "btn.revert_fulfillment": "Batalkan pemrosesan pesanan",
+        "doc.fulfilled": "Diproses",
+        "doc.partially_fulfilled": "Diproses sebagian",
+        "status.unfulfilled": "Belum diproses",
+        "event.item.fulfilled": "Terjual",
+        "event.item.fulfillment_reversed": "Penjualan dibatalkan",
+        "event.doc.fulfilled": "Diproses",
+        "event.doc.partially_fulfilled": "Diproses sebagian",
+        "event.doc.fulfillment_reversed": "Pemrosesan dibatalkan",
+        "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
+    },
+    "pt": {
+        "btn.fulfill_deduct_inventory": "Processar pedido / Deduzir estoque",
+        "btn.revert_fulfillment": "Reverter processamento do pedido",
+        "doc.fulfilled": "Processado",
+        "doc.partially_fulfilled": "Processado parcialmente",
+        "status.unfulfilled": "Não processado",
+        "event.item.fulfilled": "Vendido",
+        "event.item.fulfillment_reversed": "Venda revertida",
+        "event.doc.fulfilled": "Processado",
+        "event.doc.partially_fulfilled": "Processado parcialmente",
+        "event.doc.fulfillment_reversed": "Processamento revertido",
+        "activity.change.fulfilled_items": "Itens processados atualizados",
+    },
+}
+
+
+def test_fulfillment_family_exact_values():
+    """The reworked fulfillment family is pinned to its exact reviewed value per
+    (locale, key). This replaces the wrong-synonym blacklist, which a different
+    wrong synonym passes. Every family key must be covered for each locale."""
     en = _load_locale("en")
-    fam = _fulfillment_family_keys(en)
-    hits = {}
-    for code, terms in _FULFILL_FALSE_FRIENDS.items():
+    fam = set(_fulfillment_family_keys(en))
+    wrong = {}
+    for code, kv in _FULFILL_EXPECTED.items():
+        uncovered = fam - set(kv)
+        assert not uncovered, f"{code}: fulfillment family keys not pinned: {sorted(uncovered)}"
         loc = _load_locale(code)
-        for key in fam:
-            v = loc.get(key, "")
-            found = [tm for tm in terms if tm in v]
-            if found:
-                hits[f"{code}:{key}"] = found
-    assert not hits, f"Fulfillment false friends present: {hits}"
+        for key, val in kv.items():
+            if loc.get(key) != val:
+                wrong[f"{code}:{key}"] = {"want": val, "got": loc.get(key)}
+    assert not wrong, f"Fulfillment family not at reviewed values: {wrong}"
 
 
 def test_mandated_accounting_terminology_applied():
@@ -569,6 +638,134 @@ def test_mandated_accounting_terminology_applied():
             if loc.get(key) != val:
                 wrong[f"{code}:{key}"] = {"want": val, "got": loc.get(key)}
     assert not wrong, f"Mandated accounting terminology not applied: {wrong}"
+
+
+# ---------------------------------------------------------------------------
+# Translation-integrity regressions: glossary-marker residue, punctuation-only
+# corruption, preserved technical literals, and Thai truncation. These guard the
+# systemic failure modes of the machine-assisted translation pass.
+# ---------------------------------------------------------------------------
+
+# A prior translation pass substituted glossary terms with placeholder tokens
+# (e.g. TERME5, TERMO5, المصطلح5, เทอม5, HẠN5 for "term") and failed to restore
+# some. The stem alone (المصطلح = "the term") is a legitimate word; only the
+# stem immediately followed by a digit, or any __TOKEN__ wrapper, is residue.
+_MARKER_RESIDUE = re.compile(r"(?:TERME|TERMO|المصطلح|เทอม|HẠN)\d+|__[^\s_][^\s]*__")
+
+
+def test_no_glossary_marker_residue():
+    """No locale value carries a leaked glossary marker (stem+digit or __TOKEN__)."""
+    hits = {}
+    for code in _shipped_locales():
+        loc = _load_locale(code)
+        bad = sorted(k for k, v in loc.items() if isinstance(v, str) and _MARKER_RESIDUE.search(v))
+        if bad:
+            hits[code] = bad
+    assert not hits, f"Glossary-marker residue present: {hits}"
+
+
+# Values that are intentionally a symbol or mark only (no letters/digits), so
+# the punctuation-only corruption check must not sweep them in.
+_SYMBOL_ONLY_ALLOWED = {
+    ("am", "doc.u2630"), ("de", "doc.u2630"), ("it", "doc.u2630"),
+    ("ja", "table.daterange_to"),
+}
+_WORD_CHAR = re.compile(r"\w", re.UNICODE)
+
+
+def test_no_punctuation_only_translations():
+    """A value stripped of all letters/digits when its English source has letters
+    is a corrupted (punctuation-only) translation, unless the (locale, key) pair
+    is an explicit symbol-only exception."""
+    en = _load_locale("en")
+    hits = {}
+    for code in _shipped_locales():
+        if code == "en":
+            continue
+        loc = _load_locale(code)
+        bad = sorted(
+            k for k, v in loc.items()
+            if isinstance(v, str) and k in en
+            and _WORD_CHAR.search(en[k]) and not _WORD_CHAR.search(v)
+            and (code, k) not in _SYMBOL_ONLY_ALLOWED
+        )
+        if bad:
+            hits[code] = bad
+    assert not hits, (
+        f"Punctuation-only translations (translate them, or add the (locale, key) "
+        f"pair to _SYMBOL_ONLY_ALLOWED): {hits}"
+    )
+
+
+# Technical literals in the English source (routes, CLI flags, module targets,
+# URLs, the backup-file name) are code, not prose, and must survive verbatim in
+# every locale.
+_LITERAL_PATTERNS = [
+    re.compile(r"https?://[^\s]+"),                          # URLs
+    re.compile(r"/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-{}]+)+"),  # multi-segment routes
+    re.compile(r"--[a-z][a-z0-9-]+"),                        # long CLI flags
+    re.compile(r"\b[a-z_]+\.[a-z_]+:[a-z_]+\b"),             # module:app targets
+    re.compile(r"\.celerp-backup\b"),                        # backup filename
+]
+
+
+def _technical_literals(value: str) -> set[str]:
+    out: set[str] = set()
+    for pat in _LITERAL_PATTERNS:
+        out |= set(pat.findall(value))
+    return out
+
+
+def test_technical_literals_preserved():
+    """Commands, CLI flags, module targets, URLs, application routes, and the
+    .celerp-backup filename in the English source appear verbatim in every locale
+    value for that key. A translated route or filename is a broken instruction."""
+    en = _load_locale("en")
+    en_literals = {k: _technical_literals(v) for k, v in en.items() if _technical_literals(v)}
+    hits = {}
+    for code in _shipped_locales():
+        if code == "en":
+            continue
+        loc = _load_locale(code)
+        for key, lits in en_literals.items():
+            v = loc.get(key, "")
+            missing = sorted(x for x in lits if x not in v)
+            if missing:
+                hits[f"{code}:{key}"] = missing
+    assert not hits, f"Technical literals lost in translation: {hits}"
+
+
+# Thai values that collapsed to a bare fragment (only "แล้ว" = "already/done",
+# losing the subject and verb) or a lone dash/mark are the known truncation bug.
+_THAI_TRUNCATIONS = {"แล้ว", ".", "-", "ๆ", "…"}
+
+
+def test_thai_no_truncated_values():
+    """No Thai value is a bare truncated fragment; every value carries its full
+    subject and verb, not just a trailing particle."""
+    th = _load_locale("th")
+    bad = sorted(k for k, v in th.items() if isinstance(v, str) and v.strip() in _THAI_TRUNCATIONS)
+    assert not bad, f"Thai truncated to a bare fragment: {bad}"
+
+
+def test_bundled_module_locales_no_untranslated_prose():
+    """Bundled module catalogs get the same source-identical review as the
+    central catalogs: no release-complete locale value may be byte-identical to
+    the module's English source (there is currently no reviewed exception)."""
+    offenders = {}
+    for locdir in _BUNDLED_MODULE_LOCALE_DIRS:
+        en = json.loads((locdir / "en.json").read_text())
+        for code in sorted(_COMPLETE_LOCALES):
+            if code == "en":
+                continue
+            loc = json.loads((locdir / f"{code}.json").read_text())
+            identical = sorted(
+                k for k, v in loc.items()
+                if k in en and v == en[k] and en[k].strip()
+            )
+            if identical:
+                offenders[f"{locdir.parent.name}:{code}"] = identical
+    assert not offenders, f"Untranslated module prose identical to English: {offenders}"
 
 
 # ---------------------------------------------------------------------------
