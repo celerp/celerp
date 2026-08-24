@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "حذف القالب «{name}»؟",
+  "labels.edit_name": "تعديل: {name}",
+  "labels.height_example": "على سبيل المثال 30",
+  "labels.new_template_name": "اسم القالب الجديد",
+  "labels.print_labels": "طباعة التسميات",
+  "labels.print_labels_heading": "طباعة الملصقات - {n} عنصر (عناصر)",
+  "labels.remove_field": "إزالة الحقل",
+  "labels.selected": "المحدد: {ids}{more}",
+  "labels.width_example": "على سبيل المثال 50"
+}

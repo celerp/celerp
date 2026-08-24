@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Hapus templat '{name}'?",
+  "labels.edit_name": "Ubah: {name}",
+  "labels.height_example": "misalnya 30",
+  "labels.new_template_name": "Nama templat baru",
+  "labels.print_labels": "Cetak label",
+  "labels.print_labels_heading": "Cetak Label - {n} item",
+  "labels.remove_field": "Hapus bidang",
+  "labels.selected": "Terpilih: {ids}{more}",
+  "labels.width_example": "misalnya 50"
+}

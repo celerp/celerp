@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Eliminare il modello '{name}'?",
+  "labels.edit_name": "Modifica: {name}",
+  "labels.height_example": "ad es. 30",
+  "labels.new_template_name": "Nuovo nome del modello",
+  "labels.print_labels": "Stampa etichette",
+  "labels.print_labels_heading": "Stampa etichette - {n} articolo/i",
+  "labels.remove_field": "Rimuovi campo",
+  "labels.selected": "Selezionato: {ids}{more}",
+  "labels.width_example": "ad es. 50"
+}

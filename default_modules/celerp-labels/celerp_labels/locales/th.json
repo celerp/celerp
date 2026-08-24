@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "ลบเทมเพลต '{name}' หรือไม่",
+  "labels.edit_name": "แก้ไข: {name}",
+  "labels.height_example": "เช่น 30",
+  "labels.new_template_name": "ชื่อเทมเพลตใหม่",
+  "labels.print_labels": "พิมพ์ป้ายกำกับ",
+  "labels.print_labels_heading": "พิมพ์ฉลาก - {n} รายการ",
+  "labels.remove_field": "ลบฟิลด์",
+  "labels.selected": "เลือกแล้ว: {ids}{more}",
+  "labels.width_example": "เช่น 50"
+}

@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "¿Eliminar la plantilla «{name}»?",
+  "labels.edit_name": "Editar: {name}",
+  "labels.height_example": "p. ej., 30",
+  "labels.new_template_name": "Nuevo nombre de plantilla",
+  "labels.print_labels": "Imprimir etiquetas",
+  "labels.print_labels_heading": "Imprimir etiquetas - artículos: {n}",
+  "labels.remove_field": "Eliminar campo",
+  "labels.selected": "Seleccionado: {ids}{more}",
+  "labels.width_example": "p. ej., 50"
+}
