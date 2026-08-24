@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Xóa mẫu '{name}'?",
+  "labels.edit_name": "Chỉnh sửa: {name}",
+  "labels.height_example": "ví dụ: 30",
+  "labels.new_template_name": "Tên mẫu mới",
+  "labels.print_labels": "In nhãn",
+  "labels.print_labels_heading": "In nhãn - {n} mặt hàng",
+  "labels.remove_field": "Xóa trường",
+  "labels.selected": "Đã chọn: {ids}{more}",
+  "labels.width_example": "Ví dụ: 50"
+}

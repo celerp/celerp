@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Vorlage „{name}“ löschen?",
+  "labels.edit_name": "Bearbeiten: {name}",
+  "labels.height_example": "z. B. 30",
+  "labels.new_template_name": "Neuer Vorlagenname",
+  "labels.print_labels": "Etiketten drucken",
+  "labels.print_labels_heading": "Etiketten drucken – {n} Artikel",
+  "labels.remove_field": "Feld entfernen",
+  "labels.selected": "Ausgewählt: {ids}{more}",
+  "labels.width_example": "z. B. 50"
+}

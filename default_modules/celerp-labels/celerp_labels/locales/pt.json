@@ -1,0 +1,11 @@
+{
+  "labels.delete_template_confirm": "Excluir modelo '{name}'?",
+  "labels.edit_name": "Editar: {name}",
+  "labels.height_example": "por exemplo, 30",
+  "labels.new_template_name": "Novo nome do modelo",
+  "labels.print_labels": "Imprimir etiquetas",
+  "labels.print_labels_heading": "Imprimir etiquetas - itens: {n}",
+  "labels.remove_field": "Remover campo",
+  "labels.selected": "Selecionado: {ids}{more}",
+  "labels.width_example": "p. ex., 50"
+}

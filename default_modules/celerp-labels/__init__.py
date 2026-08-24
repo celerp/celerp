@@ -59,6 +59,17 @@ PLUGIN_MANIFEST = {
     # under the module's own `labels.*` namespace (central `label.*` is separate).
     "locales": {
         "en": {"file": "celerp_labels/locales/en.json"},
+        "am": {"file": "celerp_labels/locales/am.json"},
+        "ar": {"file": "celerp_labels/locales/ar.json", "rtl": True},
+        "de": {"file": "celerp_labels/locales/de.json"},
+        "es": {"file": "celerp_labels/locales/es.json"},
+        "fr": {"file": "celerp_labels/locales/fr.json"},
+        "id": {"file": "celerp_labels/locales/id.json"},
+        "it": {"file": "celerp_labels/locales/it.json"},
+        "ja": {"file": "celerp_labels/locales/ja.json"},
+        "pt": {"file": "celerp_labels/locales/pt.json"},
+        "th": {"file": "celerp_labels/locales/th.json"},
+        "vi": {"file": "celerp_labels/locales/vi.json"},
     },
 
     # ── Python dependencies ───────────────────────────────────────────────────
