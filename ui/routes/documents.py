@@ -4651,14 +4651,17 @@ celerpUpdateBulkAlloc();
 
     @app.post("/lists/{entity_id}/scan")
     async def list_scan(request: Request, entity_id: str):
-        """One scan endpoint for every list type (the client fork is gone — DRY). The backend
-        dispatches on (list_type, status); here we only choose the response shape:
+        """One scan endpoint for every list type (the client fork is gone, DRY). The scan bar
+        accumulates codes client-side (Enter appends a comma, never a per-scan request) and submits
+        the whole run here as one comma-separated batch. The backend dispatches on (list_type, status)
+        and adds every resolvable code against a single write; codes that fail to resolve ride back in
+        headers so the good ones still land. Here we only choose the response shape:
 
         - a finalized audit (the rapid check-off case): swap the re-rendered #line-body tbody for speed;
         - everything else, including a DRAFT audit building its manifest: plain 204 - the client pulls
           the fresh tbody out of a background page fetch, so the correct (editable) column layout still
           renders through the same detail renderer (no duplicated row builder) without a page reload,
-          and the scan bar keeps focus between scans exactly like it does on invoices and memos.
+          and the scan bar keeps focus so the operator can scan the next run.
         """
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
@@ -4671,17 +4674,26 @@ celerpUpdateBulkAlloc();
         if not barcode:
             return _R("", status_code=204)
         try:
-            await api.scan_list(token, entity_id, barcode, price_list)
+            res = await api.scan_list(token, entity_id, barcode, price_list)
         except APIError as e:
-            # The scan bar reads resp.text() on a non-2xx response and shows it ("✗ <reason>"), so
-            # return the real reason + status (e.g. "X is not on this audit") rather than a 200 toast.
+            # A LIST-LEVEL rejection (closed/void, or a finalized list whose type disables scanning):
+            # the scan bar reads resp.text() on a non-2xx response and shows it, so return the real
+            # reason + status. Per-code failures are NOT this - they come back 200 in the body/headers.
             return _R(str(e.detail), status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
         # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
         # audit is editable, so it reloads like every other building list to keep its inputs.
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
-        return _R("", status_code=204)
+            resp = HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
+        else:
+            resp = _R("", status_code=204)
+        # Report any codes that did not resolve without aborting the ones that did: the codes let the
+        # client repopulate the field with just the failures to retry, the details name each reason.
+        failed = (res or {}).get("failed") or []
+        if failed:
+            resp.headers["X-Scan-Failed-Codes"] = ", ".join(str(f.get("code", "")) for f in failed)
+            resp.headers["X-Scan-Failed"] = "; ".join(str(f.get("detail", "")) for f in failed)
+        return resp
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -7000,6 +7012,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Span("📷", cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
                       cls="scan-bar-input", autocomplete="off", autofocus=False),
+                # Lists accumulate scans as a comma list (Enter appends a comma, never a request) and
+                # submit the whole run with this one button. Documents look each scan up on the spot,
+                # so they need no submit button.
+                (Button(t("documents.scan_add_btn"), type="button", id="scan-bar-add",
+                        cls="btn btn--primary btn--sm") if is_list else None),
                 Span("", id="scan-bar-status", cls="scan-bar-status"),
                 cls="scan-bar",
             ),
@@ -7077,6 +7094,8 @@ const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
 const _L = {_json.dumps({
     "scanning": t("documents.scanning"),
     "scan_error": t("documents.scan_error"),
+    "scan_add_btn": t("documents.scan_add_btn"),
+    "scan_added": t("documents.scan_added_prefix"),
     "scanned": t("documents.scanned_prefix"),
     "not_found": t("documents.not_found_prefix"),
     "lookup_error": t("documents.lookup_error"),
@@ -7124,82 +7143,108 @@ function _celerpDocTypeParam() {{
     const scanInput = document.getElementById('scan-bar-input');
     const scanStatus = document.getElementById('scan-bar-status');
     if (!scanInput) return;
+    const addBtn = document.getElementById('scan-bar-add');
+
+    // LISTS: submit the whole accumulated comma list in ONE request. Every resolvable code is added
+    // against a single write; codes that fail come back in headers, so the good ones still land and
+    // only the failures are left in the field to retry. The response is either a re-rendered tbody
+    // (finalized-audit fast path) or a 204 whose fresh tbody comes from a background page fetch, so
+    // the editable columns still render through the same detail renderer - never a reload.
+    async function submitList() {{
+        const raw = scanInput.value.trim();
+        if (!raw) return;
+        scanStatus.textContent = _L.scanning;
+        scanStatus.className = 'scan-bar-status';
+        try {{
+            const fd = new URLSearchParams({{barcode: raw}});
+            const plSelect = document.getElementById('doc-price-list');
+            if (plSelect) fd.append('price_list', plSelect.value);
+            const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+            if (!resp.ok) {{
+                // A list-level rejection (closed/void); leave the whole run in the field.
+                const txt = await resp.text();
+                scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                return;
+            }}
+            let html = await resp.text();
+            if (!html) {{
+                const page = await fetch(location.href);
+                const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+                const fresh = doc.getElementById('{line_body_id}');
+                html = fresh ? fresh.outerHTML : '';
+            }}
+            const tbody = document.getElementById('{line_body_id}');
+            if (tbody && html) {{
+                tbody.outerHTML = html;
+                const swapped = document.getElementById('{line_body_id}');
+                htmx.process(swapped);
+                swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                celerpUpdateTotals();
+                _celerpHadLines = true;
+            }}
+            const failedCodes = (resp.headers.get('X-Scan-Failed-Codes') || '')
+                .split(',').map(s => s.trim()).filter(Boolean);
+            if (failedCodes.length) {{
+                // Keep only the failures in the field so the operator can re-scan or fix them.
+                scanInput.value = failedCodes.join(', ');
+                scanStatus.textContent = '✗ ' + (resp.headers.get('X-Scan-Failed') || _L.scan_error);
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+            }} else {{
+                scanInput.value = '';
+                scanStatus.textContent = '✓ ' + _L.scan_added;
+                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+            }}
+        }} catch (err) {{
+            scanStatus.textContent = '✗ ' + _L.scan_error;
+            scanStatus.className = 'scan-bar-status scan-bar-status--err';
+        }}
+        scanInput.focus();
+        setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000);
+    }}
+    if (addBtn) addBtn.addEventListener('click', submitList);
+
     scanInput.addEventListener('keydown', async function(e) {{
         if (e.key !== 'Enter') return;
         e.preventDefault();
         const code = scanInput.value.trim();
         if (!code) return;
+        if (_CELERP_IS_LIST === 'true') {{
+            // Enter is a SEPARATOR, not a submit: append a comma so a fast next scan can never glue
+            // onto this one, and NEVER touch the server per scan. The run submits once via Add.
+            if (!/,\\s*$/.test(scanInput.value)) scanInput.value = scanInput.value.replace(/\\s+$/, '') + ', ';
+            scanInput.focus();
+            return;
+        }}
+        // Documents (invoices, POs, ...): client-side catalog lookup + append, per scan.
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
-        if (_CELERP_IS_LIST === 'true') {{
-            // Every list type scans through ONE server endpoint that dispatches on (type, status).
-            // The response is either a re-rendered tbody (audit fast-path) or a plain 204; on 204
-            // the fresh tbody comes from a background fetch of this page, so the editable columns
-            // still render via the same detail renderer. Either way the swap is in place - never a
-            // reload - so the scan bar keeps focus and a run of scans flows like it does on
-            // invoices and memos. No client fork.
-            try {{
-                const fd = new URLSearchParams({{barcode: code}});
-                const plSelect = document.getElementById('doc-price-list');
-                if (plSelect) fd.append('price_list', plSelect.value);
-                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
-                if (!resp.ok) {{
-                    const txt = await resp.text();
-                    scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
-                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                }} else {{
-                    let html = await resp.text();
-                    if (!html) {{
-                        const page = await fetch(location.href);
-                        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-                        const fresh = doc.getElementById('{line_body_id}');
-                        html = fresh ? fresh.outerHTML : '';
-                    }}
-                    const tbody = document.getElementById('{line_body_id}');
-                    if (tbody && html) {{
-                        tbody.outerHTML = html;
-                        const swapped = document.getElementById('{line_body_id}');
-                        htmx.process(swapped);
-                        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                        celerpUpdateTotals();
-                        _celerpHadLines = true;
-                    }}
-                    scanStatus.textContent = '✓ ' + _L.scanned + code;
-                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+        try {{
+            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
+            if (!resp.ok) throw new Error('lookup failed');
+            const data = await resp.json();
+            if (data.description || data.sku) {{
+                const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
+                const row = tpl.querySelector('tr') || tpl.children[0];
+                if (row) {{
+                    const d = {{...data, sku: data.sku || code}};
+                    celerpFillRow(row, d);
                 }}
-            }} catch (err) {{
-                scanStatus.textContent = '✗ ' + _L.scan_error;
+                const tbody2 = document.getElementById('{line_body_id}');
+                tbody2.appendChild(tpl);
+                const newRow2 = tbody2.lastElementChild;
+                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                celerpUpdateTotals();
+                celerpAutoSave();
+                scanStatus.textContent = '✓ ' + (data.sku || code);
+                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+            }} else {{
+                scanStatus.textContent = '✗ ' + _L.not_found + code;
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
-        }} else {{
-            // Documents (invoices, POs, ...): client-side catalog lookup + append.
-            try {{
-                const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
-                if (!resp.ok) throw new Error('lookup failed');
-                const data = await resp.json();
-                if (data.description || data.sku) {{
-                    const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
-                    const row = tpl.querySelector('tr') || tpl.children[0];
-                    if (row) {{
-                        const d = {{...data, sku: data.sku || code}};
-                        celerpFillRow(row, d);
-                    }}
-                    const tbody2 = document.getElementById('{line_body_id}');
-                    tbody2.appendChild(tpl);
-                    const newRow2 = tbody2.lastElementChild;
-                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                    celerpUpdateTotals();
-                    celerpAutoSave();
-                    scanStatus.textContent = '✓ ' + (data.sku || code);
-                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-                }} else {{
-                    scanStatus.textContent = '✗ ' + _L.not_found + code;
-                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                }}
-            }} catch (err) {{
-                scanStatus.textContent = '✗ ' + _L.lookup_error;
-                scanStatus.className = 'scan-bar-status scan-bar-status--err';
-            }}
+        }} catch (err) {{
+            scanStatus.textContent = '✗ ' + _L.lookup_error;
+            scanStatus.className = 'scan-bar-status scan-bar-status--err';
         }}
         scanInput.value = '';
         scanInput.focus();

@@ -54,9 +54,10 @@ def test_audit_renders_as_shared_list_and_adjusts(page, ui_server, api):
     page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
     page.wait_for_selector(".doc-detail", timeout=8000)
 
-    # Scan item A -> its row highlights as audited (presence recorded).
+    # Scan item A, then Add to submit the run -> its row highlights as audited (presence recorded).
     page.locator("#scan-bar-input").fill(bc_a)
     page.locator("#scan-bar-input").press("Enter")
+    page.locator("#scan-bar-add").click()
     page.wait_for_selector(".data-row--audited", timeout=8000)
     assert page.locator(".data-row--audited").count() == 1
 

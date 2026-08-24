@@ -107,7 +107,7 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
 
     # DRAFT scan: ADD a not-yet-on-manifest item; no status change (GDR 2d).
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1003"})
-    assert r.status_code == 200 and r.json()["state"] == "added"
+    assert r.status_code == 200 and r.json()["scanned"] == 1 and r.json()["results"][0]["state"] == "added"
     state = await _state(client, t, audit)
     assert state["status"] == "draft"  # scanning never finalizes
     assert state["line_items"][0]["sku"] == "UNEXP-1"
@@ -117,17 +117,46 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
     # FINALIZED scan: the manifest is LOCKED — scanning only checks off items already on the list
     # (records presence, top-insert). It never adds.
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})
-    assert r.status_code == 200 and r.json()["state"] == "audited"
+    assert r.status_code == 200 and r.json()["results"][0]["state"] == "audited"
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
     # Re-scanning the same item just re-confirms it (no error) — you can re-check anything.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).status_code == 200
-    # Scanning an item NOT on the locked manifest is rejected (409 with a clear reason), not added.
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).json()["scanned"] == 1
+    # Scanning an item NOT on the locked manifest is reported as failed (a clear reason), not added.
     await _item(client, t, "EXTRA-1", loc=loc, qty=2, barcode="1099")
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1099"})
-    assert rej.status_code == 409 and "not on this audit" in rej.json()["detail"].lower()
+    assert rej.status_code == 200 and rej.json()["scanned"] == 0
+    assert "not on this audit" in rej.json()["failed"][0]["detail"].lower()
     assert "EXTRA-1" not in {l["sku"] for l in (await _state(client, t, audit))["line_items"]}  # not added
-    # Unknown barcode -> 404 in any state.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})).status_code == 404
+    # Unknown barcode -> reported as failed in any state, never aborts the submit.
+    nf = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})
+    assert nf.status_code == 200 and [f["code"] for f in nf.json()["failed"]] == ["NOPE"]
+
+
+@pytest.mark.asyncio
+async def test_scan_batch_adds_every_code_in_one_submit_and_reports_failures(client):
+    """The scan bar accumulates codes client-side and submits the whole run as one comma-separated
+    batch. Every resolvable code is added against a single line_items write; an unresolvable code is
+    collected in `failed` and never aborts the good ones."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "AAA", loc=loc, qty=1, barcode="900001")
+    b = await _item(client, t, "BBB", loc=loc, qty=1, barcode="900002")
+    # Empty the audited location so the manifest starts blank and the adds are unambiguous.
+    loc2 = await _location(client, t, "B")
+    await client.post(f"/items/{a}/transfer", headers=_h(t), json={"to_location_id": loc2})
+    await client.post(f"/items/{b}/transfer", headers=_h(t), json={"to_location_id": loc2})
+    audit = (await _audit(client, t, loc))["id"]
+    assert (await _state(client, t, audit))["line_items"] == []
+
+    # ONE request carrying three codes: two resolve, one is unknown.
+    r = await client.post(f"/lists/{audit}/scan", headers=_h(t),
+                          json={"barcode": "900001,900002,NOPE"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 2
+    assert [f["code"] for f in body["failed"]] == ["NOPE"]
+    # Both good codes landed in a single submit; the bad one did not abort them.
+    assert {l["sku"] for l in (await _state(client, t, audit))["line_items"]} == {"AAA", "BBB"}
 
 
 # --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
@@ -158,13 +187,14 @@ async def test_audit_duplicate_sku_distinct_lots_survive_and_scan_binds_lot(clie
     assert on_hand[a] == 5.0 and on_hand[b] == 7.0  # each froze its own on-hand
 
     # Scan lot B's barcode -> only B checked off, A untouched.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "3502"})).status_code == 200
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "3502"})).json()["scanned"] == 1
     audited = {l["item_id"]: l.get("audited_at") for l in (await _state(client, t, audit))["line_items"]}
     assert audited[b] is not None and audited[a] is None
 
-    # Scanning/typing the shared SKU is ambiguous -> 409, never a silent check-off.
+    # Scanning/typing the shared SKU is ambiguous -> reported as failed, never a silent check-off.
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "SH"})
-    assert rej.status_code == 409 and "sku" in rej.json()["detail"].lower()
+    assert rej.status_code == 200 and rej.json()["scanned"] == 0
+    assert "sku" in rej.json()["failed"][0]["detail"].lower()
 
     # Count each lot independently, then Adjust: two independent quantity changes.
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 4})).status_code == 200
@@ -329,7 +359,7 @@ async def test_editable_save_keeps_item_link(client):
     assert (await _state(client, t, audit))["line_items"][0]["on_hand"] == 7.0  # freeze found the item
 
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "8001"})
-    assert r.status_code == 200 and r.json()["state"] == "audited"  # check-off works (was 409)
+    assert r.status_code == 200 and r.json()["results"][0]["state"] == "audited"  # check-off works (was 409)
 
 
 @pytest.mark.asyncio

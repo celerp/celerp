@@ -10533,7 +10533,8 @@ class TestListScanInPlace:
 
     @pytest.mark.asyncio
     async def test_building_list_scan_answers_204_without_refresh(self, ui_client):
-        with patch("ui.api_client.scan_list", new=AsyncMock(return_value={"state": "added"})), \
+        _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
+        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
         assert r.status_code == 204
@@ -10547,6 +10548,28 @@ class TestListScanInPlace:
         assert r.status_code == 200
         assert "DOMParser" in r.text
         assert "fetch(location.href)" in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_page_has_scan_add_button(self, ui_client):
+        # A list accumulates scans client-side and submits the whole run with one Add button; Enter
+        # only appends a comma, so the submit button is the sole thing that hits the server.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="scan-bar-add"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_scan_failures_ride_back_in_headers_not_a_hard_error(self, ui_client):
+        # A batch with a bad code still succeeds (200/204) and lands the good ones; the failure rides
+        # back in headers so the client can repopulate just the failed codes, never aborting the run.
+        _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
+                "failed": [{"code": "NOPE", "detail": "Unknown barcode or SKU: NOPE"}]}
+        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
+             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1, NOPE"}, cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers.get("X-Scan-Failed-Codes") == "NOPE"
+        assert "NOPE" in r.headers.get("X-Scan-Failed", "")
 
 
 class TestAuditColumnAlignment:

@@ -5638,58 +5638,81 @@ async def scan_list(
     state = row.state
     status = state.get("status")
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
-    code = (payload.barcode or "").strip()
-    if not code:
+    # The scan bar accumulates codes client-side (Enter appends a comma, never a per-scan request) and
+    # submits the whole run at once, so `barcode` is a comma-separated batch. Resolve and apply every
+    # code against ONE in-memory copy of line_items and persist a single time; a code that fails to
+    # resolve is collected in `failed` and reported, never aborting the codes that did resolve.
+    codes = [c.strip() for c in (payload.barcode or "").split(",") if c.strip()]
+    if not codes:
         raise HTTPException(status_code=422, detail="Empty scan")
-    item = await _resolve_barcode(session, company_id, code)
-    if item is None:
-        raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
-    if str((item.state or {}).get("status") or "").lower() == "draft":
-        sku = (item.state or {}).get("sku") or code
-        raise HTTPException(status_code=422, detail=f"{sku}: item is a draft - make it available first")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
+    scan_mode = behavior(lt).scan_finalized if status == FINALIZED else None
+    if status == FINALIZED and scan_mode != "count":
+        raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
-    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
     now = datetime.now(timezone.utc).isoformat()
+    price_config = None  # money lists price new lines; fetched once for the whole batch, lazily
+    results: list[dict] = []
+    failed: list[dict] = []
+    changed = False
 
-    if status == DRAFT:
-        if lt == "audit":
-            # Manifest is a set: move an existing line to top, else add it (no count yet).
-            if idx is not None:
-                lines.insert(0, lines.pop(idx))
-                result_state = "present"
+    for code in codes:
+        try:
+            item = await _resolve_barcode(session, company_id, code)
+        except HTTPException as e:  # ambiguous SKU: report the code, keep processing the rest
+            detail = e.detail
+            item = None
+        else:
+            if item is None:
+                detail = f"Unknown barcode or SKU: {code}"
+            elif str((item.state or {}).get("status") or "").lower() == "draft":
+                detail = f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
             else:
-                lines.insert(0, _scan_line_from_item(item, lt, None))
+                detail = None
+        if detail is not None:
+            failed.append({"code": code, "detail": detail})
+            results.append({"code": code, "state": "error", "detail": detail})
+            continue
+
+        idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
+        if status == DRAFT:
+            if lt == "audit":
+                # Manifest is a set: move an existing line to top, else add it (no count yet).
+                if idx is not None:
+                    lines.insert(0, lines.pop(idx))
+                    result_state = "present"
+                else:
+                    lines.insert(0, _scan_line_from_item(item, lt, None))
+                    result_state = "added"
+            else:
+                if price_config is None:
+                    price_config = await get_price_config(session, company_id)
+                lines.append(_scan_line_from_item(item, lt, payload.price_list, price_config=price_config))
                 result_state = "added"
         else:
-            lines.append(_scan_line_from_item(item, lt, payload.price_list,
-                                              price_config=await get_price_config(session, company_id)))
-            result_state = "added"
+            # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
+            # list and never adds. An item not on the list is reported (add it while still a draft).
+            if idx is None:
+                detail = f"{item.state.get('sku') or code} is not on this audit"
+                failed.append({"code": code, "detail": detail})
+                results.append({"code": code, "state": "error", "detail": detail})
+                continue
+            ln = lines.pop(idx)
+            ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
+            lines.insert(0, ln)           # newest scan to the top (GDR 2n)
+            result_state = "audited"
+        changed = True
+        results.append({"code": code, "state": result_state,
+                        "item_id": item.entity_id, "sku": item.state.get("sku")})
+
+    if changed:
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()
-        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
-
-    if status != FINALIZED:
-        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
-
-    scan_mode = behavior(lt).scan_finalized
-    if scan_mode == "count":
-        # An issued audit's manifest is LOCKED: scanning only checks off items already on the list
-        # (so you can see what's accounted for) and never adds. An item not on the list is rejected
-        # — add it while the audit is still a draft. Re-scanning an item is fine (it re-confirms).
-        if idx is None:
-            # 409 (not 404): the item exists, it's just not on this locked manifest. A 404 here would
-            # be rewritten to a generic "Not found" by the global 404 handler, hiding the reason.
-            raise HTTPException(status_code=409,
-                                detail=f"{item.state.get('sku') or code} is not on this audit")
-        ln = lines.pop(idx)
-        ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
-        lines.insert(0, ln)           # newest scan to the top (GDR 2n)
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-        await session.commit()
-        return {"state": "audited", "item_id": item.entity_id, "sku": item.state.get("sku")}
-
-    raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+    return {"scanned": sum(1 for r in results if r["state"] != "error"),
+            "results": results, "failed": failed}
 
 
 @lists_router.patch("/{entity_id}/line/{item_id}")
