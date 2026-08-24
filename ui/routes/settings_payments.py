@@ -17,7 +17,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.cloud_gate import upgrade_banner
-from ui.components.shell import base_shell, page_header, flash
+from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import add_new_option, bank_account_options
 from ui.i18n import t
 from ui.routes.settings import _check_permission, _token
@@ -124,11 +124,12 @@ def setup_routes(app):
         try:
             relay_ok, enabled, deposit, banks = await _load(token)
         except APIError as e:
-            return await base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
+            return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
+                                    nav_active="web-access", request=request)
         return await base_shell(
             _page(relay_ok, enabled, deposit, banks,
                   saved=request.query_params.get("saved") == "1"),
-            nav_active="web-access", request=request)
+            title=page_title("nav.payments"), nav_active="web-access", request=request)
 
     @app.post("/settings/payments")
     async def payments_settings_save(request: Request):
@@ -144,7 +145,7 @@ def setup_routes(app):
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
             return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
-                              nav_active="web-access", request=request)
+                              title=page_title("nav.payments"), nav_active="web-access", request=request)
         return RedirectResponse("/settings/payments?saved=1", status_code=302)
 
     @app.post("/settings/payments/connect")
@@ -160,7 +161,7 @@ def setup_routes(app):
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
             return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
-                              nav_active="web-access", request=request)
+                              title=page_title("nav.payments"), nav_active="web-access", request=request)
         return RedirectResponse(result.get("url", "/settings/payments"), status_code=302)
 
     @app.post("/settings/payments/disconnect")

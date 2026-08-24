@@ -19,12 +19,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# FastHTML element names whose first positional arg is typically user-visible text
+# FastHTML element names whose positional args are typically user-visible text,
+# plus the page_header helper whose first argument is a page title.
 _ELEMENTS = {
     "Div", "H1", "H2", "H3", "H4", "P", "Li", "Span", "Label", "Button",
     "A", "Small", "Td", "Th", "Strong", "Em", "Option", "Input", "Title",
     "Legend", "Summary", "Details", "Figcaption", "Nav", "Section",
-    "Footer", "Header",
+    "Footer", "Header", "page_header",
 }
 
 # Strings to exclude: CSS classes, HTML attributes, URLs, short tokens, etc.
@@ -37,18 +38,11 @@ _EXCLUDE_PATTERNS = [
     re.compile(r"^[A-Z_]{2,}$"),      # constants like "GET", "POST"
 ]
 
-# Keywords that hint an argument is an HTML attribute rather than content
-_ATTR_KWARG_NAMES = {
-    "cls", "id", "type", "name", "method", "action", "href", "src",
-    "hx_get", "hx_post", "hx_put", "hx_delete", "hx_target", "hx_swap",
-    "hx_trigger", "hx_vals", "hx_confirm", "hx_include", "hx_push_url",
-    "hx_indicator", "hx_encoding", "hx_ext",
-    "data_group", "data_id", "data_value", "data_entity_id",
-    "autocomplete", "placeholder", "style", "role", "aria_label",
-    "value", "for_", "min", "max", "step", "pattern", "title",
-    "target", "rel", "width", "height", "alt", "onclick",
-    "onerror", "onchange", "onsubmit",
-}
+# Attribute kwargs that DO carry user-visible text (tooltips, placeholders,
+# confirm prompts, accessibility labels, image alt text). These are checked for
+# bare strings the same way element content is - the value must go through t()
+# at render time.
+_USER_FACING_ATTRS = {"placeholder", "title", "aria_label", "alt", "hx_confirm"}
 
 # Namespace inference from file path
 def _infer_namespace(filepath: str) -> str:
@@ -112,12 +106,23 @@ def _scan_file(filepath: Path) -> list[dict]:
     """Parse a Python file and find hardcoded strings in FastHTML elements."""
     try:
         source = filepath.read_text()
+    except (UnicodeDecodeError, OSError):
+        return []
+    return _scan_source(source, str(filepath.relative_to(ROOT)))
+
+
+def _scan_source(source: str, rel: str) -> list[dict]:
+    """Find hardcoded user-facing strings in one module's source text.
+
+    Split out from _scan_file so the AST logic can be exercised on inline
+    snippets without touching the filesystem.
+    """
+    try:
         tree = ast.parse(source)
-    except (SyntaxError, UnicodeDecodeError):
+    except SyntaxError:
         return []
 
     results = []
-    rel = str(filepath.relative_to(ROOT))
     ns = _infer_namespace(rel)
 
     for node in ast.walk(tree):
@@ -129,88 +134,163 @@ def _scan_file(filepath: Path) -> list[dict]:
             func_name = node.func.id
         elif isinstance(node.func, ast.Attribute):
             func_name = node.func.attr
-        if func_name not in _ELEMENTS:
-            continue
-
-        # Check first positional argument
-        if not node.args:
-            continue
-        first_arg = node.args[0]
-
-        # Skip t() calls
-        if isinstance(first_arg, ast.Call):
-            fn = first_arg.func
-            if (isinstance(fn, ast.Name) and fn.id == "t") or \
-               (isinstance(fn, ast.Attribute) and fn.attr == "t"):
-                continue
-
-        # Only handle string literals (Constant with str value)
-        if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
-            text = first_arg.value
-            if _is_translatable(text):
-                key = f"{ns}.{_to_snake(text)}"
+        # Positional element content (Div/Button/Th/Option/...): every positional
+        # child, so a bare string after the first argument is caught too.
+        if func_name in _ELEMENTS:
+            for arg in node.args:
+                hit = _string_hit(arg)
+                if not hit:
+                    continue
+                text, is_fstring = hit
                 results.append({
                     "file": rel,
-                    "line": first_arg.lineno,
+                    "line": arg.lineno,
                     "text": text,
-                    "suggested_key": key,
+                    "suggested_key": f"{ns}.{_to_snake(text)}",
                     "element": func_name,
+                    "attr": None,
+                    **({"is_fstring": True} if is_fstring else {}),
                 })
 
-        # Handle f-strings with mixed text+variables (JoinedStr)
-        elif isinstance(first_arg, ast.JoinedStr):
-            # Reconstruct template to check for English text
-            parts = []
-            has_text = False
-            for v in first_arg.values:
-                if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                    if v.value.strip():
-                        has_text = True
-                    parts.append(v.value)
-                else:
-                    parts.append("{...}")
-            template = "".join(parts)
-            if has_text and _is_translatable(template):
-                key = f"{ns}.{_to_snake(template)}"
-                results.append({
-                    "file": rel,
-                    "line": first_arg.lineno,
-                    "text": template,
-                    "suggested_key": key,
-                    "element": func_name,
-                    "is_fstring": True,
-                })
+        # User-facing attribute kwargs (placeholder/title/aria_label/hx_confirm)
+        # on any component-style call (FastHTML elements are Capitalized).
+        if func_name and func_name[:1].isupper():
+            for kw in node.keywords:
+                if kw.arg not in _USER_FACING_ATTRS:
+                    continue
+                hit = _string_hit(kw.value)
+                if hit:
+                    text, is_fstring = hit
+                    results.append({
+                        "file": rel,
+                        "line": kw.value.lineno,
+                        "text": text,
+                        "suggested_key": f"{ns}.{_to_snake(text)}",
+                        "element": func_name,
+                        "attr": kw.arg,
+                        **({"is_fstring": True} if is_fstring else {}),
+                    })
 
     return results
 
 
-def main():
-    scan_paths = [
-        ROOT / "ui" / "routes",
-        ROOT / "ui" / "components",
-    ]
-    # Also scan default_modules
-    for mod_dir in sorted((ROOT / "default_modules").glob("*/celerp_*")):
-        scan_paths.append(mod_dir)
+def _string_hit(arg: ast.expr) -> tuple[str, bool] | None:
+    """Return (text, is_fstring) if this arg is a bare translatable string, else None.
 
-    all_results = []
-    for scan_dir in scan_paths:
-        if not scan_dir.exists():
+    A ``t(...)`` / ``page_title(...)`` call is already routed through the
+    translation layer, so it is never a hit; an f-string with static English
+    text between its interpolations is (the static text needs translating).
+    """
+    # Already translated: t(...) or page_title(...) wrapping.
+    if isinstance(arg, ast.Call):
+        fn = arg.func
+        name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
+        if name in {"t", "page_title"}:
+            return None
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return (arg.value, False) if _is_translatable(arg.value) else None
+    if isinstance(arg, ast.JoinedStr):
+        parts, has_text = [], False
+        for v in arg.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                if v.value.strip():
+                    has_text = True
+                parts.append(v.value)
+            else:
+                parts.append("{...}")
+        template = "".join(parts)
+        if has_text and _is_translatable(template):
+            return template, True
+    return None
+
+
+# The guardrail scope: the whole first-party UI surface - the app's own rendered
+# UI (ui/routes, ui/components, ui/app.py) and every first-party module's UI
+# package. A new hardcoded string anywhere here fails the guardrail.
+def guardrail_paths() -> list[Path]:
+    paths = [ROOT / "ui" / "routes", ROOT / "ui" / "components", ROOT / "ui" / "app.py"]
+    paths += sorted((ROOT / "default_modules").glob("*/celerp_*"))
+    return paths
+
+# Known strings that are legitimately NOT translated (format hints, example
+# values, credentials-shaped samples, brand names, unit abbreviations, magic
+# confirm tokens). Frozen so no NEW hardcoded UI string can be added without
+# either routing it through t() or making an explicit, reasoned exception here.
+ALLOWLIST_PATH = ROOT / "scripts" / "i18n_allowlist.json"
+
+
+def _load_allowlist() -> set[tuple[str, str]]:
+    """Return the set of allowlisted (file, text) pairs; empty if none on disk.
+
+    Every entry must carry a non-empty ``reason`` so an exception cannot be added
+    silently; an entry missing one raises ValueError naming the offending pair.
+    """
+    if not ALLOWLIST_PATH.exists():
+        return set()
+    data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
+    for e in data["entries"]:
+        if not str(e.get("reason", "")).strip():
+            raise ValueError(
+                f"allowlist entry needs a non-empty reason: "
+                f"{e.get('file')!r} {e.get('text')!r}"
+            )
+    return {(e["file"], e["text"]) for e in data["entries"]}
+
+
+def scan(paths: list[Path] | None = None, apply_allowlist: bool = False) -> list[dict]:
+    """Scan the given directories for hardcoded user-facing strings.
+
+    paths defaults to the guardrail scope (guardrail_paths()). Each path may be a
+    directory (its *.py files, excluding _-prefixed, are scanned) or a single .py
+    file. With apply_allowlist, (file, text) pairs recorded in i18n_allowlist.json
+    are removed, leaving only NEW, un-triaged strings.
+    """
+    if paths is None:
+        paths = guardrail_paths()
+    results: list[dict] = []
+    for scan_path in paths:
+        if scan_path.is_file():
+            if scan_path.suffix == ".py" and not scan_path.name.startswith("_"):
+                results.extend(_scan_file(scan_path))
             continue
-        for py_file in sorted(scan_dir.glob("*.py")):
+        if not scan_path.exists():
+            continue
+        for py_file in sorted(scan_path.glob("*.py")):
             if py_file.name.startswith("_"):
                 continue
-            all_results.extend(_scan_file(py_file))
+            results.extend(_scan_file(py_file))
+    if apply_allowlist:
+        allowed = _load_allowlist()
+        results = [r for r in results if (r["file"], r["text"]) not in allowed]
+    return results
+
+
+def main():
+    check = "--check" in sys.argv
+    # Both the report and the --check gate cover the full guardrail scope; --check
+    # additionally removes allowlisted strings so only NEW leaks remain.
+    all_results = scan(guardrail_paths(), apply_allowlist=check)
 
     if "--json" in sys.argv:
         json.dump(all_results, sys.stdout, indent=2)
-    else:
-        print(f"Found {len(all_results)} hardcoded strings:\n")
-        for r in all_results:
-            fstr = " [f-string]" if r.get("is_fstring") else ""
-            print(f"  {r['file']}:{r['line']}: {r['element']}(\"{r['text']}\"){fstr}")
-            print(f"    → {r['suggested_key']}")
-        print(f"\nTotal: {len(all_results)}")
+        return
+    if check:
+        if all_results:
+            print(f"{len(all_results)} NEW hardcoded UI string(s) not in the allowlist:\n")
+            for r in all_results:
+                attr = f" {r['attr']}=" if r.get("attr") else " "
+                print(f"  {r['file']}:{r['line']}: {r['element']}({attr}\"{r['text']}\")")
+                print(f"    route it through t(), or add a reasoned exception to {ALLOWLIST_PATH.name}")
+            sys.exit(1)
+        print("No new hardcoded UI strings: every user-facing string routes through t().")
+        return
+    print(f"Found {len(all_results)} hardcoded strings:\n")
+    for r in all_results:
+        fstr = " [f-string]" if r.get("is_fstring") else ""
+        attr = f" {r['attr']}=" if r.get("attr") else " "
+        print(f"  {r['file']}:{r['line']}: {r['element']}({attr}\"{r['text']}\"){fstr}")
+        print(f"    → {r['suggested_key']}")
+    print(f"\nTotal: {len(all_results)}")
 
 
 if __name__ == "__main__":

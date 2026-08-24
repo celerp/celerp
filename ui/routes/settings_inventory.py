@@ -11,31 +11,20 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, flash
+from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import EMPTY
 from ui.components.cloud_gate import digest_upsell_modal
 
-# Human-readable labels for vertical tag groups in the category library
-_TAG_LABELS: dict[str, str] = {
-    "agricultural": "Agricultural",
-    "artwork": "Artwork",
-    "automotive": "Automotive",
-    "books_media": "Books & Media",
-    "coins_precious_metals": "Coins & Precious Metals",
-    "consulting": "Consulting",
-    "cosmetics": "Cosmetics",
-    "electronics": "Electronics",
-    "fashion": "Fashion",
-    "food_beverage": "Food & Beverage",
-    "furniture": "Furniture",
-    "gems_jewelry": "Gems & Jewelry",
-    "hardware": "Hardware",
-    "property_rental": "Property & Rental",
-    "saas": "SaaS",
-    "watches_accessories": "Watches & Accessories",
-    "wine_spirits": "Wine & Spirits",
-    "other": "Other",
-}
+# Vertical tag groups in the category library. The module-level dict holds i18n
+# KEYS, never English, so a non-English request gets translated group headings;
+# labels resolve at render time via t("enum.vertical_tag.<tag>") (see _tag_label).
+_VERTICAL_TAGS: tuple[str, ...] = (
+    "agricultural", "artwork", "automotive", "books_media",
+    "coins_precious_metals", "consulting", "cosmetics", "electronics",
+    "fashion", "food_beverage", "furniture", "gems_jewelry", "hardware",
+    "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
+)
+_TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 
@@ -52,12 +41,19 @@ from ui.routes.settings import (
 from ui.routes.settings_general import _section_breadcrumb
 
 
+def _tag_label(tag: str) -> str:
+    """Render-time display label for a vertical tag group; falls back to the raw
+    tag when no catalog key is registered (a data value with no shipped label)."""
+    key = _TAG_LABELS.get(tag)
+    return t(key) if key else tag
+
+
 def _inventory_tabs(active: str, lang: str = "en") -> FT:
     tabs: list[tuple[str, str]] = [
         ("locations", t("settings.tab_locations", lang)),
         ("categories", t("settings.tab_categories", lang)),
-        ("units", "Units"),
-        ("reorder", "Reorder"),
+        ("units", t("page.units", lang)),
+        ("reorder", t("settings_inventory.tab_reorder", lang)),
         ("bulk-attach", t("settings.tab_bulk_attach", lang)),
         ("import-history", t("settings.tab_import_history", lang)),
     ]
@@ -75,10 +71,10 @@ def _inventory_tabs(active: str, lang: str = "en") -> FT:
 
 def _unit_display_cell(unit_name: str, field: str, value) -> FT:
     """Click-to-edit cell for a unit row field (label or decimals)."""
-    display = str(value) if (value is not None and str(value).strip() != "") else "—"
+    display = str(value) if (value is not None and str(value).strip() != "") else EMPTY
     return Td(
         Span(display, cls="cell-text"),
-        title="Click to edit",
+        title=t("settings.click_to_edit"),
         hx_get=f"/settings/units/{unit_name}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -88,16 +84,16 @@ def _unit_display_cell(unit_name: str, field: str, value) -> FT:
 def _unit_type_select(name_attr: str, selected: str = "quantity") -> FT:
     """Reusable unit_type dropdown."""
     return Select(
-        Option("Weight", value="weight", selected=(selected == "weight")),
-        Option("Pieces", value="pieces", selected=(selected == "pieces")),
-        Option("Quantity", value="quantity", selected=(selected == "quantity")),
+        Option(t("enum.unit_type.weight"), value="weight", selected=(selected == "weight")),
+        Option(t("enum.unit_type.pieces"), value="pieces", selected=(selected == "pieces")),
+        Option(t("enum.unit_type.quantity"), value="quantity", selected=(selected == "quantity")),
         name=name_attr,
         cls="input-sm",
     )
 
 
 def _units_tab(units: list[dict], from_import: str = "") -> FT:
-    """Units settings tab — table of units with inline edit + add form."""
+    """Units settings tab - table of units with inline edit + add form."""
     rows = []
     for u in units:
         uname = u.get("name", "")
@@ -112,7 +108,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
                     "✕",
                     cls="btn btn--danger btn--xs",
                     hx_delete=f"/settings/units/{uname}",
-                    hx_confirm=f"Delete unit '{uname}'?",
+                    hx_confirm=t("settings_inventory.delete_unit_confirm", name=uname),
                     hx_swap="none",
                     hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
                 ),
@@ -122,10 +118,10 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         ))
 
     add_row = Tr(
-        Td(Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
-                 pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only"),
+        Td(Input(name="name", placeholder=t("settings_inventory.unit_name_placeholder"), required=True, cls="input-sm",
+                 pattern="[a-z0-9_]+", title=t("settings_inventory.unit_name_pattern_title")),
            cls="cell"),
-        Td(Span("(auto)", style="color:var(--c-text2);font-size:12px"), cls="cell"),
+        Td(Span(t("settings_inventory.unit_label_auto"), style="color:var(--c-text2);font-size:12px"), cls="cell"),
         Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
         Td(_unit_type_select("unit_type"), cls="cell"),
         Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
@@ -134,8 +130,8 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
 
     return_banner = (
         Div(
-            Span("Unit added? ", style="font-size:13px;"),
-            A("← Return to import", href="javascript:window.close()",
+            Span(t("settings_inventory.unit_added_prompt"), style="font-size:13px;"),
+            A(t("settings_inventory.return_to_import"), href="javascript:window.close()",
               cls="btn btn--secondary btn--sm"),
             cls="settings-card",
             style="display:flex;align-items:center;gap:10px;padding:8px 14px;margin-bottom:8px;",
@@ -149,7 +145,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
         Form(
             Table(
-                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
+                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(t("th.type")), Th(""))),
                 Tbody(*rows),
                 Tfoot(add_row),
                 cls="data-table",
@@ -158,7 +154,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             hx_swap="none",
             hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
         ),
-        P("Name: lowercase, numbers and underscores only (e.g. piece, kg, troy_oz). Label auto-fills - click to customise.", cls="form-hint"),
+        P(t("settings_inventory.unit_name_hint"), cls="form-hint"),
         cls="settings-card",
     )
 
@@ -169,33 +165,31 @@ def _reorder_tab(company: dict, saved: bool = False, upsell: bool = False) -> FT
     alerts_enabled = True if _enabled is None else bool(_enabled)
     email_enabled = bool(company.get("reorder_alert_email"))
     _method = str(company.get("inventory_method") or "fifo").lower()
-    _method_opts = [("fifo", "FIFO - oldest received first"),
-                    ("fefo", "FEFO - soonest to expire first"),
-                    ("lifo", "LIFO - newest received first (US GAAP only)")]
+    _method_opts = [("fifo", t("enum.inventory_method.fifo")),
+                    ("fefo", t("enum.inventory_method.fefo")),
+                    ("lifo", t("enum.inventory_method.lifo"))]
     return Div(
-        flash("Settings saved.", "success") if saved else "",
+        flash(t("settings_inventory.settings_saved"), "success") if saved else "",
         Form(
-            H3("Stock cutting method", cls="settings-section-title"),
-            P("Which physical lot is drawn down first when you sell. A sale of a splittable "
-              "product spans lots in this order; each lot is costed at its own cost (specific "
-              "identification). An item can override this in its details.", cls="settings-hint"),
+            H3(t("settings_inventory.stock_cutting_method"), cls="settings-section-title"),
+            P(t("settings_inventory.stock_cutting_hint"), cls="settings-hint"),
             Div(
-                Label("Default method", For="inventory_method", cls="form-label"),
+                Label(t("settings_inventory.default_method"), For="inventory_method", cls="form-label"),
                 Select(
                     *[Option(lbl, value=val, selected=(val == _method)) for val, lbl in _method_opts],
                     name="inventory_method", id="inventory_method", cls="form-input input--medium",
                 ),
                 cls="form-group",
             ),
-            P("LIFO is permitted under US GAAP but not under IFRS - use FIFO or FEFO for IFRS reporting.",
+            P(t("settings_inventory.lifo_gaap_note"),
               cls="settings-hint"),
-            H3("Reorder alerts", cls="settings-section-title mt-lg"),
-            P("Get a daily digest when items reach their reorder point, then draft a purchase order to restock.",
+            H3(t("settings_inventory.reorder_alerts"), cls="settings-section-title mt-lg"),
+            P(t("settings_inventory.reorder_alerts_hint"),
               cls="settings-hint"),
             Div(
                 Label(
                     Input(type="checkbox", name="reorder_alerts_enabled", value="1", checked=alerts_enabled),
-                    Span(" Notify me when items reach their reorder point"),
+                    Span(t("settings_inventory.notify_reorder_point")),
                     cls="settings-toggle",
                 ),
                 cls="form-group",
@@ -203,16 +197,15 @@ def _reorder_tab(company: dict, saved: bool = False, upsell: bool = False) -> FT
             Div(
                 Label(
                     Input(type="checkbox", name="reorder_alert_email", value="1", checked=email_enabled),
-                    Span(" Also email the daily low-stock digest to the account owner"),
+                    Span(t("settings_inventory.email_digest_owner")),
                     cls="settings-toggle",
                 ),
                 cls="form-group",
             ),
-            Div(Button("Save", type="submit", cls="btn btn--primary"), cls="form-actions"),
+            Div(Button(t("btn.save"), type="submit", cls="btn btn--primary"), cls="form-actions"),
             method="post", action="/settings/inventory/reorder", cls="settings-card",
         ),
-        P("Set a reorder point per item in its details, or in bulk from the inventory list. "
-          "Items at or below their reorder point appear under Inventory - Low stock.", cls="settings-hint"),
+        P(t("settings_inventory.reorder_point_hint"), cls="settings-hint"),
         digest_upsell_modal() if upsell else "",
     )
 
@@ -239,7 +232,7 @@ def _categories_tab(
     if cat:
         if cat not in cat_schemas:
             return Div(
-                P(f"Category '{cat}' not found.", cls="error-banner"),
+                P(t("settings_inventory.category_not_found", cat=cat), cls="error-banner"),
                 A(t("settings.cat_fields_back"), href="/settings/inventory?tab=categories",
                   cls="btn btn--secondary"),
                 cls="settings-card",
@@ -260,7 +253,7 @@ def _categories_tab(
                 Td(
                     Button("✕", cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
-                           hx_confirm=f"Delete field '{f.get('key', idx)}'?",
+                           hx_confirm=t("settings_inventory.delete_field_confirm", name=f.get('key', idx)),
                            hx_swap="none",
                            hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
                     cls="cell",
@@ -284,8 +277,8 @@ def _categories_tab(
                   cls="btn btn--secondary btn--xs"),
                 cls="mb-md",
             ),
-            H3(f"{cat} Fields", cls="settings-section-title"),
-            P(f"Attribute fields for the '{cat}' category. Click a cell to edit.", cls="settings-hint"),
+            H3(t("settings_inventory.category_fields_heading", cat=cat), cls="settings-section-title"),
+            P(t("settings_inventory.category_fields_hint", cat=cat), cls="settings-hint"),
             Table(
                 Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")),
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
@@ -317,7 +310,7 @@ def _categories_tab(
                     Input(type="text", name="new_category_name",
                           placeholder=t("settings.new_category_name"),
                           cls="form-input form-input--sm cat-add-input"),
-                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                    Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
                     hx_post="/settings/categories",
                     hx_target="#your-cats-section",
                     hx_swap="outerHTML",
@@ -327,7 +320,7 @@ def _categories_tab(
             ),
         )
         your_cats_body = Table(
-            Thead(Tr(Th(t("th.category")), Th("Fields", cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),
+            Thead(Tr(Th(t("th.category")), Th(t("page.fields"), cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),
             Tbody(*applied_rows, add_row),
             cls="data-table your-cats-table",
         )
@@ -338,7 +331,7 @@ def _categories_tab(
                 Input(type="text", name="new_category_name",
                       placeholder=t("settings.new_category_name"),
                       cls="form-input form-input--sm cat-add-input"),
-                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
                 hx_post="/settings/categories",
                 hx_target="#your-cats-section",
                 hx_swap="outerHTML",
@@ -373,7 +366,7 @@ def _categories_tab(
                     tag_to_preset[vtag] = p
 
         group_sections = []
-        for tag in sorted(groups.keys(), key=lambda t_: _TAG_LABELS.get(t_, t_)):
+        for tag in sorted(groups.keys(), key=_tag_label):
             cats_in_group = groups[tag]
             rows = []
             for vc in cats_in_group:
@@ -400,7 +393,7 @@ def _categories_tab(
             group_sections.append(
                 Details(
                     Summary(
-                        Span(_TAG_LABELS.get(tag, tag), cls="vert-group-label"),
+                        Span(_tag_label(tag), cls="vert-group-label"),
                         *(
                             [Form(
                                 Input(type="hidden", name="vertical", value=tag_to_preset[tag].get("name", "")),
@@ -427,7 +420,7 @@ def _categories_tab(
 
         browse_content = Div(
             P(t("settings.browse_library_hint"), cls="settings-hint"),
-            Input(type="text", id="cat-search", placeholder="Search categories...",
+            Input(type="text", id="cat-search", placeholder=t("settings_inventory.search_categories_placeholder"),
                   oninput="filterCats(this.value)", cls="form-input form-input--sm",
                   style="max-width:280px;margin-bottom:12px"),
             *group_sections,
@@ -443,7 +436,7 @@ def _categories_tab(
 }"""),
         )
     else:
-        browse_content = Div(P("No categories available in the library.", cls="settings-hint"))
+        browse_content = Div(P(t("settings_inventory.no_library_categories"), cls="settings-hint"))
 
     section_c = Details(
         Summary(t("settings.browse_library")),
@@ -529,11 +522,11 @@ def setup_routes(app):
             tab = "locations"
 
         return await base_shell(
-            _section_breadcrumb("Inventory"),
-            page_header("Inventory Settings"),
+            _section_breadcrumb(t("nav.inventory", lang)),
+            page_header(t("settings_inventory.page_header", lang)),
             _inventory_tabs(tab, lang=lang),
             content,
-            title="Settings - Celerp",
+            title=page_title("page.settings"),
             nav_active="settings-inventory",
             lang=lang,
             request=request,
@@ -622,7 +615,7 @@ def setup_routes(app):
         units = await api.get_units(token)
         unit = next((u for u in units if u.get("name") == name), None)
         if unit is None:
-            return Td("—", cls="cell")
+            return Td(EMPTY, cls="cell")
         value = unit.get(field, "")
         if field == "decimals":
             inp = Input(

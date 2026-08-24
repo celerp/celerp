@@ -21,7 +21,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import empty_state_cta, fmt_money, searchable_select
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
@@ -435,15 +435,15 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
 
     net = float(data.get("net_profit", 0))
     return Div(
-        _section("Revenue", data.get("revenue", {}), show_pct=True,
+        _section(t("acct.section_revenue"), data.get("revenue", {}), show_pct=True,
                  total_href=f"/reports/sales{_dqs}"),
-        _section("Cost of Goods Sold", data.get("cogs", {}), show_pct=True,
+        _section(t("acct.section_cogs"), data.get("cogs", {}), show_pct=True,
                  total_href=f"/reports/purchases{_dqs}"),
-        Div(P(Strong(f"Gross Profit: {fmt_money(data.get('gross_profit', 0), currency)}")), cls="report-subtotal"),
-        _section("Operating Expenses", data.get("expenses", {}), show_pct=True,
+        Div(P(Strong(f"{t('acct.gross_profit')}: {fmt_money(data.get('gross_profit', 0), currency)}")), cls="report-subtotal"),
+        _section(t("acct.section_operating_expenses"), data.get("expenses", {}), show_pct=True,
                  total_href=f"/reports/purchases{_dqs}"),
         Div(
-            P(Strong(f"Net Profit: {fmt_money(net, currency)}"),
+            P(Strong(f"{t('acct.net_profit')}: {fmt_money(net, currency)}"),
               cls=f"net-profit {'net-profit--positive' if net >= 0 else 'net-profit--negative'}"),
             cls="report-total",
         ),
@@ -475,7 +475,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 label = l.get("name", "")
                 name_cell = Td(
                     A(label, href=_pnl_href(), cls="drilldown-link"),
-                    title="Net income accumulated from P&L. Click to see the calculation.",
+                    title=t("financial.retained_earnings_tooltip"),
                 )
             elif is_parent:
                 label = f"{code} {l.get('name', '')}".strip()
@@ -510,15 +510,15 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
     total_liab = data.get("liabilities", {}).get("total", 0)
     total_equity = data.get("equity", {}).get("total", 0)
     return Div(
-        _section("Assets", data.get("assets", {})),
-        _section("Liabilities", data.get("liabilities", {})),
-        _section("Equity", data.get("equity", {})),
+        _section(t("acct.section_assets"), data.get("assets", {})),
+        _section(t("acct.section_liabilities"), data.get("liabilities", {})),
+        _section(t("acct.section_equity"), data.get("equity", {})),
         Div(
             P(
-                Strong(f"Total Liabilities & Equity: {fmt_money(total_liab + total_equity, currency)}"),
+                Strong(f"{t('financial.total_liabilities_equity')}: {fmt_money(total_liab + total_equity, currency)}"),
                 cls="section-total",
             ),
-            Span("Balance checks out ✓" if balanced else "⚠ Imbalance detected",
+            Span(t("acct.balance_checks_out") if balanced else t("acct.imbalance_detected"),
                  cls="val-chip" if balanced else "val-chip val-chip--alert"),
             cls="valuation-bar",
         ),
@@ -836,7 +836,7 @@ def setup_routes(app):
             cls="quick-links-grid",
         )
         return await _page(request, page_header(t("page.reports", lang)), content,
-                           title="Reports - Celerp")
+                           title=page_title("page.reports"))
 
     @app.get("/reports/pnl")
     async def pnl_report(request: Request):
@@ -861,7 +861,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_pnl", get_lang(request))), content,
-                           title="Profit & Loss - Celerp")
+                           title=page_title("page.profit_loss"))
 
     @app.get("/reports/balance-sheet")
     async def balance_sheet_report(request: Request):
@@ -890,7 +890,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_balance_sheet", get_lang(request))),
-                           content, title="Balance Sheet - Celerp")
+                           content, title=page_title("acct.tab_balance_sheet"))
 
     @app.get("/reports/trial-balance")
     async def trial_balance_report(request: Request):
@@ -916,7 +916,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_trial_balance", get_lang(request))),
-                           content, title="Trial Balance - Celerp")
+                           content, title=page_title("acct.tab_trial_balance"))
 
     @app.get("/reports/general-ledger")
     async def general_ledger_report(request: Request):
@@ -945,7 +945,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_general_ledger", get_lang(request))),
-                           content, title="General Ledger - Celerp")
+                           content, title=page_title("acct.tab_general_ledger"))
 
     @app.get("/reports/cash-flow")
     async def cash_flow_report(request: Request):
@@ -970,7 +970,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_cash_flow", get_lang(request))),
-                           content, title="Cash Flow - Celerp")
+                           content, title=page_title("acct.tab_cash_flow"))
 
     @app.get("/reports/extended-journal")
     async def extended_journal_report(request: Request):
@@ -1008,7 +1008,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_extended_journal", get_lang(request))),
-                           content, title="Extended Journal - Celerp")
+                           content, title=page_title("acct.tab_extended_journal"))
 
     @app.get("/reports/ledger/{account_code}")
     async def account_ledger_page(request: Request, account_code: str):
@@ -1024,7 +1024,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return await _page(request, _error_content(e), title="Ledger - Celerp")
+            return await _page(request, _error_content(e), title=page_title("financial.page_ledger"))
 
         back_path, _p, _c, back_key = REPORTS[origin]
         back_qs = page_params(origin, d_from or "", d_to or "")
@@ -1040,8 +1040,8 @@ def setup_routes(app):
             _ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
         )
         name = data.get("account_name", account_code)
-        return await _page(request, page_header(f"Ledger: {account_code} {name}"), content,
-                           title=f"Ledger {account_code} - Celerp")
+        return await _page(request, page_header(t("financial.ledger_heading", code=account_code, name=name)), content,
+                           title=t("financial.ledger_code_title", code=account_code) + " - Celerp")
 
     # ── Statement of account ───────────────────────────────────────────────
 
@@ -1183,7 +1183,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return await _page(request, page_header(t("acct.soa_title", get_lang(request))),
-                               _error_content(e), title="Statement of Account - Celerp")
+                               _error_content(e), title=page_title("acct.soa_title"))
 
         selected = [subject_token(k, i) for k, i in subjects]
         picker = Form(
@@ -1229,7 +1229,7 @@ def setup_routes(app):
             body,
         )
         return await _page(request, page_header(t("acct.soa_title", get_lang(request))),
-                           content, title="Statement of Account - Celerp")
+                           content, title=page_title("acct.soa_title"))
 
     # ── Print ──────────────────────────────────────────────────────────────
 

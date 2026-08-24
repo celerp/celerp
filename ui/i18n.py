@@ -126,6 +126,20 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def field_label(f: dict) -> str:
+    """Display label for an item-schema field, resolved through t() at render time.
+
+    Built-in fields carry a ``label_key`` (mirroring ``tooltip_key``); a request
+    in another language renders the translated label. Stored custom fields and
+    dynamic price columns have no ``label_key`` and render their raw ``label`` -
+    a user-defined label is data, never translated. Falls back to the field key
+    so a malformed field never renders blank."""
+    key = f.get("label_key")
+    if key:
+        return t(key)
+    return f.get("label", f.get("key", ""))
+
+
 def tier_label(tier: str) -> str:
     """Display name for a paid-tier key. Keys are wire/Stripe identifiers and
     never change; this is the one client-side map from key to product name."""

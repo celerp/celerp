@@ -19,8 +19,9 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, toast_header
+from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.config import get_token as _token
+from ui.i18n import t
 from ui.routes.manufacturing import _wc_table
 
 
@@ -34,6 +35,67 @@ def _info(text: str) -> FT:
                 **{"aria-label": text, "data-tip": text})
 
 
+def _work_centers_card(centers: list, loc_names: dict) -> FT:
+    """Work-centers settings card. Chrome resolves via t() at render time."""
+    return Div(
+        Div(
+            H2(Span(t("settings_manufacturing.work_centers")),
+               _info(t("settings_manufacturing.work_centers_info")),
+               cls="section-title"),
+            Button(t("settings_manufacturing.add_work_center"), type="button", cls="btn btn--sm btn--primary",
+                   hx_post="/manufacturing/work-centers/new", hx_target="#wc-table", hx_swap="outerHTML"),
+            cls="flex-row flex-between settings-card-header",
+        ),
+        _wc_table(centers, loc_names),
+        cls="settings-card", id="work-centers",
+    )
+
+
+def _production_rules_form(require_issued: bool, auto_create: bool, auto_complete: bool) -> FT:
+    """Production-rules preferences form. Headings, toggle labels and help text
+    resolve via t() at render time."""
+    return Form(
+        H2(t("settings_manufacturing.production_rules"), cls="section-title"),
+        P(t("settings_manufacturing.production_rules_hint"), cls="settings-hint"),
+        Div(
+            Label(
+                Input(type="checkbox", name="require_issued_before_complete", value="1",
+                      checked=require_issued),
+                Span(t("settings_manufacturing.require_issued_label")),
+                _info(t("settings_manufacturing.require_issued_info")),
+                cls="settings-toggle",
+            ),
+            cls="form-group",
+        ),
+        Div(
+            Label(
+                Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create,
+                      onchange="document.getElementById('auto-complete-row').style.display = this.checked ? '' : 'none'"),
+                Span(t("settings_manufacturing.auto_create_label")),
+                _info(t("settings_manufacturing.auto_create_info")),
+                cls="settings-toggle",
+            ),
+            cls="form-group",
+        ),
+        Div(
+            Label(
+                Input(type="checkbox", name="auto_complete_work_orders", value="1", checked=auto_complete),
+                Span(t("settings_manufacturing.auto_complete_label")),
+                _info(t("settings_manufacturing.auto_complete_info")),
+                cls="settings-toggle",
+            ),
+            cls="form-group settings-toggle-child", id="auto-complete-row",
+            **({"style": "display:none"} if not auto_create else {}),
+        ),
+        Div(
+            P(t("settings_manufacturing.per_workcenter_hours_note"), cls="form-hint"),
+            cls="form-group",
+        ),
+        hx_post="/settings/manufacturing", hx_trigger="change",
+        hx_swap="none", cls="settings-card",
+    )
+
+
 def setup_routes(app):
 
     async def _work_centers_section(token: str) -> FT:
@@ -44,19 +106,7 @@ def setup_routes(app):
         except APIError:
             pass
         loc_names = {l.get("id"): l.get("name") for l in locations}
-        return Div(
-            Div(
-                H2(Span("Work centers"),
-                   _info("Operational stations where production happens (e.g. Bench, Polishing, Oven). "
-                         "Optional: assign a WIP location, labour rate and capacity. Double-click a cell to edit."),
-                   cls="section-title"),
-                Button("Add work center", type="button", cls="btn btn--sm btn--primary",
-                       hx_post="/manufacturing/work-centers/new", hx_target="#wc-table", hx_swap="outerHTML"),
-                cls="flex-row flex-between settings-card-header",
-            ),
-            _wc_table(centers, loc_names),
-            cls="settings-card", id="work-centers",
-        )
+        return _work_centers_card(centers, loc_names)
 
     @app.get("/settings/manufacturing")
     async def settings_manufacturing_page(request: Request):
@@ -72,62 +122,13 @@ def setup_routes(app):
         auto_create = bool(mfg.get("auto_create_work_orders"))
         auto_complete = bool(mfg.get("auto_complete_work_orders"))
 
-        prefs = Form(
-            H2("Production rules", cls="section-title"),
-            P("How production runs behave for this company.", cls="settings-hint"),
-            Div(
-                Label(
-                    Input(type="checkbox", name="require_issued_before_complete", value="1",
-                          checked=require_issued),
-                    Span(" Require components to be issued before a run can be completed"),
-                    _info("When on, a production run cannot be marked complete until its raw materials "
-                          "have been issued (consumed) from stock - so finished output is only booked "
-                          "after the inputs are actually used. Leave off if you reconcile materials later."),
-                    cls="settings-toggle",
-                ),
-                cls="form-group",
-            ),
-            Div(
-                Label(
-                    Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create,
-                          onchange="document.getElementById('auto-complete-row').style.display = this.checked ? '' : 'none'"),
-                    Span(" Auto-create work orders when an order is finalized"),
-                    _info("When on, finalizing a customer order or stock order automatically creates a "
-                          "work order for each manufacturable line - the production task pops up with no "
-                          "extra step. Best for make-to-order shops (e.g. restaurants). Leave off to "
-                          "create work orders manually from the order or on Demand Planning."),
-                    cls="settings-toggle",
-                ),
-                cls="form-group",
-            ),
-            Div(
-                Label(
-                    Input(type="checkbox", name="auto_complete_work_orders", value="1", checked=auto_complete),
-                    Span(" Auto-complete work orders on invoice posting"),
-                    _info("When on, an auto-created work order is also completed the moment the order is "
-                          "finalized - raw materials are consumed, finished goods are produced and the "
-                          "completion journal entry posts, with no manual step. Applies only when "
-                          "auto-create above is on. Best for make-to-order shops (e.g. restaurants) that "
-                          "cannot mark each run complete by hand. Leave off to complete runs manually."),
-                    cls="settings-toggle",
-                ),
-                cls="form-group settings-toggle-child", id="auto-complete-row",
-                **({"style": "display:none"} if not auto_create else {}),
-            ),
-            Div(
-                P("Hours per day is now set per work center; see the Hours/day column "
-                  "under Work centers.", cls="form-hint"),
-                cls="form-group",
-            ),
-            hx_post="/settings/manufacturing", hx_trigger="change",
-            hx_swap="none", cls="settings-card",
-        )
+        prefs = _production_rules_form(require_issued, auto_create, auto_complete)
 
         return await base_shell(
-            page_header("Manufacturing Settings"),
+            page_header(t("settings_manufacturing.page_header")),
             prefs,
             await _work_centers_section(token),
-            title="Manufacturing Settings - Celerp",
+            title=page_title("settings_manufacturing.page_header"),
             nav_active="manufacturing",
             request=request,
         )
@@ -148,5 +149,5 @@ def setup_routes(app):
                 "auto_complete_work_orders": auto_complete,
             })
         except APIError:
-            return Response("", headers=toast_header("Could not save settings.", "error"))
-        return Response("", headers=toast_header("Settings saved."))
+            return Response("", headers=toast_header(t("settings_manufacturing.save_failed"), "error"))
+        return Response("", headers=toast_header(t("settings_manufacturing.settings_saved")))

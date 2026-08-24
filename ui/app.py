@@ -253,15 +253,16 @@ app.add_middleware(I18nMiddleware)
 
 async def ui_404_handler(request: Request, exc) -> HTMLResponse:
     from ui.components.shell import base_shell, page_header
+    from ui.i18n import t
     from fasthtml.common import A, Div, P
     page = await base_shell(
-        page_header("Page Not Found"),
+        page_header(t("error.page_not_found")),
         Div(
-            P("The page you requested does not exist.", cls="flash flash--error"),
-            A("← Go to Settings", href="/settings", cls="btn btn--primary"),
+            P(t("error.page_not_found_body"), cls="flash flash--error"),
+            A(t("error.go_to_settings"), href="/settings", cls="btn btn--primary"),
             cls="content-area",
         ),
-        title="404 - Not Found",
+        title=t("error.not_found_title"),
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=404)
@@ -273,15 +274,16 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
     import logging as _logging
     _logging.getLogger(__name__).error("UI 500: %s", exc, exc_info=True)
     from ui.components.shell import base_shell, page_header
+    from ui.i18n import t
     from fasthtml.common import A, Div, P
     page = await base_shell(
-        page_header("Something Went Wrong"),
+        page_header(t("error.something_went_wrong")),
         Div(
-            P("An unexpected error occurred. Please try again.", cls="flash flash--error"),
-            A("← Back to Dashboard", href="/dashboard", cls="btn btn--primary"),
+            P(t("error.unexpected_error_body"), cls="flash flash--error"),
+            A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--primary"),
             cls="content-area",
         ),
-        title="500 - Server Error",
+        title=t("error.server_error_title"),
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=500)

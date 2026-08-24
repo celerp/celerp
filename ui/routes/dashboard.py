@@ -9,7 +9,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, star_supporter_card
+from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
@@ -17,6 +17,132 @@ from celerp.services.permissions import role_has_permission as _role_has_permiss
 from urllib.parse import urlencode as _urlencode
 
 
+# ---------------------------------------------------------------------------
+# Render-time label resolution
+# ---------------------------------------------------------------------------
+# The vertical configs below hold English KPI-card labels and quick-link
+# label/description text as data. Each distinct string maps to a translation
+# KEY here; the display value is resolved with t(key) at render time (never at
+# import time, which would freeze the language). Keys reuse an existing catalog
+# entry where the English already has one; genuinely new strings live under
+# dashboard.*.
+_DASH_LABEL_KEYS: dict[str, str] = {
+    "Memo Out": "enum.item_status.memo_out",
+    "Stock Value": "dashboard.stock_value",
+    "Cost Basis": "dashboard.cost_basis",
+    "AR Outstanding": "dashboard.ar_outstanding",
+    "AR Overdue": "dashboard.ar_overdue",
+    "POs Pending": "dashboard.pos_pending",
+    "Deal Pipeline": "dashboard.deal_pipeline",
+    "Items Reserved": "dashboard.items_reserved",
+    "Revenue MTD": "dashboard.revenue_mtd",
+    "Stock Value (Cost)": "dashboard.stock_value_cost",
+    "Stock Value (Retail)": "dashboard.stock_value_retail",
+    "Pipeline": "dashboard.pipeline",
+    "Works Available": "dashboard.works_available",
+    "On Approval": "dashboard.on_approval",
+    "Acquisitions": "dashboard.acquisitions",
+    "Expiring Soon": "dashboard.expiring_soon",
+    "Low / Out of Stock": "dashboard.low_out_of_stock",
+    "Inventory Value": "dashboard.inventory_value",
+    "Active Stock": "dashboard.active_stock",
+    "Cost Value": "dashboard.cost_value",
+    "Low Stock": "dashboard.low_stock",
+    "Active Deals": "dashboard.active_deals",
+    "Pipeline Value": "dashboard.pipeline_value",
+    "Retainer / Recurring": "dashboard.retainer_recurring",
+    "AP Outstanding": "dashboard.ap_outstanding",
+    "Clients": "dashboard.clients",
+    "Deals Won MTD": "dashboard.deals_won_mtd",
+    "Active Subscriptions": "dashboard.active_subscriptions",
+    "Billing Issues": "dashboard.billing_issues",
+    "New Customers MTD": "dashboard.new_customers_mtd",
+    "Active Tenancies": "dashboard.active_tenancies",
+    "Rent Collected MTD": "dashboard.rent_collected_mtd",
+    "Overdue Rent": "dashboard.overdue_rent",
+    "Total Receivable": "dashboard.total_receivable",
+    "Maintenance Spend": "dashboard.maintenance_spend",
+    "Prospects": "dashboard.prospects",
+    "Revenue YTD": "dashboard.revenue_ytd",
+    "Consignment": "dashboard.consignment",
+    "Orders Pending": "dashboard.orders_pending",
+    "Inventory (active)": "dashboard.inventory_active",
+    "Retail Value": "dashboard.retail_value",
+    "Stock": "activity.stock",
+    "Invoices": "nav.invoices",
+    "Purchase Orders": "nav.purchase_orders",
+    "Contacts": "dashboard.contacts",
+    "AR Aging": "page.ar_aging",
+    "Sales": "dashboard.sales",
+    "Purchases": "dashboard.purchases",
+    "Client Pipeline": "dashboard.client_pipeline",
+    "Sourcing": "dashboard.sourcing",
+    "Works": "dashboard.works",
+    "Collectors": "dashboard.collectors",
+    "Orders": "dashboard.orders",
+    "Reports": "nav.reports",
+    "Wholesale Accounts": "dashboard.wholesale_accounts",
+    "Accounts": "dashboard.accounts",
+    "Overdue": "status.overdue",
+    "Retainers": "dashboard.retainers",
+    "Vendor Bills": "nav.vendor_bills",
+    "Subscriptions": "nav.subscriptions",
+    "Tenancies": "dashboard.tenancies",
+    "Maintenance": "dashboard.maintenance",
+    "Rent Aging": "dashboard.rent_aging",
+    "Expiring": "dashboard.expiring",
+    "Buyers": "dashboard.buyers",
+    "Sales Pipeline": "dashboard.sales_pipeline",
+    "Low Stock / Reorder": "dashboard.low_stock_reorder",
+    "Orders / Returns": "dashboard.orders_returns",
+    "Inventory": "nav.inventory",
+    "Customers": "nav.customers",
+    "All inventory": "dashboard.all_inventory",
+    "Items on consignment": "dashboard.items_on_consignment",
+    "Sales invoices": "dashboard.sales_invoices",
+    "Supplier orders": "dashboard.supplier_orders",
+    "CRM": "nav.crm",
+    "Outstanding receivables": "dashboard.outstanding_receivables",
+    "All stock": "dashboard.all_stock",
+    "On consignment": "dashboard.on_consignment",
+    "All pieces": "dashboard.all_pieces",
+    "Pieces on memo": "dashboard.pieces_on_memo",
+    "CRM deals": "dashboard.crm_deals",
+    "Purchase orders": "dashboard.purchase_orders",
+    "All works": "dashboard.all_works",
+    "Works on approval": "dashboard.works_on_approval",
+    "Items expiring soon": "dashboard.items_expiring_soon",
+    "At or below reorder": "dashboard.at_or_below_reorder",
+    "Analytics": "dashboard.analytics",
+    "B2B CRM": "dashboard.b2b_crm",
+    "All invoices": "dashboard.all_invoices",
+    "Past due invoices": "dashboard.past_due_invoices",
+    "Recurring subscriptions": "dashboard.recurring_subscriptions",
+    "AP": "dashboard.ap",
+    "Receivables aging": "dashboard.receivables_aging",
+    "All subscriptions": "dashboard.all_subscriptions",
+    "Billing": "dashboard.billing",
+    "Receivables": "dashboard.receivables",
+    "Failed payments": "dashboard.failed_payments",
+    "Active leases": "dashboard.active_leases",
+    "Rent invoices": "dashboard.rent_invoices",
+    "Past due rent": "dashboard.past_due_rent",
+    "Repair/maintenance orders": "dashboard.repair_maintenance_orders",
+    "All titles": "dashboard.all_titles",
+    "Publisher consignment": "dashboard.publisher_consignment",
+    "All parts/vehicles": "dashboard.all_parts_vehicles",
+    "View and manage stock": "dashboard.view_and_manage_stock",
+    "CRM contacts": "dashboard.crm_contacts",
+    "Chart of accounts": "dashboard.chart_of_accounts",
+}
+
+
+def _dl(text: str) -> str:
+    """Translate a config-supplied label/description at render time via its
+    catalog key. Falls back to the raw English if no key is mapped (degrade
+    honestly) so an unmapped string is still shown rather than dropped."""
+    key = _DASH_LABEL_KEYS.get(text)
+    return t(key) if key else text
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +608,7 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
 
     subscriptions_active = int(kpis.get("subscriptions", {}).get("active_count", 0) or 0)
 
-    margin_pct = f"{((retail_total - cost_total) / retail_total * 100):.1f}%" if retail_total > 0 else "n/a"
+    margin_pct = f"{((retail_total - cost_total) / retail_total * 100):.1f}%" if retail_total > 0 else t("dashboard.na")
 
     return {
         # value functions
@@ -504,35 +630,37 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
         "total_contacts":       f"{total_contacts:,}",
         "deals_won_mtd":        str(deals_won_mtd),
         "subscriptions_active": str(subscriptions_active),
-        # sub-label functions
-        "memo_count_sub":           f"{memo_count} items on consignment",
-        "active_items_sub":         f"{active_items:,} items",
-        "active_pieces_sub":        f"{active_items:,} pieces",
-        "active_titles_sub":        f"{active_items:,} titles",
-        "retail_total_sub":         f"{_fmt_money(retail_total, currency)} at retail",
-        "margin_pct_sub":           f"margin: {margin_pct}",
-        "invoices_outstanding_sub": f"{invoices_outstanding} invoices",
-        "past_due_sub":             "past due",
-        "ap_outstanding_sub":       f"{_fmt_money(ap_outstanding, currency)} on order",
-        "at_cost_sub":              "at cost (stocked only)",
-        "at_retail_sub":            "at retail (stocked only)",
-        "total_items_sub":          f"{total_items:,} total items",
-        "gross_sales_sub":          "gross sales",
-        "within_30d_sub":           "within 30 days",
-        "items_at_zero_sub":        "at or below reorder point",
-        "reorder_needed_sub":       "at or below reorder point - needs reorder",
-        "ytd_sub":                  f"{_fmt_money(revenue_ytd, currency)} YTD",
-        "mtd_sub":                  f"MTD: {_fmt_money(revenue_mtd, currency)}",
-        "active_deals_sub":         f"{active_deals} active deals",
-        "active_subs_sub":          "active subscriptions",
-        "mrr_sub":                  "active subscriptions",
-        "failed_pending_sub":       "failed / pending",
-        "billing_issues_sub":       "billing issues",
-        "occupied_units_sub":       "occupied units",
-        "invoices_past_due_sub":    f"{invoices_outstanding} invoices past due",
-        "open_orders_sub":          f"{pending_pos} open orders",
-        "action_needed_sub":        "past due - action needed",
-        "vendor_invoices_sub":      f"{pending_pos} vendor invoices",
+        # sub-label functions - resolved through t() at render time so a
+        # non-English request gets translated text; numeric values are
+        # formatted first and interpolated as {n}/{amount}.
+        "memo_count_sub":           t("dashboard.sub.memo_count", n=memo_count),
+        "active_items_sub":         t("dashboard.sub.active_items", n=f"{active_items:,}"),
+        "active_pieces_sub":        t("dashboard.sub.active_pieces", n=f"{active_items:,}"),
+        "active_titles_sub":        t("dashboard.sub.active_titles", n=f"{active_items:,}"),
+        "retail_total_sub":         t("dashboard.sub.retail_total", amount=_fmt_money(retail_total, currency)),
+        "margin_pct_sub":           t("dashboard.sub.margin_pct", pct=margin_pct),
+        "invoices_outstanding_sub": t("dashboard.sub.invoices_outstanding", n=invoices_outstanding),
+        "past_due_sub":             t("dashboard.sub.past_due"),
+        "ap_outstanding_sub":       t("dashboard.sub.ap_outstanding", amount=_fmt_money(ap_outstanding, currency)),
+        "at_cost_sub":              t("dashboard.sub.at_cost"),
+        "at_retail_sub":            t("dashboard.sub.at_retail"),
+        "total_items_sub":          t("dashboard.sub.total_items", n=f"{total_items:,}"),
+        "gross_sales_sub":          t("dashboard.sub.gross_sales"),
+        "within_30d_sub":           t("dashboard.sub.within_30d"),
+        "items_at_zero_sub":        t("dashboard.sub.items_at_zero"),
+        "reorder_needed_sub":       t("dashboard.sub.reorder_needed"),
+        "ytd_sub":                  t("dashboard.sub.ytd", amount=_fmt_money(revenue_ytd, currency)),
+        "mtd_sub":                  t("dashboard.sub.mtd", amount=_fmt_money(revenue_mtd, currency)),
+        "active_deals_sub":         t("dashboard.sub.active_deals", n=active_deals),
+        "active_subs_sub":          t("dashboard.sub.active_subs"),
+        "mrr_sub":                  t("dashboard.sub.active_subs"),
+        "failed_pending_sub":       t("dashboard.sub.failed_pending"),
+        "billing_issues_sub":       t("dashboard.sub.billing_issues"),
+        "occupied_units_sub":       t("dashboard.sub.occupied_units"),
+        "invoices_past_due_sub":    t("dashboard.sub.invoices_past_due", n=invoices_outstanding),
+        "open_orders_sub":          t("dashboard.sub.open_orders", n=pending_pos),
+        "action_needed_sub":        t("dashboard.sub.action_needed"),
+        "vendor_invoices_sub":      t("dashboard.sub.vendor_invoices", n=pending_pos),
         "memo_exposure_high":       memo_balance > retail_total * 0.4 if retail_total > 0 else False,
         # alert functions (bool values keyed by fn name)
         "ar_positive":          ar_outstanding > 0,
@@ -563,9 +691,9 @@ def setup_routes(app):
             if e.status == 404:
                 return RedirectResponse("/setup", status_code=302)
             return await base_shell(
-                page_header("Dashboard"),
-                Div(f"Error loading dashboard: {e.detail}", cls="error-banner"),
-                title="Dashboard - Celerp",
+                page_header(t("page.dashboard")),
+                Div(t("dashboard.error_loading", detail=e.detail), cls="error-banner"),
+                title=page_title("nav.dashboard"),
                 nav_active="dashboard",
                 request=request,
             )
@@ -573,9 +701,9 @@ def setup_routes(app):
             import logging as _log
             _log.getLogger(__name__).exception("Dashboard load failed: %s", e)
             return await base_shell(
-                page_header("Dashboard"),
-                Div(f"Error loading dashboard: {type(e).__name__}", cls="error-banner"),
-                title="Dashboard - Celerp",
+                page_header(t("page.dashboard")),
+                Div(t("dashboard.error_loading", detail=type(e).__name__), cls="error-banner"),
+                title=page_title("nav.dashboard"),
                 nav_active="dashboard",
                 request=request,
             )
@@ -587,7 +715,7 @@ def setup_routes(app):
             return await base_shell(
                 page_header(t("page.dashboard", lang)),
                 Div(t("perm.page_no_access", lang), cls="error-banner"),
-                title="Dashboard - Celerp",
+                title=page_title("nav.dashboard"),
                 nav_active="dashboard",
                 request=request,
             )
@@ -627,7 +755,7 @@ def setup_routes(app):
                             kpis_data.get("sales", {}).get("revenue_trend", []), currency),
             _activity_feed(activities, currency) if cfg.get("show_activity") else "",
             _quick_links(cfg),
-            title=f"Dashboard - {company.get('name', '')}",
+            title=f"{t('nav.dashboard')} - {company.get('name', '')}",
             nav_active="dashboard",
             companies=companies,
             lang=lang,
@@ -678,10 +806,10 @@ def setup_routes(app):
 
         filters = Form(
             Div(
-                Input(type="search", name="q", value=q, placeholder="Search events…", cls="filter-input"),
+                Input(type="search", name="q", value=q, placeholder=t("dashboard.search_events"), cls="filter-input"),
                 Input(type="date", name="date_from", value=date_from, cls="filter-input", style="width:160px"),
                 Input(type="date", name="date_to", value=date_to, cls="filter-input", style="width:160px"),
-                Button("Search", type="submit", cls="btn btn-primary"),
+                Button(t("label.search"), type="submit", cls="btn btn-primary"),
                 cls="filter-bar",
             ),
             method="get", action="/history",
@@ -692,15 +820,15 @@ def setup_routes(app):
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
         return await base_shell(
-            page_header("Activity History", A("← Dashboard", href="/dashboard", cls="btn btn-secondary")),
+            page_header(t("dashboard.activity_history"), A(t("dashboard.back_dashboard"), href="/dashboard", cls="btn btn-secondary")),
             Div(
                 filters,
-                P(f"{total:,} events found", cls="result-count") if q or date_from or date_to else "",
+                P(t("dashboard.events_found", n=f"{total:,}"), cls="result-count") if q or date_from or date_to else "",
                 table,
                 pager,
                 cls="page-body",
             ),
-            title="Activity History - Celerp",
+            title=page_title("dashboard.activity_history"),
             nav_active="dashboard",
             request=request,
         )
@@ -733,7 +861,7 @@ async def _load_dashboard(token: str):
 # ---------------------------------------------------------------------------
 
 def _kpi_card(spec: dict, values: dict) -> FT:
-    label = spec["label"]
+    label = _dl(spec["label"])
     value_key = spec["value_fn"]
     sub_key = spec.get("sub_fn")
     href = spec.get("href")
@@ -960,8 +1088,8 @@ def _quick_links(cfg: dict) -> FT:
         Div(
             *[
                 A(
-                    Strong(label),
-                    P(desc, cls="quick-link-desc"),
+                    Strong(_dl(label)),
+                    P(_dl(desc), cls="quick-link-desc"),
                     href=href,
                     cls="quick-link-card",
                 )

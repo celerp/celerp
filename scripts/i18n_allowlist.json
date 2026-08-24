@@ -1,0 +1,110 @@
+{
+  "_comment": "Hardcoded UI strings that are legitimately NOT translated. The i18n hardcoded-string guardrail (tests/test_i18n_hardcoded_scan.py) fails if any user-facing string in ui/ is neither routed through t() nor listed here. Add an entry only with a real reason; the goal is for this list to shrink, never grow.",
+  "entries": [
+    {
+      "file": "ui/components/files.py",
+      "text": "YYYY-MM-DD",
+      "reason": "date format hint, not prose"
+    },
+    {
+      "file": "ui/components/table.py",
+      "text": "{...} ct",
+      "reason": "unit abbreviation (canonical, like a currency code)"
+    },
+    {
+      "file": "ui/routes/account.py",
+      "text": "Google",
+      "reason": "brand name"
+    },
+    {
+      "file": "ui/routes/auth.py",
+      "text": "Acme Corp",
+      "reason": "sample input value shown as a placeholder example"
+    },
+    {
+      "file": "ui/routes/auth.py",
+      "text": "Jane Smith",
+      "reason": "sample input value shown as a placeholder example"
+    },
+    {
+      "file": "ui/routes/auth.py",
+      "text": "you@example.com",
+      "reason": "example email input value"
+    },
+    {
+      "file": "ui/routes/documents.py",
+      "text": "CN {...}",
+      "reason": "document number code prefix (identifier, not prose)"
+    },
+    {
+      "file": "ui/routes/documents.py",
+      "text": "bcc@example.com",
+      "reason": "example email input value"
+    },
+    {
+      "file": "ui/routes/documents.py",
+      "text": "cc@example.com",
+      "reason": "example email input value"
+    },
+    {
+      "file": "ui/routes/documents.py",
+      "text": "pcs",
+      "reason": "unit abbreviation (canonical, like a currency code)"
+    },
+    {
+      "file": "ui/routes/documents.py",
+      "text": "recipient@example.com",
+      "reason": "example email input value"
+    },
+    {
+      "file": "ui/routes/settings.py",
+      "text": "user@example.com",
+      "reason": "example email input value"
+    },
+    {
+      "file": "ui/routes/settings_cloud.py",
+      "text": "AKIAIOSFODNN7EXAMPLE",
+      "reason": "example credential sample (AWS docs value)"
+    },
+    {
+      "file": "ui/routes/settings_cloud.py",
+      "text": "celerp",
+      "reason": "example config value"
+    },
+    {
+      "file": "ui/routes/settings_cloud.py",
+      "text": "localhost",
+      "reason": "example config value"
+    },
+    {
+      "file": "ui/routes/settings_cloud.py",
+      "text": "my-celerp-bucket",
+      "reason": "example config value"
+    },
+    {
+      "file": "ui/routes/settings_cloud.py",
+      "text": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "reason": "example credential sample (AWS docs value)"
+    },
+    {
+      "file": "ui/routes/auth.py",
+      "text": "Celerp",
+      "reason": "brand name in the logo image alt text"
+    },
+    {
+      "file": "ui/routes/setup.py",
+      "text": "Celerp",
+      "reason": "brand name in the logo image alt text"
+    },
+    {
+      "file": "ui/components/shell.py",
+      "text": "Celerp",
+      "reason": "brand name in the logo image alt text"
+    },
+    {
+      "file": "default_modules/celerp-ai/celerp_ai/ui_routes.py",
+      "text": "{...}x",
+      "reason": "quantity multiplier format (e.g. 3x), a numeric affix not translatable prose"
+    }
+  ]
+}

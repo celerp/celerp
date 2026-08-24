@@ -256,6 +256,26 @@ def suggest_mapping(
     return mapping
 
 
+def _mapping_js_labels() -> dict[str, str]:
+    """Translated labels the mapping dropdown JS reads at render time.
+
+    Resolved in Python and handed to the JS as a single ``json.dumps`` config
+    object (``_MAP_I18N``); the JS never carries English literals of its own.
+    """
+    return {
+        "skip_badge": t("import.js_skip_badge"),
+        "skip_title": t("import.js_skip_title"),
+        "custom_badge": t("import.js_custom_badge"),
+        "custom_title": t("import.js_custom_title"),
+        "matched_title": t("import.js_matched_title"),
+        "search_placeholder": t("import.js_search_placeholder"),
+        "show_matched": t("import.js_show_matched"),
+        "hide_matched": t("import.js_hide_matched"),
+        "category_fields": t("import.js_category_fields"),
+        "core_fields": t("import.js_core_fields"),
+    }
+
+
 def column_mapping_form(
     *,
     csv_cols: list[str],
@@ -294,8 +314,8 @@ def column_mapping_form(
     import json as _json
     option_defs = []
     # Special options first (top of list)
-    option_defs.append({"value": MAPPING_ATTRIBUTE, "label": "Import as custom", "group": "action"})
-    option_defs.append({"value": MAPPING_SKIP, "label": "Skip (don't import)", "group": "action"})
+    option_defs.append({"value": MAPPING_ATTRIBUTE, "label": t("import.opt_import_as_custom"), "group": "action"})
+    option_defs.append({"value": MAPPING_SKIP, "label": t("import.opt_skip"), "group": "action"})
     # Core fields
     for tc in target_cols:
         label = _col_labels.get(tc) or tc.replace("_", " ").title()
@@ -332,7 +352,7 @@ def column_mapping_form(
                     name=f"attr_name__{csv_col}",
                     id=attr_input_id,
                     value=attr_name,
-                    placeholder="Custom field name",
+                    placeholder=t("import.custom_field_name_placeholder"),
                     cls="form-input form-input--sm mapping-attr-input",
                     style="" if is_custom else "display:none",
                 ),
@@ -366,14 +386,13 @@ def column_mapping_form(
     if missing_required:
         names = ", ".join(sorted(missing_required))
         warning = P(
-            f"Required fields not yet mapped: {names}. "
-            "Map them above or the import will fail validation.",
+            t("import.required_not_mapped", names=names),
             cls="flash flash--warning",
         )
 
     row_count = len(sample_rows)
     showing_hint = (
-        P(f"Showing {len(preview)} of {row_count} rows", cls="import-hint")
+        P(t("import.showing_rows", n=len(preview), total=row_count), cls="import-hint")
         if row_count > 5 else ""
     )
 
@@ -381,8 +400,7 @@ def column_mapping_form(
         _step_indicator(2, has_mapping=True),
         H3(t("page.map_columns"), cls="settings-section-title"),
         P(
-            "Match your CSV columns to Celerp fields. "
-            "Unrecognized columns can be mapped to category fields or imported as custom fields.",
+            t("import.map_intro"),
             cls="import-hint",
         ),
         error_block,
@@ -403,7 +421,8 @@ def column_mapping_form(
             showing_hint,
             Div(
                 Button(t("btn.continue_to_preview"), type="button", cls="btn btn--primary",
-                       onclick="this.disabled=true;this.textContent='Processing…';this.classList.add('btn--disabled');this.form.submit()"),
+                       data_busy=t("import.processing"),
+                       onclick="this.disabled=true;this.textContent=this.dataset.busy;this.classList.add('btn--disabled');this.form.submit()"),
                 A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
@@ -412,6 +431,7 @@ def column_mapping_form(
         ),
         Script(f"var _MAPPING_OPTIONS = {_json.dumps(option_defs)};"),
         Script(f"var _MUTEX_GROUPS = {_json.dumps(_mutex_groups)};"),
+        Script(f"var _MAP_I18N = {_json.dumps(_mapping_js_labels())};"),
         Script(_MAPPING_JS),
         id="import-preview",
         cls="import-panel",
@@ -449,8 +469,7 @@ def validate_column_mapping(
             # Check collision with core field names
             if attr_name.lower() in {c.lower() for c in core}:
                 errors.append(
-                    f'Custom field name "{attr_name}" (from column "{col}") '
-                    f"conflicts with a built-in field. Choose a different name."
+                    t("import.err_custom_name_conflict", name=attr_name, col=col)
                 )
         elif target.startswith(MAPPING_ATTR_PREFIX):
             # Category attribute - use the attr key as the attribute name
@@ -464,8 +483,11 @@ def validate_column_mapping(
         if len(sources) > 1:
             names = " and ".join(f'"{s}"' for s in sources)
             errors.append(
-                f"Columns {names} are both mapped to "
-                f'"{target.replace("_", " ").title()}". Each target can only be used once.'
+                t(
+                    "import.err_duplicate_target",
+                    cols=names,
+                    target=target.replace("_", " ").title(),
+                )
             )
 
     # Check duplicate attribute names
@@ -473,8 +495,7 @@ def validate_column_mapping(
         if len(sources) > 1:
             names = " and ".join(f'"{s}"' for s in sources)
             errors.append(
-                f"Columns {names} both have attribute name "
-                f'"{attr_name}". Each attribute name must be unique.'
+                t("import.err_duplicate_attr", cols=names, name=attr_name)
             )
 
     return errors
@@ -558,11 +579,11 @@ _MAPPING_JS = """
     var v = dd.hiddenInput.value;
     badge.className = 'mapping-badge';
     if (v === SKIP) {
-      badge.textContent = 'skip'; badge.classList.add('mapping-badge--skip'); badge.title = 'Skipped';
+      badge.textContent = _MAP_I18N.skip_badge; badge.classList.add('mapping-badge--skip'); badge.title = _MAP_I18N.skip_title;
     } else if (v === ATTR) {
-      badge.textContent = 'custom'; badge.classList.add('mapping-badge--attr'); badge.title = 'Custom field';
+      badge.textContent = _MAP_I18N.custom_badge; badge.classList.add('mapping-badge--attr'); badge.title = _MAP_I18N.custom_title;
     } else {
-      badge.textContent = '\\u2713'; badge.classList.add('mapping-badge--matched'); badge.title = 'Matched';
+      badge.textContent = '\\u2713'; badge.classList.add('mapping-badge--matched'); badge.title = _MAP_I18N.matched_title;
     }
   }
 
@@ -622,7 +643,7 @@ _MAPPING_JS = """
     var search = document.createElement('input');
     search.type = 'text';
     search.className = 'mapping-dd-search';
-    search.placeholder = 'Search fields...';
+    search.placeholder = _MAP_I18N.search_placeholder;
     panel.appendChild(search);
 
     // Options list
@@ -635,7 +656,7 @@ _MAPPING_JS = """
     toggleRow.className = 'mapping-dd-toggle-matched';
     var toggleLink = document.createElement('a');
     toggleLink.href = '#';
-    toggleLink.textContent = 'Show already matched';
+    toggleLink.textContent = _MAP_I18N.show_matched;
     toggleRow.appendChild(toggleLink);
     panel.appendChild(toggleRow);
 
@@ -656,8 +677,8 @@ _MAPPING_JS = """
         if (opt.group !== lastGroup && lastGroup !== '') {
           var sep = document.createElement('div');
           sep.className = 'mapping-dd-sep';
-          if (opt.group === 'category') sep.textContent = 'Category fields';
-          else if (opt.group === 'core') sep.textContent = 'Core fields';
+          if (opt.group === 'category') sep.textContent = _MAP_I18N.category_fields;
+          else if (opt.group === 'core') sep.textContent = _MAP_I18N.core_fields;
           optList.appendChild(sep);
         }
         lastGroup = opt.group;
@@ -731,7 +752,7 @@ _MAPPING_JS = """
         });
       }
       toggleRow.style.display = hasHidden || dd.showMatched ? '' : 'none';
-      toggleLink.textContent = dd.showMatched ? 'Hide already matched' : 'Show already matched';
+      toggleLink.textContent = dd.showMatched ? _MAP_I18N.hide_matched : _MAP_I18N.show_matched;
     }
 
     dd.render = renderOptions;
@@ -854,9 +875,9 @@ def _step_indicator(current: int, has_mapping: bool = False, *, all_done: bool =
     ``all_done`` marks every step as completed (for result panels).
     """
     steps = (
-        ["Upload", "Map Columns", "Review", "Import"]
+        [t("import.step_upload"), t("import.step_map_columns"), t("inv.review"), t("btn.import")]
         if has_mapping
-        else ["Upload", "Review", "Import"]
+        else [t("import.step_upload"), t("inv.review"), t("btn.import")]
     )
     parts: list[Any] = []
     for i, label in enumerate(steps, 1):
@@ -937,7 +958,7 @@ def upload_form(
                 id="import-dropzone",
                 cls="import-dropzone",
             ),
-            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title="Please upload a CSV file first.", style="margin-top: 12px;"),
+            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title=t("import.upload_first_hint"), style="margin-top: 12px;"),
             method="post",
             action=preview_action,
             enctype="multipart/form-data",
@@ -961,24 +982,24 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
     """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
-        return [], "Please select a CSV file."
+        return [], t("import.err_select_file")
     content = await file_obj.read()
     try:
         text = content.decode("utf-8-sig")
     except Exception:
-        return [], "Could not decode file. Use UTF-8 encoding."
+        return [], t("import.err_decode")
     try:
         reader = csv.DictReader(io.StringIO(text))
         rows = list(reader)
         fieldnames = reader.fieldnames or []
     except csv.Error:
-        return [], "Could not parse file. Please check it is a valid CSV."
+        return [], t("import.err_parse")
     if not fieldnames or any(f is None for f in fieldnames):
-        return [], "CSV file is empty or has no valid header row."
+        return [], t("import.err_no_header")
     if rows and any(None in row for row in rows):
-        return [], "CSV has more columns than the header row. Please check the file."
+        return [], t("import.err_extra_columns")
     if not rows:
-        return [], "CSV file is empty or invalid."
+        return [], t("import.err_empty")
     return rows, None
 
 
@@ -1156,11 +1177,11 @@ def _fix_errors_panel(
             else:
                 fill_widget = Input(
                     type="text", id=f"fill-{col}",
-                    placeholder=f"Value for all {label} cells",
+                    placeholder=t("import.fill_placeholder", label=label),
                     cls="form-input form-input--sm",
                 )
             fill_bars.append(Div(
-                Label(f"{label} ({col_error_count} rows):", _for=f"fill-{col}"),
+                Label(f"{label} " + t("import.n_rows_paren", n=col_error_count), _for=f"fill-{col}"),
                 fill_widget,
                 Button(t("btn.apply"),
                     type="button",
@@ -1185,15 +1206,15 @@ def _fix_errors_panel(
     # Table: identifier cols read-only, error cols editable
     # Row number + error badge headers
     _COL_TOOLTIPS: dict[str, str] = {
-        "name": "Required. The item's display name.",
-        "sell_by": "Required. The unit this item is bought and sold in (e.g. piece, kg, carat).",
+        "name": t("import.tooltip_name"),
+        "sell_by": t("import.tooltip_sell_by"),
     }
 
     header_cells = [Th("#", cls="csv-th")]
     for col in visible_cols:
         label = col.replace("_", " ").title()
         is_err_col = col in error_cols
-        badge = f" ({col_error_counts.get(col, 0)} errors)" if is_err_col else ""
+        badge = t("import.n_errors_paren", n=col_error_counts.get(col, 0)) if is_err_col else ""
         tooltip = _COL_TOOLTIPS.get(col)
         th_content: Any = (
             Span(
@@ -1231,14 +1252,17 @@ def _fix_errors_panel(
                 cells.append(Td(val, cls="cell-ro"))
         body_rows.append(Tr(*cells, cls="data-row"))
 
-    # Error navigation JS
+    # Error navigation JS. The "{pos} of {total}" counter text comes from the
+    # label's data-fmt attribute (translated in Python), never spliced into JS.
     err_nav_js = """
 (function(){
   var pos=0,rows=document.querySelectorAll('.csv-fix-table .data-row');
   var total=rows.length,lbl=document.getElementById('err-pos-label');
-  function go(d){if(!total)return;pos=((pos+d)%total+total)%total;rows[pos].scrollIntoView({block:'center'});if(lbl)lbl.textContent=(pos+1)+' of '+total}
+  var fmt=(lbl&&lbl.dataset.fmt)||'{pos} of {total}';
+  function fmtLabel(p,n){return fmt.replace('{pos}',p).replace('{total}',n)}
+  function go(d){if(!total)return;pos=((pos+d)%total+total)%total;rows[pos].scrollIntoView({block:'center'});if(lbl)lbl.textContent=fmtLabel(pos+1,total)}
   window.errPrev=function(){go(-1)};window.errNext=function(){go(1)};
-  if(lbl) lbl.textContent='1 of '+total;
+  if(lbl) lbl.textContent=fmtLabel(1,total);
 })();
 """
 
@@ -1247,17 +1271,17 @@ def _fix_errors_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
             P(
-                Strong(f"{total_errors} cell(s)"),
-                f" need fixing across {len(error_row_indices)} of {len(rows)} rows.",
+                Strong(t("import.cells_count", n=total_errors)),
+                t("import.need_fixing_across", rows=len(error_row_indices), total=len(rows)),
                 cls="csv-fix-summary",
             ),
             Div(
                 Div(style=f"width:{pct}%", cls="import-progress-fill"),
                 cls="import-progress",
             ),
-            P(f"{ok_count} of {len(rows)} rows are valid", cls="csv-ok-count"),
+            P(t("import.rows_valid", ok=ok_count, total=len(rows)), cls="csv-ok-count"),
             Div(
-                Span(id="err-pos-label", cls="import-err-pos"),
+                Span(id="err-pos-label", cls="import-err-pos", data_fmt=t("import.err_pos_fmt")),
                 Button(t("btn.prev"), type="button", onclick="errPrev()", cls="btn btn--ghost btn--xs"),
                 Button(t("btn.next"), type="button", onclick="errNext()", cls="btn btn--ghost btn--xs"),
                 cls="import-err-nav",
@@ -1406,13 +1430,13 @@ def validation_result(
         upsert_control = Div(
             Label(
                 Input(type="checkbox", name="upsert", value="1"),
-                " Update existing records",
+                " ",
+                t("import.update_existing_records"),
                 cls="flex-row gap-sm",
                 style="align-items:center;cursor:pointer;",
             ),
             Span(
-                f"Matched by: {upsert_label}. When checked, rows matching an existing "
-                f"{upsert_label} will be updated instead of skipped.",
+                t("import.upsert_hint", label=upsert_label),
                 cls="import-hint",
                 style="display:block;margin-top:4px;",
             ),
@@ -1435,12 +1459,12 @@ def validation_result(
                 Tbody(*preview_body),
                 cls="data-table import-preview-table",
             ) if preview_rows else "",
-            P(f"Showing {len(preview_rows)} of {n} rows", cls="import-hint") if n > 5 else "",
+            P(t("import.showing_rows", n=len(preview_rows), total=n), cls="import-hint") if n > 5 else "",
             Form(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
                 upsert_control,
                 Button(
-                    f"Import All {n} Rows",
+                    t("import.import_all_rows", n=n),
                     cls="btn btn--primary",
                     type="submit",
                     hx_post=confirm_action,
@@ -1451,7 +1475,8 @@ def validation_result(
                 ),
                 Span(
                     Div(cls="spinner"),
-                    " Importing...",
+                    " ",
+                    t("import.importing"),
                     id="import-spinner",
                     cls="htmx-indicator import-spinner-label",
                 ),
@@ -1560,7 +1585,7 @@ def import_result_panel(
     error_block: Any = ""
     if details:
         error_block = Details(
-            Summary(f"Error details ({len(details)})"),
+            Summary(t("import.error_details", n=len(details))),
             *(P(e) for e in details[:10]),
             cls="mt-sm",
         )
@@ -1572,7 +1597,7 @@ def import_result_panel(
         extra,
         error_block,
         Div(
-            A(f"View {label_title}", href=back_href, cls="btn btn--primary"),
+            A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
             A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),

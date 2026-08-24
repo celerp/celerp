@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
@@ -24,17 +24,27 @@ from ui.routes.settings import (
 )
 from ui.routes.settings_general import _section_breadcrumb
 
-_DOC_TYPE_LABELS = {
-    "invoice": "Invoice",
-    "purchase_order": "Purchase Order",
-    "quotation": "Quotation",
-    "credit_note": "Credit Note",
-    "bill": "Bill",
-    "memo": "Memo",
-    "shipping_doc": "Shipping Document",
-    "list": "List",
-    "consignment_in": "Consignment In",
+# Doc-type display labels resolved at render time (R1/R3): the raw doc_type stays
+# canonical everywhere (persistence, URLs, comparisons); only the shown label is
+# translated, via ``t()`` in _doc_type_label below.
+_DOC_TYPE_LABEL_KEYS = {
+    "invoice": "settings.doc_type_invoice",
+    "purchase_order": "settings.doc_type_purchase_order",
+    "quotation": "settings_sales.doc_type_quotation",
+    "credit_note": "settings.doc_type_credit_note",
+    "bill": "settings.doc_type_bill",
+    "memo": "th.memo",
+    "shipping_doc": "settings_sales.doc_type_shipping_doc",
+    "list": "enum.doc_type.list",
+    "consignment_in": "settings.doc_type_consignment_in",
 }
+
+
+def _doc_type_label(dt: str) -> str:
+    """Human label for a doc_type, in the request language; unknown types fall
+    back to a title-cased form of the raw value."""
+    key = _DOC_TYPE_LABEL_KEYS.get(dt)
+    return t(key) if key else dt.replace("_", " ").title()
 
 _SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note"})
 
@@ -42,8 +52,8 @@ _SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_
 def _sales_tabs(active: str, lang: str = "en") -> FT:
     tabs: list[tuple[str, str]] = [
         ("taxes", t("settings.tab_taxes", lang)),
-        ("terms-conditions", "Terms & Conditions"),
-        ("numbering", "Numbering"),
+        ("terms-conditions", t("page.terms_conditions", lang)),
+        ("numbering", t("settings_sales.tab_numbering", lang)),
         ("line-items", t("settings.tab_line_items", lang)),
     ]
     return Div(
@@ -59,9 +69,10 @@ def _sales_tabs(active: str, lang: str = "en") -> FT:
 def _numbering_tab(sequences: list[dict]) -> FT:
     """Render the document numbering settings table."""
     rows = []
+    edit_title = t("settings.click_to_edit")
     for seq in sequences:
         dt = seq["doc_type"]
-        label = _DOC_TYPE_LABELS.get(dt, dt.replace("_", " ").title())
+        label = _doc_type_label(dt)
         rows.append(Tr(
             Td(label),
             Td(
@@ -69,7 +80,7 @@ def _numbering_tab(sequences: list[dict]) -> FT:
                     seq.get("prefix") or EMPTY,
                     hx_get=f"/settings/numbering/{dt}/prefix/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title="Click to edit", cls="editable-cell",
+                    title=edit_title, cls="editable-cell",
                 ),
             ),
             Td(
@@ -77,7 +88,7 @@ def _numbering_tab(sequences: list[dict]) -> FT:
                     seq.get("pattern") or EMPTY,
                     hx_get=f"/settings/numbering/{dt}/pattern/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title="Click to edit", cls="editable-cell",
+                    title=edit_title, cls="editable-cell",
                 ),
             ),
             Td(
@@ -85,7 +96,7 @@ def _numbering_tab(sequences: list[dict]) -> FT:
                     str(seq.get("next", 1)),
                     hx_get=f"/settings/numbering/{dt}/next/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title="Click to edit", cls="editable-cell",
+                    title=edit_title, cls="editable-cell",
                 ),
             ),
             Td(Code(seq.get("preview", ""), cls="numbering-preview")),
@@ -97,9 +108,7 @@ def _numbering_tab(sequences: list[dict]) -> FT:
         ))
     return Div(
         H3(t("page.document_numbering"), cls="settings-section-title"),
-        P("Configure the format and sequence for each document type. "
-          "Tokens: {PREFIX}, {YYYY}, {YY}, {MM}, {DD}, {##} (# count = digit padding).",
-          cls="settings-hint"),
+        P(t("settings_sales.numbering_hint"), cls="settings-hint"),
         Table(
             Thead(Tr(
                 Th(t("th.document_type"), cls="th--center"),
@@ -115,11 +124,13 @@ def _numbering_tab(sequences: list[dict]) -> FT:
     )
 
 
-# Line item identifier: what the identifier column shows on document lines.
+# Line item identifier: what the identifier column shows on document lines. The
+# raw mode (sku/barcode/barcode_sku) is canonical; the label is a display key
+# resolved at render time (R1/R3).
 _LINE_IDENT_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("sku", "SKU"),
-    ("barcode", "Barcode"),
-    ("barcode_sku", "Barcode + SKU"),
+    ("sku", "field.sku"),
+    ("barcode", "field.barcode"),
+    ("barcode_sku", "settings_sales.line_ident_barcode_sku"),
 )
 
 # One sample line for the preview rows (a lot barcode over a product-type SKU).
@@ -141,8 +152,8 @@ def _line_items_tab(company: dict, lang: str = "en") -> FT:
                   cls="col-sku")
 
     preview_rows = [
-        Tr(Td(label), _preview_cell(val))
-        for val, label in _LINE_IDENT_OPTIONS
+        Tr(Td(t(label_key, lang)), _preview_cell(val))
+        for val, label_key in _LINE_IDENT_OPTIONS
     ]
     return Div(
         H3(t("page.line_items", lang), cls="settings-section-title"),
@@ -150,8 +161,8 @@ def _line_items_tab(company: dict, lang: str = "en") -> FT:
         Div(
             Label(t("label.line_item_identifier", lang), fr="line-item-identifier"),
             Select(
-                *[Option(label, value=val, selected=(val == current))
-                  for val, label in _LINE_IDENT_OPTIONS],
+                *[Option(t(label_key, lang), value=val, selected=(val == current))
+                  for val, label_key in _LINE_IDENT_OPTIONS],
                 name="value", id="line-item-identifier",
                 hx_patch="/settings/sales/line-identifier",
                 hx_target="#li-ident-saved", hx_swap="innerHTML", hx_include="this",
@@ -215,11 +226,11 @@ def setup_routes(app):
             tab = "taxes"
 
         return await base_shell(
-            _section_breadcrumb("Sales"),
-            page_header("Sales Documents Settings"),
+            _section_breadcrumb(t("dashboard.sales", lang)),
+            page_header(t("settings_sales.page_title", lang)),
             _sales_tabs(tab, lang=lang),
             content,
-            title="Settings - Celerp",
+            title=page_title("page.settings"),
             nav_active="settings",
             lang=lang,
             request=request,
@@ -274,7 +285,7 @@ def setup_routes(app):
             str(value) or EMPTY,
             hx_get=f"/settings/numbering/{doc_type}/{field}/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=t("settings.click_to_edit"), cls="editable-cell",
         )
 
     @app.patch("/settings/numbering/{doc_type}/{field}")
@@ -336,26 +347,27 @@ def setup_routes(app):
 def _numbering_row(seq: dict) -> FT:
     """Render a single numbering table row (used for HTMX swap after edit)."""
     dt = seq["doc_type"]
-    label = _DOC_TYPE_LABELS.get(dt, dt.replace("_", " ").title())
+    label = _doc_type_label(dt)
+    edit_title = t("settings.click_to_edit")
     return Tr(
         Td(label),
         Td(Div(
             seq.get("prefix") or EMPTY,
             hx_get=f"/settings/numbering/{dt}/prefix/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=edit_title, cls="editable-cell",
         )),
         Td(Div(
             seq.get("pattern") or EMPTY,
             hx_get=f"/settings/numbering/{dt}/pattern/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=edit_title, cls="editable-cell",
         )),
         Td(Div(
             str(seq.get("next", 1)),
             hx_get=f"/settings/numbering/{dt}/next/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=edit_title, cls="editable-cell",
         )),
         Td(Code(seq.get("preview", ""), cls="numbering-preview")),
         Td(Button(t("btn.reset"), hx_post=f"/settings/numbering/{dt}/reset",

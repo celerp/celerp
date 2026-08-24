@@ -17,74 +17,37 @@ from fasthtml.common import *
 from ui.i18n import t, get_lang
 from ui.components.table import fmt_money, fmt_rate
 
-EVENT_TYPE_LABELS: dict[str, str] = {
-    "item.created": "Item added",
-    "item.updated": "Item updated",
-    "item.deleted": "Item deleted",
-    "item.quantity.adjusted": "Quantity adjusted",
-    "item.quantity_adjusted": "Quantity adjusted",
-    "item.transferred": "Item transferred",
-    "item.expired": "Item expired",
-    "item.reserved": "Item reserved",
-    "item.unreserved": "Item unreserved",
-    "item.pricing.set": "Price updated",
-    "item.status.set": "Status changed",
-    "item.split": "Item split",
-    "item.split_from": "Split from",
-    "item.merged": "Items merged",
-    "item.transform": "Item transformed",
-    "item.transformed_from": "Transformed from",
-    "item.source_deactivated": "Merged into another item",
-    "item.fulfilled": "Sold",
-    "item.fulfillment_reversed": "Sale reversed",
-    "item.consumed": "Consumed in production",
-    "item.produced": "Produced",
-    "doc.created": "Document created",
-    "doc.updated": "Document updated",
-    "doc.finalized": "Document finalized",
-    "doc.paid": "Payment recorded",
-    "doc.voided": "Document voided",
-    "doc.sent": "Document sent",
-    "doc.marked_sent": "Marked as sent",
-    "doc.converted": "Document converted",
-    "doc.converted_to_bill": "Converted to bill",
-    "doc.payment.received": "Payment received",
-    "doc.payment.refunded": "Payment refunded",
-    "doc.payment.voided": "Payment voided",
-    "doc.payment.deleted": "Payment deleted",
-    "doc.received": "Goods received",
-    "doc.fulfilled": "Fulfilled",
-    "doc.partially_fulfilled": "Partially fulfilled",
-    "doc.fulfillment_reversed": "Fulfillment reversed",
-    "doc.partially_reverted": "Partially reverted",
-    "doc.line_received": "Line item received",
-    "doc.line_returned": "Line item returned",
-    "doc.items_returned": "Items returned",
-    "doc.shared": "Share link created",
-    "doc.reverted_to_draft": "Reverted to draft",
-    "contact.created": "Contact added",
-    "contact.updated": "Contact updated",
-    "deal.created": "Deal created",
-    "deal.updated": "Deal updated",
-    "deal.won": "Deal won",
-    "deal.lost": "Deal lost",
-    "memo.created": "Memo created",
-    "memo.returned": "Memo returned",
-    "scan.checked_in": "Scanned in",
-    "scan.checked_out": "Scanned out",
-}
+# Known ledger event types. The label for each is resolved at render time via
+# ``t("event.<event_type>")`` (see event_label); values here are those i18n keys,
+# derived mechanically so the key set can never drift from the type list. Kept as a
+# dict (not a set) so membership tests and the single-source guard read unchanged.
+_EVENT_TYPES: tuple[str, ...] = (
+    "item.created", "item.updated", "item.deleted",
+    "item.quantity.adjusted", "item.quantity_adjusted", "item.transferred",
+    "item.expired", "item.reserved", "item.unreserved", "item.pricing.set",
+    "item.status.set", "item.split", "item.split_from", "item.merged",
+    "item.transform", "item.transformed_from", "item.source_deactivated",
+    "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
+    "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
+    "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
+    "doc.payment.received", "doc.payment.refunded", "doc.payment.voided",
+    "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
+    "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
+    "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
+    "contact.created", "contact.updated", "deal.created", "deal.updated",
+    "deal.won", "deal.lost", "memo.created", "memo.returned",
+    "scan.checked_in", "scan.checked_out",
+)
+EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
 
 
 # File events (item.file.*, doc.file_*, crm.contact.file_*) share one label set and one
 # renderer across all entity types, keyed by the operation suffix (attached/tagged/...).
 _FILE_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs"}
-_FILE_OP_LABELS = {
-    "attached": "File attached",
-    "tagged": "File tagged",
-    "deleted": "File removed",
-    "description_updated": "File description updated",
-    "hero_set": "Hero image set",
-}
+# File-op label i18n keys, resolved at render time (see event_label). Keyed by the
+# operation suffix; the value is the ``event.file.<op>`` key.
+_FILE_OP_LABELS = {op: f"event.file.{op}" for op in
+                   ("attached", "tagged", "deleted", "description_updated", "hero_set")}
 
 
 def _is_file_event(event_type: str) -> bool:
@@ -102,10 +65,16 @@ def _title_case(event_type: str) -> str:
 
 
 def event_label(event_type: str) -> str:
-    """Human label for a ledger event_type string."""
+    """Human label for a ledger event_type string, in the current request language.
+
+    Known types resolve their label at render time via ``t()``; an unknown type
+    falls back to a title-cased form of the raw string (a data enum we do not
+    ship a catalog entry for)."""
     if _is_file_event(event_type):
-        return _FILE_OP_LABELS.get(_file_op(event_type), _title_case(event_type))
-    return EVENT_TYPE_LABELS.get(event_type, _title_case(event_type))
+        key = _FILE_OP_LABELS.get(_file_op(event_type))
+        return t(key) if key else _title_case(event_type)
+    key = EVENT_TYPE_LABELS.get(event_type)
+    return t(key) if key else _title_case(event_type)
 
 
 def _file_event_detail(e: dict, data: dict, event_type: str):
@@ -137,12 +106,12 @@ def relative_time(ts: str) -> str:
         now = datetime.now(timezone.utc)
         s = int((now - dt).total_seconds())
         if s < 60:
-            return "just now"
+            return t("time.just_now")
         if s < 3600:
-            return f"{s // 60}m ago"
+            return t("time.minutes_ago", n=s // 60)
         if s < 86400:
-            return f"{s // 3600}h ago"
-        return f"{s // 86400}d ago"
+            return t("time.hours_ago", n=s // 3600)
+        return t("time.days_ago", n=s // 86400)
     except Exception:
         return ts[:10] if ts else ""
 
@@ -218,7 +187,7 @@ def _item_brief_summary(items, limit: int = 6) -> str:
         parts.append(f"{sku} ×{fmt_qty(qty)}" if qty is not None else sku)
     summary = ", ".join(parts[:limit])
     if len(parts) > limit:
-        summary += f" +{len(parts) - limit} more"
+        summary += " " + t("activity.more", n=len(parts) - limit)
     return summary
 
 
@@ -228,13 +197,13 @@ def _line_item_type(li: dict) -> str:
     sku/id) is treated as stock and a free-typed line as non-stock. The history renderer
     has no catalog access, so a service catalog item on an invoice reads as 'Stock'."""
     if not isinstance(li, dict):
-        return "Non-stock"
+        return t("activity.non_stock")
     ra = li.get("receive_as")
     if ra:
         return str(ra).replace("_", " ").strip().capitalize()
     if li.get("sku") or li.get("item_id") or li.get("entity_id"):
-        return "Stock"
-    return "Non-stock"
+        return t("activity.stock")
+    return t("activity.non_stock")
 
 
 # Event types that are system-internal and should not appear in user-facing history.
@@ -293,40 +262,19 @@ _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
 # "Subtotal: x → y, Total: x → y" alongside the real "ItemName: x → y".
 _DERIVED_DOC_FIELDS = frozenset({"subtotal", "total", "tax_amount", "discount_amount", "amount_outstanding"})
 
-# Human-readable labels for field keys shown in activity change summaries.
-_FIELD_LABELS: dict[str, str] = {
-    "contact_name": "Contact",
-    "contact_company_name": "Contact company",
-    "contact_id": "Contact",
-    "commission_contact_id": "Commission contact",
-    "contact_billing_address": "Billing address",
-    "contact_shipping_address": "Shipping address",
-    "contact_phone": "Phone",
-    "contact_email": "Email",
-    "contact_tax_id": "Tax ID",
-    "payment_terms": "Payment terms",
-    "ref_id": "Reference",
-    "due_date": "Due date",
-    "issue_date": "Issue date",
-    "amount_outstanding": "Amount outstanding",
-    "total": "Total",
-    "status": "Status",
-    "description": "Description",
-    "customer_note": "Customer note",
-    "internal_note": "Internal note",
-    "currency": "Currency",
-    "price_list": "Price list",
-    "terms_text": "Terms",
-    "shipping_attn": "Ship to",
-    "doc_number": "Doc number",
-    "name": "Name",
-    "sku": "SKU",
-    "quantity": "Quantity",
-    "price": "Price",
-    "category": "Category",
-    "barcode": "Barcode",
-    "location": "Location",
-}
+# Field keys shown in activity change summaries; the label for each is resolved at
+# render time via ``t("field.<key>")`` (see _fields_changed_summary). Values are those
+# i18n keys, derived mechanically so the catalog set cannot drift from the field list.
+_FIELD_LABEL_KEYS: tuple[str, ...] = (
+    "contact_name", "contact_company_name", "contact_id", "commission_contact_id",
+    "contact_billing_address", "contact_shipping_address", "contact_phone",
+    "contact_email", "contact_tax_id", "payment_terms", "ref_id", "due_date",
+    "issue_date", "amount_outstanding", "total", "status", "description",
+    "customer_note", "internal_note", "currency", "price_list", "terms_text",
+    "shipping_attn", "doc_number", "name", "sku", "quantity", "price",
+    "category", "barcode", "location",
+)
+_FIELD_LABELS: dict[str, str] = {k: f"field.{k}" for k in _FIELD_LABEL_KEYS}
 
 # ID fields that carry a raw entity-ID value; suppressed when a companion
 # human-readable field is present in the same changeset.
@@ -352,7 +300,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if new_qty is None:
             new_qty = data.get("quantity")
         if new_qty is not None:
-            return f"Qty → {fmt_qty(new_qty)}"
+            return t("activity.qty_to", qty=fmt_qty(new_qty))
     if event_type == "item.transferred":
         to = data.get("to_location_name") or data.get("to_location_id") or data.get("location_name") or data.get("location_id") or ""
         frm = data.get("from_location_name") or data.get("from_location_id") or ""
@@ -365,7 +313,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
     if event_type == "item.pricing.set":
         price_type = data.get("price_type", "")
         new_price = data.get("new_price")
-        label = price_type.replace("_", " ").title() if price_type else "Price"
+        label = price_type.replace("_", " ").title() if price_type else t("field.price")
         return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
@@ -375,7 +323,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if child_skus:
             return f"→ {', '.join(str(s) for s in child_skus)}"
         child_ids = data.get("child_ids", [])
-        return f"{len(child_ids)} children" if child_ids else ""
+        return t("activity.n_children", n=len(child_ids)) if child_ids else ""
     if event_type == "item.transform":
         child_sku = data.get("child_sku", "")
         child_category = data.get("child_category", "")
@@ -391,13 +339,13 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         qty = data.get("resulting_qty")
         if source_skus:
             sku_list = ", ".join(str(v) for v in source_skus.values())
-            parts = [f"Merged from: {sku_list}"]
+            parts = [t("activity.merged_from_skus", skus=sku_list)]
         elif sources:
-            parts = [f"From {len(sources)} source items"]
+            parts = [t("activity.merged_from_sources", n=len(sources))]
         else:
             parts = []
         if qty is not None:
-            parts.append(f"qty={qty}")
+            parts.append(t("activity.qty_eq", qty=qty))
         return " - ".join(parts) if parts else ""
     if event_type == "item.source_deactivated":
         merged_into_sku = data.get("merged_into_sku", "")
@@ -406,19 +354,19 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         label = merged_into_sku or merged_into
         parts = [f"→ {label}"] if label else []
         if original_qty is not None:
-            parts.append(f"qty was {original_qty}")
+            parts.append(t("activity.qty_was_lc", qty=original_qty))
         return " - ".join(parts) if parts else ""
     if event_type == "item.consumed":
         qty = data.get("quantity_consumed")
-        return f"Qty consumed: {qty}" if qty is not None else ""
+        return t("activity.qty_consumed", qty=qty) if qty is not None else ""
     if event_type == "item.produced":
         qty = data.get("quantity_produced")
-        return f"Qty produced: {qty}" if qty is not None else ""
+        return t("activity.qty_produced", qty=qty) if qty is not None else ""
     # --- Document-specific events ---
     doc_ref = data.get("doc_number") or data.get("ref_id") or data.get("ref") or ""
     if event_type == "doc.created":
         doc_type = data.get("doc_type", "")
-        label = doc_type.replace("_", " ").title() if doc_type else "Document"
+        label = doc_type.replace("_", " ").title() if doc_type else t("activity.document")
         return f"{label} {doc_ref}" if doc_ref else label
     if event_type == "doc.finalized":
         return doc_ref or ""
@@ -428,7 +376,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if doc_ref:
             parts.append(doc_ref)
         if recipient:
-            parts.append(f"to {recipient}")
+            parts.append(t("activity.to_recipient", recipient=recipient))
         return " ".join(parts) if parts else ""
     if event_type == "doc.marked_sent":
         return doc_ref or ""
@@ -436,26 +384,26 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"amount: {fmt_money(amount, currency)}")
+            parts.append(t("activity.amount", amount=fmt_money(amount, currency)))
         return " - ".join(parts) if parts else ""
     if event_type == "doc.payment.received":
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"amount: {fmt_money(amount, currency)}")
+            parts.append(t("activity.amount", amount=fmt_money(amount, currency)))
         return " - ".join(parts) if parts else ""
     if event_type == "doc.payment.refunded":
         amount = data.get("amount")
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
-            parts.append(f"refunded: {fmt_money(amount, currency)}")
+            parts.append(t("activity.refunded", amount=fmt_money(amount, currency)))
         return " - ".join(parts) if parts else ""
     if event_type in ("doc.payment.voided", "doc.payment.deleted"):
         amount = data.get("amount")
         reason = data.get("void_reason") or data.get("delete_reason") or ""
         parts = []
         if amount is not None:
-            parts.append(f"amount: {fmt_money(amount, currency)}")
+            parts.append(t("activity.amount", amount=fmt_money(amount, currency)))
         if reason:
             parts.append(str(reason)[:80])
         return " - ".join(parts) if parts else ""
@@ -479,9 +427,9 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if desc:
             parts.append(desc)
         if qty is not None:
-            parts.append(f"qty: {qty}")
+            parts.append(t("activity.qty_lc", qty=qty))
         if loc:
-            parts.append(f"at {loc}")
+            parts.append(t("activity.at_loc", loc=loc))
         return " - ".join(parts) if parts else ""
     if event_type == "doc.line_returned":
         desc = data.get("description") or data.get("sku") or ""
@@ -490,11 +438,11 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if desc:
             parts.append(desc)
         if qty is not None:
-            parts.append(f"qty: {qty}")
+            parts.append(t("activity.qty_lc", qty=qty))
         return " - ".join(parts) if parts else ""
     if event_type == "doc.converted_to_bill":
         bill_ref = data.get("bill_number") or data.get("bill_ref") or ""
-        return f"Bill #{bill_ref}" if bill_ref else ""
+        return t("activity.bill_number", ref=bill_ref) if bill_ref else ""
     if event_type == "doc.converted":
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
@@ -509,7 +457,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if event_type == "doc.partially_fulfilled":
             pending = _item_brief_summary(data.get("unfulfilled_items"))
             if summary and pending:
-                return f"{summary} (pending: {pending})"
+                return f"{summary} ({t('activity.pending', items=pending)})"
         return summary
     if event_type in ("doc.fulfillment_reversed", "doc.partially_reverted"):
         return _item_brief_summary(data.get("reversed_items"))
@@ -528,7 +476,7 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
     """Format a single changed-field value by its field type: integer/clean pieces & qty,
     currency money, ISO dates as dates; anything else falls back to capped text."""
     if value is None:
-        return "none"
+        return t("activity.none")
     if key in _QTY_FIELD_KEYS:
         return fmt_qty(value)
     if key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total"):
@@ -581,16 +529,18 @@ def _discount_change_summary(fields_changed: dict, currency: str | None):
         # When an existing discount is changed, show "old → new" like every other field;
         # a brand-new discount (no prior amount) just shows the applied figure.
         if amt_old is not None and float(amt_old) > 0 and amt_old != amt_new:
-            parts = [f"Discount Applied: {fmt_price(amt_old, 'discount_amount', currency)} → {new_str}"]
+            parts = [t("activity.discount_applied_change",
+                       old=fmt_price(amt_old, 'discount_amount', currency), new=new_str)]
         else:
-            parts = [f"Discount Applied: {new_str}"]
+            parts = [t("activity.discount_applied", amount=new_str)]
     else:
-        parts = ["Discount Removed"]
+        parts = [t("activity.discount_removed")]
 
     if "total" in fields_changed:
         old, new = _change_old_new(fields_changed["total"])
         if old is not None and new is not None and old != new:
-            parts.append(f"Total: {fmt_price(old, 'total', currency)} → {fmt_price(new, 'total', currency)}")
+            parts.append(t("activity.total_change",
+                           old=fmt_price(old, 'total', currency), new=fmt_price(new, 'total', currency)))
     return ", ".join(parts), _DISCOUNT_CONSUMED
 
 
@@ -641,7 +591,7 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
         name = li.get("sku") or li.get("name") or ""
         label = f"{name} " if name else ""
         parts.append(
-            f"{label}Tax {o_rate:g}% → {n_rate:g}% "
+            f"{label}{t('activity.tax')} {o_rate:g}% → {n_rate:g}% "
             f"({fmt_price(o_amt, 'tax', currency)} → {fmt_price(n_amt, 'tax', currency)})"
         )
     return parts, (frozenset({"tax"}) if parts else frozenset())
@@ -680,16 +630,11 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         if id_field in user_fields and companion in user_fields:
             del user_fields[id_field]
 
-    _COMPLEX_LABELS: dict[str, str] = {
-        "line_items": "Lines edited",
-        "received_items": "Received items updated",
-        "fulfilled_items": "Fulfilled items updated",
-        "taxes": "Taxes updated",
-        "addresses": "Address updated",
-        "payments": "Payments updated",
-        "tc_items": "T&C items updated",
-        "attributes": "Attributes updated",
-    }
+    # Complex-change label i18n keys, resolved at render time below; values are the
+    # ``activity.change.<field>`` keys.
+    _COMPLEX_LABELS: dict[str, str] = {k: f"activity.change.{k}" for k in
+                                       ("line_items", "received_items", "fulfilled_items",
+                                        "taxes", "addresses", "payments", "tc_items", "attributes")}
 
     scalar_parts: list[str] = []
     complex_labels: list[str] = []
@@ -748,9 +693,9 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                                     f"→{fmt_price(new_price, 'unit_price', currency)}"
                                 )
                     parts = (
-                        [f"Added {_li_added_label(li)}" for li in added[:2]]
-                        + [f"Changed {x}" for x in changed[:2]]
-                        + [f"Removed {x}" for x in removed[:2]]
+                        [t("activity.added", item=_li_added_label(li)) for li in added[:2]]
+                        + [t("activity.changed", item=x) for x in changed[:2]]
+                        + [t("activity.removed", item=x) for x in removed[:2]]
                     )
                     overflow = (len(added) + len(changed) + len(removed)) - len(parts)
                 else:
@@ -761,18 +706,19 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                             continue
                         if not (li.get("name") or li.get("sku")):
                             continue
-                        parts.append(f"Added {_li_added_label(li)}")
+                        parts.append(t("activity.added", item=_li_added_label(li)))
                     overflow = max(0, len(parts) - 3)
                 if parts:
                     summary = "; ".join(parts[:3])
                     if overflow > 0:
-                        summary += f" +{overflow} more"
+                        summary += " " + t("activity.more", n=overflow)
                     complex_labels.append(summary)
                 # line_items diffed explicitly above: a real change produced `parts`. An empty
                 # diff means the lines were re-sent unchanged (e.g. a header-discount save), so
                 # emit nothing - never fall back to a misleading bare "Lines edited".
                 continue
-            label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
+            label_key = _COMPLEX_LABELS.get(k)
+            label = t(label_key) if label_key else t("activity.generic_updated", field=k.replace('_', ' ').title())
             if label not in complex_labels:
                 complex_labels.append(label)
             continue
@@ -786,9 +732,10 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         if old == new:
             continue
 
-        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else "none"
-        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else "none"
-        label = _FIELD_LABELS.get(k) or k.replace("_", " ").title()
+        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else t("activity.none")
+        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else t("activity.none")
+        label_key = _FIELD_LABELS.get(k)
+        label = t(label_key) if label_key else k.replace("_", " ").title()
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
         else:
@@ -858,13 +805,13 @@ def _qpw_delta(d: dict, currency: str | None = None) -> str:
         return ""
     parts: list[str] = []
     if d.get("qty_before") is not None or d.get("qty_after") is not None:
-        parts.append(f"Qty: {fmt_qty(d.get('qty_before'))} → {fmt_qty(d.get('qty_after'))}")
+        parts.append(f"{t('activity.m_qty')}: {fmt_qty(d.get('qty_before'))} → {fmt_qty(d.get('qty_after'))}")
     if d.get("pieces_before") is not None or d.get("pieces_after") is not None:
-        parts.append(f"Pcs: {fmt_qty(d.get('pieces_before'))} → {fmt_qty(d.get('pieces_after'))}")
+        parts.append(f"{t('activity.m_pcs')}: {fmt_qty(d.get('pieces_before'))} → {fmt_qty(d.get('pieces_after'))}")
     if d.get("weight_before") is not None or d.get("weight_after") is not None:
-        parts.append(f"Wt: {fmt_qty(d.get('weight_before'))} → {fmt_qty(d.get('weight_after'))}")
+        parts.append(f"{t('activity.m_wt')}: {fmt_qty(d.get('weight_before'))} → {fmt_qty(d.get('weight_after'))}")
     if d.get("cost_before") is not None or d.get("cost_after") is not None:
-        parts.append(f"Cost: {fmt_money(d.get('cost_before'), currency)} → {fmt_money(d.get('cost_after'), currency)}")
+        parts.append(f"{t('activity.m_cost')}: {fmt_money(d.get('cost_before'), currency)} → {fmt_money(d.get('cost_after'), currency)}")
     return ", ".join(parts)
 
 
@@ -894,13 +841,13 @@ def _delta_detail(data: dict) -> FT | None:
 
 def _origin_detail(data: dict, with_category: bool = False) -> str:
     """Child origin detail: '0 → received' for each measure the child actually got."""
-    parts = [f"Qty: 0 → {fmt_qty(data.get('qty'))}"]
+    parts = [f"{t('activity.m_qty')}: 0 → {fmt_qty(data.get('qty'))}"]
     if data.get("pieces") is not None:
-        parts.append(f"Pcs: 0 → {fmt_qty(data.get('pieces'))}")
+        parts.append(f"{t('activity.m_pcs')}: 0 → {fmt_qty(data.get('pieces'))}")
     if data.get("weight") is not None:
-        parts.append(f"Wt: 0 → {fmt_qty(data.get('weight'))}")
+        parts.append(f"{t('activity.m_wt')}: 0 → {fmt_qty(data.get('weight'))}")
     if with_category and data.get("category"):
-        parts.append(f"Cat: {data.get('category')}")
+        parts.append(f"{t('activity.m_cat')}: {data.get('category')}")
     return ", ".join(parts)
 
 
@@ -917,8 +864,8 @@ def _doc_link(doc_id, doc_number=None) -> FT:
 def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
     memo = (doc_type or "") == "memo"
     if reversed_:
-        return "Consignment returned" if memo else "Sale reversed"
-    return "Consigned" if memo else "Sold"
+        return t("activity.consignment_returned") if memo else t("event.item.fulfillment_reversed")
+    return t("activity.consigned") if memo else t("event.item.fulfilled")
 
 
 def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
@@ -940,11 +887,12 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
         content = Span(f"{_fulfil_verb(data.get('doc_type'), reversed_)} ",
                        _doc_link(doc_id, data.get("doc_number")))
         qty = data.get("quantity_restored") if reversed_ else data.get("quantity_fulfilled")
-        detail = f"Qty: {fmt_qty(qty)}" if qty is not None else ""
+        detail = t("activity.qty_val", qty=fmt_qty(qty)) if qty is not None else ""
         return [(content, detail, "")]
     if etype == "item.status.set" and data.get("source_doc_id"):
         status = str(data.get("new_status") or "")
-        verb = {"sold": "Sold", "memo_out": "Consigned"}.get(status, (status.replace("_", " ").title() or "Status"))
+        verb = {"sold": t("event.item.fulfilled"), "memo_out": t("activity.consigned")}.get(
+            status, (status.replace("_", " ").title() or t("field.status")))
         content = Span(f"{verb} ", _doc_link(data.get("source_doc_id"), data.get("doc_number")))
         return [(content, "", "")]
 
@@ -956,17 +904,17 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
         specs: list[tuple[FT, str, str]] = []
         for i, c in enumerate(children):
             content = Span(
-                f"Item Split - {psku} → ",
+                f"{t('activity.item_split')} - {psku} → ",
                 _item_link(c.get("child_id"), str(c.get("child_sku") or ""), c.get("origin_event_id")),
             )
             specs.append((content, _qpw_delta(c, currency), f"-{i}"))
         delta_line = _delta_detail(data)
         if delta_line is not None:
-            specs.append((Span(f"Item Split - {psku}"), delta_line, "-delta"))
+            specs.append((Span(f"{t('activity.item_split')} - {psku}"), delta_line, "-delta"))
         return specs
 
     if etype == "item.split_from":
-        content = Span("Split from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        content = Span(f"{t('event.item.split_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
         return [(content, _origin_detail(data), "")]
 
     if etype == "item.transform":
@@ -974,7 +922,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
             return None  # legacy row (pre-enrichment) → generic fallback
         psku = str(data.get("parent_sku") or "")
         content = Span(
-            f"Item Transform - {psku} → ",
+            f"{t('activity.item_transform')} - {psku} → ",
             _item_link(data.get("child_id"), str(data.get("child_sku") or ""), data.get("child_origin_event_id")),
         )
         detail_txt = _qpw_delta(data, currency)
@@ -986,7 +934,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
         return [(content, detail, "")]
 
     if etype == "item.transformed_from":
-        content = Span("Transformed from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        content = Span(f"{t('event.item.transformed_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
         return [(content, _origin_detail(data, with_category=True), "")]
 
     if etype == "item.merged":
@@ -997,25 +945,25 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
             if j:
                 links.append(", ")
             links.append(_item_link(eid, str(skus.get(eid, eid))))
-        content = Span("Merged from ", *links) if links else Span("Items merged")
+        content = Span(f"{t('activity.merged_from')} ", *links) if links else Span(t("event.item.merged"))
         rq = data.get("resulting_qty")
-        detail = f"Qty: {fmt_qty(rq)}" if rq is not None else ""
+        detail = t("activity.qty_val", qty=fmt_qty(rq)) if rq is not None else ""
         return [(content, detail, "")]
 
     if etype == "item.source_deactivated":
         tgt = data.get("merged_into") or ""
         tsku = str(data.get("merged_into_sku") or tgt)
-        content = Span("Merged into ", _item_link(tgt, tsku))
+        content = Span(f"{t('activity.merged_into')} ", _item_link(tgt, tsku))
         oq = data.get("original_qty")
-        detail = f"Qty was {fmt_qty(oq)}" if oq is not None else ""
+        detail = t("activity.qty_was", qty=fmt_qty(oq)) if oq is not None else ""
         return [(content, detail, "")]
 
     return None
 
 
-def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
+def activity_table(ledger: list[dict], *, title: str | None = None,
                    section_cls: str = "section", icon: str = "",
-                   empty_msg: str = "No activity yet.",
+                   empty_msg: str | None = None,
                    max_display: int | None = None,
                    history_url: str | None = None,
                    subject_entity_id: str | None = None,
@@ -1028,7 +976,14 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
     subject_entity_id: when set (an entity's own detail page), that entity's split/transform
     origin row is shown; when None (dashboard), origin rows de-dup against the mother summary.
     currency: ISO code used to format money amounts in the Details column.
+
+    title/empty_msg default to None so their text resolves in the request language
+    at render time; a caller may still pass an explicit string to override.
     """
+    if title is None:
+        title = t("activity.recent_activity")
+    if empty_msg is None:
+        empty_msg = t("activity.empty")
     EMPTY = "--"
 
     if not ledger:
@@ -1113,12 +1068,12 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         header_parts.append(Span(icon, cls="section-icon"))
     header_parts.append(H3(title, cls="section-title"))
 
-    footer_text = f"Showing last {len(display_rows)} events"
+    footer_text = t("activity.showing_last", n=len(display_rows))
     if len(all_rows) < threshold:
         footer = ""
     elif history_url:
         footer = P(
-            footer_text + " - ", A("See All", href=history_url, cls="table-link"),
+            footer_text + " - ", A(t("activity.see_all"), href=history_url, cls="table-link"),
             cls="table-footer-note",
         )
     else:

@@ -5704,7 +5704,7 @@ class TestBulkTransferRoute:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"transferred" in r.content
+        assert b"Transferred: 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_items_selected(self, ui_client):
@@ -5910,7 +5910,7 @@ class TestInventoryBulkActions:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"2 item(s) updated" in r.content
+        assert b"Updated to 'Inactive': 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_status_passes_ids_and_status(self, ui_client):
@@ -5970,7 +5970,7 @@ class TestInventoryBulkActions:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"3 item(s) transferred" in r.content
+        assert b"Transferred: 3." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_passes_ids_and_location(self, ui_client):
@@ -6030,7 +6030,7 @@ class TestInventoryBulkActions:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"2 item(s) deleted" in r.content
+        assert b"Deleted: 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_delete_passes_ids(self, ui_client):
@@ -6115,7 +6115,7 @@ class TestBulkDuplicate:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"2 item(s) duplicated" in r.content
+        assert b"Duplicated: 2." in r.content
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -6154,7 +6154,7 @@ class TestBulkDuplicate:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"1 item(s) duplicated, 1 failed" in r.content
+        assert b"Duplicated: 1, failed: 1." in r.content
         assert b"flash--warning" in r.content
         assert create.call_count == 2
 
@@ -6208,7 +6208,7 @@ class TestBulkDuplicate:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"1 item(s) duplicated" in r.content
+        assert b"Duplicated: 1." in r.content
         assert create.call_count == 1
 
     @pytest.mark.asyncio
@@ -6390,7 +6390,7 @@ class TestBulkActionsPhase1to5:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"2 item(s) expired" in r.content
+        assert b"Expired: 2." in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_expire_no_selection(self, ui_client):
@@ -14001,7 +14001,8 @@ class TestFieldSchemaBarcode:
     def test_sidebar_label_updated(self):
         """Sidebar label for POs is 'Purchase Orders'."""
         from ui.routes.documents import _DOC_TYPE_PAGE_LABELS
-        assert _DOC_TYPE_PAGE_LABELS["purchase_order"] == "Purchase Orders"
+        from ui.i18n import t
+        assert t(_DOC_TYPE_PAGE_LABELS["purchase_order"]) == "Purchase Orders"
 
     def test_bill_conversion_projection(self):
         """doc.converted_to_bill sets status to awaiting_payment and updates doc_type."""
@@ -19455,10 +19456,11 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
 def test_reserved_badge_renders():
     """A reserved item status maps to the Reserved badge, not the '-' fallthrough."""
     from ui.routes.documents import _STATUS_BADGE
+    from ui.i18n import t
 
     assert "reserved" in _STATUS_BADGE, "reserved status has no badge mapping (renders '-')"
-    label, badge_cls = _STATUS_BADGE["reserved"]
-    assert label == "Reserved"
+    label_key, badge_cls = _STATUS_BADGE["reserved"]
+    assert t(label_key) == "Reserved"
     assert badge_cls == "badge--reserved"
 
 

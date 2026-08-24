@@ -11,10 +11,10 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, flash, page_header
+from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.config import COOKIE_NAME
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option, searchable_select
+from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum
 
 from ui.routes.accounting_import import ACCOUNT_TYPES
 
@@ -24,19 +24,22 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
-from ui.i18n import t, get_lang
+from ui.i18n import t
 
 
-_BANK_TYPES = [
-    ("checking", "Checking"),
-    ("savings", "Savings"),
-    ("credit_card", "Credit Card"),
-]
+# Raw bank-account type values. Canonical everywhere (API, comparisons); the
+# human label is resolved at render via display_enum(domain="bank_type").
+_BANK_TYPES = ("checking", "savings", "credit_card")
 
 
 
 def _accounting_settings_tabs(active: str) -> FT:
-    tabs = [("bank-accounts", "Bank Accounts"), ("chart", "Chart of Accounts"), ("rules", "Reconciliation Rules"), ("period-lock", "Period Lock")]
+    tabs = [
+        ("bank-accounts", t("settings_accounting.tab_bank_accounts")),
+        ("chart", t("settings_accounting.chart_of_accounts")),
+        ("rules", t("page.reconciliation_rules")),
+        ("period-lock", t("page.period_lock")),
+    ]
     return Div(
         *[
             A(label, href=f"/settings/accounting?tab={key}",
@@ -54,7 +57,7 @@ def _bank_account_row(b: dict) -> FT:
     return Div(
         Div(
             Span(b.get("bank_name", ""), cls="account-name"),
-            Span(f"{b.get('bank_type', '').replace('_', ' ').title()} · {b.get('account_number', '')} · {b.get('chart_account_code', '')}", cls="bank-name-label"),
+            Span(f"{display_enum(b.get('bank_type', ''), 'bank_type')} · {b.get('account_number', '')} · {b.get('chart_account_code', '')}", cls="bank-name-label"),
             cls="bank-info",
         ),
         Div(
@@ -70,7 +73,7 @@ def _bank_account_row(b: dict) -> FT:
                 A(t("acct.reconcile"), href="/accounting/reconcile/start",
                   cls="btn btn--primary btn--xs"),
                 Button(
-                    "Archive" if b.get("is_active") else "Restore",
+                    t("inv.archive") if b.get("is_active") else t("btn.restore"),
                     hx_patch=f"/settings/accounting/bank-accounts/{b['id']}/toggle",
                     hx_target="#bank-accounts-list",
                     hx_swap="outerHTML",
@@ -115,9 +118,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
     return Div(
         H3(t("page.period_lock"), cls="section-title"),
         P(
-            "Lock all transactions before a certain date. "
-            "Once locked, no journal entries, documents, or inventory adjustments can be created "
-            "or modified for dates on or before the lock date.",
+            t("settings_accounting.period_lock_help"),
             cls="text-muted mb-md",
         ),
         Form(
@@ -141,15 +142,16 @@ def _period_lock_tab(lock_data: dict) -> FT:
             hx_swap="outerHTML",
         ),
         *(
-            [P(f"Currently locked through {lock_date}. Last updated: {set_at[:10] if set_at else 'unknown'}.",
+            [P(t("settings_accounting.currently_locked_through",
+                 lock_date=lock_date,
+                 updated=(set_at[:10] if set_at else t("settings_accounting.unknown"))),
                cls="text-muted mt-md")]
             if lock_date else []
         ),
         Hr(cls="section-divider mt-lg mb-lg"),
         H3(t("page.close_fiscal_year"), cls="section-title"),
         P(
-            "Close a fiscal year to zero all revenue and expense accounts and transfer net income "
-            "to Retained Earnings. This also locks the period through the year-end date.",
+            t("settings_accounting.close_year_help"),
             cls="text-muted mb-md",
         ),
         Form(
@@ -161,7 +163,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
             ),
             Div(
                 Button(t("btn.close_year"), type="submit", cls="btn btn--danger",
-                       hx_confirm="This will create a closing journal entry and lock the period. Continue?"),
+                       hx_confirm=t("settings_accounting.close_year_confirm")),
                 cls="form-actions mt-md",
             ),
             hx_post="/settings/accounting/close-year",
@@ -175,17 +177,17 @@ def _period_lock_tab(lock_data: dict) -> FT:
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
     bank_options = [Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"]) for b in banks]
-    _bank_opt, _bank_js = add_new_option("+ Add new bank account", "/settings/accounting?tab=bank-accounts")
-    _MATCH_TYPES = [("contains", "Contains"), ("exact", "Exact"), ("starts_with", "Starts with")]
+    _bank_opt, _bank_js = add_new_option(t("settings_accounting.add_new_bank_account_option"), "/settings/accounting?tab=bank-accounts")
+    _MATCH_TYPES = ("contains", "exact", "starts_with")
 
     rows = []
     for r in rules:
         rows.append(Tr(
             Td(r.get("match_pattern", EMPTY)),
-            Td(r.get("match_type", EMPTY)),
+            Td(display_enum(r.get("match_type"), "match_type") if r.get("match_type") else EMPTY),
             Td(r.get("target_account_code", EMPTY)),
             Td(r.get("default_memo") or EMPTY),
-            Td(Span("Active" if r.get("is_active") else "Inactive",
+            Td(Span(t("th.active") if r.get("is_active") else t("settings.inactive"),
                     cls="badge badge--active" if r.get("is_active") else "badge badge--inactive")),
             Td(str(r.get("times_applied", 0))),
             Td(
@@ -193,7 +195,7 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
                        hx_delete=f"/settings/accounting/rules/{r['id']}",
                        hx_target="#rules-list",
                        hx_swap="outerHTML",
-                       hx_confirm="Delete this rule?",
+                       hx_confirm=t("settings_accounting.delete_rule_confirm"),
                        cls="btn btn--xs btn--outline"),
             ),
         ))
@@ -222,19 +224,19 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
             ),
             Div(
                 Label(t("label.match_pattern"), cls="form-label"),
-                Input(type="text", name="match_pattern", placeholder="e.g. ACME Corp",
+                Input(type="text", name="match_pattern", placeholder=t("settings_accounting.ph_match_pattern"),
                       cls="form-input", required=True),
                 cls="form-field",
             ),
             Div(
                 Label(t("th.match_type"), cls="form-label"),
-                Select(*[Option(label, value=v) for v, label in _MATCH_TYPES],
+                Select(*[Option(display_enum(v, "match_type"), value=v) for v in _MATCH_TYPES],
                        name="match_type", cls="form-input cell-input--select"),
                 cls="form-field",
             ),
             Div(
                 Label(t("label.target_account_code"), cls="form-label"),
-                Input(type="text", name="target_account_code", placeholder="e.g. 6950",
+                Input(type="text", name="target_account_code", placeholder=t("settings_accounting.ph_account_code"),
                       cls="form-input", required=True),
                 cls="form-field",
             ),
@@ -259,13 +261,13 @@ def _cash_flow_display_cell(code: str, cash_flow_category: str | None) -> FT:
     """Read-only cash flow section cell. Click fires HTMX GET to fetch the select
     editor in place, matching the click-to-edit cells used elsewhere (e.g. the
     document numbering table in settings_sales.py)."""
-    display = (cash_flow_category or "").title() or EMPTY
+    display = (display_enum(cash_flow_category, "cash_flow") if cash_flow_category else "") or EMPTY
     return Td(
         Div(
             display,
             hx_get=f"/settings/accounting/chart/{code}/cash-flow/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title="Click to edit", cls="editable-cell",
+            title=t("settings.click_to_edit"), cls="editable-cell",
         ),
     )
 
@@ -283,7 +285,7 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     return Td(
         Select(
             Option(t("acct.cash_flow_derived"), value="", selected=not current),
-            *[Option(x.title(), value=x, selected=(x == current)) for x in CASH_FLOW_CATEGORIES],
+            *[Option(display_enum(x, "cash_flow"), value=x, selected=(x == current)) for x in CASH_FLOW_CATEGORIES],
             name="value",
             hx_patch=f"/settings/accounting/chart/{code}/cash-flow",
             hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
@@ -300,10 +302,10 @@ def _chart_table(chart: list[dict]) -> FT:
         return Tr(
             Td(code, cls="cell--mono"),
             Td(a.get("name", "")),
-            Td(Span(a.get("account_type", ""), cls=f"badge badge--{a.get('account_type', '')}")),
+            Td(Span(display_enum(a.get("account_type", ""), "account_type"), cls=f"badge badge--{a.get('account_type', '')}")),
             Td(a.get("parent_code") or EMPTY),
             _cash_flow_display_cell(code, a.get("cash_flow_category")),
-            Td(Span("Active" if a.get("is_active", True) else "Inactive",
+            Td(Span(t("th.active") if a.get("is_active", True) else t("settings.inactive"),
                     cls="badge badge--active" if a.get("is_active", True) else "badge badge--inactive")),
             Td(A(t("btn.edit"), href=f"/settings/accounting/chart/{code}/edit",
                  cls="btn btn--secondary btn--xs")),
@@ -320,7 +322,7 @@ def _chart_table(chart: list[dict]) -> FT:
         accounts = by_type.get(atype, [])
         if not accounts:
             continue
-        sections.append(Tr(Th(atype.title(), colspan="7", cls="section-header")))
+        sections.append(Tr(Th(display_enum(atype, "account_type"), colspan="7", cls="section-header")))
         sections.extend(_row(a) for a in accounts)
 
     return Table(
@@ -366,18 +368,18 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
         Tr(
             Td(t("th.code"), cls="detail-label"),
             Td(Span(code, cls="cell--mono")) if editing else
-            Td(Input(type="text", name="code", placeholder="e.g. 1000", maxlength="32",
+            Td(Input(type="text", name="code", placeholder=t("settings_accounting.ph_code"), maxlength="32",
                      cls="cell-input", required=True)),
         ),
         Tr(
             Td(t("th.name"), cls="detail-label"),
             Td(Input(type="text", name="name", value=v.get("name", ""),
-                     placeholder="e.g. Petty Cash", cls="cell-input", required=True)),
+                     placeholder=t("settings_accounting.ph_name"), cls="cell-input", required=True)),
         ),
         Tr(
             Td(t("th.doc_type"), cls="detail-label"),
             Td(Select(
-                *[Option(x.title(), value=x, selected=(x == v.get("account_type", "asset")))
+                *[Option(display_enum(x, "account_type"), value=x, selected=(x == v.get("account_type", "asset")))
                   for x in ACCOUNT_TYPES],
                 name="account_type", cls="cell-input cell-input--select",
             )),
@@ -392,7 +394,7 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
         Td(Select(
             Option(t("acct.cash_flow_derived"), value="",
                    selected=not v.get("cash_flow_category")),
-            *[Option(x.title(), value=x, selected=(x == v.get("cash_flow_category")))
+            *[Option(display_enum(x, "cash_flow"), value=x, selected=(x == v.get("cash_flow_category")))
               for x in CASH_FLOW_CATEGORIES],
             name="cash_flow_category", cls="cell-input cell-input--select",
         )),
@@ -401,8 +403,8 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
         rows.append(Tr(
             Td(t("th.status"), cls="detail-label"),
             Td(Select(
-                Option("Active", value="true", selected=bool(v.get("is_active", True))),
-                Option("Inactive", value="false", selected=not v.get("is_active", True)),
+                Option(t("th.active"), value="true", selected=bool(v.get("is_active", True))),
+                Option(t("settings.inactive"), value="false", selected=not v.get("is_active", True)),
                 name="is_active", cls="cell-input cell-input--select",
             )),
         ))
@@ -428,13 +430,13 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
 
 async def _account_error_page(request: Request, message: str) -> FT:
     return await base_shell(
-        _section_breadcrumb("Accounting"),
+        _section_breadcrumb(t("page.accounting")),
         page_header(
-            "Chart of Accounts",
+            t("settings_accounting.chart_of_accounts"),
             A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
         ),
         Div(P(message, cls="error-banner"), cls="settings-card"),
-        title="Chart of Accounts - Celerp",
+        title=page_title("settings_accounting.chart_of_accounts"),
         nav_active="settings-accounting",
         request=request,
     )
@@ -445,18 +447,18 @@ async def _validate_account(token: str, name: str, account_type: str,
     """Field-level validation shared by account create and patch. Returns an
     error message, or None when the fields are valid."""
     if not name:
-        return "Name is required."
+        return t("settings_accounting.name_required")
     if account_type not in ACCOUNT_TYPES:
-        return "Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + "."
+        return t("settings_accounting.account_type_invalid", types=", ".join(ACCOUNT_TYPES))
     if parent_code:
         if parent_code == own_code:
-            return "An account cannot be its own parent."
+            return t("settings_accounting.account_own_parent")
         try:
             chart = (await api.get_chart(token)).get("items", [])
         except APIError as e:
             return str(e.detail)
         if not any(a.get("code") == parent_code for a in chart):
-            return f"Parent account {parent_code} does not exist."
+            return t("settings_accounting.parent_account_not_exist", code=parent_code)
     return None
 
 
@@ -507,12 +509,12 @@ def setup_routes(app):
 
         msg = request.query_params.get("msg", "").strip()
         return await base_shell(
-            _section_breadcrumb("Accounting"),
-            page_header("Finance Settings"),
+            _section_breadcrumb(t("page.accounting")),
+            page_header(t("settings_accounting.finance_settings")),
             flash(msg) if msg else None,
             _accounting_settings_tabs(tab),
             content,
-            title="Finance Settings - Celerp",
+            title=page_title("settings_accounting.finance_settings"),
             nav_active="settings-accounting",
             request=request,
         )
@@ -529,9 +531,9 @@ def setup_routes(app):
             currency = "USD"
 
         return await base_shell(
-            _section_breadcrumb("Accounting"),
+            _section_breadcrumb(t("page.accounting")),
             page_header(
-                "Add Bank Account",
+                t("acct.add_bank_account"),
                 A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
@@ -540,18 +542,18 @@ def setup_routes(app):
                         Table(
                             Tr(
                                 Td(t("acct.bank_name"), cls="detail-label"),
-                                Td(Input(type="text", name="bank_name", placeholder="e.g. Kasikorn Bank",
+                                Td(Input(type="text", name="bank_name", placeholder=t("settings_accounting.ph_bank_name"),
                                          cls="cell-input", required=True)),
                             ),
                             Tr(
                                 Td(t("acct.account_number"), cls="detail-label"),
-                                Td(Input(type="text", name="account_number", placeholder="e.g. ****1234",
+                                Td(Input(type="text", name="account_number", placeholder=t("settings_accounting.ph_account_number"),
                                          cls="cell-input", required=True)),
                             ),
                             Tr(
                                 Td(t("acct.account_type"), cls="detail-label"),
                                 Td(Select(
-                                    *[Option(label, value=v) for v, label in _BANK_TYPES],
+                                    *[Option(display_enum(v, "bank_type"), value=v) for v in _BANK_TYPES],
                                     name="bank_type", cls="cell-input cell-input--select",
                                 )),
                             ),
@@ -586,7 +588,7 @@ def setup_routes(app):
                 ),
                 cls="settings-card",
             ),
-            title="Add Bank Account - Celerp",
+            title=page_title("acct.add_bank_account"),
             nav_active="settings-accounting",
             request=request,
         )
@@ -634,9 +636,9 @@ def setup_routes(app):
             return RedirectResponse("/settings/accounting?tab=bank-accounts", status_code=302)
 
         return await base_shell(
-            _section_breadcrumb("Accounting"),
+            _section_breadcrumb(t("page.accounting")),
             page_header(
-                f"Edit {b.get('bank_name', 'Bank Account')}",
+                t("settings_accounting.edit_named", name=b.get("bank_name") or t("settings_accounting.bank_account")),
                 A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
@@ -656,8 +658,8 @@ def setup_routes(app):
                             Tr(
                                 Td(t("acct.account_type"), cls="detail-label"),
                                 Td(Select(
-                                    *[Option(label, value=v, selected=(v == b.get("bank_type")))
-                                      for v, label in _BANK_TYPES],
+                                    *[Option(display_enum(v, "bank_type"), value=v, selected=(v == b.get("bank_type")))
+                                      for v in _BANK_TYPES],
                                     name="bank_type", cls="cell-input cell-input--select",
                                 )),
                             ),
@@ -684,7 +686,7 @@ def setup_routes(app):
                 ),
                 cls="settings-card",
             ),
-            title=f"Edit Bank Account - Celerp",
+            title=page_title("settings_accounting.edit_bank_account"),
             nav_active="settings-accounting",
             request=request,
         )
@@ -759,7 +761,7 @@ def setup_routes(app):
         content = _period_lock_tab(lock_data)
         # Prepend success message
         net = result.get("net_income", 0)
-        msg = f"Fiscal year closed through {fiscal_year_end}. Net income of {net:,.2f} transferred to Retained Earnings. Period locked."
+        msg = t("settings_accounting.fiscal_year_closed", date=fiscal_year_end, net=f"{net:,.2f}")
         return Div(P(msg, cls="success-banner mb-md"), content, id="period-lock-content")
 
     @app.post("/settings/accounting/rules")
@@ -828,13 +830,13 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             return await _account_error_page(request, str(e.detail))
         return await base_shell(
-            _section_breadcrumb("Accounting"),
+            _section_breadcrumb(t("page.accounting")),
             page_header(
-                "Add Account",
+                t("acct.add_account"),
                 A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart), cls="settings-card"),
-            title="Add Account - Celerp",
+            title=page_title("acct.add_account"),
             nav_active="settings-accounting",
             request=request,
         )
@@ -851,9 +853,9 @@ def setup_routes(app):
         account_type = str(form.get("account_type", "")).strip()
         parent_code = str(form.get("parent_code", "")).strip()
         if not code:
-            return P("Code is required.", cls="error-banner")
+            return P(t("settings_accounting.code_required"), cls="error-banner")
         if len(code) > 32:
-            return P("Code must be 32 characters or fewer.", cls="error-banner")
+            return P(t("settings_accounting.code_too_long"), cls="error-banner")
         err = await _validate_account(token, name, account_type, parent_code, own_code=code)
         if err:
             return P(err, cls="error-banner")
@@ -883,15 +885,15 @@ def setup_routes(app):
             return await _account_error_page(request, str(e.detail))
         acct = next((a for a in chart if a.get("code") == code), None)
         if acct is None:
-            return await _account_error_page(request, "Account not found")
+            return await _account_error_page(request, t("settings_accounting.account_not_found"))
         return await base_shell(
-            _section_breadcrumb("Accounting"),
+            _section_breadcrumb(t("page.accounting")),
             page_header(
-                f"Edit {acct.get('name', code)}",
+                t("settings_accounting.edit_named", name=acct.get("name") or code),
                 A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart, values=acct), cls="settings-card"),
-            title="Edit Account - Celerp",
+            title=page_title("settings_accounting.edit_account"),
             nav_active="settings-accounting",
             request=request,
         )
@@ -933,7 +935,7 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         acct = next((a for a in chart if a.get("code") == code), None)
         if acct is None:
-            return P("Account not found", cls="cell-error")
+            return P(t("settings_accounting.account_not_found"), cls="cell-error")
         return _cash_flow_edit_cell(acct)
 
     @app.get("/settings/accounting/chart/{code}/cash-flow/display")
@@ -949,7 +951,7 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         acct = next((a for a in chart if a.get("code") == code), None)
         if acct is None:
-            return P("Account not found", cls="cell-error")
+            return P(t("settings_accounting.account_not_found"), cls="cell-error")
         return _cash_flow_display_cell(code, acct.get("cash_flow_category"))
 
     @app.patch("/settings/accounting/chart/{code}/cash-flow")

@@ -35,7 +35,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError, refresh_access_token
-from ui.components.shell import base_shell, page_header, toast_header
+from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import sortable_th, filter_th, table_search, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_role as _get_role, REFRESH_COOKIE_NAME, set_session_cookies
 from ui.i18n import t, get_lang
@@ -1127,7 +1127,7 @@ def setup_routes(app):
             page_header(t("modules.title", lang)),
             _tabs(tab, lang),
             content,
-            title="Modules - Celerp",
+            title=page_title("modules.title"),
             nav_active="modules",
             lang=lang,
             request=request,

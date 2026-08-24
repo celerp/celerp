@@ -16,6 +16,13 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from ui.config import get_token as _token
+from ui.i18n import t
+
+
+def _claim_success_body(escaped_label: str) -> str:
+    """Body copy for a successful badge claim. *escaped_label* must already be
+    HTML-escaped by the caller; this only performs the t() interpolation."""
+    return t("stars.claim_success_body", label=f"<strong>{escaped_label}</strong>")
 
 
 def _claim_result_page(title: str, body: str) -> str:
@@ -25,7 +32,7 @@ def _claim_result_page(title: str, body: str) -> str:
         "text-align:center;line-height:1.5'>"
         f"<h1>{html.escape(title)}</h1><p style='color:#555'>{body}</p>"
         "<p><a href='/' style='display:inline-block;margin-top:12px;padding:10px 20px;"
-        "background:#1f883d;color:#fff;border-radius:6px;text-decoration:none'>Back to Celerp</a></p>"
+        f"background:#1f883d;color:#fff;border-radius:6px;text-decoration:none'>{t('stars.back_to_celerp')}</a></p>"
         "</div>"
     )
 
@@ -90,13 +97,13 @@ def setup_routes(app):
                     data = r.json()
                 except Exception:
                     return HTMLResponse(_claim_result_page(
-                        "Couldn't save your badge", "Please try claiming again from Celerp."))
+                        t("stars.claim_save_failed_title"), t("stars.claim_save_failed_body")))
             if data.get("error") or not data.get("badge"):
                 return HTMLResponse(_claim_result_page(
-                    "We couldn't verify a star", "Star Celerp on GitHub, then claim again."))
+                    t("stars.claim_no_star_title"), t("stars.claim_no_star_body")))
             label = html.escape(data["badge"]["label"])
             return HTMLResponse(_claim_result_page(
-                "Thank you", f"You are recognised as <strong>{label}</strong>."))
+                t("stars.claim_success_title"), _claim_success_body(label)))
 
         # No cred yet: ask the API for the relay verify-start URL, return here after.
         return_url = str(request.base_url).rstrip("/") + "/stars/claim"
@@ -109,5 +116,5 @@ def setup_routes(app):
                 url = None
         if not url:
             return HTMLResponse(_claim_result_page(
-                "Cloud unavailable", "Couldn't reach the Celerp relay. Try again later."))
+                t("stars.claim_unavailable_title"), t("stars.claim_unavailable_body")))
         return RedirectResponse(url, status_code=302)

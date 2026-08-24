@@ -62,6 +62,10 @@ _IDLE_LOGOUT_JS = ("""
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
+function _copiedFeedback(btn, restoreLabel) {
+  btn.textContent = window.__shellI18n.copied;
+  setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
+}
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -201,8 +205,7 @@ document.addEventListener('click', function(e) {
       : copyBtn.getAttribute('data-copy-text') || '';
     var original = copyBtn.textContent;
     function _markCopied() {
-      copyBtn.textContent = 'Copied!';
-      setTimeout(function() { copyBtn.textContent = original; }, 2000);
+      _copiedFeedback(copyBtn, original);
     }
     function _fallbackCopy(str) {
       var ta = document.createElement('textarea');
@@ -514,15 +517,15 @@ function quietError(e) {
 
 document.addEventListener('htmx:responseError', function(e) {
   if (quietError(e)) return;
-  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
+  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || window.__shellI18n.unknownRequest;
   var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
-  showGlobalUiError('Request failed (' + status + '): ' + path);
+  showGlobalUiError(window.__shellI18n.requestFailedPrefix + ' (' + status + '): ' + path);
 });
 
 document.addEventListener('htmx:sendError', function(e) {
   if (quietError(e)) return;
-  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
-  showGlobalUiError('Network error while loading: ' + path);
+  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || window.__shellI18n.unknownRequest;
+  showGlobalUiError(window.__shellI18n.networkErrorPrefix + ': ' + path);
 });
 
 /* ── Image cell drag-and-drop ─────────────────────────────────────────── */
@@ -618,12 +621,15 @@ _BACKUP_BANNER_JS = """
 })();
 """
 
-_BACKUP_BANNER_HTML = Div(
-    Span("Backup in progress: editing paused. You can still view your data."),
-    id="backup-progress-banner",
-    cls="sys-health-banner",
-    style="display:none;align-items:center;justify-content:center;padding:0.5rem 1rem;font-weight:500;background-color:#2563eb;color:#fff;",
-)
+def _backup_banner_html(lang: str = "en") -> FT:
+    """Built at render time (never a module-level constant): the banner text must
+    resolve in the current request's language, not get frozen at import (R1)."""
+    return Div(
+        Span(t("shell.backup_in_progress", lang)),
+        id="backup-progress-banner",
+        cls="sys-health-banner",
+        style="display:none;align-items:center;justify-content:center;padding:0.5rem 1rem;font-weight:500;background-color:#2563eb;color:#fff;",
+    )
 
 _GLOBAL_UI_ERROR_HTML = Div(
     "",
@@ -653,7 +659,7 @@ function _notifItemHtml(n) {
     : '<div class="notif-item__link">' + inner + '</div>';
   return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '" data-id="' + _notifEsc(n.id) + '">'
     + content
-    + '<button class="notif-item__dismiss" type="button" title="Mark as read" aria-label="Mark as read">&times;</button>'
+    + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
     + '</div>';
 }
 
@@ -679,7 +685,7 @@ function _renderNotifs(data) {
   }
   if (list) {
     if (!data.items || data.items.length === 0) {
-      list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
+      list.innerHTML = '<div class="notif-panel__empty">' + window.__shellI18n.noNotifications + '</div>';
     } else {
       list.innerHTML = data.items.slice(0, 10).map(_notifItemHtml).join('');
     }
@@ -879,13 +885,13 @@ document.addEventListener('DOMContentLoaded', function() {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
 
-      setState('Up to date', false);
+      setState(window.__shellI18n.upToDate, false);
 
       // Log lines: always show — no isManualCheck gate.
       window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
 
       window.celerp.onUpdateAvailable(function(info) {
-        setState('Downloading v' + (info && info.version ? info.version : 'update') + '...', false);
+        setState(window.__shellI18n.downloadingVersion.replace('{version}', info && info.version ? info.version : window.__shellI18n.updateWord), false);
         setCheckBtn(false);
         setProgress(0);
       });
@@ -894,40 +900,40 @@ document.addEventListener('DOMContentLoaded', function() {
         var pct = progress && typeof progress.percent === 'number' ? progress.percent : 0;
         setProgress(pct);
         // Also update state text so user sees live percentage
-        setState('Downloading... ' + Math.round(pct) + '%', false);
+        setState(window.__shellI18n.downloadingPct.replace('{pct}', Math.round(pct)), false);
       });
 
       window.celerp.onUpdateNotAvailable(function() {
-        setState('Up to date', false);
-        appendLog('Already on the latest version.');
+        setState(window.__shellI18n.upToDate, false);
+        appendLog(window.__shellI18n.alreadyLatest);
         resetToIdle();
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
-        var v = info && info.version ? info.version : 'update';
-        setState('v' + v + ' ready to install', false);
+        var v = info && info.version ? info.version : window.__shellI18n.updateWord;
+        setState(window.__shellI18n.versionReady.replace('{version}', v), false);
         setProgress(100);
         setCheckBtn(false);
         if (restartBtn) restartBtn.style.display = '';
-        appendLog('v' + v + ' downloaded. Click "Restart to Install" when ready.');
+        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', v));
         window.celerpSetUpdateReady(v);
       });
 
       // Errors are always visible — never silently swallowed.
       window.celerp.onUpdateError(function(info) {
-        var msg = info && info.message ? info.message : 'Unknown error';
-        setState('Update check failed', false);
-        appendLog('Error: ' + msg);
+        var msg = info && info.message ? info.message : window.__shellI18n.unknownError;
+        setState(window.__shellI18n.updateCheckFailed, false);
+        appendLog(window.__shellI18n.errorPrefix + ' ' + msg);
         resetToIdle();
       });
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
           setCheckBtn(false);
-          setState('Checking...', false);
+          setState(window.__shellI18n.checking, false);
           if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
-            setState('Update check failed', false);
+            setState(window.__shellI18n.updateCheckFailed, false);
             resetToIdle();
           });
         });
@@ -936,7 +942,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (restartBtn) {
         restartBtn.addEventListener('click', function() {
           restartBtn.disabled = true;
-          restartBtn.textContent = 'Restarting...';
+          restartBtn.textContent = window.__shellI18n.restarting;
           window.celerp.installUpdate();
         });
       }
@@ -955,37 +961,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
       function runPyPICheck() {
         setCheckBtn(false);
-        setState('Checking...', false);
+        setState(window.__shellI18n.checking, false);
         var releaseEl = card.querySelector('.update-card__release');
         if (releaseEl) releaseEl.textContent = '';
         fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
           var current = health.version || '';
           var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current.indexOf('0.0.0') === 0;
-          if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
+          if (versionEl) versionEl.textContent = isDev ? window.__shellI18n.developmentBuild : (current ? 'v' + current : window.__shellI18n.unknownVersion);
           if (isDev) {
-            setState('Running from source - no updates', false);
+            setState(window.__shellI18n.runningFromSource, false);
             resetToIdle();
             // A source build is not pip-upgradable, so it is never offered an
             // update. Show the latest published release, best-effort, so the
             // developer can see whether newer releases landed since their build.
             return fetchLatestRelease().then(function(latest) {
-              if (releaseEl && latest) releaseEl.textContent = 'Latest release: v' + latest;
+              if (releaseEl && latest) releaseEl.textContent = window.__shellI18n.latestReleasePrefix + latest;
             }).catch(function() {});
           }
           return fetchLatestRelease().then(function(latest) {
-            if (!latest) { setState('Up to date', false); resetToIdle(); return; }
+            if (!latest) { setState(window.__shellI18n.upToDate, false); resetToIdle(); return; }
             if (latest !== current) {
-              setState('Update available: v' + latest, false);
+              setState(window.__shellI18n.updateAvailablePrefix + latest, false);
               var upgrade = card.querySelector('.update-card__upgrade-cmd');
               if (upgrade) upgrade.style.display = '';
               window.celerpSetUpdateReady(latest);
             } else {
-              setState('Up to date', false);
+              setState(window.__shellI18n.upToDate, false);
             }
             resetToIdle();
           });
         }).catch(function() {
-          setState('Check failed', false);
+          setState(window.__shellI18n.checkFailed, false);
           resetToIdle();
         });
       }
@@ -998,8 +1004,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (copyBtn) {
         copyBtn.addEventListener('click', function() {
           navigator.clipboard.writeText('pip install --upgrade celerp').catch(function() {});
-          copyBtn.textContent = 'Copied!';
-          setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
+          _copiedFeedback(copyBtn, window.__shellI18n.copyLabel);
         });
       }
 
@@ -1015,11 +1020,11 @@ _STAR_CTA_JS = """
   fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
     var el = document.getElementById('star-cta');
     if (!el || !d || !d.url) return;
-    var label = '\\u2605 Star on GitHub';
+    var label = '\\u2605 ' + window.__shellI18n.starOnGithub;
     if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
     el.textContent = label;
     el.href = d.url;
-    el.title = d.tooltip || 'We appreciate your support.';
+    el.title = d.tooltip || window.__shellI18n.appreciateSupport;
     el.style.display = '';
   }).catch(function(){});
   fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
@@ -1058,13 +1063,13 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "var link=document.getElementById('star-card-star');"
         "if(link&&d.url)link.href=d.url;"
         "if(bd&&bd.badge){"  # claimed -> thank-you (offer the wall, drop the ask)
-        "if(h)h.textContent=d.thanks_headline||'Thank you for your support!';"
+        "if(h)h.textContent=d.thanks_headline||card.dataset.fallbackThanksHeadline;"
         "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
         "if(b2)b2.style.display='none';"
         "if(actions)actions.style.display='none';"
         "if(wall&&bd.wall_url){wall.href=bd.wall_url;wall.style.display='inline-block';}"
         "}else{"  # not claimed -> the ask
-        "if(h)h.textContent=d.headline||'Star on GitHub';"
+        "if(h)h.textContent=d.headline||card.dataset.fallbackHeadline;"
         "var parts=(d.body||'').split('\\n\\n');"
         "if(b)b.textContent=parts[0]||'';"
         "if(b2)b2.textContent=parts.slice(1).join('\\n\\n');"
@@ -1079,10 +1084,16 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "})();"
     )
     gold = "color:#d4af37"
+    # Static fallbacks for when the relay does not supply its own copy (R2): translated
+    # here in Python and handed to the client via data-* attributes the script above
+    # reads, never spliced into the JS source directly.
+    fallback_headline = t("shell.star_on_github")
+    fallback_thanks_headline = t("shell.thank_you_support")
     return Div(
         Div(
             # Dismiss = X in the top-right corner.
-            Button("×", id="star-card-dismiss", type="button", title="Dismiss", aria_label="Dismiss",
+            Button("×", id="star-card-dismiss", type="button", title=t("settings.dismiss"),
+                   aria_label=t("settings.dismiss"),
                    style="position:absolute;top:10px;right:14px;background:none;border:none;"
                          "font-size:24px;line-height:1;cursor:pointer;color:#999;padding:0"),
             # Header IS the link to the repo (gold star + the relay-hydrated ask).
@@ -1098,15 +1109,17 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             # Claiming a badge lists the founder on the public wall (that is what the
             # badge is). Hidden once claimed; the wall link below takes its place.
             Div(
-                A("Claim your badge", id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                A(t("shell.claim_your_badge"), id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
                 id="star-card-actions",
                 style="margin-top:22px",
             ),
             # Shown only once claimed: a quiet link to the public founders wall.
-            A(Span("★ ", style=gold), "See the founders wall",
+            A(Span("★ ", style=gold), t("shell.see_founders_wall"),
               id="star-card-wall", href="#", target="_blank", rel="noopener",
               style="display:none;margin-top:18px;font-size:13px;text-decoration:underline;color:inherit"),
             id="star-supporter-card",
+            data_fallback_headline=fallback_headline,
+            data_fallback_thanks_headline=fallback_thanks_headline,
             style="display:none;position:relative;margin:16px 0;padding:28px 32px;"
                   "border:1px solid #d4af37;border-radius:10px;text-align:center",
         ),
@@ -1311,6 +1324,50 @@ _STICKY_HEADER_JS = """
 """
 
 
+def page_title(label_key: str) -> str:
+    """Compose a browser <title> from a translation key (R5): resolves at call
+    time in the current request's language, so route handlers never hardcode
+    an English "<Thing> - Celerp" string."""
+    return t(label_key) + " - Celerp"
+
+
+def _shell_js_i18n(lang: str = "en") -> dict:
+    """Translated strings the static JS bundle needs (R2): resolved here at render
+    time and handed to the client as a single config object, never spliced into
+    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS and _STAR_CTA_JS, which are
+    only ever rendered inside a base_shell()-wrapped page (this config is injected
+    below, before those scripts)."""
+    return {
+        "copied": t("shell.copied", lang),
+        "copyLabel": t("btn.copy", lang),
+        "unknownRequest": t("shell.unknown_request", lang),
+        "requestFailedPrefix": t("shell.request_failed_prefix", lang),
+        "networkErrorPrefix": t("shell.network_error_prefix", lang),
+        "markAsRead": t("shell.mark_as_read", lang),
+        "noNotifications": t("shell.no_notifications", lang),
+        "upToDate": t("shell.up_to_date", lang),
+        "downloadingVersion": t("shell.js_downloading_version", lang),
+        "updateWord": t("shell.js_update_word", lang),
+        "downloadingPct": t("shell.js_downloading_pct", lang),
+        "alreadyLatest": t("shell.js_already_latest", lang),
+        "versionReady": t("shell.js_version_ready", lang),
+        "updateDownloadedLog": t("shell.js_update_downloaded_log", lang),
+        "unknownError": t("shell.unknown_error", lang),
+        "updateCheckFailed": t("shell.update_check_failed", lang),
+        "errorPrefix": t("shell.error_prefix", lang),
+        "checking": t("shell.checking", lang),
+        "restarting": t("shell.restarting", lang),
+        "developmentBuild": t("shell.development_build", lang),
+        "unknownVersion": t("shell.unknown_version", lang),
+        "runningFromSource": t("shell.running_from_source", lang),
+        "latestReleasePrefix": t("shell.latest_release_prefix", lang),
+        "updateAvailablePrefix": t("shell.update_available_prefix", lang),
+        "checkFailed": t("shell.check_failed", lang),
+        "starOnGithub": t("shell.star_on_github", lang),
+        "appreciateSupport": t("shell.appreciate_support", lang),
+    }
+
+
 async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
     from ui.config import get_user_email, get_relay_info, get_token
@@ -1335,6 +1392,9 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         Link(rel="icon", type="image/png", href="/static/icon.png"),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         Script(src="/static/htmx.min.js"),
+        # Config the JS bundle below reads for its translated strings (R2) - must come
+        # before any script that references window.__shellI18n.
+        Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
         Script(_CLIENT_JS),
         Script(_IDLE_LOGOUT_JS),
         Script(_HEALTH_BANNER_JS),
@@ -1355,7 +1415,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
                 Div(
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
-                    _BACKUP_BANNER_HTML,
+                    _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
@@ -1428,13 +1488,15 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
         Div(
             Div(t("msg.search_help", lang), cls="global-search-help-title"),
             Ul(
-                Li("Plain text matches name, SKU, barcode, description, category and attributes."),
-                Li(op(","), " is OR: ", Code("bolt, nut"), " finds either term."),
-                Li(op("&"), " is AND: ", Code("bolt & steel"), " finds rows matching both."),
-                Li(op("5-10"), " is a numeric range: matches any of quantity, weight or pieces between 5 and 10."),
+                Li(t("shell.search_help_plain_text", lang)),
+                Li(op(","), " ", t("shell.search_help_or", lang), " ", Code("bolt, nut"),
+                   " ", t("shell.search_help_or_result", lang)),
+                Li(op("&"), " ", t("shell.search_help_and", lang), " ", Code("bolt & steel"),
+                   " ", t("shell.search_help_and_result", lang)),
+                Li(op("5-10"), " ", t("shell.search_help_range", lang)),
             ),
-            Div("Example: ", Code("bolt & 5-10"),
-                " finds bolts whose quantity, weight or pieces value is from 5 to 10.",
+            Div(t("shell.search_help_example_label", lang), " ", Code("bolt & 5-10"),
+                " ", t("shell.search_help_example_result", lang),
                 cls="global-search-help-example"),
             id=panel_id,
             cls="global-search-help-panel",

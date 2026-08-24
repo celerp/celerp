@@ -28,7 +28,7 @@ def _subscribe_url(plan: str = "") -> str:
 def upgrade_banner(
     feature: str,
     description: str,
-    price: str = "USD $29/mo",
+    price: str | None = None,
     plan: str = "",
     lang: str = "en",
 ) -> FT:
@@ -37,11 +37,14 @@ def upgrade_banner(
     Args:
         feature: Short feature name, e.g. "Encrypted Backup"
         description: One-line description of what the user gets.
-        price: Price string shown on the CTA button.
+        price: Price string shown on the CTA button. Defaults to the
+            standard Connect price, resolved at render time so it
+            translates with the request language.
         plan: Plan key for the /subscribe CTA, e.g. "cloud" or "ai".
         lang: UI language code.
     """
     href = _subscribe_url(plan)
+    price_text = price if price is not None else t("msg.29mo", lang)
     return Div(
         Div(
             Span(t("msg.u0001f512", lang), cls="upgrade-banner__icon"),
@@ -53,7 +56,7 @@ def upgrade_banner(
             cls="upgrade-banner__left",
         ),
         A(
-            f"{t('cloud.start_trial', lang)} - {price}",
+            f"{t('cloud.start_trial', lang)} - {price_text}",
             href=href,
             target="_blank",
             cls="btn btn--primary upgrade-banner__cta",
@@ -77,14 +80,13 @@ def digest_upsell_modal(lang: str = "en") -> FT:
     return Div(
         Dialog(
             upgrade_banner(
-                "Hands-off digest delivery",
-                "Connect delivers the daily low-stock digest for you, with no local "
-                "mail server to keep running.",
+                t("cloud.digest_upsell_feature", lang),
+                t("cloud.digest_upsell_desc", lang),
                 plan="cloud",
                 lang=lang,
             ),
             Div(
-                Button("Continue on your own plan", type="button", onclick=dismiss,
+                Button(t("btn.continue_on_own_plan", lang), type="button", onclick=dismiss,
                        cls="btn btn--sm btn--secondary"),
                 cls="account-panel__cancel",
             ),
@@ -103,7 +105,7 @@ def cloud_gate(
     is_connected: bool,
     feature: str,
     description: str,
-    price: str = "USD $29/mo",
+    price: str | None = None,
     plan: str = "cloud",
     content: FT | None = None,
     lang: str = "en",
@@ -114,7 +116,8 @@ def cloud_gate(
         is_connected: True if the gateway session is active (subscription valid).
         feature: Feature name for the banner.
         description: Banner description.
-        price: Price string.
+        price: Price string. Defaults to the standard Connect price,
+            resolved at render time by ``upgrade_banner``.
         plan: Plan key for the /subscribe CTA.
         content: The real UI to show when connected. If None, returns only banner.
         lang: UI language code.

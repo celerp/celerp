@@ -22,7 +22,7 @@ from pathlib import Path
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import auth_shell, flash
+from ui.components.shell import auth_shell, flash, page_title
 from ui.components.currency import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
@@ -113,7 +113,7 @@ def setup_routes(app):
             company = {}
         return auth_shell(
             _company_details_form(company, lang=get_lang(request)),
-            title="Company setup - Celerp",
+            title=page_title("page.company_setup"),
         )
 
     @app.post("/setup/company")
@@ -137,8 +137,8 @@ def setup_routes(app):
             except APIError:
                 company = {}
             return auth_shell(
-                _company_details_form(company, error=f"Invalid currency: {data['currency']!r}. Please select from the list.", lang=get_lang(request)),
-                title="Company setup - Celerp",
+                _company_details_form(company, error=t("setup.invalid_currency", value=repr(data["currency"])), lang=get_lang(request)),
+                title=page_title("page.company_setup"),
             )
 
         try:
@@ -150,7 +150,7 @@ def setup_routes(app):
                 company = {}
             return auth_shell(
                 _company_details_form(company, error=e.detail, lang=get_lang(request)),
-                title="Company setup - Celerp",
+                title=page_title("page.company_setup"),
             )
 
         # Mirror the company identity onto the self-contact - the Company Details page and the document
@@ -235,7 +235,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
             _activating_form(lang=get_lang(request)),
-            title="Activating modules - Celerp",
+            title=page_title("page.activating_modules"),
         )
 
     @app.get("/setup/activating-status")
@@ -330,10 +330,10 @@ def setup_routes(app):
         lang = get_lang(request)
         error = request.query_params.get("error", "")
         reason = request.query_params.get("reason", "")
-        notice = flash("Your company was deactivated. Enter a name to create a new one.", kind="info") if reason == "deactivated" else ""
+        notice = flash(t("setup.company_deactivated_notice"), kind="info") if reason == "deactivated" else ""
         return auth_shell(
             Div(notice, _new_company_form(error=error, lang=lang, hide_back=reason == "deactivated")) if notice else _new_company_form(error=error, lang=lang),
-            title="New company - Celerp",
+            title=page_title("setup.new_company_title"),
         )
 
     @app.post("/setup/new-company")
@@ -365,7 +365,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
             _cloud_form(),
-            title="Connect to Celerp Connect - Celerp",
+            title=page_title("page.connect_to_celerp_connect"),
         )
 
 
@@ -410,7 +410,7 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
             Div(
                 Label(t("th.address"), For="address", cls="form-label"),
                 Textarea(s.get("address", ""), id="address", name="address",
-                         placeholder="123 Main St, Bangkok, 10110",
+                         placeholder=t("setup.address_placeholder"),
                          rows="3", cls="form-input form-textarea"),
                 cls="form-group",
             ),
@@ -426,7 +426,7 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
                 Input(
                     type="text", id="currency", name="currency",
                     value=s.get("currency", "THB"),
-                    placeholder="Type to search, e.g. THB or Dollar",
+                    placeholder=t("setup.currency_search_placeholder"),
                     list="currency-list",
                     autocomplete="off",
                     cls="form-input",
@@ -605,18 +605,17 @@ def _cloud_form() -> FT:
     pricing_url = "https://celerp.com/pricing"
 
     _features = [
-        ("🔗", "All connectors", "Shopify, QuickBooks, and Xero - auto-synced on a schedule."),
-        ("☁", "Encrypted cloud backup", "Daily DB + weekly file backup, auto-pruned, 20 GB. Export/import for easy migration."),
-        ("🌐", "Web Access", "A stable public URL for your instance. No static IP, no config."),
-        ("✨", "Bonus: 100 AI queries", "Auto-draft POs, reconcile invoices, run natural language reports."),
+        ("🔗", t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
+        ("☁", t("setup.feature_backup_title"), t("setup.feature_backup_desc")),
+        ("🌐", t("setup.feature_web_title"), t("setup.feature_web_desc")),
+        ("✨", t("setup.feature_ai_title"), t("setup.feature_ai_desc")),
     ]
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
             H1(t("page.one_last_thing"), cls="auth-title"),
             P(
-                "Your desktop app is ready. If you need your tools connected or your data backed up, "
-                "Connect unlocks all of that.",
+                t("setup.cloud_subtitle"),
                 cls="auth-subtitle",
             ),
             cls="auth-header",
@@ -656,7 +655,7 @@ def _cloud_form() -> FT:
                 cls="btn btn--primary btn--full",
             ),
             A(
-                "Skip for now - go to settings",
+                t("setup.skip_for_now"),
                 href="/settings?setup=done",
                 cls="cloud-upsell-skip",
             ),

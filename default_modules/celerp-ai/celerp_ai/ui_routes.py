@@ -280,7 +280,7 @@ def setup_ui_routes(app) -> None:
                 Button(t("btn.clear_all_memory"), cls="btn btn--danger btn--sm",
                     hx_delete="/ai/memory-clear",
                     hx_target="#ai-memory-content",
-                    hx_confirm="Clear all AI memory for this company?",
+                    hx_confirm=t("ai.clear_memory_confirm"),
                 ),
                 cls="ai-memory__actions",
             ),
@@ -347,7 +347,7 @@ def setup_ui_routes(app) -> None:
             count = result.get("count", 0)
             return Div(
                 _msg_bubble("ai", f"\u2705 {feedback}"),
-                P(f"{count} draft bill(s) created. View them in Documents.", cls="ai-bills__done"),
+                P(t("ai.draft_bills_created", count=count), cls="ai-bills__done"),
                 cls="ai-bills__confirmed",
             )
         except APIError as e:
@@ -411,7 +411,7 @@ async def _quota_section(token: str, session_token: str) -> FT:
                 cls="ai-settings__stat",
             ),
             Div(
-                Span("Top-up credits", cls="ai-settings__stat-label"),
+                Span(t("ai.top_up_credits"), cls="ai-settings__stat-label"),
                 Span(str(topup), cls="ai-settings__stat-value"),
                 cls="ai-settings__stat",
             ),
@@ -519,7 +519,8 @@ def _bill_preview(bills: list[dict]) -> FT:
 
     bills_json = json.dumps(bills)
     return Div(
-        H4(f"{len(bills)} Draft Bill{'s' if len(bills) != 1 else ''} Ready", cls="ai-bills__title"),
+        H4(t("ai.draft_bills_ready_one" if len(bills) == 1 else "ai.draft_bills_ready_other",
+             n=len(bills)), cls="ai-bills__title"),
         Div(*rows, cls="ai-bills__list"),
         Div(
             Form(
@@ -664,7 +665,7 @@ def _chat_view() -> FT:
                 "☰",
                 cls="ai-sidebar__toggle",
                 id="ai-sidebar-toggle",
-                title="Toggle sidebar",
+                title=t("ai.toggle_sidebar"),
                 onclick="celerpAiToggleSidebar()",
             ),
             # Expanded action buttons (stacked vertically)
@@ -691,7 +692,7 @@ def _chat_view() -> FT:
                 Button(
                     "+",
                     cls="ai-sidebar__icon-btn",
-                    title="New Conversation",
+                    title=t("ai.new_conversation"),
                     hx_post="/ai/conversations",
                     hx_target="#ai-history",
                     hx_swap="afterbegin",
@@ -700,7 +701,7 @@ def _chat_view() -> FT:
                 Button(
                     "🧠",
                     cls="ai-sidebar__icon-btn",
-                    title="Memory",
+                    title=t("ai.memory"),
                     hx_get="/ai/memory-panel",
                     hx_target="#ai-memory-content",
                     hx_swap="innerHTML",
@@ -758,7 +759,7 @@ def _chat_view() -> FT:
                         type="text",
                         name="query",
                         id="ai-query-input",
-                        placeholder="Ask anything about your business data…",
+                        placeholder=t("msg.ask_anything_about_your_business_data"),
                         cls="ai-input__field",
                         autocomplete="off",
                     ),

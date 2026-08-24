@@ -93,7 +93,7 @@ def currency_combobox_td(
     return Td(
         Div(
             Input(
-                type="text", value=display_val, placeholder="Search currency...",
+                type="text", value=display_val, placeholder=t("currency.search_placeholder"),
                 cls="cell-input combobox-input", autofocus=True,
             ),
             Input(type="hidden", name="value", value=value, id=hidden_id),

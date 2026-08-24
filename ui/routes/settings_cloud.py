@@ -9,7 +9,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.i18n import t, get_lang
 
 from ui.routes.settings import (
@@ -64,7 +64,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     card_cls = "cloud-plan-card cloud-plan-card--featured" if featured else "cloud-plan-card"
     return Div(
         Div(name, cls="cloud-plan-card__name"),
-        Div(price, Span("/mo"), cls="cloud-plan-card__price"),
+        Div(price, Span(t("settings_cloud.per_mo", lang)), cls="cloud-plan-card__price"),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
         A(t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
@@ -283,7 +283,7 @@ def _infra_db_section() -> FT:
                     hx_swap="innerHTML",
                 ),
                 Button(t("btn.save_restart"), type="submit", cls="btn btn--primary btn--sm", style="margin-left:8px;",
-                       onclick="return confirm('This will restart the server. Continue?');"),
+                       hx_confirm=t("settings_cloud.restart_server_confirm")),
                 style="display:flex;align-items:center;margin-top:4px;",
             ),
             Div(id="db-test-result", cls="infra-test-result"),
@@ -298,7 +298,7 @@ def _infra_db_section() -> FT:
                 hx_post="/settings/cloud/restore-db",
                 hx_target="#db-test-result",
                 hx_swap="innerHTML",
-                hx_confirm="Restore the previous database URL and restart?",
+                hx_confirm=t("settings_cloud.restore_db_confirm"),
             ),
             Div(id="db-test-result", cls="infra-test-result"),
             style="margin-top:8px;",
@@ -409,13 +409,13 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
 
     def _time_until(iso: str | None) -> str:
         if iso is None:
-            return "not scheduled"
+            return t("settings.not_scheduled")
         from datetime import datetime, timezone
         dt = datetime.fromisoformat(iso)
         delta = dt - datetime.now(timezone.utc)
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
-        return f"in {hours}h {mins}m" if hours > 0 else f"in {mins}m"
+        return t("settings_cloud.in_hours_mins", hours=hours, mins=mins) if hours > 0 else t("settings_cloud.in_mins", mins=mins)
 
     cloud_section = Div(
         Div(
@@ -507,10 +507,10 @@ def setup_routes(app):
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return await base_shell(
-                _section_breadcrumb("Web Access"),
-                page_header("Web Access"),
+                _section_breadcrumb(t("settings_cloud.web_access", lang)),
+                page_header(t("settings_cloud.web_access", lang)),
                 _value_prop_page(iid, lang=lang, disconnected=disconnected),
-                title="Web Access - Celerp",
+                title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
                 request=request,
@@ -549,11 +549,11 @@ def setup_routes(app):
             tab = "status"
 
         return await base_shell(
-            _section_breadcrumb("Web Access"),
-            page_header("Web Access"),
+            _section_breadcrumb(t("settings_cloud.web_access", lang)),
+            page_header(t("settings_cloud.web_access", lang)),
             _cloud_tabs(tab, has_team_features=has_team, lang=lang),
             content,
-            title="Web Access - Celerp",
+            title=page_title("settings_cloud.web_access"),
             nav_active="web-access",
             lang=lang,
             request=request,
@@ -587,7 +587,7 @@ def setup_routes(app):
                 _try_db_connect(host, port, name, user, password),
                 timeout=3.0,
             )
-            return Span(f"✓ Connected to {name}@{host}:{port}", cls="infra-test-result--ok")
+            return Span(t("settings_cloud.connected_to", target=f"{name}@{host}:{port}"), cls="infra-test-result--ok")
         except asyncio.TimeoutError:
             return Span(t("settings.connection_timed_out_3s"), cls="infra-test-result--err")
         except Exception as exc:
@@ -690,7 +690,7 @@ def setup_routes(app):
 
             return Span(t("settings._saved"), cls="infra-test-result--ok")
         except Exception as exc:
-            return Span(f"✗ Save failed: {exc}", cls="infra-test-result--err")
+            return Span(t("settings_cloud.save_failed", err=exc), cls="infra-test-result--err")
 
     @app.post("/settings/cloud/restore-db")
     async def cloud_restore_db(request: Request):
@@ -723,7 +723,7 @@ def setup_routes(app):
 
             return Span(t("settings._restored_previous_db_url_restarting"), cls="infra-test-result--ok")
         except Exception as exc:
-            return Span(f"✗ Restore failed: {exc}", cls="infra-test-result--err")
+            return Span(t("settings_cloud.restore_failed", err=exc), cls="infra-test-result--err")
 
 
 async def _try_db_connect(host: str, port: int, name: str, user: str, password: str) -> None:
@@ -746,18 +746,18 @@ async def _try_s3_connect(endpoint: str, bucket: str, access_key: str, secret_ke
         async with httpx.AsyncClient(timeout=2.5) as client:
             r = await client.head(bucket_url, headers={"Authorization": "dummy"})
     except httpx.ConnectError:
-        raise RuntimeError("Cannot reach endpoint")
+        raise RuntimeError(t("settings_cloud.cannot_reach_endpoint"))
     except httpx.TimeoutException:
-        raise RuntimeError("Cannot reach endpoint")
+        raise RuntimeError(t("settings_cloud.cannot_reach_endpoint"))
 
     if r.status_code == 200:
-        return f"✓ Connected to bucket '{bucket}'"
+        return t("settings_cloud.connected_to_bucket", bucket=bucket)
     elif r.status_code == 403:
-        raise RuntimeError("Invalid credentials (403)")
+        raise RuntimeError(t("settings_cloud.invalid_credentials_403"))
     elif r.status_code == 404:
-        raise RuntimeError("Bucket not found (404)")
+        raise RuntimeError(t("settings_cloud.bucket_not_found_404"))
     elif r.status_code in (301, 307, 308):
         # Redirect - endpoint reachable but bucket may be in different region
-        raise RuntimeError(f"Bucket redirect ({r.status_code}) - check region/endpoint")
+        raise RuntimeError(t("settings_cloud.bucket_redirect", status=r.status_code))
     else:
-        raise RuntimeError(f"S3 returned {r.status_code}")
+        raise RuntimeError(t("settings_cloud.s3_returned", status=r.status_code))

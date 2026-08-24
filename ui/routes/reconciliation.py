@@ -19,10 +19,10 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, flash, page_header
+from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.components.table import (
-    EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, fmt_money, party_options,
-    searchable_select,
+    EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, display_enum, fmt_money,
+    party_options, searchable_select,
 )
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
@@ -42,18 +42,10 @@ _STATUS_CLS = {
     "skipped": "recon-row--skipped",
 }
 
-_STATUS_LABEL = {
-    "matched": "Matched",
-    "created": "Created",
-    "suggested": "Suggested",
-    "unmatched": "Unmatched",
-    "skipped": "Skipped",
-}
-
-
 def _row_status_badge(status: str) -> FT:
-    label = _STATUS_LABEL.get(status, status.title())
-    return Span(label, cls=f"badge badge--recon-{status}")
+    # Raw status stays canonical (badge class, comparisons); only the visible label
+    # is resolved per request language via the enum display layer (R3).
+    return Span(display_enum(status, "recon_status"), cls=f"badge badge--recon-{status}")
 
 
 # ── Select-to-match interaction ───────────────────────────────────────────────
@@ -200,7 +192,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability")
     ]
-    _acct_opt, _acct_js = add_new_option("+ Add new account", "/settings/accounting?tab=chart")
+    _acct_opt, _acct_js = add_new_option(t("recon.add_new_account"), "/settings/accounting?tab=chart")
     return Div(
         H4(t("page.create_journal_entry")),
         Form(
@@ -254,23 +246,23 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability", "revenue")
     ]
-    _acct_opt, _acct_js = add_new_option("+ Add new account", "/settings/accounting?tab=chart")
+    _acct_opt, _acct_js = add_new_option(t("recon.add_new_account"), "/settings/accounting?tab=chart")
     return Div(
         H4(t("page.split_transaction")),
         Form(
             Div(
-                P(f"Total: {fmt_money(float(line.get('amount', 0)), currency)}", cls="text-muted"),
+                P(f"{t('doc.total')} {fmt_money(float(line.get('amount', 0)), currency)}", cls="text-muted"),
                 id="split-entries",
                 *[
                     Div(
                         Select(*account_options, _acct_opt, name="account_code_0",
                                cls="form-input cell-input--select w-auto", onchange=_acct_js),
-                        Input(type="number", name="amount_0", placeholder="Amount",
+                        Input(type="number", name="amount_0", placeholder=t("label.amount"),
                               step="0.01", cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
                                           placeholder=t("acct.je_line_party"),
                                           cls_extra="form-input", search_url=PARTY_SEARCH_URL),
-                        Input(type="text", name="memo_0", placeholder="Memo", cls="form-input"),
+                        Input(type="text", name="memo_0", placeholder=t("th.memo"), cls="form-input"),
                         cls="split-entry-row flex-row gap-sm mb-sm",
                     )
                 ],
@@ -299,8 +291,9 @@ def _recon_progress(total: int, matched: int, created: int, skipped: int) -> FT:
         pct = int((matched + created + skipped) / total * 100)
     return Div(
         Div(
-            Span(f"{matched + created}/{total} resolved", cls="recon-progress-label"),
-            Span(f"({skipped} skipped)", cls="recon-progress-label text-muted"),
+            Span(t("recon.progress_resolved", done=matched + created, total=total),
+                 cls="recon-progress-label"),
+            Span(t("recon.progress_skipped", n=skipped), cls="recon-progress-label text-muted"),
         ),
         Div(
             Div(cls="recon-progress-fill", style=f"width:{pct}%;"),
@@ -345,26 +338,26 @@ def _workspace_view(
 
     header = Div(
         Div(
-            H2(f"Reconciliation: {bank_name} {acc_num}", cls="recon-title"),
-            Span(f"Statement date: {recon.get('statement_date', '--')}", cls="text-muted"),
+            H2(t("recon.title", bank=bank_name, account=acc_num), cls="recon-title"),
+            Span(t("recon.statement_date", date=recon.get("statement_date", "--")), cls="text-muted"),
         ),
         Div(
-            Span(f"Statement: {fmt_money(stmt_bal, currency)}", cls="val-chip"),
-            Span(f"Diff: {fmt_money(float(difference), currency)}", cls=f"val-chip {diff_cls}"),
+            Span(t("recon.statement_balance", amount=fmt_money(stmt_bal, currency)), cls="val-chip"),
+            Span(t("recon.difference", amount=fmt_money(float(difference), currency)), cls=f"val-chip {diff_cls}"),
         ),
         cls="recon-header",
     )
 
     toolbar = Div(
         Button(
-            "Auto-Match All",
+            t("recon.auto_match_all"),
             hx_post=f"/accounting/reconcile/{session_id}/auto-match",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
             cls="btn btn--secondary btn--sm",
         ),
         Button(
-            f"Confirm Suggestions ({suggested})",
+            t("recon.confirm_suggestions", n=suggested),
             hx_post=f"/accounting/reconcile/{session_id}/bulk-confirm",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
@@ -452,10 +445,10 @@ def _workspace_view(
         header,
         toolbar,
         Div(
-            Span(f"Unmatched: {unmatched}", cls="recon-stat"),
-            Span(f"Suggested: {suggested}", cls="recon-stat recon-stat--suggested"),
-            Span(f"Matched: {matched}", cls="recon-stat recon-stat--matched"),
-            Span(f"Skipped: {skipped}", cls="recon-stat recon-stat--skipped"),
+            Span(t("recon.stat_unmatched", n=unmatched), cls="recon-stat"),
+            Span(t("recon.stat_suggested", n=suggested), cls="recon-stat recon-stat--suggested"),
+            Span(t("recon.stat_matched", n=matched), cls="recon-stat recon-stat--matched"),
+            Span(t("recon.stat_skipped", n=skipped), cls="recon-stat recon-stat--skipped"),
             cls="recon-stats-bar",
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
@@ -532,7 +525,7 @@ def _mapper_fragment(
     ]
 
     return Div(
-        H3("Map CSV Columns", cls="recon-panel-title"),
+        H3(t("recon.map_csv_columns"), cls="recon-panel-title"),
         P(t("acct.we_couldnt_autodetect_your_csv_columns_please_map"), cls="text-muted"),
         P(error, cls="error-banner") if error else None,
         Form(
@@ -583,7 +576,7 @@ def setup_routes(app):
             Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"])
             for b in banks if b.get("is_active", True)
         ]
-        _bank_opt, _bank_js = add_new_option("+ Add new bank account", "/settings/accounting?tab=bank-accounts")
+        _bank_opt, _bank_js = add_new_option(t("recon.add_new_bank_account"), "/settings/accounting?tab=bank-accounts")
 
         if bank_options:
             bank_select_or_msg = Select(
@@ -629,10 +622,10 @@ def setup_routes(app):
         )
 
         return await base_shell(
-            page_header("Start Reconciliation",
+            page_header(t("btn.start_reconciliation"),
                         A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
             form,
-            title="Start Reconciliation - Celerp",
+            title=page_title("btn.start_reconciliation"),
             nav_active="accounting",
             request=request,
         )
@@ -688,7 +681,7 @@ def setup_routes(app):
         return await base_shell(
             flash(msg) if msg else None,
             workspace,
-            title="Reconciliation Workspace - Celerp",
+            title=page_title("recon.workspace_title"),
             nav_active="accounting",
             request=request,
         )
@@ -701,10 +694,10 @@ def setup_routes(app):
         form = await request.form()
         csv_file = form.get("csv_file")
         if not csv_file or not hasattr(csv_file, "read"):
-            return _workspace_redirect(session_id, "Choose a CSV file to import.")
+            return _workspace_redirect(session_id, t("recon.err_choose_csv"))
         content = await csv_file.read()
         if len(content) > _MAX_CSV_BYTES:
-            return _workspace_redirect(session_id, "CSV file is larger than 5 MB. Split the statement and try again.")
+            return _workspace_redirect(session_id, t("recon.err_csv_too_large"))
         filename = csv_file.filename or "upload.csv"
         try:
             result = await api.import_recon_csv(token, session_id, content, filename)
@@ -716,7 +709,7 @@ def setup_routes(app):
             csv_b64 = base64.b64encode(content).decode()
             return _mapper_fragment(session_id, list(result.get("headers") or []), csv_b64, filename)
         if not int(result.get("rows_imported", 0) or 0):
-            return _workspace_redirect(session_id, "No statement lines were found in the CSV.")
+            return _workspace_redirect(session_id, t("recon.err_no_lines"))
         return _workspace_redirect(session_id)
 
     @app.post("/accounting/reconcile/{session_id}/confirm-import")
@@ -730,9 +723,9 @@ def setup_routes(app):
         try:
             content = base64.b64decode(str(form.get("csv_b64", "")), validate=True)
         except (binascii.Error, ValueError):
-            return _workspace_redirect(session_id, "The CSV data was corrupted in transit. Please upload the file again.")
+            return _workspace_redirect(session_id, t("recon.err_csv_corrupted"))
         if len(content) > _MAX_CSV_BYTES:
-            return _workspace_redirect(session_id, "CSV file is larger than 5 MB. Split the statement and try again.")
+            return _workspace_redirect(session_id, t("recon.err_csv_too_large"))
         fieldnames = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace"))).fieldnames or [])
         selections = {k[4:]: str(v) for k, v in form.items() if k.startswith("map_")}
         column_map = {
@@ -750,10 +743,10 @@ def setup_routes(app):
             csv_b64 = base64.b64encode(content).decode()
             return _mapper_fragment(
                 session_id, fieldnames, csv_b64, filename, selections=selections,
-                error="Map these required fields before importing: " + ", ".join(missing),
+                error=t("recon.err_map_required") + ", ".join(missing),
             )
         if any(h not in fieldnames for h in column_map.values()):
-            return _workspace_redirect(session_id, "The mapped columns no longer match the CSV. Please upload the file again.")
+            return _workspace_redirect(session_id, t("recon.err_columns_changed"))
         try:
             result = await api.import_recon_csv(token, session_id, content, filename, column_map=column_map)
         except APIError as e:
@@ -761,7 +754,7 @@ def setup_routes(app):
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             return _workspace_redirect(session_id, str(e.detail))
         if not int(result.get("rows_imported", 0) or 0):
-            return _workspace_redirect(session_id, "No statement lines were found in the CSV.")
+            return _workspace_redirect(session_id, t("recon.err_no_lines"))
         return _workspace_redirect(session_id)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/create-form")
@@ -948,15 +941,15 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             return P(str(e.detail), cls="error-banner")
         return await base_shell(
-            page_header("Reconciliation Complete ✓"),
+            page_header(t("recon.complete_heading")),
             Div(
-                P(f"Reconciliation completed for {result.get('statement_date', '--')}.",
+                P(t("recon.completed_for", date=result.get("statement_date", "--")),
                   cls="success-banner"),
                 A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
                   cls="btn btn--primary"),
                 cls="settings-card",
             ),
-            title="Reconciliation Complete - Celerp",
+            title=page_title("recon.complete_title"),
             nav_active="accounting",
             request=request,
         )

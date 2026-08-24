@@ -21,7 +21,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, PlainTextRespons
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.components.currency import CURRENCIES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
@@ -159,7 +159,7 @@ def setup_routes(app):
             request,
             page_header(t("page.accounting", get_lang(request))),
             content,
-            title="Accounting - Celerp",
+            title=page_title("page.accounting"),
             nav_active="accounting",
         )
 
@@ -174,7 +174,7 @@ def setup_routes(app):
             return await base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
                 Div(t("acct.not_authorized"), cls="error-banner"),
-                title="Accounting - Celerp",
+                title=page_title("page.accounting"),
                 nav_active="accounting",
                 request=request,
             )
@@ -202,7 +202,7 @@ def setup_routes(app):
                                 date_from=date_from, date_to=date_to,
                                 base_currency=base_currency,
                                 contacts=contacts, contacts_total=contacts_total),
-            title="Accounting - Celerp",
+            title=page_title("page.accounting"),
             nav_active="accounting",
             request=request,
         )

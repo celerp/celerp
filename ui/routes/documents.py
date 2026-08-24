@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+import json as _json
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -15,8 +16,8 @@ from urllib.parse import quote_plus, urlencode
 import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
-from ui.components.shell import base_shell, page_header, toast_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell
+from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
@@ -353,14 +354,16 @@ _RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
 }
 # Item-status badges, module level so the mapping is importable and unit-testable. The "reserved"
 # row is the manual-reservation badge; without it a reserved line fell through to a bare "-".
+# Value is (label i18n key, css class); the label resolves at render time via t()
+# (see _item_status_badge_cell) so the raw status stays canonical everywhere else (R3).
 _STATUS_BADGE: dict[str, tuple[str, str]] = {
-    "available":     ("In Stock",     "badge--available"),
-    "reserved":      ("Reserved",     "badge--reserved"),
-    "memo_out":      ("On Memo",      "badge--memo_out"),
-    "sold":          ("Sold",         "badge--sold"),
-    "archived":      ("Archived",     "badge--inactive"),
-    "expired":       ("Expired",      "badge--expired"),
-    "not_received":  ("Not Received", "badge--not_received"),
+    "available":     ("documents.status_available",    "badge--available"),
+    "reserved":      ("documents.status_reserved",     "badge--reserved"),
+    "memo_out":      ("documents.status_memo_out",     "badge--memo_out"),
+    "sold":          ("enum.item_status.sold",         "badge--sold"),
+    "archived":      ("enum.item_status.archived",     "badge--inactive"),
+    "expired":       ("enum.item_status.expired",      "badge--expired"),
+    "not_received":  ("documents.status_not_received", "badge--not_received"),
 }
 
 
@@ -373,27 +376,28 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     the same format the inventory page uses. The label and the doc number are sibling
     anchors inside the badge span (an anchor may not nest inside an anchor)."""
     if status_val and status_val in _STATUS_BADGE:
-        label, badge_cls = _STATUS_BADGE[status_val]
+        label_key, badge_cls = _STATUS_BADGE[status_val]
+        label = t(label_key)
         if status_doc and status_doc[0]:
             doc_id, doc_number = status_doc
             badge_el = Span(
-                A(label, href=f"/inventory/{eid}", title="View in catalog", cls="badge__doc-link")
+                A(label, href=f"/inventory/{eid}", title=t("documents.view_in_catalog"), cls="badge__doc-link")
                 if eid else label,
                 ": ",
                 A(doc_number or doc_id.removeprefix("doc:"), href=f"/docs/{doc_id}",
-                  title="View reserving document", cls="badge__doc-link"),
+                  title=t("documents.view_reserving_document"), cls="badge__doc-link"),
                 cls=f"badge {badge_cls}",
             )
         else:
             badge_el = (
-                A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{eid}", title="View in catalog")
+                A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{eid}", title=t("documents.view_in_catalog"))
                 if eid else Span(label, cls=f"badge {badge_cls}")
             )
         return Td(badge_el, cls="col-item-status")
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
-def _item_link_eye(entity_id: str, title: str = "View item details") -> FT:
+def _item_link_eye(entity_id: str, title: str | None = None) -> FT:
     """Eye glyph on a document line linking to its catalog item, in EVERY document state.
     Active (accent, opens the catalog) when the line came from the catalog; a greyed,
     inert placeholder otherwise, so the SKU column reads the same in the draft and
@@ -401,40 +405,41 @@ def _item_link_eye(entity_id: str, title: str = "View item details") -> FT:
     and the finalized SKU cell); the draft autocomplete JS re-points the same element
     live as the user picks an item."""
     active = bool(entity_id)
+    if title is None:
+        title = t("documents.view_item_details")
     return A("👁", href=f"/inventory/{entity_id}" if active else "#",
              target="_blank" if active else "",
              cls="item-link item-link--active" if active else "item-link item-link--inactive",
              data_name="item_link",
-             title=title if active else "No linked item",
+             title=title if active else t("documents.no_linked_item"),
              onclick="" if active else "event.preventDefault();")
 
 
+# Plural page/breadcrumb labels per doc type. Values are i18n keys resolved at render
+# time (see _doc_section_label / the list handler), never frozen English (R1).
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
-    "invoice": "Invoices",
-    "purchase_order": "Purchase Orders",
-    "bill": "Vendor Bills",
-    "receipt": "Receipts",
-    "credit_note": "Credit Notes",
-    "memo": "Consignment Out",
-    "consignment_in": "Consignment In",
-    "list": "Lists",
-    "production_order": "Stock Orders",
-    "subscription_invoice": "Subscription Templates",
-    "subscription_po": "Subscription PO Templates",
+    "invoice": "nav.invoices",
+    "purchase_order": "nav.purchase_orders",
+    "bill": "nav.vendor_bills",
+    "receipt": "documents.page_receipts",
+    "credit_note": "nav.credit_notes",
+    "memo": "nav.consignment_out",
+    "consignment_in": "nav.consignment_in",
+    "list": "nav.lists",
+    "production_order": "documents.page_stock_orders",
+    "subscription_invoice": "documents.page_subscription_templates",
+    "subscription_po": "documents.page_subscription_po_templates",
 }
-# Short explanatory banner shown above certain doc-type lists where the purpose isn't obvious.
+# Short explanatory banner shown above certain doc-type lists where the purpose isn't
+# obvious. Values are i18n keys resolved at render time (see _doc_type_intro).
 _DOC_TYPE_INTRO: dict[str, str] = {
-    "production_order": (
-        "Stock Orders are internal orders to make stock - demand you create yourself, not tied to "
-        "a customer. Use them to plan production ahead of (or independent of) sales; once finalized, their "
-        "items appear on the Manufacturing Demand Planning page and can become work orders."
-    ),
+    "production_order": "documents.intro_production_order",
 }
 
 
 def _doc_type_intro(doc_type: str) -> FT:
-    text = _DOC_TYPE_INTRO.get(doc_type)
-    return Div(Span("ℹ️", cls="info-banner-icon"), Span(text), cls="info-banner") if text else ""
+    key = _DOC_TYPE_INTRO.get(doc_type)
+    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t(key)), cls="info-banner") if key else ""
 
 
 _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
@@ -459,18 +464,20 @@ def _doc_type_new_label(doc_type: str, lang: str = "en") -> str:
 _DOC_STATUSES = ["draft", "sent", "paid", "overdue", "void", "open", "awaiting_payment", "converted", "expired", "bill", "final"]
 
 # Singular labels for doc detail pages / breadcrumbs
+# Singular labels for doc detail pages / breadcrumbs. Values are i18n keys resolved at
+# render time (see _doc_singular_label), never frozen English (R1).
 _DOC_TYPE_SINGULAR: dict[str, str] = {
-    "invoice": "Invoice",
-    "purchase_order": "Purchase Order",
-    "bill": "Vendor Bill",
-    "receipt": "Receipt",
-    "credit_note": "Credit Note",
-    "memo": "Consignment Out",
-    "consignment_in": "Consignment In",
-    "list": "List",
-    "production_order": "Stock Order",
-    "subscription_invoice": "Subscription Template",
-    "subscription_po": "Subscription PO Template",
+    "invoice": "label.invoice",
+    "purchase_order": "label.purchase_order",
+    "bill": "label.vendor_bill",
+    "receipt": "documents.doc_receipt",
+    "credit_note": "doc.credit_note",
+    "memo": "nav.consignment_out",
+    "consignment_in": "nav.consignment_in",
+    "list": "documents.doc_list",
+    "production_order": "documents.doc_stock_order",
+    "subscription_invoice": "documents.doc_subscription_template",
+    "subscription_po": "documents.doc_subscription_po_template",
 }
 
 
@@ -497,7 +504,7 @@ def _doc_nav_key(doc_type: str) -> str:
 
 def _doc_section_label(doc_type: str) -> str:
     """Section label for breadcrumb (plural)."""
-    return _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
+    return t(_DOC_TYPE_PAGE_LABELS.get(doc_type, "page.documents"))
 
 
 # ---------------------------------------------------------------------------
@@ -570,10 +577,10 @@ def _render_receive_return_section(doc: dict):
         undo_form = Form(
             Button(t("btn.revert_return_stock"),
                 cls="btn btn--secondary btn--sm",
-                title="Revert the received return. Disposes the returned inventory items and reverses the COGS journal entry.",
+                title=t("documents.revert_return_tooltip"),
             ),
             hx_delete=f"/docs/{entity_id}/receive-return",
-            hx_confirm="Revert the received return? This will archive the returned inventory items and reverse the accounting entry.",
+            hx_confirm=t("documents.revert_return_confirm"),
             hx_target=f"#{cid_safe}",
             hx_swap="outerHTML",
         )
@@ -598,9 +605,9 @@ def _render_receive_return_section(doc: dict):
             *hidden_fields,
             Button(t("btn.receive_returns"),
                 cls="btn btn--primary btn--sm",
-                title="Receive returned goods back into inventory. Creates new inventory items and reverses COGS.",
+                title=t("documents.receive_returns_tooltip"),
                 hx_post=f"/docs/{entity_id}/receive-return",
-                hx_confirm="Receive all returned goods back into inventory? This will create new inventory items and reverse the COGS journal entry.",
+                hx_confirm=t("documents.receive_returns_confirm"),
                 hx_encoding="application/x-www-form-urlencoded",
                 hx_target=f"#{cid_safe}",
                 hx_swap="outerHTML",
@@ -630,7 +637,10 @@ def _doc_section_url(doc_type: str) -> str:
 
 def _doc_singular_label(doc_type: str) -> str:
     """Singular label for a doc type (e.g. 'Invoice', 'Purchase Order')."""
-    return _DOC_TYPE_SINGULAR.get(doc_type, doc_type.replace("_", " ").title() if doc_type else "Document")
+    key = _DOC_TYPE_SINGULAR.get(doc_type)
+    if key:
+        return t(key)
+    return display_enum(doc_type, domain="doc_type") if doc_type else t("activity.document")
 
 
 
@@ -842,11 +852,11 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
         if kind == "memo":
             ref = d.get("memo_number") or eid.split(":")[-1][:8]
             contact = d.get("contact_name") or d.get("customer_name") or ""
-            label = f"Memo {ref}"
+            label = t("documents.memo_ref", ref=ref)
         elif kind == "list":
             ref = d.get("ref_id") or eid.split(":")[-1][:8]
             contact = d.get("customer_name") or d.get("receiver") or ""
-            label = f"List {ref}"
+            label = t("documents.list_ref", ref=ref)
         else:
             ref = d.get("ref_id") or d.get("doc_number") or eid.split(":")[-1][:8]
             contact = d.get("contact_name") or ""
@@ -876,11 +886,11 @@ def _send_to_modal(
     """Unified send-to modal: create new draft or add to existing doc/list/memo."""
     return Div(
         Div(
-            H3(f"Send to {type_label}", cls="modal-title"),
+            H3(t("documents.send_to", target=type_label), cls="modal-title"),
             # Create new draft
             Form(
                 *hidden_items,
-                Button(f"Create new draft {type_label.lower()}", type="submit", cls="btn btn--primary btn--full"),
+                Button(t("documents.create_new_draft", target=type_label.lower()), type="submit", cls="btn btn--primary btn--full"),
                 hx_post=create_url,
                 hx_target="#modal-container",
                 hx_swap="innerHTML",
@@ -892,7 +902,7 @@ def _send_to_modal(
             Input(
                 type="search",
                 name="q",
-                placeholder=f"Search by ref, customer...",
+                placeholder=t("documents.search_ref_customer"),
                 hx_get=search_url,
                 hx_trigger="input changed delay:300ms",
                 hx_target="#send-to-options",
@@ -906,7 +916,7 @@ def _send_to_modal(
             Form(
                 *hidden_items,
                 Input(type="hidden", name="target_id", value="", id="send-to-target-hidden"),
-                Button(f"Add to selected {type_label.lower()}", type="submit", cls="btn btn--secondary btn--full",
+                Button(t("documents.add_to_selected", target=type_label.lower()), type="submit", cls="btn btn--secondary btn--full",
                        id="send-to-add-btn", disabled=True),
                 hx_post=add_url,
                 hx_target="#modal-container",
@@ -1107,7 +1117,8 @@ def setup_routes(app):
             return RedirectResponse(f"/docs{redirect_params}", status_code=302)
 
         lang = get_lang(request)
-        page_title = _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
+        section_label_key = _DOC_TYPE_PAGE_LABELS.get(doc_type, "page.documents")
+        section_title = t(section_label_key)
         new_label = _doc_type_new_label(doc_type, lang)
         search_url = f"/docs/search?type={doc_type}" if doc_type else "/docs/search"
         create_type = doc_type or "invoice"
@@ -1115,12 +1126,12 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         return await base_shell(
             page_header(
-                page_title,
+                section_title,
                 search_bar(
-                    placeholder="Search doc number, contact...",
+                    placeholder=t("documents.search_docs_placeholder"),
                     target="#doc-table",
                     url=search_url,
-                    label=f"Search {page_title.lower()}",
+                    label=t("documents.search_section", section=section_title.lower()),
                 ),
                 Button(
                     new_label,
@@ -1146,7 +1157,7 @@ def setup_routes(app):
                 is_drafts_view=is_drafts_view,
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
-            title=f"{page_title} - Celerp",
+            title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
             request=request,
@@ -1225,9 +1236,8 @@ def setup_routes(app):
             if e.status == 401:
                 from starlette.responses import Response as _R
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            import json as _json
             from starlette.responses import Response as _R
-            detail = e.detail if hasattr(e, "detail") and e.detail else "Failed to create document."
+            detail = e.detail if hasattr(e, "detail") and e.detail else t("documents.failed_to_create_document")
             return _R(
                 "",
                 status_code=200,
@@ -1275,7 +1285,7 @@ def setup_routes(app):
         except APIError:
             drafts = []
         hidden_items = [Input(type="hidden", name="selected", value=eid) for eid in entity_ids]
-        return _send_to_modal("Invoice", "/docs/from-items/new", "/docs/from-items/add",
+        return _send_to_modal(t("label.invoice"), "/docs/from-items/new", "/docs/from-items/add",
                               "/docs/from-items/search", drafts, hidden_items, "doc")
 
     @app.post("/docs/from-items/new")
@@ -1883,9 +1893,9 @@ def setup_routes(app):
         hidden_ids = [Input(type="hidden", name="doc_ids", value=(d.get("entity_id") or d.get("id", ""))) for d in payable]
 
         panel = Div(
-            H3(f"Bulk Payment: {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
-            P(f"{skipped} document(s) skipped (already paid or draft).", cls="text-muted") if skipped else "",
-            P(f"Total Outstanding: {fmt_money(total_outstanding, currency)}", cls="total-label--final"),
+            H3(t("documents.bulk_payment_title", contact=contact_name, n=len(payable)), cls="section-title"),
+            P(t("documents.docs_skipped", n=skipped), cls="text-muted") if skipped else "",
+            P(t("documents.total_outstanding", amount=fmt_money(total_outstanding, currency)), cls="total-label--final"),
             Table(
                 Thead(Tr(Th(t("th.document")), Th(t("th.due_date")), Th(t("th.outstanding")), Th(t("th.allocation")))),
                 Tbody(*alloc_rows),
@@ -1951,7 +1961,7 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             if isinstance(e, APIError) and e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
-                return _HR("<h2>Document not found</h2><p><a href='/docs'>Back to Documents</a></p>", status_code=404)
+                return _HR(f"<h2>{t('documents.document_not_found')}</h2><p><a href='/docs'>{t('documents.back_to_documents')}</a></p>", status_code=404)
             doc = {}
 
         # Inject company fields so "My company info" box is populated
@@ -2052,7 +2062,7 @@ celerpUpdateBulkAlloc();
         # History loaded lazily via HTMX GET /docs/{entity_id}/history
         ledger: list[dict] = []
 
-        doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("external_id") or "Document"
+        doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("external_id") or t("th.document")
         status = doc.get("status", "draft")
 
         # Fetch price lists for price list dropdown on doc detail
@@ -2138,7 +2148,7 @@ celerpUpdateBulkAlloc();
                     _payments_on = await api.get_payments_enabled(token)
                 except Exception:
                     pass
-        status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
+        status_label = t("status.pro_forma") if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
         section_url = _doc_section_url(doc_type)
@@ -2209,7 +2219,7 @@ celerpUpdateBulkAlloc();
         if doc_type == "purchase_order" and status == "draft":
             line_suggestions = await _po_line_suggestions(token, doc)
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
             _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
             title=f"{type_label} {doc_ref} - Celerp",
@@ -2225,7 +2235,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
@@ -2248,7 +2258,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         value = str(doc.get(field, "") or "")
 
         restore_url = f"/docs/{entity_id}/field/{field}/display"
@@ -2298,12 +2308,12 @@ celerpUpdateBulkAlloc();
                 onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
                 oninput="this.dataset.dirty='1'",
                 data_orig=value,
-                placeholder="e.g. 35.00",
+                placeholder=t("documents.eg_amount"),
             )
         elif field == "purchase_kind":
             opts = ["inventory", "expense", "asset"]
             input_el = Select(
-                *[Option(o, value=o, selected=(o == value)) for o in opts],
+                *[Option(t("documents.purchase_kind_" + o), value=o, selected=(o == value)) for o in opts],
                 name="value",
                 hx_patch=f"/docs/{entity_id}/field/{field}",
                 hx_target="closest .editable-cell", hx_swap="outerHTML",
@@ -2382,7 +2392,7 @@ celerpUpdateBulkAlloc();
                 patch_url = f"/docs/{entity_id}/field/contact_id"
             else:
                 contact_opts = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
-                contact_opts.append(("__new__", "+ Add new contact"))
+                contact_opts.append(("__new__", t("documents.add_new_contact")))
                 pre_val = value
                 patch_url = f"/docs/{entity_id}/field/{field}"
             # Fix #1: wrap combobox in div so ESC keydown bubbles up and can restore the display cell
@@ -2391,7 +2401,7 @@ celerpUpdateBulkAlloc();
                     name="value",
                     options=contact_opts,
                     value=pre_val,
-                    placeholder="Search contacts...",
+                    placeholder=t("documents.search_contacts"),
                     hx_patch=patch_url,
                     hx_target="closest .editable-cell",
                     hx_swap="outerHTML",
@@ -2434,7 +2444,7 @@ celerpUpdateBulkAlloc();
             else:
                 auto_select = len(addr_opts) == 1 and not value
                 input_el = Select(
-                    Option("-- Select address --", value="", selected=not value and not auto_select),
+                    Option(t("documents.select_address"), value="", selected=not value and not auto_select),
                     *[Option(lbl, value=val, selected=(val == value) or (auto_select and i == 0)) for i, (val, lbl) in enumerate(addr_opts)],
                     name="value",
                     hx_patch=f"/docs/{entity_id}/field/{field}",
@@ -2630,7 +2640,7 @@ celerpUpdateBulkAlloc();
             idx = int(li_index)
             li = line_items[idx] if 0 <= idx < len(line_items) else {}
         except Exception:
-            return P("Error", cls="cell-error")
+            return P(t("settings.error"), cls="cell-error")
         current = li.get(field) or ""
         restore_url = f"/docs/{entity_id}/line/{li_index}/field/{field}/display"
         cell_id = f"li-{li_index}-{field}"
@@ -2652,7 +2662,7 @@ celerpUpdateBulkAlloc();
                     name="value",
                     options=acct_opts,
                     value=current,
-                    placeholder="e.g. 1130",
+                    placeholder=t("documents.eg_account_code"),
                     cls_extra="cell-input",
                     allow_custom=True,
                     hx_trigger="change",
@@ -2682,7 +2692,7 @@ celerpUpdateBulkAlloc();
             idx = int(li_index)
             li = line_items[idx] if 0 <= idx < len(line_items) else {}
         except Exception:
-            return P("Error", cls="cell-error")
+            return P(t("settings.error"), cls="cell-error")
         return _li_field_display_cell(entity_id, li_index, field, li.get(field) or "")
 
     @app.patch("/docs/{entity_id}/line/{li_index}/field/{field}")
@@ -2699,7 +2709,7 @@ celerpUpdateBulkAlloc();
             line_items = list(doc.get("line_items") or [])
             idx = int(li_index)
             if not (0 <= idx < len(line_items)):
-                return _action_error("Line item not found.")
+                return _action_error(t("documents.line_item_not_found"))
             line_items[idx] = {**line_items[idx], field: value}
             await api.patch_doc(token, entity_id, {"line_items": line_items})
         except APIError as e:
@@ -3244,7 +3254,7 @@ celerpUpdateBulkAlloc();
         doc_ids_raw = str(form.get("doc_ids") or request.query_params.get("doc_ids", ""))
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
         if not doc_ids:
-            return _action_error("No documents selected.")
+            return _action_error(t("doc.no_documents_selected"))
         try:
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
@@ -3264,7 +3274,7 @@ celerpUpdateBulkAlloc();
         doc_ids_raw = str(form.get("doc_ids") or request.query_params.get("doc_ids", ""))
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
         if not doc_ids:
-            return _action_error("No documents selected.")
+            return _action_error(t("doc.no_documents_selected"))
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
@@ -3394,9 +3404,9 @@ celerpUpdateBulkAlloc();
 
         # Summary
         summary_bar = Div(
-            Span(f"Received: {fmt_money(total_received, currency)}", cls="val-chip"),
-            Span(f"Sent: {fmt_money(total_sent, currency)}", cls="val-chip"),
-            Span(f"Net: {fmt_money(total_received - total_sent, currency)}", cls="val-chip val-chip--alert"),
+            Span(t("documents.received_total", amount=fmt_money(total_received, currency)), cls="val-chip"),
+            Span(t("documents.sent_total", amount=fmt_money(total_sent, currency)), cls="val-chip"),
+            Span(t("documents.net_total", amount=fmt_money(total_received - total_sent, currency)), cls="val-chip val-chip--alert"),
             cls="valuation-bar",
         )
 
@@ -3408,10 +3418,10 @@ celerpUpdateBulkAlloc();
         _tab_enc, _q_enc = quote_plus(tab), quote_plus(q)
         _method_enc, _contact_enc = quote_plus(method_filter), quote_plus(contact_filter)
         filter_bar = Div(
-            Input(type="search", name="q", value=q, placeholder="Search doc# or reference...",
+            Input(type="search", name="q", value=q, placeholder=t("documents.search_doc_ref"),
                   cls="form-input form-input--sm", style="max-width:200px;",
                   onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}'"),
-            Input(type="text", name="contact", value=contact_filter, placeholder="Contact...",
+            Input(type="text", name="contact", value=contact_filter, placeholder=t("documents.contact_placeholder"),
                   cls="form-input form-input--sm", style="max-width:200px;",
                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}&contact='+encodeURIComponent(this.value)"),
             Select(*_methods_opts, name="method",
@@ -3447,14 +3457,14 @@ celerpUpdateBulkAlloc();
 
         lang = get_lang(request)
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Payments", None)]),
-            page_header("Payments"),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("documents.payments"), None)]),
+            page_header(t("documents.payments")),
             tabs,
             _date_filter_bar("/payments", date_from, date_to, preset, extra_params=f"&tab={quote_plus(tab)}{extra_params}", lang=lang),
             summary_bar,
             filter_bar,
             payment_table,
-            title="Payments - Celerp",
+            title=page_title("documents.payments"),
             nav_active="payments",
             lang=lang,
             request=request,
@@ -3601,7 +3611,6 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/fulfill-lines")
     async def doc_fulfill_lines(request: Request, entity_id: str):
-        import json as _json
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3619,7 +3628,6 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/revert-lines")
     async def doc_revert_lines(request: Request, entity_id: str):
-        import json as _json
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3636,7 +3644,7 @@ celerpUpdateBulkAlloc();
             try:
                 quantities[m.group(1)] = float(value)
             except (TypeError, ValueError):
-                return _action_error(f"Invalid returned quantity for {m.group(1)}")
+                return _action_error(t("documents.invalid_returned_quantity", id=m.group(1)))
         try:
             await api.unfulfill_lines(token, entity_id, line_entity_ids, quantities=quantities or None)
         except APIError as e:
@@ -3647,7 +3655,6 @@ celerpUpdateBulkAlloc();
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     async def _reserve_lines_proxy(request: Request, entity_id: str, is_list: bool):
-        import json as _json
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3861,19 +3868,19 @@ celerpUpdateBulkAlloc();
         )
         footer = Div(
             Div(*page_btns, cls="history-page-btns"),
-            Div(Span("Show:", cls="text-muted"), per_page_select, cls="history-per-page"),
+            Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
             cls="history-footer",
         )
         if not entries and page == 1:
-            content = P("No activity recorded yet.", cls="empty-state-msg")
+            content = P(t("documents.no_activity_recorded"), cls="empty-state-msg")
         else:
             content = Table(
-                Thead(Tr(Th("Event"), Th("When"), Th("Who"), Th("Details"))),
+                Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("documents.th_who")), Th(t("th.details")))),
                 Tbody(*rows),
                 cls="data-table",
             )
         return Div(
-            Div(Span("📜", cls="section-icon"), H3("History", cls="section-title"), cls="section-header"),
+            Div(Span("📜", cls="section-icon"), H3(t("documents.history"), cls="section-title"), cls="section-header"),
             content,
             footer,
             id=f"doc-history-{safe_id}",
@@ -3990,17 +3997,17 @@ celerpUpdateBulkAlloc();
         _settings = (await api.get_company(token)).get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
         if list_type == "audit":
-            _new_btn = A("New audit", href="/lists/new-audit", cls="btn btn--primary")
+            _new_btn = A(t("documents.new_audit"), href="/lists/new-audit", cls="btn btn--primary")
         elif list_type == "shipping_doc":
             _new_btn = Button(t("page.new_shipping_doc"), hx_post="/lists/create-blank?type=shipping_doc",
-                              hx_swap="none", cls="btn btn--primary", title="Create a blank draft shipping document")
+                              hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
-            _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft")
+            _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search",
-                           label="Search lists"),
+                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table", url="/lists/search",
+                           label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
@@ -4014,7 +4021,7 @@ celerpUpdateBulkAlloc();
             _list_table(lists, lang=lang),
             pagination(page, filtered_total, _PER_PAGE, "/lists",
                        f"q={q}&type={list_type}&status={status}&view={view}".strip("&")),
-            title="Lists - Celerp",
+            title=page_title("page.lists"),
             nav_active="lists",
             request=request,
         )
@@ -4106,7 +4113,7 @@ celerpUpdateBulkAlloc();
         except APIError:
             drafts = []
         hidden_items = [Input(type="hidden", name="selected", value=eid) for eid in entity_ids]
-        return _send_to_modal("List", "/lists/from-items/new", "/lists/from-items/add",
+        return _send_to_modal(t("documents.doc_list"), "/lists/from-items/new", "/lists/from-items/add",
                               "/lists/from-items/search", drafts, hidden_items, "list")
 
     @app.post("/lists/from-items/new")
@@ -4184,27 +4191,27 @@ celerpUpdateBulkAlloc();
             locations = []
         if not locations:
             return await base_shell(
-                page_header("New Audit"),
-                P("Create a location first (Settings > Inventory > Locations) to audit it.", cls="hint"),
-                title="New Audit - Celerp", nav_active="lists", request=request,
+                page_header(t("documents.new_audit_title")),
+                P(t("documents.audit_no_locations"), cls="hint"),
+                title=page_title("documents.new_audit_title"), nav_active="lists", request=request,
             )
         loc_options = [(l.get("id"), l.get("name") or l.get("id")) for l in locations]
         form = Form(
             Div(
-                Label("Location", cls="form-label"),
-                searchable_select("location_id", loc_options, placeholder="Search a location..."),
-                P("The audit is pre-populated with the stocked items at this location.", cls="hint"),
+                Label(t("label.location"), cls="form-label"),
+                searchable_select("location_id", loc_options, placeholder=t("documents.search_location")),
+                P(t("documents.audit_prepopulate_hint"), cls="hint"),
                 cls="form-group",
             ),
-            Button("Start audit", type="submit", cls="btn btn--primary"),
+            Button(t("documents.start_audit"), type="submit", cls="btn btn--primary"),
             method="post", action="/lists/new-audit", cls="form-card",
         )
         return await base_shell(
-            page_header("New Audit",
-                        A("All audits", href="/lists?type=audit", cls="btn btn--sm btn--secondary")),
-            P("Pick a location to count. Then scan barcodes to confirm stock and adjust it.", cls="hint"),
+            page_header(t("documents.new_audit_title"),
+                        A(t("documents.all_audits"), href="/lists?type=audit", cls="btn btn--sm btn--secondary")),
+            P(t("documents.audit_pick_location_hint"), cls="hint"),
             form,
-            title="New Audit - Celerp", nav_active="lists", request=request,
+            title=page_title("documents.new_audit_title"), nav_active="lists", request=request,
         )
 
     @app.post("/lists/new-audit")
@@ -4234,7 +4241,7 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             if e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
-                return _HR("<h2>List not found</h2><p><a href='/lists'>Back to Lists</a></p>", status_code=404)
+                return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
             lst = {}
 
         # Inject doc_type so _doc_detail() treats it as a list
@@ -4368,14 +4375,14 @@ celerpUpdateBulkAlloc();
             except Exception:
                 _chart_accounts = []
         return await base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.lists"), "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
             _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         chart_accounts=_chart_accounts,
                         line_identifier_mode=_ident_mode, relay_error=_ls_error),
-            title=f"List {ref} - Celerp",
+            title=f"{t('documents.doc_list')} {ref} - Celerp",
             nav_active="lists",
             request=request,
         )
@@ -4391,7 +4398,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         value = str(lst.get(field, "") or "")
         restore_url = f"/lists/{entity_id}/field/{field}/display"
         patch_url = f"/lists/{entity_id}/field/{field}"
@@ -4444,7 +4451,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         return _doc_display_cell(entity_id, field, lst.get(field), "list")
 
     @app.patch("/lists/{entity_id}/field/{field}")
@@ -4524,7 +4531,7 @@ celerpUpdateBulkAlloc();
             elif action == "move":
                 to_loc = str(form.get("to_location_id", "")).strip()
                 if not to_loc:
-                    return _action_error("Pick a destination location.")
+                    return _action_error(t("documents.pick_destination_location"))
                 await api.move_transfer(token, entity_id, to_loc)
             elif action == "send":
                 sent_to = str(form.get("sent_to", "")).strip()
@@ -4589,7 +4596,7 @@ celerpUpdateBulkAlloc();
         _ident_mode = await _line_identifier_mode(token)
         rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable, _ident_mode) for li in line_items]
         if not rows:
-            rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
+            rows = [Tr(Td(t("documents.no_items_scan"), colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
     def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True, line_identifier_mode: str = "sku") -> FT:
@@ -4615,7 +4622,7 @@ celerpUpdateBulkAlloc();
                          hx_target="closest .editable-cell",
                          hx_swap="outerHTML",
                          cls="editable-cell",
-                         title="Click to edit count"),
+                         title=t("documents.click_to_edit_count")),
                     cls="editable-cell",
                 ),
                 cls="cell--number col-counted",
@@ -4657,7 +4664,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error("Session expired.")
+            return _action_error(t("documents.session_expired"))
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
@@ -4684,7 +4691,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error("Session expired.")
+            return _action_error(t("documents.session_expired"))
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
@@ -4700,7 +4707,7 @@ celerpUpdateBulkAlloc();
         from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
-            return _action_error("Session expired.")
+            return _action_error(t("documents.session_expired"))
         form = await request.form()
         raw = str(form.get("counted_qty", "")).strip()
         try:
@@ -4719,7 +4726,7 @@ celerpUpdateBulkAlloc();
                  hx_target="closest .editable-cell",
                  hx_swap="outerHTML",
                  cls="editable-cell",
-                 title="Click to edit count"),
+                 title=t("documents.click_to_edit_count")),
             cls="editable-cell",
         )
 
@@ -4733,7 +4740,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         prefill = f"{float(counted):g}" if counted is not None else ""
@@ -4767,7 +4774,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         display_val = f"{float(counted):g}" if counted is not None else _EMPTY
@@ -4778,7 +4785,7 @@ celerpUpdateBulkAlloc();
                  hx_target="closest .editable-cell",
                  hx_swap="outerHTML",
                  cls="editable-cell",
-                 title="Click to edit count"),
+                 title=t("documents.click_to_edit_count")),
             cls="editable-cell",
         )
 
@@ -4807,7 +4814,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_editable_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -4834,7 +4841,7 @@ celerpUpdateBulkAlloc();
                     kwargs["qty_out"] = float(raw)
                 except ValueError:
                     return _writeoff_editable_cell(entity_id, line_id, field, raw, opts, labels)(
-                        P("Enter a number", cls="cell-error"))
+                        P(t("documents.enter_a_number"), cls="cell-error"))
         elif field == "account":
             if raw != "":
                 kwargs["account"] = raw
@@ -4864,7 +4871,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
+            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -4998,7 +5005,7 @@ def _doc_table(
                 cls="btn btn--danger btn--sm", style="display:none",
                 hx_delete="/docs/bulk-draft",
                 hx_include="#doc-bulk-ids",
-                hx_confirm="Delete selected drafts? This cannot be undone.",
+                hx_confirm=t("documents.confirm_delete_drafts"),
                 hx_disabled_elt="this",
                 hx_swap="none",
             ),
@@ -5023,7 +5030,6 @@ def _doc_table(
 
     bulk_js = ""
     if show_checkboxes:
-        import json as _json
         bulk_js = Script(f"""
 (function() {{
     var table = document.getElementById('doc-table');
@@ -5042,7 +5048,7 @@ def _doc_table(
     function updateBar() {{
         var sel = getSelected();
         var n = sel.length;
-        if (countEl) countEl.textContent = n + ' selected';
+        if (countEl) countEl.textContent = {_json.dumps(t("documents.n_selected"))}.replace('{{n}}', n);
         var ids = sel.map(cb => cb.value).join(',');
         if (idsInput) idsInput.value = ids;
         if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
@@ -5103,10 +5109,10 @@ def _doc_table(
         Table(
             Thead(Tr(
                 *checkbox_th,
-                _th("Number", "number"), _th("Type", "type"), _th("Contact", "contact"), _th("Date", "date"),
-                _th("Last Updated", "updated") if is_drafts_view else _th("Due", "due"),
-                *([] if no_money else [_th("Total", "total"), _th("Outstanding", "outstanding")]),
-                _th("Status", "status"),
+                _th(t("th.number"), "number"), _th(t("th.type"), "type"), _th(t("th.contact"), "contact"), _th(t("th.date"), "date"),
+                _th(t("documents.th_last_updated"), "updated") if is_drafts_view else _th(t("documents.th_due"), "due"),
+                *([] if no_money else [_th(t("th.total"), "total"), _th(t("th.outstanding"), "outstanding")]),
+                _th(t("th.status"), "status"),
             )),
             Tbody(*[_row(d) for d in docs]),
             cls="data-table sticky-head",
@@ -5142,7 +5148,7 @@ def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str
         id=cell_id,
         hx_get=f"/docs/{entity_id}/line/{li_index}/field/{field}/edit",
         hx_target=f"#{cell_id}", hx_swap="outerHTML", hx_trigger="dblclick",
-        title="Double-click to edit",
+        title=t("label.dblclick_to_edit"),
         cls="editable-cell",
     )
 
@@ -5214,7 +5220,7 @@ def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> 
         format_value(value, "badge" if field in {"purchase_kind"} else ("money" if field in {"total_amount", "tax_amount", "outstanding_balance"} else "date" if field in {"issue_date", "due_date"} else "text")),
         hx_get=f"{_prefix}/{entity_id}/field/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        title="Click to edit",
+        title=t("documents.click_to_edit"),
         cls="editable-cell",
     )
 
@@ -5271,9 +5277,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     is_bill = doc_type == "bill"
 
     # Labels
-    section_title = "Credit Application" if is_credit_note else "Payments"
+    section_title = t("documents.credit_application") if is_credit_note else t("documents.payments")
     section_icon = "\U0001f4b3" if is_credit_note else "\U0001f4b0"
-    add_label = "Apply to Invoice" if is_credit_note else ("Record Payment" if is_bill else "Receive Payment")
+    add_label = t("page.apply_to_invoice") if is_credit_note else (t("btn.record_payment") if is_bill else t("documents.receive_payment"))
 
     # Deleted payments are tombstoned in the doc, not removed; only voided ones
     # stay visible (struck through).
@@ -5313,10 +5319,10 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         elif not voided and is_operator:
             void_cell = Td(
                 Details(
-                    Summary("🗑", cls="btn btn--ghost btn--xs", title="Void this payment"),
+                    Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
                     Form(
                         Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
-                        Input(type="text", name="void_reason", placeholder="Reason...", cls="form-input form-input--sm"),
+                        Input(type="text", name="void_reason", placeholder=t("documents.reason_placeholder"), cls="form-input form-input--sm"),
                         Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--xs"),
                         hx_post=f"/docs/{entity_id}/void-payment", hx_swap="none",
                         cls="inline-form inline-form--compact",
@@ -5339,7 +5345,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
 
     history_table = ""
     if history_rows:
-        _hist_header = "Applied To" if is_credit_note else "Bank"
+        _hist_header = t("documents.applied_to") if is_credit_note else t("documents.bank")
         history_table = Table(
             Thead(Tr(Th(t("th.date")), Th(t("label.method")), Th(_hist_header), Th(t("label.reference")), Th(t("label.amount")), Th(""))),
             Tbody(*history_rows),
@@ -5349,15 +5355,15 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # --- Summary line ---
     if is_credit_note:
         summary_line = Div(
-            Span(f"Credit Total: {fmt_money(total_val, currency)}", cls="total-label"),
-            Span(f"Applied: {fmt_money(amount_paid, currency)}", cls="total-label"),
-            Span(f"Remaining: {fmt_money(outstanding, currency)}",
+            Span(t("documents.credit_total", amount=fmt_money(total_val, currency)), cls="total-label"),
+            Span(t("documents.applied_amount", amount=fmt_money(amount_paid, currency)), cls="total-label"),
+            Span(t("documents.remaining_amount", amount=fmt_money(outstanding, currency)),
                  cls="total-value" + (" total-value--alert" if outstanding > 0 else " total-value--success")),
             cls="payment-summary",
         )
     else:
-        paid_label = f"Total Paid: {fmt_money(amount_paid, currency)} / {fmt_money(total_val, currency)}"
-        outstanding_label = "Paid in Full" if outstanding <= 0.005 else f"Outstanding: {fmt_money(outstanding, currency)}"
+        paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
+        outstanding_label = t("documents.paid_in_full") if outstanding <= 0.005 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
         outstanding_cls = "total-value--success" if outstanding <= 0.005 else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),
@@ -5434,11 +5440,11 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         .then(invoices => {{
             const sel = document.getElementById('cn-invoice-picker');
             if (!sel) return;
-            sel.innerHTML = '<option value="">-- Select Invoice --</option>';
+            sel.innerHTML = '<option value="">' + {_json.dumps(t("documents.select_invoice_option"))} + '</option>';
             invoices.forEach(inv => {{
                 const opt = document.createElement('option');
                 opt.value = inv.id;
-                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - Outstanding: ' + inv.outstanding.toFixed(2);
+                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed(2);
                 sel.appendChild(opt);
             }});
             sel.addEventListener('change', function() {{
@@ -5468,7 +5474,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                             Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                        Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which payment was received (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
+                        Div(Label(t("label.conversion_rate"), cls="form-label", title=t("documents.tip_conversion_rate")),
                             Input(type="number", name="conversion_rate", value="1",
                                   step="any", min="0", cls="form-input"),
                             cls="form-group"),
@@ -5524,7 +5530,7 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
         # `change` fires on a datalist pick and on leaving a typed value.
         return Input(
             type="text", name="value", value=current, list="country-options",
-            autocomplete="off", placeholder="Type to search...",
+            autocomplete="off", placeholder=t("documents.type_to_search"),
             hx_patch=f"/lists/{entity_id}/field/{field}",
             hx_trigger="change", hx_swap="none",
             cls="form-input",
@@ -5568,7 +5574,7 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
     def _addr_text(loc: dict) -> str:
         return unwrap_address(loc.get("address")) or loc.get("name") or ""
 
-    options = [Option("-- select address --", value="", selected=(not current_address))]
+    options = [Option(t("documents.select_address_lower"), value="", selected=(not current_address))]
     for loc in locations:
         addr_text = _addr_text(loc)
         options.append(Option(
@@ -5579,9 +5585,9 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
     # Preserve unknown free-text value
     known = {_addr_text(l) for l in locations}
     if current_address and current_address not in known and current_address != "--":
-        options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
+        options.append(Option(t("documents.custom_address", address=current_address[:40]), value=current_address, selected=True))
     # GDR: always include Add new option
-    options.append(Option("+ Add new location", value="__add_new__"))
+    options.append(Option(t("documents.add_new_location"), value="__add_new__"))
 
     return Div(
         Select(
@@ -5605,7 +5611,7 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
 
     add_new_url = f"/contacts/{contact_id}" if contact_id else "/contacts/customers"
 
-    options = [Option("-- select address --", value="", selected=(not current_address))]
+    options = [Option(t("documents.select_address_lower"), value="", selected=(not current_address))]
     for a in contact_shipping_addresses:
         addr_text = _addr_text(a)
         label = a.get("label") or a.get("attn") or addr_text[:40]
@@ -5613,9 +5619,9 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
     # Preserve unknown free-text value
     known = {_addr_text(a) for a in contact_shipping_addresses}
     if current_address and current_address not in known and current_address != "--":
-        options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
+        options.append(Option(t("documents.custom_address", address=current_address[:40]), value=current_address, selected=True))
     # GDR: always include Add new option
-    options.append(Option("+ Add new shipping address", value="__add_new__"))
+    options.append(Option(t("documents.add_new_shipping_address"), value="__add_new__"))
 
     return Div(
         Select(
@@ -5648,7 +5654,7 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
         display = current_address or "--"
         return _doc_display_cell(doc_id, "company_address", display)
 
-    options = [Option("-- select address --", value="", selected=(not current_address))]
+    options = [Option(t("documents.select_address_lower"), value="", selected=(not current_address))]
     for loc in addressed:
         addr_text = _addr_text(loc)
         options.append(Option(
@@ -5659,7 +5665,7 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
     # Free-text option if current_address doesn't match any location
     known = {_addr_text(l) for l in addressed}
     if current_address and current_address not in known and current_address != "--":
-        options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
+        options.append(Option(t("documents.custom_address", address=current_address[:40]), value=current_address, selected=True))
 
     return Div(
         Select(
@@ -5689,9 +5695,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
         None,
     )
-    _fulfill_label = "Receive Goods" if is_inbound else "Set as shipped"
-    _revert_label = "Return Goods" if is_inbound else "Set as available"
-    _reserve_label = "Set as reserved"
+    _fulfill_label = t("doc.receive_goods") if is_inbound else t("documents.set_as_shipped")
+    _revert_label = t("documents.return_goods") if is_inbound else t("documents.set_as_available")
+    _reserve_label = t("documents.set_as_reserved")
     if not labels_only:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
@@ -5719,8 +5725,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             options.append(Option(_revert_label, value="li-revert"))
     # Marking/reverting scanned highlights on a finalized audit is a row-selection action, not a button.
     if scan_marks:
-        options.append(Option("Mark as scanned", value="li-mark-scanned"))
-        options.append(Option("Clear scanned", value="li-clear-scanned"))
+        options.append(Option(t("documents.mark_as_scanned"), value="li-mark-scanned"))
+        options.append(Option(t("documents.clear_scanned"), value="li-clear-scanned"))
     children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
@@ -5739,10 +5745,10 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     ]
     if scan_marks:
         children += [
-            Button("Mark as scanned", type="button", id="li-bulk-markscan-btn",
+            Button(t("documents.mark_as_scanned"), type="button", id="li-bulk-markscan-btn",
                    cls="btn btn--secondary btn--sm", style="display:none",
                    onclick="liBulkSetScanned(true)"),
-            Button("Clear scanned", type="button", id="li-bulk-clearscan-btn",
+            Button(t("documents.clear_scanned"), type="button", id="li-bulk-clearscan-btn",
                    cls="btn btn--secondary btn--sm", style="display:none",
                    onclick="liBulkSetScanned(false)"),
         ]
@@ -5762,7 +5768,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             loc_el = (
                 Select(*loc_opts, name="location_name", cls="form-input form-input--sm", id="li-bulk-location")
                 if loc_opts else
-                Input(type="text", name="location_name", placeholder="Location (optional)", cls="form-input form-input--sm", id="li-bulk-location")
+                Input(type="text", name="location_name", placeholder=t("documents.location_optional"), cls="form-input form-input--sm", id="li-bulk-location")
             )
             children += [
                 Form(
@@ -5947,7 +5953,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 hx_post=f"/docs/{entity_id}/action/create-credit-note",
                 hx_swap="none",
                 cls="btn btn--secondary btn--sm",
-                title="Create a credit note from this invoice. The CN will be pre-populated with this invoice's line items.",
+                title=t("documents.tip_create_credit_note"),
             )
         )
     if doc_type == "invoice" and status in ("sent", "final", "partial", "awaiting_payment"):
@@ -5956,14 +5962,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--primary",
-                   title="Turn this accepted quote into an invoice, carrying over its line items.")
+                   title=t("documents.tip_convert_quote"))
         )
     # Issued memos can be converted to invoices (customer keeps goods)
     if doc_type == "memo" and status in ("final", "sent", "received", "partially_received"):
         action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary",
-                   title="Turn this memo into an invoice because the customer is keeping the goods.")
+                   title=t("documents.tip_convert_memo"))
         )
     # Invoices and consignment-out memos ship: one step to a prefilled shipping
     # document (Delivery Note / Commercial Invoice printouts). Issued documents
@@ -5973,14 +5979,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Button(t("btn.create_shipping_doc"),
                    hx_post=f"/docs/{entity_id}/action/create-shipment",
                    hx_swap="none", cls="btn btn--secondary",
-                   title="Create a shipping document from this document's lines. Print it as a Delivery Note (no prices) or a Commercial Invoice for customs.")
+                   title=t("documents.tip_create_shipping_doc"))
         )
     # Issued consignment_in can be converted to vendor bills (vendor keeps goods)
     if doc_type == "consignment_in" and status in ("final", "sent", "received", "partially_received"):
         action_btns_left.append(
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary",
-                   title="Turn this consignment into a vendor bill because you are keeping the goods and now owe for them.")
+                   title=t("documents.tip_convert_consignment"))
         )
     # List lifecycle buttons — uniform invoice-style across every type (a list behaves like a list
     # whatever its type): Draft -> [Issue] -> finalized, then the type's primary action in the same
@@ -5989,10 +5995,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if is_list:
         if status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
-            _list_word = _list_behavior(list_type).label.lower() if list_type else "list"
-            action_btns_left.append(Button("Issue", hx_post=f"/lists/{entity_id}/action/finalize",
+            _list_word = _list_behavior(list_type).label.lower() if list_type else t("documents.word_list")
+            action_btns_left.append(Button(t("documents.issue"), hx_post=f"/lists/{entity_id}/action/finalize",
                                            hx_swap="none", cls="btn btn--primary",
-                                           title=f"Finalize this {_list_word} and lock its contents so it can be sent, converted, or acted on."))
+                                           title=t("documents.tip_finalize_list", word=_list_word)))
         elif status == _LF:
             if pol["audit"]:
                 # "Adjust stock" lives directly above the Counted column (see the line section),
@@ -6000,22 +6006,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 pass
             elif list_type == "transfer":
                 # Move every item on the transfer to a chosen location (repeatable — stays finalized).
-                _move_opts = [Option("Move all to…", value="", disabled=True, selected=True)] + [
+                _move_opts = [Option(t("documents.move_all_to"), value="", disabled=True, selected=True)] + [
                     Option(_l.get("name", ""), value=_l.get("id", "")) for _l in (locations or [])]
                 action_btns_left.append(Form(
                     Select(*_move_opts, name="to_location_id", cls="form-input form-input--sm",
                            required=True, onchange="if(this.value)this.closest('form').requestSubmit()"),
-                    Button("Move", type="submit", cls="btn btn--primary btn--sm"),
+                    Button(t("documents.move"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/lists/{entity_id}/action/move", hx_swap="none", cls="inline-form-row",
                 ))
             elif list_type == "quotation":
                 # Convert is the quote's terminal (closes); Send / Mark-as-sent come from _can_send.
                 action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice",
                                                hx_swap="none", cls="btn btn--secondary",
-                                               title="Turn this accepted quote into an invoice. This closes the quote."))
+                                               title=t("documents.tip_convert_quote_close")))
                 action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo",
                                                hx_swap="none", cls="btn btn--secondary",
-                                               title="Turn this quote into a memo so the goods go out on approval before invoicing."))
+                                               title=t("documents.tip_convert_quote_memo")))
             elif pol["writeoff"]:
                 # Write-off terminal (registry-declared): removes each line's qty out from stock and
                 # posts one journal entry. Manager permission is enforced server-side (GDR 2e).
@@ -6023,22 +6029,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
                                                hx_swap="none", cls="btn btn--primary",
                                                hx_confirm=_wo_term.confirm,
-                                               title="Remove each line's quantity out from stock and post one journal entry. This closes the write-off."))
+                                               title=t("documents.tip_writeoff")))
         elif status == _LC and pol["writeoff"] and doc.get("result") == "written_off":
             # Closed write-off: the terminal is reversible (GDR 2a) - void the JE, restore the stock.
-            action_btns_left.append(Button("Undo write-off", hx_post=f"/lists/{entity_id}/action/undo-write-off",
+            action_btns_left.append(Button(t("documents.undo_writeoff"), hx_post=f"/lists/{entity_id}/action/undo-write-off",
                                            hx_swap="none", cls="btn btn--secondary",
-                                           title="Reverse this write-off: void its journal entry and restore the disposed stock to available.",
-                                           hx_confirm="Reverse this write-off? The disposed stock returns to available and its journal entry is voided."))
+                                           title=t("documents.tip_undo_writeoff"),
+                                           hx_confirm=t("documents.confirm_undo_writeoff")))
         elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
             # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
-            action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",
+            action_btns_left.append(Button(t("documents.undo_stock_adjustment"), hx_post=f"/lists/{entity_id}/action/undo-adjust",
                                            hx_swap="none", cls="btn btn--secondary",
-                                           title="Reverse the stock changes this audit applied, restoring the previous quantities.",
-                                           hx_confirm="Reverse this audit's stock adjustment?"))
+                                           title=t("documents.tip_undo_adjust"),
+                                           hx_confirm=t("documents.confirm_undo_adjust")))
         action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate",
                                        hx_swap="none", cls="btn btn--secondary",
-                                       title="Create an editable draft copy of this list."))
+                                       title=t("documents.tip_duplicate_list")))
     # The Issue button shows only for an un-issued document. "sent" is
     # ambiguous: a draft can be marked-sent (still un-issued) OR a finalized doc
     # can be emailed, which overwrites its status to "sent". Distinguish via the
@@ -6053,25 +6059,25 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     )
     if not is_list and (status == "draft" or _sent_but_unissued):
         _finalize_labels = {
-            "invoice": "Issue Invoice",
-            "purchase_order": "Convert to Bill",
-            "memo": "Issue Memo",
-            "consignment_in": "Issue Consignment In",
-            "credit_note": "Issue Credit Note",
-            "receipt": "Issue Receipt",
+            "invoice": t("documents.finalize_label_invoice"),
+            "purchase_order": t("documents.finalize_label_purchase_order"),
+            "memo": t("documents.finalize_label_memo"),
+            "consignment_in": t("documents.finalize_label_consignment_in"),
+            "credit_note": t("documents.finalize_label_credit_note"),
+            "receipt": t("documents.finalize_label_receipt"),
         }
         # Plain-language tooltip for the primary lifecycle action: "Issue"/"Finalize"
         # is jargon until you know it locks the document and makes it official.
         _finalize_tips = {
-            "invoice": "Finalize this invoice and lock its contents. It becomes an official invoice you can send and collect payment on.",
-            "purchase_order": "Record this purchase order as a vendor bill you owe and can receive stock against.",
-            "memo": "Finalize this memo so the items go out to the customer on approval or loan.",
-            "consignment_in": "Finalize this consignment: hold the vendor's goods for sale before owing for them.",
-            "credit_note": "Finalize this credit note so it can offset an invoice or refund the customer.",
-            "receipt": "Finalize this receipt as the official record of a payment received.",
+            "invoice": t("documents.finalize_tip_invoice"),
+            "purchase_order": t("documents.finalize_tip_purchase_order"),
+            "memo": t("documents.finalize_tip_memo"),
+            "consignment_in": t("documents.finalize_tip_consignment_in"),
+            "credit_note": t("documents.finalize_tip_credit_note"),
+            "receipt": t("documents.finalize_tip_receipt"),
         }
-        finalize_label = _finalize_labels.get(doc_type, "Finalize")
-        finalize_tip = _finalize_tips.get(doc_type, "Finalize this document and lock its contents so it can be sent and acted on.")
+        finalize_label = _finalize_labels.get(doc_type, t("btn.finalize"))
+        finalize_tip = _finalize_tips.get(doc_type, t("documents.finalize_tip_default"))
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
@@ -6082,9 +6088,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger",
-                        title="Cancel this document. It stays on record marked void and can no longer be edited."),
+                        title=t("documents.tip_void")),
                 Form(
-                    Input(type="text", name="reason", placeholder="Void reason...", cls="form-input form-input--inline",
+                    Input(type="text", name="reason", placeholder=t("documents.void_reason_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
                     Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
@@ -6107,9 +6113,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary",
-                        title="Reopen this document as an editable draft, undoing its issued status."),
+                        title=t("documents.tip_revert")),
                 Form(
-                    Input(type="text", name="reason", placeholder="Reason (optional)...", cls="form-input form-input--inline",
+                    Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
                     Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
@@ -6123,7 +6129,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
                 Form(
-                    P(f"Restore to '{doc['pre_void_status']}' status?", cls="text-muted"),
+                    P(t("documents.restore_to_status", status=doc['pre_void_status']), cls="text-muted"),
                     Button(t("btn.confirm_unvoid"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/unvoid", hx_swap="none", cls="inline-form",
                 ),
@@ -6179,15 +6185,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if share_enabled and _send_ok:
             contact_email = doc.get("contact_email") or ""
             doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
-            company_name = doc.get("company_name") or "Your Company"
+            company_name = doc.get("company_name") or t("documents.your_company")
             _type_label_send = doc_type.replace("_", " ").title()
-            default_subject = f"{_type_label_send} #{doc_number} from {company_name}" if doc_number else ""
-            default_body = f"Here is {_type_label_send} #{doc_number}." if doc_number else ""
+            default_subject = t("documents.email_subject", type=_type_label_send, number=doc_number, company=company_name) if doc_number else ""
+            default_body = t("documents.email_body", type=_type_label_send, number=doc_number) if doc_number else ""
             modal_id = f"send-modal-{entity_id.replace(':', '-')}"
             action_btns_left.append(
                 Button(t("btn.send"), type="button",
                        onclick=f"document.getElementById('{modal_id}').showModal()",
-                       title="Email this document to your customer with an optional online view link.",
+                       title=t("documents.tip_send"),
                        cls="btn btn--secondary"),
             )
             # Dialog rendered at the bottom of the page via extra content - inject as sibling
@@ -6198,7 +6204,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         H3(t("btn.send"), cls="modal-dialog__title"),
                         Button("✕", type="button",
                                onclick=f"document.getElementById('{modal_id}').close()",
-                               cls="modal-dialog__close", aria_label="Close"),
+                               cls="modal-dialog__close", aria_label=t("btn.close")),
                         cls="modal-dialog__header",
                     ),
                     Form(
@@ -6210,12 +6216,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             cls="form-group",
                         ),
                         Div(
-                            Label("CC", cls="form-label"),
+                            Label(t("documents.cc"), cls="form-label"),
                             Input(type="text", name="cc", placeholder="cc@example.com", cls="form-input"),
                             cls="form-group",
                         ),
                         Div(
-                            Label("BCC", cls="form-label"),
+                            Label(t("documents.bcc"), cls="form-label"),
                             Input(type="text", name="bcc", placeholder="bcc@example.com", cls="form-input"),
                             cls="form-group",
                         ),
@@ -6291,7 +6297,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # fix it (GDR 2d), and stays open until the user dismisses it rather than
         # sitting inline beside the Send action.
         if _send_ok and relay_error:
-            import json as _json
             _notice_js = _json.dumps(t("doc.send_relay_error_notice"))
             _link_js = _json.dumps(t("doc.send_relay_error_link"))
             action_btns_left.append(Script(
@@ -6306,7 +6311,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"{_base}/action/mark_sent",
                        hx_swap="none", cls="btn btn--secondary",
-                       title="Record this document as sent without emailing it (for example, if you sent it by hand).")
+                       title=t("documents.tip_mark_sent"))
             )
         # Unmark Sent: a "sent" document, or a finalized quote whose sent milestone is set.
         _unmark_ok = (status == _LF and _list_sent) if is_list else (status == "sent")
@@ -6314,11 +6319,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary",
-                       title="Clear the sent marker so this document shows as not yet sent.")
+                       title=t("documents.tip_unmark_sent"))
             )
     # Share: a public read-only link (customer-facing docs + lists; never supplier docs).
     if _can_share:
-        import json as _json
         _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
         _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
         _fail_js = _json.dumps(t("doc.share_failed"))
@@ -6341,7 +6345,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     H3(t("btn.share"), cls="modal-dialog__title"),
                     Button("✕", type="button",
                            onclick=f"document.getElementById('{_share_modal_id}').close()",
-                           cls="modal-dialog__close", aria_label="Close"),
+                           cls="modal-dialog__close", aria_label=t("btn.close")),
                     cls="modal-dialog__header",
                 ),
                 Div(id=_share_body_id, cls="modal-body"),
@@ -6477,10 +6481,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             return Div(
                 Div(
                     eye,
-                    Input(type="text", value=val, data_name="sku", placeholder="SKU...",
+                    Input(type="text", value=val, data_name="sku", placeholder=t("documents.sku_placeholder"),
                           cls="cell-input cell-input--sm catalog-ac-input",
                           autocomplete="off",
-                          title="Type to search catalog or enter custom description",
+                          title=t("documents.tip_catalog_search"),
                           oninput="celerpAcSearch(this,'sku')",
                           onblur="celerpAcBlur(this)",
                           onkeydown="celerpAcKey(event,this)"),
@@ -6494,10 +6498,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         def _desc_input(val: str = "") -> FT:
             return Div(
-                Input(type="text", value=val, data_name="description", placeholder="Description…",
+                Input(type="text", value=val, data_name="description", placeholder=t("documents.description_placeholder"),
                       cls="cell-input cell-input--sm catalog-ac-input",
                       autocomplete="off",
-                      title="Type to search catalog or enter custom description",
+                      title=t("documents.tip_catalog_search"),
                       oninput="celerpAcSearch(this,'description')",
                       onblur="celerpAcBlur(this)",
                       onkeydown="celerpAcKey(event,this)"),
@@ -6505,7 +6509,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="catalog-ac-wrap",
             )
 
-        import json as _json
         _taxes_list = company_taxes or []
         _default_tax = next((tax for tax in _taxes_list if tax.get("is_default")), None)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
@@ -6571,7 +6574,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          hx_target="closest .editable-cell",
                          hx_swap="outerHTML",
                          cls="editable-cell",
-                         title="Click to edit count"),
+                         title=t("documents.click_to_edit_count")),
                     cls="editable-cell",
                 ),
                 cls="cell--number col-counted",
@@ -6605,7 +6608,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         name="account_code",
                         options=_acct_opts,
                         value=_default_acct,
-                        placeholder="e.g. 1130",
+                        placeholder=t("documents.eg_account_code"),
                         cls_extra="cell-input cell-input--xs",
                         allow_custom=True,
                     ),
@@ -6869,7 +6872,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in (chart_accounts or []) if a.get("code")]
                 cells.append(Td(
                     searchable_select(name="account_code", options=_acct_opts, value="1130",
-                                      placeholder="e.g. 1130", cls_extra="cell-input cell-input--xs", allow_custom=True),
+                                      placeholder=t("documents.eg_account_code"), cls_extra="cell-input cell-input--xs", allow_custom=True),
                     cls="col-account",
                 ))
             cells.extend([
@@ -6907,7 +6910,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # so they have no PCS/WEIGHT/UNIT columns of their own.
         _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _draft_show_item_status:
-            _line_headers.insert(1, Th("Status", cls="col-item-status"))
+            _line_headers.insert(1, Th(t("th.status"), cls="col-item-status"))
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category"), cls="col-cat"))
             _line_headers.append(Th(t("th.type"), cls="col-type"))
@@ -6922,16 +6925,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
         if pol["show_onhand"]:
-            _line_headers.append(Th("On hand", cls="cell--number col-onhand"))
+            _line_headers.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
-            _line_headers.append(Th("Counted", cls="cell--number col-counted"))
+            _line_headers.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
         # Qty out is numeric (right-aligned over its figures); Account/Comment are text (left).
         if pol["show_qtyout"]:
-            _line_headers.append(Th("Qty out", cls="cell--number col-qtyout"))
+            _line_headers.append(Th(t("documents.th_qty_out"), cls="cell--number col-qtyout"))
         if pol["show_account"]:
-            _line_headers.append(Th("Account", cls="col-account"))
+            _line_headers.append(Th(t("th.account"), cls="col-account"))
         if pol["show_comment"]:
-            _line_headers.append(Th("Comment", cls="col-comment"))
+            _line_headers.append(Th(t("documents.th_comment"), cls="col-comment"))
         _line_thead = Thead(Tr(*_line_headers))
         _line_colgroup = None
 
@@ -6951,11 +6954,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _ai_dropzone = [
                 Div(
                     Div("✨", cls="ai-dropzone__icon"),
-                    Div("Drop PDF or receipt image here to auto-fill this bill", cls="ai-dropzone__text"),
+                    Div(t("documents.ai_dropzone_text"), cls="ai-dropzone__text"),
                     Div(t("doc.powered_by_celerp_ai_operator"), cls="ai-dropzone__sub"),
                     cls="ai-dropzone",
                     id=f"ai-dropzone-{entity_id}",
-                    title="Auto-fill line items from receipts or invoices",
+                    title=t("documents.ai_dropzone_tip"),
                 ),
                 Script(f"""
 (function() {{
@@ -6984,11 +6987,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # audit's manifest is locked, so scanning checks items OFF the list (it never adds); a draft
         # audit is still being built, so scanning ADDS; other lists just add a line.
         if pol["audit"] and status == _LF:
-            _scan_placeholder = "Scan to check items off this audit"
+            _scan_placeholder = t("documents.scan_check_off")
         elif pol["audit"]:
-            _scan_placeholder = "Scan or type a SKU to add it to the count"
+            _scan_placeholder = t("documents.scan_add_count")
         else:
-            _scan_placeholder = "Scan barcode or type SKU and press Enter"
+            _scan_placeholder = t("documents.scan_barcode")
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
@@ -7009,9 +7012,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
-                Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
+                Button(t("documents.adjust_stock"), hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
                        cls="btn btn--primary btn--sm",
-                       hx_confirm="Apply the counted quantities to stock? This posts a journal entry."),
+                       hx_confirm=t("documents.confirm_adjust_stock")),
                 cls="audit-adjust-bar",
                 # Buffer on every side so the button never touches the scan bar above, the table
                 # below, or the right edge (consistent with button spacing elsewhere).
@@ -7069,10 +7072,46 @@ function _celerpUnitFromTotal(total, qty) {{
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
 const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
+/* Translated UI strings resolved in Python at render time (R2: never splice
+   translated text into JS source; hand it over as one config object). */
+const _L = {_json.dumps({
+    "scanning": t("documents.scanning"),
+    "scan_error": t("documents.scan_error"),
+    "scanned": t("documents.scanned_prefix"),
+    "not_found": t("documents.not_found_prefix"),
+    "lookup_error": t("documents.lookup_error"),
+    "view_item_details": t("documents.view_item_details"),
+    "no_linked_item": t("documents.no_linked_item"),
+    "view_in_catalog": t("documents.view_in_catalog"),
+    "view_reserving_document": t("documents.view_reserving_document"),
+    "discount": t("doc.discount"),
+    "discount_word": t("label.discount"),
+    "subtotal": t("doc.subtotal"),
+    "net_subtotal": t("documents.net_subtotal"),
+    "double_click_rename": t("documents.double_click_rename"),
+    "save_failed": t("documents.save_failed"),
+    "reprice_failed": t("documents.reprice_failed"),
+    "import_failed": t("documents.import_failed"),
+    "allow_split_warn": t("documents.allow_split_warn"),
+    "reserved_conflict_title": t("documents.reserved_conflict_title"),
+    "close": t("btn.close"),
+    "is_reserved_on": t("documents.is_reserved_on"),
+    "another_document": t("documents.another_document"),
+    "reserved_conflict_hint": t("documents.reserved_conflict_hint"),
+    "keep_lines": t("documents.keep_lines"),
+    "remove_from_draft": t("documents.remove_from_draft"),
+    "rows_selected": t("documents.rows_selected"),
+    "no_inventory_status": t("documents.no_inventory_items_status"),
+    "no_inventory_labels": t("documents.no_inventory_items_labels"),
+    "confirm_set_reserved": t("documents.confirm_set_reserved"),
+    "confirm_set_available": t("documents.confirm_set_available"),
+    "could_not_set_reserved": t("documents.could_not_set_reserved"),
+    "could_not_set_available": t("documents.could_not_set_available"),
+})};
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
-const _CELERP_STATUS_BADGE = {_json.dumps({k: {"label": v[0], "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
+const _CELERP_STATUS_BADGE = {_json.dumps({k: {"label": t(v[0]), "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -7090,7 +7129,7 @@ function _celerpDocTypeParam() {{
         e.preventDefault();
         const code = scanInput.value.trim();
         if (!code) return;
-        scanStatus.textContent = 'Scanning...';
+        scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         if (_CELERP_IS_LIST === 'true') {{
             // Every list type scans through ONE server endpoint that dispatches on (type, status).
@@ -7106,7 +7145,7 @@ function _celerpDocTypeParam() {{
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
                     const txt = await resp.text();
-                    scanStatus.textContent = '✗ ' + (txt || 'Scan error');
+                    scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
                 }} else {{
                     let html = await resp.text();
@@ -7125,11 +7164,11 @@ function _celerpDocTypeParam() {{
                         celerpUpdateTotals();
                         _celerpHadLines = true;
                     }}
-                    scanStatus.textContent = '✓ Scanned: ' + code;
+                    scanStatus.textContent = '✓ ' + _L.scanned + code;
                     scanStatus.className = 'scan-bar-status scan-bar-status--ok';
                 }}
             }} catch (err) {{
-                scanStatus.textContent = '✗ Scan error';
+                scanStatus.textContent = '✗ ' + _L.scan_error;
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
         }} else {{
@@ -7154,11 +7193,11 @@ function _celerpDocTypeParam() {{
                     scanStatus.textContent = '✓ ' + (data.sku || code);
                     scanStatus.className = 'scan-bar-status scan-bar-status--ok';
                 }} else {{
-                    scanStatus.textContent = '✗ Not found: ' + code;
+                    scanStatus.textContent = '✗ ' + _L.not_found + code;
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
                 }}
             }} catch (err) {{
-                scanStatus.textContent = '✗ Lookup error';
+                scanStatus.textContent = '✗ ' + _L.lookup_error;
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
         }}
@@ -7256,13 +7295,13 @@ function celerpFillRow(row, data) {{
             linkEl.href = '/inventory/' + data.entity_id;
             linkEl.target = '_blank';
             linkEl.className = 'item-link item-link--active';
-            linkEl.title = 'View item details';
+            linkEl.title = _L.view_item_details;
             linkEl.onclick = null;
         }} else {{
             linkEl.href = '#';
             linkEl.target = '';
             linkEl.className = 'item-link item-link--inactive';
-            linkEl.title = 'No linked item';
+            linkEl.title = _L.no_linked_item;
             linkEl.onclick = (e) => e.preventDefault();
         }}
     }}
@@ -7298,16 +7337,16 @@ function celerpFillRow(row, data) {{
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls;
                 const invA = document.createElement('a');
-                invA.href = invHref; invA.title = 'View in catalog';
+                invA.href = invHref; invA.title = _L.view_in_catalog;
                 invA.className = 'badge__doc-link'; invA.textContent = badge.label;
                 const docA = document.createElement('a');
-                docA.href = '/docs/' + data.status_doc_id; docA.title = 'View reserving document';
+                docA.href = '/docs/' + data.status_doc_id; docA.title = _L.view_reserving_document;
                 docA.className = 'badge__doc-link'; docA.textContent = docNum;
                 span.append(invA, ': ', docA);
                 statusCell.replaceChildren(span);
             } else {
                 const invA = document.createElement('a');
-                invA.href = invHref; invA.title = 'View in catalog';
+                invA.href = invHref; invA.title = _L.view_in_catalog;
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls + ' badge--link';
                 span.textContent = badge.label;
@@ -7489,8 +7528,7 @@ function celerpQtyBlur(input) {{
     const currentQty = parseFloat(input.value || 0);
     if (itemQty > 0 && currentQty !== itemQty) {{
         const eid = entityIdEl.value;
-        const msg = 'Allow splitting is set to false for this item, so you cannot sell less than the full quantity (' + itemQty + '). '
-            + 'You can modify this in the item details page: /inventory/' + eid;
+        const msg = _L.allow_split_warn.replace('{{qty}}', itemQty).replace('{{eid}}', eid);
         alert(msg);
         // Per UX rules: do NOT revert the value or make readonly - just warn
     }}
@@ -7638,15 +7676,15 @@ function celerpUpdateTotals() {{
                 if (subRow) {{
                     const discRow = document.createElement('div');
                     discRow.className = 'total-row';
-                    discRow.innerHTML = '<span class="total-label">Discount:</span><span class="total-value" id="doc-line-discount">-' + _fmt(totalDiscount) + '</span>';
+                    discRow.innerHTML = '<span class="total-label">' + _L.discount + '</span><span class="total-value" id="doc-line-discount">-' + _fmt(totalDiscount) + '</span>';
                     subRow.parentNode.insertBefore(discRow, subRow);
                     const grossRow = document.createElement('div');
                     grossRow.className = 'total-row';
-                    grossRow.innerHTML = '<span class="total-label">Subtotal:</span><span class="total-value" id="doc-gross-subtotal">' + _fmt(grossSub) + '</span>';
+                    grossRow.innerHTML = '<span class="total-label">' + _L.subtotal + '</span><span class="total-value" id="doc-gross-subtotal">' + _fmt(grossSub) + '</span>';
                     discRow.parentNode.insertBefore(grossRow, discRow);
                     // Relabel net subtotal
                     const lbl = subRow.querySelector('.total-label');
-                    if (lbl) lbl.textContent = 'Net Subtotal:';
+                    if (lbl) lbl.textContent = _L.net_subtotal;
                 }}
             }}
         }} else {{
@@ -7656,7 +7694,7 @@ function celerpUpdateTotals() {{
             const subEl = document.getElementById('doc-subtotal');
             if (subEl) {{
                 const lbl = subEl.closest('.total-row')?.querySelector('.total-label');
-                if (lbl) lbl.textContent = 'Net Subtotal:';
+                if (lbl) lbl.textContent = _L.net_subtotal;
             }}
         }}
     }} else {{
@@ -7666,7 +7704,7 @@ function celerpUpdateTotals() {{
         const subEl = document.getElementById('doc-subtotal');
         if (subEl) {{
             const lbl = subEl.closest('.total-row')?.querySelector('.total-label');
-            if (lbl) lbl.textContent = 'Subtotal:';
+            if (lbl) lbl.textContent = _L.subtotal;
         }}
     }}
     const subEl = document.getElementById('doc-subtotal');
@@ -7689,7 +7727,7 @@ function celerpUpdateTotals() {{
                 const lbl = document.createElement('span');
                 lbl.className = 'total-label total-label--editable';
                 lbl.textContent = t.label + ':';
-                lbl.title = 'Double-click to rename';
+                lbl.title = _L.double_click_rename;
                 lbl.style.cursor = 'pointer';
                 lbl.addEventListener('dblclick', () => _celerpEditTaxLabel(key, t.rate, lbl));
                 const val = document.createElement('span');
@@ -7732,7 +7770,7 @@ function _celerpRenderHeaderDiscount(amount) {{
         function _f(n) {{ try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur2}}).format(n); }} catch(e) {{ return _cur2 + ' ' + n.toFixed(2); }} }}
         const v = vEl ? parseFloat(vEl.value || 0) : 0;
         const isPct = tEl && tEl.value === 'percentage';
-        const label = 'Discount' + (isPct && v ? ' (' + (+v) + '%)' : '');
+        const label = _L.discount_word + (isPct && v ? ' (' + (+v) + '%)' : '');
         if (!row) {{
             row = document.createElement('div');
             row.className = 'total-row';
@@ -7876,7 +7914,7 @@ async function _celerpPersist() {{
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
     }} else {{
-        let msg = 'Save failed';
+        let msg = _L.save_failed;
         let conflicts = null;
         try {{
             const e = await resp.json();
@@ -7905,11 +7943,11 @@ function _celerpShowReservedConflicts(conflicts) {{
     header.className = 'modal-dialog__header';
     const title = document.createElement('h3');
     title.className = 'modal-dialog__title';
-    title.textContent = 'Reserved on another document';
+    title.textContent = _L.reserved_conflict_title;
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'modal-dialog__close';
-    closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.setAttribute('aria-label', _L.close);
     closeBtn.textContent = '✕';
     closeBtn.onclick = () => dlg.close();
     header.append(title, closeBtn);
@@ -7917,7 +7955,7 @@ function _celerpShowReservedConflicts(conflicts) {{
     conflicts.forEach(c => {{
         const p = document.createElement('p');
         p.className = 'form-hint reserved-conflict-line';
-        p.append((c.sku || c.entity_id) + ' is reserved on ');
+        p.append((c.sku || c.entity_id) + _L.is_reserved_on);
         if (c.doc_id) {{
             const a = document.createElement('a');
             a.href = '/docs/' + c.doc_id;
@@ -7925,26 +7963,26 @@ function _celerpShowReservedConflicts(conflicts) {{
             a.textContent = c.doc_number || String(c.doc_id).replace(/^doc:/, '');
             p.appendChild(a);
         }} else {{
-            p.append('another document');
+            p.append(_L.another_document);
         }}
         p.append('.');
         dlg.appendChild(p);
     }});
     const hint = document.createElement('p');
     hint.className = 'form-hint';
-    hint.textContent = 'The draft cannot save while these lines are on it. Remove them from the draft, or open the reserving document to release the stock first, then save again.';
+    hint.textContent = _L.reserved_conflict_hint;
     dlg.appendChild(hint);
     const actions = document.createElement('div');
     actions.className = 'modal-dialog__actions';
     const keepBtn = document.createElement('button');
     keepBtn.type = 'button';
     keepBtn.className = 'btn btn--ghost';
-    keepBtn.textContent = 'Keep lines';
+    keepBtn.textContent = _L.keep_lines;
     keepBtn.onclick = () => dlg.close();
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'btn btn--primary';
-    removeBtn.textContent = 'Remove from draft';
+    removeBtn.textContent = _L.remove_from_draft;
     removeBtn.onclick = () => {{
         const eids = new Set(conflicts.map(c => c.entity_id).filter(Boolean));
         document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
@@ -7978,7 +8016,7 @@ async function celerpReprice(priceList) {{
         window.location.reload();
     }} else {{
         const err = await resp.json().catch(() => ({{}}));
-        alert(err.error || 'Reprice failed');
+        alert(err.error || _L.reprice_failed);
     }}
 }}
 /* ── CSV import ── */
@@ -7997,10 +8035,10 @@ async function celerpCsvImport(input, entityId) {{
         if (resp.ok && data.ok) {{
             window.location.reload();
         }} else {{
-            alert(data.error || 'Import failed');
+            alert(data.error || _L.import_failed);
         }}
     }} catch (err) {{
-        alert('Import failed: ' + err.message);
+        alert(_L.import_failed + ': ' + err.message);
     }}
     input.value = '';
 }}
@@ -8013,7 +8051,7 @@ async function celerpCsvImport(input, entityId) {{
   function _n(){{return table?table.querySelectorAll('tbody .li-select:checked').length:0;}}
   function _update(){{
     var n=_n();
-    if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
+    if(countEl) countEl.textContent=_L.rows_selected.replace('{{n}}', n);
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) sel.value='';
   }}
@@ -8060,11 +8098,11 @@ async function celerpCsvImport(input, entityId) {{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
     if(!ids.length){{
-      if(window.celerpToast)celerpToast('No inventory items selected. Status can only be set on lines linked to inventory records.','error');
+      if(window.celerpToast)celerpToast(_L.no_inventory_status,'error');
       return;
     }}
-    var verb=target==='reserved'?'reserved':'available';
-    if(!window.confirm('Set '+ids.length+' line'+(ids.length===1?'':'s')+' as '+verb+'?')) return;
+    var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
+    if(!window.confirm(_confirm.replace('{{n}}', ids.length))) return;
     // Persist pending edits first so the server sees every selected line, then act.
     await _celerpPersist();
     var fd=new FormData();
@@ -8072,7 +8110,7 @@ async function celerpCsvImport(input, entityId) {{
     fd.append('new_status',target);
     var resp=await fetch(_CELERP_BASE + _CELERP_EID + '/reserve-lines',{{method:'POST',body:fd}});
     if(resp.status===204){{ window.location.reload(); return; }}
-    var msg='Could not set the selected lines as '+verb+'.';
+    var msg=(target==='reserved'?_L.could_not_set_reserved:_L.could_not_set_available);
     try{{
       var trig=resp.headers.get('HX-Trigger');
       if(trig){{ var t=JSON.parse(trig); if(t&&t.celerpToast&&t.celerpToast.message) msg=t.celerpToast.message; }}
@@ -8114,7 +8152,7 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    if(!ids.length){{if(window.celerpToast)celerpToast('No inventory items selected. Labels can only be printed for items linked to inventory records.','error');return;}}
+    if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
@@ -8203,7 +8241,7 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and li.get("receive_as") == "expense":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc and not _doc_has_received:
-                    cells.append(Td(Span("Not Received", cls="badge badge--not_received"), cls="col-item-status"))
+                    cells.append(Td(Span(t("documents.status_not_received"), cls="badge badge--not_received"), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
@@ -8225,8 +8263,8 @@ async function celerpCsvImport(input, entityId) {{
             # maintained, so the eye there says so; one affordance, no duplicate SKU link.
             _ident_1st, _ident_2nd = line_identifier(li, line_identifier_mode)
             _ident_2nd_div = Div(_ident_2nd, cls="li-ident-2nd", title=_ident_2nd) if _ident_2nd else None
-            _eye_title = ("Open this item in the catalog (HS code and origin live there)"
-                          if pol["customs"] else "View item details")
+            _eye_title = (t("documents.tip_eye_customs")
+                          if pol["customs"] else t("documents.view_item_details"))
             _sku_cell = Td(
                 Div(_item_link_eye(li_eid, title=_eye_title),
                     Span(format_value(_ident_1st or None)), cls="li-ident-view"),
@@ -8276,7 +8314,7 @@ async function celerpCsvImport(input, entityId) {{
         if _fin_show_bulk:
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
         if _show_item_status:
-            _thead_base.append(Th("Status", cls="col-item-status"))
+            _thead_base.append(Th(t("th.status"), cls="col-item-status"))
         _thead_base += [Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.type"), cls="col-type")]
@@ -8287,15 +8325,15 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         if pol["show_onhand"]:
-            _thead_base.append(Th("On hand", cls="cell--number col-onhand"))
+            _thead_base.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
-            _thead_base.append(Th("Counted", cls="cell--number col-counted"))
+            _thead_base.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
         if pol["show_qtyout"]:
-            _thead_base.append(Th("Qty out", cls="cell--number col-qtyout"))
+            _thead_base.append(Th(t("documents.th_qty_out"), cls="cell--number col-qtyout"))
         if pol["show_account"]:
-            _thead_base.append(Th("Account", cls="col-account"))
+            _thead_base.append(Th(t("th.account"), cls="col-account"))
         if pol["show_comment"]:
-            _thead_base.append(Th("Comment", cls="col-comment"))
+            _thead_base.append(Th(t("documents.th_comment"), cls="col-comment"))
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
@@ -8312,6 +8350,20 @@ async function celerpCsvImport(input, entityId) {{
             ),
             Script(f"""
 (function(){{
+  /* Translated UI strings resolved in Python at render time (R2). */
+  const _L = {_json.dumps({
+    "rows_selected": t("documents.rows_selected"),
+    "no_inventory_labels": t("documents.no_inventory_items_labels"),
+    "no_lines_selected": t("documents.no_lines_selected"),
+    "none_can_available": t("documents.none_can_available"),
+    "confirm_set_reserved": t("documents.confirm_set_reserved"),
+    "confirm_set_available": t("documents.confirm_set_available"),
+    "could_not_set_reserved": t("documents.could_not_set_reserved"),
+    "could_not_set_available": t("documents.could_not_set_available"),
+    "sold_reserve_warn": t("documents.sold_reserve_warn"),
+    "memo_return_prompt": t("documents.memo_return_prompt"),
+    "qty_between": t("documents.qty_between"),
+  })};
   var table=document.getElementById('{_fin_bulk_id}');
   var toolbar=document.getElementById('li-bulk-toolbar');
   var countEl=document.getElementById('li-bulk-count');
@@ -8319,7 +8371,7 @@ async function celerpCsvImport(input, entityId) {{
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
   function _update(){{
     var n=_n();
-    if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
+    if(countEl) countEl.textContent=_L.rows_selected.replace('{{n}}', n);
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) {{ sel.value=''; _hideBtns(); }}
   }}
@@ -8360,7 +8412,7 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    if(!ids.length){{if(window.celerpToast)celerpToast('No inventory items selected. Labels can only be printed for items linked to inventory records.','error');return;}}
+    if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
@@ -8395,14 +8447,12 @@ async function celerpCsvImport(input, entityId) {{
   // shipped is taken back into stock first (sale reversed), so the confirm says exactly that.
   window.liBulkReserveConfirmed=async function(){{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
-    if(!rows.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
+    if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var ids=rows.map(function(cb){{return cb.value;}});
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
-    var msg='Set '+ids.length+' line'+(ids.length===1?'':'s')+' as reserved?';
+    var msg=_L.confirm_set_reserved.replace('{{n}}', ids.length);
     if(sold){{
-      msg=sold+' of the selected line'+(sold===1?' is':'s are')+' already shipped. Setting '
-        +(sold===1?'it':'them')+' as reserved takes the goods back into stock and reverses the '
-        +'sale posting on this document. Continue?';
+      msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
     if(!window.confirm(msg)) return;
     var fd=new FormData();
@@ -8410,14 +8460,14 @@ async function celerpCsvImport(input, entityId) {{
     fd.append('new_status','reserved');
     var resp=await fetch(_liBase+_liEid+'/reserve-lines',{{method:'POST',body:fd}});
     if(resp.status===204){{ window.location.reload(); return; }}
-    await _liShowErr(resp,'Could not set the selected lines as reserved.');
+    await _liShowErr(resp,_L.could_not_set_reserved);
   }};
   // "Set as available": a reserved line releases via reserve-lines; a sold/memo line reverts
   // via revert-lines. Partition the selection by data-item-status, issue both fetches, and only
   // refresh once both return 204. A single memo line can be part-returned (the rest stays out).
   window.liBulkAvailableConfirmed=async function(){{
     var rows=_liCheckedRows();
-    if(!rows.length){{ if(window.celerpToast)celerpToast('No lines selected.','error'); return; }}
+    if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var releaseIds=[], revertRows=[];
     rows.forEach(function(cb){{
       if(!cb.value) return;
@@ -8427,11 +8477,11 @@ async function celerpCsvImport(input, entityId) {{
       // already-available (or otherwise non-actionable) lines are skipped.
     }});
     if(!releaseIds.length && !revertRows.length){{
-      if(window.celerpToast)celerpToast('None of the selected lines can be set as available.','error');
+      if(window.celerpToast)celerpToast(_L.none_can_available,'error');
       return;
     }}
     var total=releaseIds.length+revertRows.length;
-    if(!window.confirm('Set '+total+' line'+(total===1?'':'s')+' as available?')) return;
+    if(!window.confirm(_L.confirm_set_available.replace('{{n}}', total))) return;
     var calls=[];
     if(releaseIds.length){{
       var fd=new FormData();
@@ -8446,10 +8496,10 @@ async function celerpCsvImport(input, entityId) {{
         var cb=revertRows[0];
         var outQty=parseFloat(cb.getAttribute('data-out-qty')||'0');
         if(cb.getAttribute('data-item-status')==='memo_out'&&outQty>1){{
-          var answer=window.prompt('How many are coming back? Leave as '+outQty+' to take back all of it. Anything less stays out with the customer.',String(outQty));
+          var answer=window.prompt(_L.memo_return_prompt.replace('{{qty}}', outQty),String(outQty));
           if(answer===null) return;
           var qty=parseFloat(answer);
-          if(!(qty>0)||qty>outQty){{ alert('Enter a quantity between 0 and '+outQty+'.'); return; }}
+          if(!(qty>0)||qty>outQty){{ alert(_L.qty_between.replace('{{qty}}', outQty)); return; }}
           if(qty!==outQty) rf.append('qty['+cb.value+']',String(qty));
         }}
       }}
@@ -8458,7 +8508,7 @@ async function celerpCsvImport(input, entityId) {{
     var resps=await Promise.all(calls);
     if(resps.every(function(r){{return r.status===204;}})){{ window.location.reload(); return; }}
     var bad=resps.filter(function(r){{return r.status!==204;}})[0];
-    await _liShowErr(bad,'Could not set the selected lines as available.');
+    await _liShowErr(bad,_L.could_not_set_available);
   }};
 }})();
 """) if _fin_show_bulk else None,
@@ -8529,7 +8579,7 @@ async function celerpCsvImport(input, entityId) {{
                     custom_label = item.get("label") or ""
                     amt = float(item.get("amount", 0) or 0) or round(li_total * rate / 100, 2)
                     key = code or f"custom_{rate}"
-                    label = f"{code} ({rate}%)" if code else f"{custom_label or 'Tax'} ({rate}%)"
+                    label = f"{code} ({rate}%)" if code else f"{custom_label or t('documents.tax')} ({rate}%)"
                     if key not in code_totals:
                         code_totals[key] = {"label": label, "amount": 0.0}
                     code_totals[key]["amount"] += amt
@@ -8538,7 +8588,7 @@ async function celerpCsvImport(input, entityId) {{
                 if rate != 0:
                     amt = round(li_total * rate / 100, 2)
                     key = f"rate_{rate}"
-                    label = f"Tax ({rate}%)"
+                    label = f"{t('documents.tax')} ({rate}%)"
                     if key not in code_totals:
                         code_totals[key] = {"label": label, "amount": 0.0}
                     code_totals[key]["amount"] += amt
@@ -8577,7 +8627,7 @@ async function celerpCsvImport(input, entityId) {{
             Span(fmt_money(gross_subtotal, currency), id="doc-gross-subtotal", cls="total-value"), cls="total-row") if line_discount > 0.005 else "",
         Div(Span(t("doc.discount"), cls="total-label"),
             Span(f"-{fmt_money(line_discount, currency)}", id="doc-line-discount", cls="total-value"), cls="total-row") if line_discount > 0.005 else "",
-        Div(Span("Net Subtotal:" if line_discount > 0.005 else "Subtotal:", cls="total-label"),
+        Div(Span(t("documents.net_subtotal") if line_discount > 0.005 else t("doc.subtotal"), cls="total-label"),
             Span(fmt_money(subtotal, currency), id="doc-subtotal", cls="total-value"), cls="total-row"),
         Div(Span(_disc_label, cls="total-label"),
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
@@ -8588,7 +8638,7 @@ async function celerpCsvImport(input, entityId) {{
             # (accounting format).
             Span(
                 (Button("✎", type="button", cls="btn-disc-edit",
-                        title="Add or edit discount", aria_label="Add or edit discount",
+                        title=t("documents.add_edit_discount"), aria_label=t("documents.add_edit_discount"),
                         onclick="celerpOpenDiscount()") if _can_discount else ""),
                 Span(t("doc.total"), cls="total-label total-label--final"),
                 cls="total-final-left",
@@ -8597,7 +8647,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="total-row total-row--final"),
         # Conversion note: shown only when doc currency differs from company base currency
         *([Div(
-            Span(f"≈ {fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency)} at {doc.get('conversion_rate')} {company_currency}/{currency}", cls="total-label total-label--conversion"),
+            Span(t("documents.conversion_note", amount=fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency), rate=doc.get('conversion_rate'), base=company_currency, currency=currency), cls="total-label total-label--conversion"),
             cls="total-row total-row--conversion",
         )] if currency != company_currency and doc.get("conversion_rate") else []),
         # Header-discount state (read by celerpUpdateTotals) + the inline editor popover. An anchored
@@ -8622,9 +8672,9 @@ async function celerpCsvImport(input, entityId) {{
                 ),
                 Div(
                     # "Remove" once a discount exists, else "Cancel" (nothing to remove yet).
-                    Button("Remove" if discount > 0.005 else "Cancel", type="button", id="disc-remove-btn",
+                    Button(t("btn.remove") if discount > 0.005 else t("btn.cancel"), type="button", id="disc-remove-btn",
                            onclick="celerpRemoveDiscount()", cls="btn btn--ghost btn--sm"),
-                    Button("Apply", type="button", onclick="celerpApplyDiscount()", cls="btn btn--primary btn--sm"),
+                    Button(t("btn.apply"), type="button", onclick="celerpApplyDiscount()", cls="btn btn--primary btn--sm"),
                     cls="disc-pop-actions",
                 ),
                 id="discount-popover", cls="disc-popover",
@@ -8648,10 +8698,10 @@ async function celerpCsvImport(input, entityId) {{
         )
 
     contact_label = {
-        "invoice": "Bill to", "purchase_order": "Vendor", "quotation": "Quote to",
-        "memo": "Receiver", "credit_note": "Issued to", "receipt": "Customer",
-        "list": "Customer", "bill": "Vendor", "consignment_in": "Vendor",
-    }.get(doc_type, "Contact")
+        "invoice": t("documents.party_bill_to"), "purchase_order": t("documents.party_vendor"), "quotation": t("documents.party_quote_to"),
+        "memo": t("documents.party_receiver"), "credit_note": t("documents.party_issued_to"), "receipt": t("th.customer"),
+        "list": t("th.customer"), "bill": t("documents.party_vendor"), "consignment_in": t("documents.party_vendor"),
+    }.get(doc_type, t("label.contact"))
 
     # Build contact detail rows - hide payment terms/outstanding for lists
     _contact_rows: list = [
@@ -8702,7 +8752,7 @@ async function celerpCsvImport(input, entityId) {{
         Div(
             P(t("pay.doc_hint"), " ",
               A(t("pay.send_hint_link"), href="/settings/payments", cls="auth-link"), " ",
-              Button("×", type="button", title="Dismiss", aria_label="Dismiss",
+              Button("×", type="button", title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
                      style="background:none;border:none;cursor:pointer;color:#999;padding:0 4px;font-size:14px;line-height:1;vertical-align:middle;",
                      onclick="localStorage.setItem('celerp_pay_hint_dismissed','1');document.getElementById('pay-setup-hint').remove()"),
               cls="form-hint"),
@@ -8723,7 +8773,7 @@ async function celerpCsvImport(input, entityId) {{
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
-            Div(Div("Frequency" if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
+            Div(Div(t("th.frequency") if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
                 _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
                 cls="meta-cell"),
             (Div(Div(t("doc.next_issue_date"), cls="meta-label"),
@@ -8755,7 +8805,7 @@ async function celerpCsvImport(input, entityId) {{
                         _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
                         if _is_vendor_doc else
                         (_contact_ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", contact_shipping_addresses or [], doc.get("contact_id") or "")
-                         if doc.get("contact_id") else Span("--", cls="form-value-placeholder", title="Select a Customer first")),
+                         if doc.get("contact_id") else Span("--", cls="form-value-placeholder", title=t("documents.select_customer_first"))),
                         cls="form-group"),
                     Div(Div(t("doc.attn"), cls="form-label"), _cell("shipping_attn", doc.get("shipping_attn")), cls="form-group"),
                     cls="doc-section", style="margin-top:0.75rem",
@@ -8810,7 +8860,7 @@ async function celerpCsvImport(input, entityId) {{
                 Div(
                     Div(t("doc.terms_text"), cls="form-label"),
                     Textarea(doc.get("terms_text") or "", name="terms_text", rows="4",
-                             placeholder="Terms & conditions text", cls="form-input",
+                             placeholder=t("documents.terms_placeholder"), cls="form-input",
                              hx_post=f"{_base}/field/terms_text",
                              hx_trigger="blur", hx_swap="none") if is_draft
                     else Div(doc.get("terms_text") or "--", cls="meta-value"),
@@ -8822,7 +8872,7 @@ async function celerpCsvImport(input, entityId) {{
                 Div(Span("💬", cls="section-icon"), H3(t("page.note_to_customer"), cls="section-title"), cls="section-header"),
                 Div(
                     Textarea(doc.get("customer_note") or "", name="customer_note", rows="4",
-                             placeholder="Add a note to your customer", cls="form-input",
+                             placeholder=t("documents.customer_note_placeholder"), cls="form-input",
                              hx_post=f"{_base}/field/customer_note",
                              hx_trigger="blur", hx_swap="none") if is_draft
                     else Div(doc.get("customer_note") or "-", cls="meta-value"),
@@ -8887,10 +8937,10 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     """Render a timeline of ledger events for a document. Legacy: used by non-paginated callers."""
     return activity_table(
         ledger,
-        title="History",
+        title=t("documents.history"),
         section_cls="doc-section",
         icon="\U0001f4dc",
-        empty_msg="No activity recorded yet.",
+        empty_msg=t("documents.no_activity_recorded"),
         max_display=20,
     )
 
@@ -9016,7 +9066,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         cards = [
             {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
-            {"label": "Not Restocked",               "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
+            {"label": t("documents.not_restocked", lang), "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
             {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
@@ -9045,7 +9095,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         cards = [
             {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": f"{base_url}&status=draft",                        "_active_key": "draft"},
             {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
-            {"label": "Not Stocked Goods",               "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
+            {"label": t("documents.not_stocked_goods", lang), "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
@@ -9097,7 +9147,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             _active_key = "open"
         cards = [
             {"label": t("status.draft", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
-            {"label": "Open",                  "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
+            {"label": t("connectors.open", lang), "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
              "_url": f"{base_url}&status_in={_OPEN_STATUSES}", "_active_key": "open"},
             {"label": t("btn.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
@@ -9137,7 +9187,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     if doc_type and doc_type != "invoice":
         count = summary.get(f"{doc_type}_count", summary.get("total_count", 0))
         return Div(
-            Span(f"{doc_type.replace('_', ' ').title()}s: {count}", cls="val-chip"),
+            Span(t("documents.doc_type_count", type=doc_type.replace('_', ' ').title(), count=count), cls="val-chip"),
             cls="valuation-bar",
         )
     return Div(
@@ -9206,11 +9256,11 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         _active_key = active_status or ""
 
     cards = [
-        {"label": "Draft",                "count": draft_cnt,      "total": None, "status": "draft",            "color": "gray"},
-        {"label": "All Issued",           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": "/lists?all_issued=1",              "_active_key": "all_issued"},
-        {"label": "Converted to Memo",    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": "/lists?converted_to_type=memo",    "_active_key": "converted_to_memo"},
-        {"label": "Converted to Invoice", "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
-        {"label": "Void",                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
+        {"label": t("status.draft"),                "count": draft_cnt,      "total": None, "status": "draft",            "color": "gray"},
+        {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": "/lists?all_issued=1",              "_active_key": "all_issued"},
+        {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": "/lists?converted_to_type=memo",    "_active_key": "converted_to_memo"},
+        {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
+        {"label": t("btn.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, "/lists", _active_key or None, show_all_card=False)
 

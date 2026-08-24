@@ -14,7 +14,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -62,7 +62,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
             page_header(
-                "Import Subscriptions",
+                t("subscriptions_import.hdr_import"),
                 A(t("btn.back_to_settings"), href="/subscriptions", cls="btn btn--secondary"),
                 A(t("btn.download_template"), href="/subscriptions/import/template", cls="btn btn--secondary"),
             ),
@@ -72,7 +72,7 @@ def setup_routes(app):
                 preview_action="/subscriptions/import/preview",
                 has_mapping=True,
             ),
-            title="Import Subscriptions - Celerp",
+            title=page_title("subscriptions_import.hdr_import"),
             nav_active="subscriptions",
             request=request,
         )
@@ -114,7 +114,7 @@ def setup_routes(app):
         rows, err = await read_csv_upload(form)
         if err:
             return await base_shell(
-                page_header("Import Subscriptions"),
+                page_header(t("subscriptions_import.hdr_import")),
                 upload_form(
                     cols=_SUB_IMPORT_SPEC.cols,
                     template_href="/subscriptions/import/template",
@@ -122,7 +122,7 @@ def setup_routes(app):
                     has_mapping=True,
                     error=err,
                 ),
-                title="Import Subscriptions - Celerp",
+                title=page_title("subscriptions_import.hdr_import"),
                 nav_active="subscriptions",
                 request=request,
             )
@@ -130,7 +130,7 @@ def setup_routes(app):
         csv_text = _rows_to_csv(rows, cols)
         csv_ref = _stash_csv(csv_text)
         return await base_shell(
-            page_header("Import Subscriptions"),
+            page_header(t("subscriptions_import.hdr_import")),
             column_mapping_form(
                 csv_cols=cols,
                 target_cols=_SUB_IMPORT_SPEC.cols,
@@ -140,7 +140,7 @@ def setup_routes(app):
                 back_href="/subscriptions/import",
                 required_targets=_SUB_IMPORT_SPEC.required,
             ),
-            title="Import Subscriptions - Celerp",
+            title=page_title("subscriptions_import.hdr_import"),
             nav_active="subscriptions",
             request=request,
         )
@@ -155,15 +155,15 @@ def setup_routes(app):
         csv_text = _resolve_csv_text(form)
         if not csv_text:
             return await base_shell(
-                page_header("Import Subscriptions"),
+                page_header(t("subscriptions_import.hdr_import")),
                 upload_form(
                     cols=_SUB_IMPORT_SPEC.cols,
                     template_href="/subscriptions/import/template",
                     preview_action="/subscriptions/import/preview",
                     has_mapping=True,
-                    error="CSV data expired. Please re-upload.",
+                    error=t("inventory.csv_expired"),
                 ),
-                title="Import Subscriptions - Celerp",
+                title=page_title("subscriptions_import.hdr_import"),
                 nav_active="subscriptions",
                 request=request,
             )
@@ -174,7 +174,7 @@ def setup_routes(app):
             csv_ref = _stash_csv(csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
-                page_header("Import Subscriptions"),
+                page_header(t("subscriptions_import.hdr_import")),
                 column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_SUB_IMPORT_SPEC.cols,
@@ -186,7 +186,7 @@ def setup_routes(app):
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
-                title="Import Subscriptions - Celerp",
+                title=page_title("subscriptions_import.hdr_import"),
                 nav_active="subscriptions",
                 request=request,
             )
@@ -197,7 +197,7 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _SUB_IMPORT_SPEC.cols)
 
         return await base_shell(
-            page_header("Import Subscriptions"),
+            page_header(t("subscriptions_import.hdr_import")),
             validation_result(
                 rows=rows,
                 cols=cols,
@@ -207,9 +207,9 @@ def setup_routes(app):
                 back_href="/subscriptions/import",
                 revalidate_action="/subscriptions/import/revalidate",
                 has_mapping=True,
-                upsert_label="name + start date",
+                upsert_label=t("subscriptions_import.upsert_label"),
             ),
-            title="Import Subscriptions - Celerp",
+            title=page_title("subscriptions_import.hdr_import"),
             nav_active="subscriptions",
             request=request,
         )
@@ -226,7 +226,7 @@ def setup_routes(app):
                 template_href="/subscriptions/import/template",
                 preview_action="/subscriptions/import/preview",
                 has_mapping=True,
-                error="CSV data expired. Please re-upload.",
+                error=t("inventory.csv_expired"),
             )
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _SUB_IMPORT_SPEC.cols
@@ -240,7 +240,7 @@ def setup_routes(app):
             back_href="/subscriptions/import",
             revalidate_action="/subscriptions/import/revalidate",
             has_mapping=True,
-            upsert_label="name + start date",
+            upsert_label=t("subscriptions_import.upsert_label"),
         )
 
     @app.post("/subscriptions/import/errors")
@@ -319,7 +319,7 @@ def setup_routes(app):
             skipped=skipped,
             updated=0,
             errors=errors,
-            entity_label="subscriptions",
+            entity_label=t("nav.subscriptions"),
             back_href="/subscriptions",
             import_more_href="/subscriptions/import",
             has_mapping=True,

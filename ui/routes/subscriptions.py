@@ -20,11 +20,10 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import breadcrumbs, pagination, search_bar, status_cards
+from ui.components.table import breadcrumbs, display_enum, pagination, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.settings import _check_permission
-from ui.i18n import get_lang, t
-from ui.i18n import t, get_lang
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ _DIRECTION_DOC_TYPE = {
 # ---------------------------------------------------------------------------
 
 def _status_badge(status: str) -> FT:
-    return Span(status.replace("_", " ").capitalize(), cls=f"badge {_STATUS_CSS.get(status, 'badge--draft')}")
+    return Span(display_enum(status, "subscription_status"), cls=f"badge {_STATUS_CSS.get(status, 'badge--draft')}")
 
 
 def _direction_tabs(direction: str, status: str = "") -> FT:
@@ -60,7 +59,7 @@ def _direction_tabs(direction: str, status: str = "") -> FT:
             params += f"&status={status}"
         return A(label, href=f"/subscriptions?{params}",
                  cls=f"tab-link {'tab-link--active' if direction == dir_ else ''}")
-    return Nav(_tab("Sales", "sales"), _tab("Purchasing", "purchasing"), cls="tab-nav")
+    return Nav(_tab(t("dashboard.sales"), "sales"), _tab(t("subscriptions.purchasing"), "purchasing"), cls="tab-nav")
 
 
 def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> FT:
@@ -72,11 +71,11 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
     issued_total = sum(counts.get(s, 0) for s in ("active", "paused", "cancelled"))
     # Draft first, then All Issued, then lifecycle statuses
     cards = [
-        {"label": "Draft",      "count": counts.get("draft", 0),     "total": None, "status": "draft",     "color": "gray",   "_url": f"{base}&status=draft"},
-        {"label": "All Issued", "count": issued_total,               "total": None, "status": "",          "color": "blue",   "_url": base, "_active_key": ""},
-        {"label": "Active",     "count": counts.get("active", 0),    "total": None, "status": "active",    "color": "green",  "_url": f"{base}&status=active"},
-        {"label": "Paused",     "count": counts.get("paused", 0),    "total": None, "status": "paused",    "color": "yellow", "_url": f"{base}&status=paused"},
-        {"label": "Cancelled",  "count": counts.get("cancelled", 0), "total": None, "status": "cancelled", "color": "gray",   "_url": f"{base}&status=cancelled"},
+        {"label": display_enum("draft", "subscription_status"),     "count": counts.get("draft", 0),     "total": None, "status": "draft",     "color": "gray",   "_url": f"{base}&status=draft"},
+        {"label": t("status.all_issued"),                           "count": issued_total,               "total": None, "status": "",          "color": "blue",   "_url": base, "_active_key": ""},
+        {"label": display_enum("active", "subscription_status"),    "count": counts.get("active", 0),    "total": None, "status": "active",    "color": "green",  "_url": f"{base}&status=active"},
+        {"label": display_enum("paused", "subscription_status"),    "count": counts.get("paused", 0),    "total": None, "status": "paused",    "color": "yellow", "_url": f"{base}&status=paused"},
+        {"label": display_enum("cancelled", "subscription_status"), "count": counts.get("cancelled", 0), "total": None, "status": "cancelled", "color": "gray",   "_url": f"{base}&status=cancelled"},
     ]
     return status_cards(cards, base, active_status or None, currency=None, show_all_card=False)
 
@@ -89,7 +88,7 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
         name = s.get("ref_id") or s.get("doc_number") or s.get("name") or eid.split(":")[-1]
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
-        freq = (s.get("frequency") or "-").capitalize()
+        freq = display_enum(s["frequency"], "subscription_frequency") if s.get("frequency") else "-"
         next_run = s.get("next_run_date") or "-"
         status = s.get("status", "draft")
         return Tr(
@@ -120,12 +119,12 @@ def _schedule_inputs(entity_id: str, sub: dict):
     start = sub.get("start_date") or ""
     interval = sub.get("custom_interval_days") or ""
     freq_select = Select(
-        *[Option(f.capitalize(), value=f, selected=(f == freq)) for f in _FREQUENCIES],
+        *[Option(display_enum(f, "subscription_frequency"), value=f, selected=(f == freq)) for f in _FREQUENCIES],
         name="value",
         hx_patch=f"/docs/{entity_id}/field/frequency",
         hx_swap="none",
         hx_trigger="change",
-        title="Frequency",
+        title=t("th.frequency"),
         cls="form-input form-input--inline",
         style="width:130px",
     )
@@ -134,17 +133,17 @@ def _schedule_inputs(entity_id: str, sub: dict):
         hx_patch=f"/docs/{entity_id}/field/start_date",
         hx_swap="none",
         hx_trigger="change",
-        title="Start date",
+        title=t("label.start_date"),
         cls="form-input form-input--inline",
         style="width:145px",
     )
     custom_input = Input(
         type="number", name="value", value=str(interval) if interval else "",
-        placeholder="Days", min="1",
+        placeholder=t("label.days"), min="1",
         hx_patch=f"/docs/{entity_id}/field/custom_interval_days",
         hx_swap="none",
         hx_trigger="change",
-        title="Custom interval (days)",
+        title=t("subscriptions.custom_interval_title"),
         cls="form-input form-input--inline",
         style=f"width:80px;{'display:none' if freq != 'custom' else ''}",
         id="sub-custom-days",
@@ -175,7 +174,7 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
         return _schedule_inputs(entity_id, sub) + [
             Form(Button(t("btn.activate"), type="submit", cls="btn btn--primary"),
                  method="post", action=f"/subscriptions/{entity_id}/activate",
-                 title="Set frequency and start date, then activate"),
+                 title=t("subscriptions.activate_title")),
         ], []
 
     left: list = [_status_badge(status)]
@@ -207,7 +206,7 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
     gen_count = len(sub.get("generated_doc_ids") or [])
     if gen_count:
         left.append(
-            Span(f"{gen_count} doc{'s' if gen_count != 1 else ''} generated", cls="text-muted", style="font-size:.85em")
+            Span(t("subscriptions.docs_generated", n=gen_count), cls="text-muted", style="font-size:.85em")
         )
 
     return left, right
@@ -253,15 +252,15 @@ def setup_routes(app) -> None:
 
         total = len(filtered)
         page_items = filtered[(page - 1) * _PER_PAGE: page * _PER_PAGE]
-        title = "Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions"
+        title = t("nav.subscriptions_sales") if direction == "sales" else t("nav.subscriptions_purchasing")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q}.items() if v})
 
         content = Div(
             page_header(
                 title,
-                search_bar(placeholder="Search name, contact...", target="#sub-table",
+                search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
                            url=f"/subscriptions/search?direction={direction}&status={status}",
-                           label=f"Search {title.lower()}"),
+                           label=t("contacts.search_scope", scope=title.lower())),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
             ),
@@ -392,16 +391,16 @@ def setup_routes(app) -> None:
 
         status = doc.get("status", "draft")
         ref = doc.get("ref_id") or doc.get("doc_number") or entity_id.split(":")[-1]
-        type_label = "Sales Subscription" if direction == "sales" else "Purchasing Subscription"
-        status_label = status.capitalize()
+        type_label = t("subscriptions.type_sales") if direction == "sales" else t("subscriptions.type_purchasing")
+        status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
         _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc)
 
         return await base_shell(
             breadcrumbs([
-                ("Dashboard", "/dashboard"),
-                ("Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions", list_url),
+                (t("nav.dashboard"), "/dashboard"),
+                (t("nav.subscriptions_sales") if direction == "sales" else t("nav.subscriptions_purchasing"), list_url),
                 (f"{status_label} {ref}", None),
             ]),
             page_header(f"{type_label} - {status_label} {ref}"),
