@@ -7,34 +7,40 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+# The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
+# boundary, the interactive routes, the allocation service, and the scanner share one
+# source of truth. reject_comma_sku/SKU_COMMA_MESSAGE are re-exported here because
+# celerp_inventory.routes imports them from this module.
+from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inventory
+    SKU_COMMA_MESSAGE,
+    reject_comma_sku,
+    validate_barcode,
+    validate_sku,
+)
+
 
 # -----------------
 # Items
 # -----------------
 
-# A comma is Celerp's OR operator in the SKU/search syntax, so a SKU may never contain one: it would
-# split into separate codes wherever SKUs are matched (the scan bar, the `skus=` filter), making the
-# SKU unresolvable. This is the canonical write-time predicate; interactive routes wrap it to surface
-# a friendly 422 (celerp_inventory.routes._validate_sku), every other emitter hits it here at the
-# event boundary (imports, connector upserts, document receiving). Replay never runs these schemas
-# (the reducer does), so enforcing here can never brick a historical projection.
-SKU_COMMA_MESSAGE = "SKU cannot contain a comma"
-
-
-def reject_comma_sku(sku: Any) -> Any:
-    if sku is not None and "," in str(sku):
-        raise ValueError(SKU_COMMA_MESSAGE)
-    return sku
-
 
 class _SkuGuard(BaseModel):
-    """Mixin: reject a comma-bearing top-level `sku` on any item event that sets one."""
+    """Mixin: enforce the SKU and barcode invariants on any item event that sets them.
+
+    SKU: no comma (Celerp's OR operator in the SKU/search syntax) and a bounded length.
+    Barcode: digits only and a bounded length. These are the canonical write-time
+    predicates; interactive routes wrap them to surface a friendly 422, every other
+    emitter hits them here at the event boundary (imports, connector upserts, document
+    receiving). Replay never runs these schemas (the reducer does), so enforcing here
+    can never brick a historical projection.
+    """
 
     @model_validator(mode="before")
     @classmethod
-    def _guard_sku(cls, data: Any) -> Any:
+    def _guard_item_codes(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            reject_comma_sku(data.get("sku"))
+            validate_sku(data.get("sku"))
+            validate_barcode(data.get("barcode"))
         return data
 
 
@@ -79,8 +85,11 @@ class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
 
     @model_validator(mode="after")
-    def _guard_sku(self) -> "ItemUpdated":
-        reject_comma_sku((self.fields_changed.get("sku") or {}).get("new"))
+    def _guard_item_codes(self) -> "ItemUpdated":
+        if "sku" in self.fields_changed:
+            validate_sku((self.fields_changed.get("sku") or {}).get("new"))
+        if "barcode" in self.fields_changed:
+            validate_barcode((self.fields_changed.get("barcode") or {}).get("new"))
         return self
 
 

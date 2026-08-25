@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from celerp.inventory_codes import BarcodeConflictError, is_barcode_unique_violation
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
@@ -130,8 +131,19 @@ class ProjectionEngine:
                     )
                     await session.flush()
                 return
-            except IntegrityError:
+            except IntegrityError as exc:
+                # Only the (company_id, entity_id) primary-key race is a benign
+                # concurrent-first-insert to retry as an update on the winner's row.
+                # A barcode unique-index violation is a real conflict - surface it so
+                # the API maps it to 409 rather than swallowing it as a PK race.
+                if is_barcode_unique_violation(exc):
+                    raise BarcodeConflictError((fields.get("state") or {}).get("barcode")) from exc
+                constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+                if constraint not in (None, "projections_pkey"):
+                    raise
                 projection = await ProjectionEngine._locked_projection(session, entry)
+                if projection is None:
+                    raise
         for column, value in ProjectionEngine._next_fields(projection.state, entry, projection.version).items():
             setattr(projection, column, value)
 
