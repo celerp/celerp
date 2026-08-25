@@ -4674,10 +4674,11 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
+        run_key = str(form.get("run_key", "")).strip() or None
         if not barcode:
             return _JSON({"scanned": 0, "failed": [], "html": ""})
         try:
-            res = await api.scan_list(token, entity_id, barcode, price_list)
+            res = await api.scan_list(token, entity_id, barcode, price_list, run_key)
         except APIError as e:
             # A LIST-LEVEL rejection (closed/void, or a finalized list whose type disables scanning):
             # the scan bar reads resp.text() on a non-2xx response and shows it, so return the real
@@ -7155,24 +7156,61 @@ function _celerpDocTypeParam() {{
     // and only the failures are left in the field to retry. The body's `html` is either a re-rendered
     // tbody (finalized-audit fast path) or empty, in which case the fresh tbody comes from a background
     // page fetch so the editable columns still render through the same detail renderer - never a reload.
+    // One idempotency key per Add click. A retry of the SAME unacknowledged run reuses it, so if the
+    // backend committed but its response (or the tbody refresh) never landed, the re-submit replays
+    // instead of adding the successful lines again. Cleared only once a JSON response is received.
+    let pendingRunKey = null;
+    function _newRunKey() {{
+        return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+            : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+    }}
+    function _clearStatusSoon() {{ setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
     async function submitList() {{
         const raw = scanInput.value.trim();
         if (!raw) return;
+        if (!pendingRunKey) pendingRunKey = _newRunKey();
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
+        let data;
         try {{
-            const fd = new URLSearchParams({{barcode: raw}});
+            const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
             const plSelect = document.getElementById('doc-price-list');
             if (plSelect) fd.append('price_list', plSelect.value);
             const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
             if (!resp.ok) {{
-                // A list-level rejection (closed/void); leave the whole run in the field.
+                // A list-level rejection (closed/void): nothing committed, so keep the field AND the key.
                 const txt = await resp.text();
                 scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                scanInput.focus(); _clearStatusSoon();
                 return;
             }}
-            const data = await resp.json();
+            data = await resp.json();
+        }} catch (err) {{
+            // The request never completed: the run may or may not have committed. Keep the field and the
+            // run_key so a retry reuses it and the backend refuses to add the same lines twice.
+            scanStatus.textContent = '✗ ' + _L.scan_error;
+            scanStatus.className = 'scan-bar-status scan-bar-status--err';
+            scanInput.focus(); _clearStatusSoon();
+            return;
+        }}
+        // JSON received = the run is acknowledged. Prune successful codes from the field IMMEDIATELY,
+        // BEFORE any tbody refresh, so a refresh failure can never leave successful codes to be
+        // re-added. Only the failures stay in the field for the operator to fix.
+        pendingRunKey = null;
+        const failed = data.failed || [];
+        if (failed.length) {{
+            scanInput.value = failed.map(f => f.code).join(', ');
+            scanStatus.textContent = '✗ ' + failed.map(f => f.detail).join('; ');
+            scanStatus.className = 'scan-bar-status scan-bar-status--err';
+        }} else {{
+            scanInput.value = '';
+            scanStatus.textContent = '✓ ' + _L.scan_added;
+            scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+        }}
+        // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
+        // the lines are already committed and will appear on the next natural render.
+        try {{
             let html = data.html || '';
             if (!html) {{
                 const page = await fetch(location.href);
@@ -7189,23 +7227,9 @@ function _celerpDocTypeParam() {{
                 celerpUpdateTotals();
                 _celerpHadLines = true;
             }}
-            const failed = data.failed || [];
-            if (failed.length) {{
-                // Keep only the failures in the field so the operator can re-scan or fix them.
-                scanInput.value = failed.map(f => f.code).join(', ');
-                scanStatus.textContent = '✗ ' + failed.map(f => f.detail).join('; ');
-                scanStatus.className = 'scan-bar-status scan-bar-status--err';
-            }} else {{
-                scanInput.value = '';
-                scanStatus.textContent = '✓ ' + _L.scan_added;
-                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-            }}
-        }} catch (err) {{
-            scanStatus.textContent = '✗ ' + _L.scan_error;
-            scanStatus.className = 'scan-bar-status scan-bar-status--err';
-        }}
+        }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
         scanInput.focus();
-        setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000);
+        _clearStatusSoon();
     }}
     if (addBtn) addBtn.addEventListener('click', submitList);
 

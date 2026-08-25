@@ -107,6 +107,28 @@ async def test_items_upsert_true_emits_patch(client, session):
     assert body3["skipped"] == 1
 
 
+@pytest.mark.asyncio
+async def test_items_import_rejects_comma_sku(client, session):
+    """The comma-SKU invariant is enforced at the event/schema boundary, so bulk import cannot slip a
+    comma-bearing SKU past the interactive 422: the row lands in `errors` and nothing is created. A
+    comma is Celerp's OR operator, so a SKU that contained one could never be scanned back."""
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    record = {
+        "entity_id": f"item:comma-{uuid.uuid4().hex[:8]}",
+        "event_type": "item.created",
+        "data": {"sku": "BAD,SKU", "name": "Comma Item", "quantity": 1, "sell_by": "piece"},
+        "source": "csv_import",
+        "idempotency_key": f"csv:item:comma-{uuid.uuid4().hex[:8]}",
+    }
+    r = await client.post("/items/import/batch", headers=headers, json={"records": [record]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["created"] == 0
+    assert body["errors"], "a comma SKU must be reported, not silently imported"
+    assert any("comma" in str(e).lower() for e in body["errors"])
+
+
 # ---------------------------------------------------------------------------
 # Docs upsert
 # ---------------------------------------------------------------------------

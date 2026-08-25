@@ -5,15 +5,40 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # -----------------
 # Items
 # -----------------
 
+# A comma is Celerp's OR operator in the SKU/search syntax, so a SKU may never contain one: it would
+# split into separate codes wherever SKUs are matched (the scan bar, the `skus=` filter), making the
+# SKU unresolvable. This is the canonical write-time predicate; interactive routes wrap it to surface
+# a friendly 422 (celerp_inventory.routes._validate_sku), every other emitter hits it here at the
+# event boundary (imports, connector upserts, document receiving). Replay never runs these schemas
+# (the reducer does), so enforcing here can never brick a historical projection.
+SKU_COMMA_MESSAGE = "SKU cannot contain a comma"
 
-class ItemCreated(BaseModel):
+
+def reject_comma_sku(sku: Any) -> Any:
+    if sku is not None and "," in str(sku):
+        raise ValueError(SKU_COMMA_MESSAGE)
+    return sku
+
+
+class _SkuGuard(BaseModel):
+    """Mixin: reject a comma-bearing top-level `sku` on any item event that sets one."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_sku(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            reject_comma_sku(data.get("sku"))
+        return data
+
+
+class ItemCreated(_SkuGuard):
     sku: str
     name: str
     quantity: float = 0
@@ -28,7 +53,7 @@ class ItemCreated(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class ItemSnapshot(BaseModel):
+class ItemSnapshot(_SkuGuard):
     """Snapshot of full item state - used for imports. sku/name optional (absent in some sources)."""
 
     sku: str | None = None
@@ -52,6 +77,11 @@ class ItemSnapshot(BaseModel):
 
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _guard_sku(self) -> "ItemUpdated":
+        reject_comma_sku((self.fields_changed.get("sku") or {}).get("new"))
+        return self
 
 
 class ItemPricingSet(BaseModel):
@@ -188,7 +218,7 @@ class ItemMerged(BaseModel):
     source_entity_ids: list[str]
 
 
-class ItemPatched(BaseModel):
+class ItemPatched(_SkuGuard):
     """CSV upsert patch: accepts any item data fields."""
     model_config = {"extra": "allow"}
 

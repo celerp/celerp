@@ -297,6 +297,21 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connector_item_upsert_rejects_comma_sku(use_test_session):
+    """A connector pushing a comma-bearing SKU is rejected at the event/schema boundary, not just at
+    the interactive route: the invariant lives on the item event itself, so every emitter (import,
+    connector, direct) is covered. A comma is Celerp's OR operator; a SKU with one is unscannable."""
+    from celerp_inventory.routes import ItemCreate
+
+    session = use_test_session
+    cid = await _seed_company(session, "CommaConn")
+    with pytest.raises(ValueError, match="comma"):
+        await u.upsert_item(str(cid), ItemCreate(
+            sku="BAD,SKU", name="Bad", sell_by="piece", sale_price=1.0,
+            idempotency_key="woocommerce:comma-1"))
+
+
+@pytest.mark.asyncio
 async def test_reimport_updates_legacy_uuid_projection_not_duplicate(use_test_session):
     """Finding: a record imported under the pre-deterministic-id scheme (random-uuid
     entity_id, but idempotency_key present in state — as the backfill migration stamps it)

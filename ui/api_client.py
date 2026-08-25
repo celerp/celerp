@@ -1406,10 +1406,13 @@ async def get_audit(token: str, entity_id: str) -> dict:
     return await get_list(token, entity_id)
 
 
-async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None) -> dict:
+async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None,
+                    run_key: str | None = None) -> dict:
     body: dict = {"barcode": barcode}
     if price_list:
         body["price_list"] = price_list
+    if run_key:
+        body["run_key"] = run_key
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
 
