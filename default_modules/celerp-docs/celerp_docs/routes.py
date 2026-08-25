@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
 import uuid
 from datetime import datetime, timezone, date as _date
@@ -5500,10 +5501,22 @@ class AuditCreateBody(BaseModel):
     idempotency_key: str | None = None
 
 
+# A single scan run submits its whole accumulated comma list at once. These bounds cap one
+# submission by count AND by byte size, so a pathological paste can neither build an unbounded
+# in-memory line set behind one write nor bloat the persisted replay data (below).
+MAX_SCAN_BATCH = 200            # max codes in one submitted run
+MAX_CODE_LEN = 64              # max chars in a single scanned code (barcode or SKU)
+MAX_RUN_KEY_LEN = 64          # max chars in a client-supplied idempotency run key
+_MAX_SCAN_BODY_LEN = MAX_SCAN_BATCH * (MAX_CODE_LEN + 1)  # comma-joined upper bound
+# Recent scan runs retained on the list for retry dedup (post-commit refresh failure).
+_MAX_SCAN_RUNS = 50
+
+
 class ListScanBody(BaseModel):
-    barcode: str
+    barcode: str = Field(max_length=_MAX_SCAN_BODY_LEN)
     price_list: str | None = None  # money lists price the added line from this list (default Retail)
-    run_key: str | None = None     # one Add click; a retry reuses it so a re-submit never re-adds
+    # one Add click; a retry reuses it so a re-submit never re-adds (bounded so replay data stays small)
+    run_key: str | None = Field(default=None, max_length=MAX_RUN_KEY_LEN)
 
 
 class ListCountBody(BaseModel):
@@ -5608,11 +5621,12 @@ async def create_audit_list(
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
-# A single scan run submits its whole accumulated comma list at once; this bounds one submission
-# so a pathological paste can never build an unbounded in-memory line set behind one write.
-MAX_SCAN_BATCH = 200
-# Recent scan-run keys retained on the list for retry dedup (blocker: post-commit refresh failure).
-_MAX_SCAN_RUNS = 50
+def _scan_run_fingerprint(codes: list[str], price_list: str | None) -> str:
+    """A fixed-size digest identifying one scan batch: its ordered normalized codes and the price
+    list they price against. Binds a run_key to the exact batch it acknowledged, so the same key
+    reused for a different batch is caught rather than mis-replayed."""
+    payload = "\n".join(codes) + "\x00" + (price_list or "")
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @lists_router.post("/{entity_id}/scan")
@@ -5644,19 +5658,28 @@ async def scan_list(
     if len(codes) > MAX_SCAN_BATCH:
         raise HTTPException(status_code=422,
                             detail=f"Too many codes in one scan ({len(codes)}); the limit is {MAX_SCAN_BATCH}")
+    if any(len(c) > MAX_CODE_LEN for c in codes):
+        raise HTTPException(status_code=422,
+                            detail=f"A scanned code exceeds {MAX_CODE_LEN} characters")
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
     scan_mode = behavior(lt).scan_finalized if status == FINALIZED else None
     if status == FINALIZED and scan_mode != "count":
         raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
 
-    # A retry of one Add click carries the same run_key. If that run already committed here, replay
-    # its recorded outcome instead of adding the successful lines a second time: the browser only
-    # retries because the first response (or its tbody refresh) never landed, so the batch is still in
-    # the field. Runs that added nothing are not recorded - reprocessing them is already idempotent.
+    # A retry of one Add click carries the same run_key AND the same batch still sitting in the field.
+    # The key alone is not enough: if the response is lost, the user could edit the field to a new
+    # batch and resubmit under the same key - replaying the old run would then silently drop the new
+    # one. So each recorded run stores a fingerprint of its normalized codes + price_list; a matching
+    # key with a matching fingerprint replays the recorded outcome (never re-adding the lines), while a
+    # matching key with a DIFFERENT batch is a client error, rejected with 409 rather than mis-replayed.
+    run_fp = _scan_run_fingerprint(codes, payload.price_list) if payload.run_key else None
     if payload.run_key:
         for rec in (state.get("scan_runs") or []):
             if rec.get("key") == payload.run_key:
+                if rec.get("fp") != run_fp:
+                    raise HTTPException(status_code=409,
+                                        detail="This scan key was already used for a different batch")
                 return {"scanned": rec.get("scanned", 0), "results": [],
                         "failed": rec.get("failed", []), "duplicate": True}
 
@@ -5724,9 +5747,11 @@ async def scan_list(
     if changed:
         fields = {"line_items": lines}
         if payload.run_key:
-            # Record this run so a retry replays instead of re-adding (recent runs only).
+            # Record this run so a retry replays instead of re-adding (recent runs only). The stored
+            # failed list is already bounded: each code is <= MAX_CODE_LEN and the batch <=
+            # MAX_SCAN_BATCH, so the retained replay data can never bloat the projection.
             runs = [dict(r) for r in (state.get("scan_runs") or [])]
-            runs.append({"key": payload.run_key, "scanned": scanned, "failed": failed})
+            runs.append({"key": payload.run_key, "fp": run_fp, "scanned": scanned, "failed": failed})
             fields["scan_runs"] = runs[-_MAX_SCAN_RUNS:]
         await _set_list_fields(session, company_id, entity_id, user, fields)
         await session.commit()

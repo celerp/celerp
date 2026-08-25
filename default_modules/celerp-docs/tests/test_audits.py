@@ -248,6 +248,70 @@ async def test_scan_retry_with_same_run_key_does_not_duplicate(client):
     assert len((await _state(client, t, q))["line_items"]) == 3
 
 
+@pytest.mark.asyncio
+async def test_scan_same_run_key_different_batch_is_rejected(client):
+    """The run_key is bound to the batch it acknowledged. If the first response is lost, the operator
+    could edit the still-active field to a NEW batch and resubmit under the same key. Replaying the old
+    run would silently drop the new batch, so a key reused for a different batch is a 409, not a replay."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "B1", loc=loc, qty=5, barcode="720001")
+    await _item(client, t, "B2", loc=loc, qty=5, barcode="720002")
+    q = await _quotation(client, t)
+
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "720001", "run_key": "k1"})
+    assert r1.status_code == 200 and r1.json()["scanned"] == 1
+
+    # Same key, DIFFERENT codes -> rejected, and the new batch is not applied.
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "720002", "run_key": "k1"})
+    assert r2.status_code == 409
+    assert len((await _state(client, t, q))["line_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_same_run_key_different_price_list_is_rejected(client):
+    """The fingerprint covers the price list too: the same codes priced against a different list is a
+    different batch (different money), so the same key with a changed price_list is a 409, not a replay."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "P1", loc=loc, qty=5, barcode="730001")
+    q = await _quotation(client, t)
+
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "730001", "run_key": "k2", "price_list": "Retail"})
+    assert r1.status_code == 200 and r1.json()["scanned"] == 1
+
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "730001", "run_key": "k2", "price_list": "Wholesale"})
+    assert r2.status_code == 409
+    assert len((await _state(client, t, q))["line_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_bounds_code_and_key_length(client):
+    """Persisted replay data is bounded: an over-long individual code or run_key is refused before any
+    line or scan_runs record is written, so a mixed good/oversized batch can never bloat the projection."""
+    from celerp_docs.routes import MAX_CODE_LEN, MAX_RUN_KEY_LEN
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "L1", loc=loc, qty=5, barcode="740001")
+    q = await _quotation(client, t)
+
+    # An over-long single code is refused (422), nothing written.
+    long_code = "7" * (MAX_CODE_LEN + 1)
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": f"740001,{long_code}", "run_key": "k3"})
+    assert r.status_code == 422
+    assert (await _state(client, t, q))["line_items"] == []
+
+    # An over-long run_key is refused at the schema boundary (422).
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": "740001", "run_key": "x" * (MAX_RUN_KEY_LEN + 1)})
+    assert r.status_code == 422
+
+
 # --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
 
 @pytest.mark.asyncio
