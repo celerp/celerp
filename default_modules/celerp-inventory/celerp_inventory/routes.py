@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.events.schemas import reject_comma_sku
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
@@ -1215,12 +1216,51 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     return ResolveResult("none", [])
 
 
+async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
+    """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
+
+    A per-code caller (a 200-code scan run) would otherwise load every item projection once per
+    code. This loads them once, indexes by barcode and SKU, and returns one ResolveResult per
+    distinct code - the SAME disambiguation rule (barcode wins; a SKU may map to N lots, then
+    ``ambiguous``), so callers behave identically to the single-code path.
+    """
+    wanted = {(c or "").strip() for c in codes if (c or "").strip()}
+    if not wanted:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    by_barcode: dict[str, list] = {}
+    by_sku: dict[str, list] = {}
+    for r in rows:
+        st = r.state or {}
+        bc = str(st.get("barcode") or "")
+        sku = str(st.get("sku") or "")
+        if bc:
+            by_barcode.setdefault(bc, []).append(r)
+        if sku:
+            by_sku.setdefault(sku, []).append(r)
+    out: dict[str, ResolveResult] = {}
+    for code in wanted:
+        if code in by_barcode:
+            out[code] = ResolveResult("barcode", by_barcode[code])
+        elif code in by_sku:
+            out[code] = ResolveResult("sku", by_sku[code])
+        else:
+            out[code] = ResolveResult("none", [])
+    return out
+
+
 def _validate_sku(sku: str | None) -> None:
-    """A comma is the OR operator in the SKU/search syntax, so a SKU may never contain one: it would
-    split into separate codes wherever SKUs are matched (the scan bar, the ``skus=`` filter), making
-    the SKU unresolvable. Reject it at every write so an unscannable SKU can never exist."""
-    if sku is not None and "," in sku:
-        raise HTTPException(status_code=422, detail="SKU cannot contain a comma")
+    """Friendly-422 wrapper over the canonical event-boundary rule (celerp.events.schemas), so an
+    interactive route surfaces a clear message instead of the raw write-time rejection."""
+    try:
+        reject_comma_sku(sku)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("")

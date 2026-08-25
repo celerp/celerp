@@ -5503,6 +5503,7 @@ class AuditCreateBody(BaseModel):
 class ListScanBody(BaseModel):
     barcode: str
     price_list: str | None = None  # money lists price the added line from this list (default Retail)
+    run_key: str | None = None     # one Add click; a retry reuses it so a re-submit never re-adds
 
 
 class ListCountBody(BaseModel):
@@ -5536,21 +5537,9 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
     return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
 
 
-async def _resolve_barcode(session, company_id, code: str):
-    """Resolve a scanned code to a single item via the canonical resolver.
-
-    Barcode (unique) wins; an exact SKU may map to N physical lots. When a SKU is
-    ambiguous we do NOT silently pick a lot - we 409 so the caller scans a barcode
-    or picks a lot. Returns the single matching item, or None if no match.
-    """
-    from celerp_inventory.routes import resolve_item_by_code
-    res = await resolve_item_by_code(session, company_id, code)
-    if res.ambiguous:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot.",
-        )
-    return res.one
+def _ambiguous_sku_detail(code: str) -> str:
+    """The one message for an ambiguous SKU: never silently pick a lot - the operator disambiguates."""
+    return f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot."
 
 
 def _normalize_line_item_ids(lines: list) -> None:
@@ -5622,6 +5611,8 @@ async def create_audit_list(
 # A single scan run submits its whole accumulated comma list at once; this bounds one submission
 # so a pathological paste can never build an unbounded in-memory line set behind one write.
 MAX_SCAN_BATCH = 200
+# Recent scan-run keys retained on the list for retry dedup (blocker: post-commit refresh failure).
+_MAX_SCAN_RUNS = 50
 
 
 @lists_router.post("/{entity_id}/scan")
@@ -5659,6 +5650,16 @@ async def scan_list(
     if status == FINALIZED and scan_mode != "count":
         raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
 
+    # A retry of one Add click carries the same run_key. If that run already committed here, replay
+    # its recorded outcome instead of adding the successful lines a second time: the browser only
+    # retries because the first response (or its tbody refresh) never landed, so the batch is still in
+    # the field. Runs that added nothing are not recorded - reprocessing them is already idempotent.
+    if payload.run_key:
+        for rec in (state.get("scan_runs") or []):
+            if rec.get("key") == payload.run_key:
+                return {"scanned": rec.get("scanned", 0), "results": [],
+                        "failed": rec.get("failed", []), "duplicate": True}
+
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     now = datetime.now(timezone.utc).isoformat()
@@ -5667,13 +5668,16 @@ async def scan_list(
     failed: list[dict] = []
     changed = False
 
+    # Resolve the whole run against ONE inventory load (vs one load per code).
+    from celerp_inventory.routes import resolve_items_by_codes
+    resolved = await resolve_items_by_codes(session, company_id, codes)
+
     for code in codes:
-        try:
-            item = await _resolve_barcode(session, company_id, code)
-        except HTTPException as e:  # ambiguous SKU: report the code, keep processing the rest
-            detail = e.detail
-            item = None
+        res = resolved.get(code)
+        if res is not None and res.ambiguous:
+            item, detail = None, _ambiguous_sku_detail(code)
         else:
+            item = res.one if res is not None else None
             if item is None:
                 detail = f"Unknown barcode or SKU: {code}"
             elif str((item.state or {}).get("status") or "").lower() == "draft":
@@ -5716,11 +5720,17 @@ async def scan_list(
         results.append({"code": code, "state": result_state,
                         "item_id": item.entity_id, "sku": item.state.get("sku")})
 
+    scanned = sum(1 for r in results if r["state"] != "error")
     if changed:
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        fields = {"line_items": lines}
+        if payload.run_key:
+            # Record this run so a retry replays instead of re-adding (recent runs only).
+            runs = [dict(r) for r in (state.get("scan_runs") or [])]
+            runs.append({"key": payload.run_key, "scanned": scanned, "failed": failed})
+            fields["scan_runs"] = runs[-_MAX_SCAN_RUNS:]
+        await _set_list_fields(session, company_id, entity_id, user, fields)
         await session.commit()
-    return {"scanned": sum(1 for r in results if r["state"] != "error"),
-            "results": results, "failed": failed}
+    return {"scanned": scanned, "results": results, "failed": failed}
 
 
 @lists_router.patch("/{entity_id}/line/{item_id}")

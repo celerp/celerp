@@ -175,6 +175,79 @@ async def test_scan_batch_rejects_oversized_submit(client):
     assert (await _state(client, t, audit))["line_items"] == []
 
 
+async def _quotation(client, t) -> str:
+    r = await client.post("/lists", headers=_h(t), json={"list_type": "quotation"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
+    """A batch of N codes resolves against ONE inventory load, not one per code: scanning routes the
+    whole run through the batch resolver and never the per-code resolver (the N+1 that a 200-code run
+    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the batch resolver is
+    the same rule, loaded once."""
+    import celerp_inventory.routes as inv
+    calls = {"batch": 0, "single": 0}
+    real_batch, real_single = inv.resolve_items_by_codes, inv.resolve_item_by_code
+
+    async def _batch(session, company_id, codes):
+        calls["batch"] += 1
+        return await real_batch(session, company_id, codes)
+
+    async def _single(session, company_id, code):
+        calls["single"] += 1
+        return await real_single(session, company_id, code)
+
+    monkeypatch.setattr(inv, "resolve_items_by_codes", _batch)
+    monkeypatch.setattr(inv, "resolve_item_by_code", _single)
+
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "Q1", loc=loc, qty=5, barcode="700001")
+    await _item(client, t, "Q2", loc=loc, qty=5, barcode="700002")
+    await _item(client, t, "Q3", loc=loc, qty=5, barcode="700003")
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": "700001,700002,700003"})
+    assert r.status_code == 200 and r.json()["scanned"] == 3
+    assert {l["sku"] for l in (await _state(client, t, q))["line_items"]} == {"Q1", "Q2", "Q3"}
+    # ONE load for the whole run; the per-code resolver is never used by scanning.
+    assert calls["batch"] == 1
+    assert calls["single"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_retry_with_same_run_key_does_not_duplicate(client):
+    """The post-commit duplication guard: a quotation scan APPENDS a line per code. If the response (or
+    the client's tbody refresh) is lost after the write commits, the operator retries the same run. The
+    run_key makes that retry replay the recorded outcome instead of appending the same lines again."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "R1", loc=loc, qty=5, barcode="710001")
+    await _item(client, t, "R2", loc=loc, qty=5, barcode="710002")
+    q = await _quotation(client, t)
+
+    body = {"barcode": "710001,710002", "run_key": "run-abc"}
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t), json=body)
+    assert r1.status_code == 200 and r1.json()["scanned"] == 2
+    assert len((await _state(client, t, q))["line_items"]) == 2
+
+    # Retry of the SAME run (same key): replayed as a duplicate, no second append.
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t), json=body)
+    assert r2.status_code == 200
+    assert r2.json().get("duplicate") is True
+    assert r2.json()["scanned"] == 2
+    assert len((await _state(client, t, q))["line_items"]) == 2
+
+    # A genuinely new run (different key) still appends normally.
+    r3 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "710001", "run_key": "run-xyz"})
+    assert r3.status_code == 200 and r3.json()["scanned"] == 1
+    assert len((await _state(client, t, q))["line_items"]) == 3
+
+
 # --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
 
 @pytest.mark.asyncio
