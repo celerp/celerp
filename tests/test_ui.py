@@ -19614,6 +19614,32 @@ class TestAPIErrorStructuredDetail:
         assert e.detail == detail
         assert e.data is None
 
+    def test_apierror_preserves_top_level_code_with_string_detail(self):
+        """A scan_run_conflict body - a machine `code` beside a plain-string detail -
+        keeps detail the string the UI renders and carries the whole body on
+        APIError.data, so the proxy and scan bar can branch on the code."""
+        import httpx as _httpx
+        from ui.api_client import APIError, _raise
+        req = _httpx.Request("POST", "http://api.test/lists/list:1/scan")
+        msg = "This scan run was already recorded against a different batch."
+        resp = _httpx.Response(409, json={"code": "scan_run_conflict", "detail": msg}, request=req)
+        with pytest.raises(APIError) as exc:
+            _raise(resp)
+        e = exc.value
+        assert e.status == 409
+        assert e.detail == msg
+        assert e.data == {"code": "scan_run_conflict", "detail": msg}
+
+    def test_apierror_plain_string_detail_carries_no_data(self):
+        """A plain {"detail": "..."} rejection (no extra top-level keys) leaves data
+        None: the new code branch must not over-trigger on the ordinary shape."""
+        from ui.api_client import APIError, _raise
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp("closed list"))
+        e = exc.value
+        assert e.detail == "closed list"
+        assert e.data is None
+
 
 def test_picker_item_includes_status():
     """Catalog picker payload carries the item status and its causing doc, so
@@ -19733,6 +19759,64 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
         )
     assert r2.status_code == 400
     assert "reserved_conflicts" not in r2.json()
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_preserves_run_conflict(ui_client):
+    """A spent scan run key reused for a different batch: the backend 409s with a
+    structured {code: scan_run_conflict} body. The proxy passes the code and status
+    straight through so the scan bar mints a fresh key and lets the operator resubmit,
+    never guessing from message text."""
+    from ui.api_client import APIError
+    msg = "This scan run was already recorded against a different batch."
+    err = APIError(409, msg, data={"code": "scan_run_conflict", "detail": msg})
+    with patch("ui.api_client.scan_list", new=AsyncMock(side_effect=err)):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == "scan_run_conflict"
+    assert "different batch" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_plain_rejection_wraps_detail(ui_client):
+    """A list-level rejection carrying only a string detail (a closed or void list)
+    still returns JSON {detail: "..."} with the backend status - no machine code, so
+    the scan bar shows the reason and keeps the field for a plain retry."""
+    from ui.api_client import APIError
+    with patch("ui.api_client.scan_list",
+               new=AsyncMock(side_effect=APIError(409, "This list is closed."))):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 409
+    assert r.json() == {"detail": "This list is closed."}
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_returns_fresh_version(ui_client):
+    """On a successful scan the proxy hands back the list's post-write projection
+    version, so the client's optimistic-lock token tracks the scan's write and a
+    later line save does not 409 on a stale version."""
+    scan = AsyncMock(return_value={"scanned": 1, "failed": []})
+    get = AsyncMock(return_value={"list_type": "quotation", "status": "draft", "version": 4242})
+    with patch("ui.api_client.scan_list", new=scan), patch("ui.api_client.get_list", new=get):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 1
+    assert body["version"] == 4242
+    assert body["html"] == ""
 
 
 def _inventory_nav_slots():

@@ -4671,7 +4671,7 @@ celerpUpdateBulkAlloc();
           a non-Latin SKU, and Starlette encodes headers as Latin-1, which would 500 after the good
           scans had already committed and leave the client able to re-submit and duplicate them.
         """
-        from starlette.responses import JSONResponse as _JSON, Response as _R
+        from starlette.responses import JSONResponse as _JSON
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
@@ -4685,18 +4685,24 @@ celerpUpdateBulkAlloc();
         try:
             res = await api.scan_list(token, entity_id, barcode, price_list, run_key)
         except APIError as e:
-            # A LIST-LEVEL rejection (closed/void, or a finalized list whose type disables scanning):
-            # the scan bar reads resp.text() on a non-2xx response and shows it, so return the real
-            # reason + status. Per-code failures are NOT this - they come back 200 in the JSON body.
-            return _R(str(e.detail), status_code=e.status or 400)
+            # A LIST-LEVEL rejection (closed/void, a finalized list whose type disables scanning, or a
+            # spent scan run key reused for a different batch). The scan bar branches on the structured
+            # body: a machine `code` (e.g. scan_run_conflict) drives its recovery, a plain rejection is
+            # shown as-is. Preserve the whole structured body when the backend sent one, else wrap the
+            # string detail. Per-code failures are NOT this - they come back 200 in the JSON body.
+            body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": str(e.detail)}
+            return _JSON(body, status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
         # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
         # audit is editable, so it reloads like every other building list to keep its inputs.
         html = ""
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
             html = to_xml(await _audit_line_tbody(token, entity_id))
+        # The scanned write advanced the list projection version; hand the fresh version back so the
+        # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
         return _JSON({"scanned": (res or {}).get("scanned", 0),
-                      "failed": (res or {}).get("failed") or [], "html": html})
+                      "failed": (res or {}).get("failed") or [], "html": html,
+                      "version": lst.get("version")})
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -7178,17 +7184,19 @@ function _celerpDocTypeParam() {{
         if (!raw) return;
         if (scanInput.disabled) return;  // a run is already in flight; ignore the double-fire
         if (!pendingRunKey) pendingRunKey = _newRunKey();
-        // Lock the field and Add button for the whole round-trip so a second click or Enter cannot
-        // start an overlapping run that races the run_key and field-pruning logic. Released in finally.
+        // Lock the field, Add button, and price-list selector for the whole round-trip so a second
+        // click or Enter - or a mid-run price-list change - cannot start an overlapping run that races
+        // the run_key and field-pruning logic. All released in finally.
+        const plSelect = document.getElementById('doc-price-list');
         scanInput.disabled = true;
         if (addBtn) addBtn.disabled = true;
+        if (plSelect) plSelect.disabled = true;
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         try {{
             let data;
             try {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
-                const plSelect = document.getElementById('doc-price-list');
                 if (plSelect) fd.append('price_list', plSelect.value);
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
@@ -7245,12 +7253,18 @@ function _celerpDocTypeParam() {{
                     swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
                     celerpUpdateTotals();
                     _celerpHadLines = true;
+                    // The scan advanced the list projection version; track it so a later line-item save
+                    // carries the right optimistic-lock token. Only after a SUCCESSFUL tbody install - a
+                    // failed refresh leaves stale rows visible, and advancing the version there would let
+                    // the next save clobber the just-scanned lines.
+                    if (data.version != null) _celerpListVersion = data.version;
                 }}
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
         }} finally {{
             scanInput.disabled = false;
             if (addBtn) addBtn.disabled = false;
+            if (plSelect) plSelect.disabled = false;
             scanInput.focus();
         }}
     }}

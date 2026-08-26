@@ -93,9 +93,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
         raise APIError(r.status_code, f"Unexpected redirect to {r.headers.get('location', '?')}")
     if r.is_error:
         try:
-            detail = r.json().get("detail", r.text)
+            body = r.json()
         except Exception:
-            detail = r.text
+            body = None
+        detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
         data = None
         if isinstance(detail, dict) and "message" in detail:
             # Structured detail (message + extras): keep detail a plain string for
@@ -104,6 +105,12 @@ def _raise(r: httpx.Response) -> httpx.Response:
             # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
             data = detail
             detail = detail.get("message") or r.text
+        elif isinstance(body, dict) and set(body) - {"detail"}:
+            # An error body carrying structured fields beyond `detail` (a top-level
+            # machine "code" like scan_run_conflict, with a plain-string detail):
+            # keep detail the string the sites render, carry the whole body on
+            # APIError.data so callers can branch on the code.
+            data = body
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
