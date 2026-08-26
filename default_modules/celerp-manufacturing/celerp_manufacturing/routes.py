@@ -1426,6 +1426,11 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
         received_after = float(run_state.get("received_qty") or 0) + qty
         unit_cost = _run_input_cost(run_state, states) / (received_after or 1)
         lot_id = f"item:{uuid.uuid5(_MFG_LOT_NS, f'{order_id}:{rk}')}"
+        # A produced lot is a new physical parcel: give it a fresh barcode from the
+        # inventory code service (under its code-namespace lock) so it is scannable
+        # and the one-barcode-per-item contract holds for manufactured stock too.
+        from celerp_inventory.services import allocate_internal_codes
+        lot_barcode = (await allocate_internal_codes(session, company_id))[0]
         await emit_event(
             session, company_id=company_id, entity_id=lot_id, entity_type="item",
             event_type="item.created",
@@ -1435,6 +1440,7 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
                 "inventory_type": product.get("inventory_type"),
                 "allow_splitting": splitting_allowed(product),
                 "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
+                "barcode": lot_barcode,
                 "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
             },
             actor_id=user.id, location_id=loc, source="api",

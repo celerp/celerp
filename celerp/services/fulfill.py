@@ -10,6 +10,7 @@ and by the fulfillment module's toggle/pick screen.
 from __future__ import annotations
 
 import uuid as _uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,16 +43,36 @@ async def execute_fulfill(
     company_id,
     user_id,
     doc_type: str = "",
+    allocate_barcodes: Callable[[int], Awaitable[list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Execute fulfillment: emit item events, doc event, and COGS JE.
 
     Returns: {fulfillment_status, fulfilled_items, total_cogs}
+
+    A split pick carves a new child parcel off its parent lot; that child is a
+    fresh physical item and needs its own barcode. Core must not depend on the
+    inventory module, so the calling module injects allocation through
+    ``allocate_barcodes(count) -> list[str]`` (celerp_inventory allocates under
+    its code-namespace lock). When any split is planned and no allocator is
+    supplied, this fails before emitting a single event rather than minting a
+    barcodeless child.
     """
     now = datetime.now(timezone.utc).isoformat()
     fulfilled_items: list[dict] = []
     total_cogs = 0.0
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
+
+    # Allocate every split child's barcode up front, under the caller's lock, and
+    # fail clearly before any event is emitted if the allocator is missing.
+    split_picks = [p for p in pick_result.picks if p.action == "split"]
+    if split_picks and allocate_barcodes is None:
+        raise ValueError(
+            "Fulfillment must split a lot into a new child parcel that needs a "
+            "freshly allocated barcode, but no allocate_barcodes callback was "
+            "supplied. The calling module must inject inventory code allocation."
+        )
+    split_barcodes = iter(await allocate_barcodes(len(split_picks))) if split_picks else iter(())
     # Stable human doc number for the item's history (the entity_id suffix can diverge on
     # finalize/renumber, e.g. PF-... -> INV-...), so capture it from the doc at emit time.
     doc_number = doc_state.get("doc_number") or doc_state.get("ref_id") or ""
@@ -96,6 +117,7 @@ async def execute_fulfill(
                     "sku": pick.sku,   # child keeps the parent SKU (distinct lot by entity_id)
                     "name": pick.sku,
                     "quantity": pick.pick_qty,
+                    "barcode": next(split_barcodes),   # fresh per-lot barcode from the injected allocator
                 },
                 actor_id=uid,
                 location_id=None,

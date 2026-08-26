@@ -165,6 +165,24 @@ async def test_fungible_output_creates_lot_at_actual_cost(client):
 
 
 @pytest.mark.asyncio
+async def test_produced_lot_gets_fresh_barcode(client):
+    """A produced lot is a new physical parcel and must be born scannable: its
+    item.created carries a freshly allocated barcode. Red at merge-base: the lot
+    was created with no barcode at all."""
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDBC", quantity=1000, cost_total=80000)
+    ring = await _item(client, token, "RINGBC", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+
+    run = await _build(client, token, ring, 2, complete=True)
+
+    lots = await _lots(client, token, run)
+    assert len(lots) == 1
+    lot = (await client.get(f"/items/{lots[0]['id']}", headers=_h(token))).json()
+    assert lot.get("barcode"), f"a produced lot must carry a fresh barcode, got {lot.get('barcode')!r}"
+
+
+@pytest.mark.asyncio
 async def test_mfg_lot_none_product_splittable(client, session):
     """A lot manufactured from a product whose allow_splitting is unset/None inherits
     allow_splitting True (routed through splitting_allowed). At merge-base the lot's

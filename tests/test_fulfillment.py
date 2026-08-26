@@ -17,6 +17,17 @@ from celerp.services.auth import create_access_token
 from celerp.services.pick import PickResult, compute_pick_plan
 
 
+def _barcode_allocator(session, company_id):
+    """The DI callback a real fulfillment caller injects: allocate split-child
+    barcodes through the inventory code service under its namespace lock."""
+    from celerp_inventory.services import allocate_internal_codes
+
+    async def _alloc(count):
+        return await allocate_internal_codes(session, company_id, count)
+
+    return _alloc
+
+
 # ---------------------------------------------------------------------------
 # Pure pick algorithm tests (no DB needed)
 # ---------------------------------------------------------------------------
@@ -342,6 +353,7 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
         session, doc_entity_id=doc_id, doc_state=doc_state,
         pick_result=pick_result, company_id=_setup_ids["company_id"],
         user_id=str(_setup_ids["user_id"]),
+        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
     )
     await session.commit()
 
@@ -352,6 +364,71 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
     # Check doc projection
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     assert doc_row.state.get("fulfillment_status") in ("fulfilled", "partial")
+
+
+async def _split_pick_setup(client, session, auth, _setup_ids):
+    """Fulfil 3 of a 10-unit lot so the pick plan splits off a child parcel."""
+    from celerp.models.projections import Projection
+    from celerp.services.pick import compute_pick_plan
+
+    item_id = await _create_item(client, auth, "SPLIT-BC", 10, cost_price=5.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": "SPLIT-BC", "quantity": 3, "unit_price": 10.0},
+    ])
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    available_inv = [{
+        "entity_id": item_id, "sku": inv_row.state["sku"],
+        "quantity": float(inv_row.state["quantity"]),
+        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
+        "expires_at": inv_row.state.get("expires_at"),
+        "cost_total": float(inv_row.state.get("cost_total", 0)),
+    }]
+    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
+    assert any(p.action == "split" for p in pick_result.picks), "setup must produce a split pick"
+    return doc_id, doc_row.state, pick_result
+
+
+@pytest.mark.asyncio
+async def test_split_child_gets_fresh_barcode_from_allocator(client, session, auth, _setup_ids):
+    """A fulfillment split carves a new child parcel; it must be born with a fresh
+    barcode from the injected allocator (red at merge-base: the child item.created
+    carried no barcode at all)."""
+    from celerp.models.projections import Projection
+    from celerp.services.fulfill import execute_fulfill
+
+    doc_id, doc_state, pick_result = await _split_pick_setup(client, session, auth, _setup_ids)
+    result = await execute_fulfill(
+        session, doc_entity_id=doc_id, doc_state=doc_state,
+        pick_result=pick_result, company_id=_setup_ids["company_id"],
+        user_id=str(_setup_ids["user_id"]),
+        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
+    )
+    await session.commit()
+
+    child = next(fi for fi in result["fulfilled_items"] if fi["action"] == "split")
+    child_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": child["item_id"]})
+    assert child_row.state.get("barcode"), "split child must carry a freshly allocated barcode"
+
+
+@pytest.mark.asyncio
+async def test_split_without_allocator_fails_before_emitting(client, session, auth, _setup_ids):
+    """When a split is planned and no allocator is injected, fulfillment fails cleanly
+    before emitting a single event rather than minting a barcodeless child."""
+    from celerp.models.projections import Projection
+    from celerp.services.fulfill import execute_fulfill
+
+    doc_id, doc_state, pick_result = await _split_pick_setup(client, session, auth, _setup_ids)
+    with pytest.raises(ValueError):
+        await execute_fulfill(
+            session, doc_entity_id=doc_id, doc_state=doc_state,
+            pick_result=pick_result, company_id=_setup_ids["company_id"],
+            user_id=str(_setup_ids["user_id"]),
+        )
+    await session.rollback()
+    # No fulfillment landed on the doc: the failure happened before any emit.
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    assert doc_row.state.get("fulfillment_status") is None
 
 
 @pytest.mark.asyncio
