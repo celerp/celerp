@@ -5709,8 +5709,12 @@ async def scan_list(
         for rec in (state.get("scan_runs") or []):
             if rec.get("key") == payload.run_key:
                 if rec.get("fp") != run_fp:
-                    raise HTTPException(status_code=409,
-                                        detail="This scan key was already used for a different batch")
+                    # Same key, different batch: a client bug (edited the field then resubmitted under
+                    # a spent key). Reply with a code so the scan bar branches on it, not on message text.
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=409, content={
+                        "code": "scan_run_conflict",
+                        "detail": "This scan key was already used for a different batch"})
                 return {"scanned": rec.get("scanned", 0), "results": [],
                         "failed": rec.get("failed", []), "duplicate": True}
 

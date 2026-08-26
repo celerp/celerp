@@ -7176,68 +7176,83 @@ function _celerpDocTypeParam() {{
     async function submitList() {{
         const raw = scanInput.value.trim();
         if (!raw) return;
+        if (scanInput.disabled) return;  // a run is already in flight; ignore the double-fire
         if (!pendingRunKey) pendingRunKey = _newRunKey();
+        // Lock the field and Add button for the whole round-trip so a second click or Enter cannot
+        // start an overlapping run that races the run_key and field-pruning logic. Released in finally.
+        scanInput.disabled = true;
+        if (addBtn) addBtn.disabled = true;
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
-        let data;
         try {{
-            const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
-            const plSelect = document.getElementById('doc-price-list');
-            if (plSelect) fd.append('price_list', plSelect.value);
-            const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
-            if (!resp.ok) {{
-                // A list-level rejection (closed/void): nothing committed, so keep the field AND the key.
-                const txt = await resp.text();
-                scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
+            let data;
+            try {{
+                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
+                const plSelect = document.getElementById('doc-price-list');
+                if (plSelect) fd.append('price_list', plSelect.value);
+                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                if (!resp.ok) {{
+                    // Branch on the structured code, never on message text. A scan_run_conflict means the
+                    // key already committed a DIFFERENT batch, so mint a fresh key and let the operator
+                    // resubmit the current field as a new run. Any other rejection (closed/void list)
+                    // committed nothing, so keep the field AND the key for a plain retry.
+                    let code = null, detail = null;
+                    try {{ const e = await resp.json(); code = e && e.code; detail = e && e.detail; }} catch (_e) {{}}
+                    if (code === 'scan_run_conflict') pendingRunKey = _newRunKey();
+                    scanStatus.textContent = '✗ ' + (typeof detail === 'string' ? detail : _L.scan_error);
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                    _clearStatusSoon();
+                    return;
+                }}
+                data = await resp.json();
+            }} catch (err) {{
+                // The request never completed: the run may or may not have committed. Keep the field and
+                // the run_key so a retry reuses it and the backend refuses to add the same lines twice.
+                scanStatus.textContent = '✗ ' + _L.scan_error;
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                scanInput.focus(); _clearStatusSoon();
+                _clearStatusSoon();
                 return;
             }}
-            data = await resp.json();
-        }} catch (err) {{
-            // The request never completed: the run may or may not have committed. Keep the field and the
-            // run_key so a retry reuses it and the backend refuses to add the same lines twice.
-            scanStatus.textContent = '✗ ' + _L.scan_error;
-            scanStatus.className = 'scan-bar-status scan-bar-status--err';
-            scanInput.focus(); _clearStatusSoon();
-            return;
-        }}
-        // JSON received = the run is acknowledged. Prune successful codes from the field IMMEDIATELY,
-        // BEFORE any tbody refresh, so a refresh failure can never leave successful codes to be
-        // re-added. Only the failures stay in the field for the operator to fix.
-        pendingRunKey = null;
-        const failed = data.failed || [];
-        if (failed.length) {{
-            scanInput.value = failed.map(f => f.code).join(', ');
-            scanStatus.textContent = '✗ ' + failed.map(f => f.label).join('; ');
-            scanStatus.className = 'scan-bar-status scan-bar-status--err';
-        }} else {{
-            scanInput.value = '';
-            scanStatus.textContent = '✓ ' + _L.scan_added;
-            scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-        }}
-        // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
-        // the lines are already committed and will appear on the next natural render.
-        try {{
-            let html = data.html || '';
-            if (!html) {{
-                const page = await fetch(location.href);
-                const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-                const fresh = doc.getElementById('{line_body_id}');
-                html = fresh ? fresh.outerHTML : '';
+            // JSON received = the run is acknowledged. Prune successful codes from the field IMMEDIATELY,
+            // BEFORE any tbody refresh, so a refresh failure can never leave successful codes to be
+            // re-added. Only the failures stay in the field for the operator to fix.
+            pendingRunKey = null;
+            const failed = data.failed || [];
+            if (failed.length) {{
+                scanInput.value = failed.map(f => f.code).join(', ');
+                scanStatus.textContent = '✗ ' + failed.map(f => f.label).join('; ');
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+            }} else {{
+                scanInput.value = '';
+                scanStatus.textContent = '✓ ' + _L.scan_added;
+                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
             }}
-            const tbody = document.getElementById('{line_body_id}');
-            if (tbody && html) {{
-                tbody.outerHTML = html;
-                const swapped = document.getElementById('{line_body_id}');
-                htmx.process(swapped);
-                swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                celerpUpdateTotals();
-                _celerpHadLines = true;
-            }}
-        }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
-        scanInput.focus();
-        _clearStatusSoon();
+            // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
+            // the lines are already committed and will appear on the next natural render.
+            try {{
+                let html = data.html || '';
+                if (!html) {{
+                    const page = await fetch(location.href);
+                    const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+                    const fresh = doc.getElementById('{line_body_id}');
+                    html = fresh ? fresh.outerHTML : '';
+                }}
+                const tbody = document.getElementById('{line_body_id}');
+                if (tbody && html) {{
+                    tbody.outerHTML = html;
+                    const swapped = document.getElementById('{line_body_id}');
+                    htmx.process(swapped);
+                    swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                    celerpUpdateTotals();
+                    _celerpHadLines = true;
+                }}
+            }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
+            _clearStatusSoon();
+        }} finally {{
+            scanInput.disabled = false;
+            if (addBtn) addBtn.disabled = false;
+            scanInput.focus();
+        }}
     }}
     if (addBtn) addBtn.addEventListener('click', submitList);
 

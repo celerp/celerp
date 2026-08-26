@@ -326,6 +326,7 @@ async def test_scan_same_run_key_different_batch_is_rejected(client):
     r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
                            json={"barcode": "720002", "run_key": "k1"})
     assert r2.status_code == 409
+    assert r2.json()["code"] == "scan_run_conflict"  # structured, so the scan bar branches on the code
     assert len((await _state(client, t, q))["line_items"]) == 1
 
 
@@ -345,6 +346,7 @@ async def test_scan_same_run_key_different_price_list_is_rejected(client):
     r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
                            json={"barcode": "730001", "run_key": "k2", "price_list": "Wholesale"})
     assert r2.status_code == 409
+    assert r2.json()["code"] == "scan_run_conflict"
     assert len((await _state(client, t, q))["line_items"]) == 1
 
 
