@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.events.schemas import reject_comma_sku
-from celerp.inventory_codes import BarcodeConflictError
+from celerp.inventory_codes import BarcodeConflictError, validate_barcode
 from celerp.models.projections import Projection
 from .services import (
     _next_seq,
@@ -1539,22 +1539,23 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # SKU uniqueness is intentionally NOT enforced on patch: `sku` is a product-type
     # that may repeat across physical lots (barcode/entity_id carry lot identity).
 
-    # Validate barcode format + uniqueness if changing
+    # Validate barcode format + uniqueness if changing. Acquire the company code
+    # namespace lock BEFORE checking availability and hold it through emit + commit,
+    # so two concurrent patches to the same barcode serialize: one commits, the other
+    # reads the committed value and gets a clean 409 instead of racing to a duplicate
+    # (or a 500 from the unique index). The lock is released when this request commits.
     if "barcode" in changed_keys:
         new_barcode = (payload.fields_changed["barcode"] or {}).get("new")
         if new_barcode is not None:
-            if not str(new_barcode).isdigit():
-                raise HTTPException(status_code=422, detail="Barcode must contain digits only")
-            existing_barcode = (await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                    Projection.state["barcode"].as_string() == str(new_barcode),
-                    Projection.entity_id != entity_id,
-                )
-            )).scalars().first()
-            if existing_barcode:
-                raise HTTPException(status_code=409, detail=f"Barcode '{new_barcode}' already exists")
+            try:
+                validate_barcode(new_barcode)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            await lock_item_code_namespace(session, company_id)
+            try:
+                await assert_barcode_available(session, company_id, new_barcode, exclude_entity_id=entity_id)
+            except BarcodeConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate inventory_type if changing
     if "inventory_type" in changed_keys:

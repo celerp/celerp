@@ -174,6 +174,65 @@ async def test_assert_barcode_available_flags_taken_codes(_db_engine):
         await _cleanup(factory, company_id)
 
 
+def _update_barcode_kwargs(company_id, entity_id, barcode):
+    return dict(
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.updated",
+        data={"fields_changed": {"barcode": {"new": barcode}}},
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_barcode_patches_one_conflicts(_db_engine):
+    """Two items patched at once to the SAME barcode resolve to one success and one
+    clean BarcodeConflictError, never a duplicate and never a 500. This mirrors
+    patch_item's sequence: lock the code namespace, check availability excluding the
+    item's own row, emit the update, commit while the lock is held. The lock forces
+    the second patch to read the first's committed barcode and see the collision."""
+    from celerp_inventory.services import assert_barcode_available, lock_item_code_namespace
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:pa", "PA", "700001"))
+            await emit_event(s, **_item_kwargs(company_id, "item:pb", "PB", "700002"))
+            await s.commit()
+
+        target = "700009"
+
+        async def _patch(entity_id: str):
+            async with factory() as s:
+                await lock_item_code_namespace(s, company_id)
+                await assert_barcode_available(s, company_id, target, exclude_entity_id=entity_id)
+                await emit_event(s, **_update_barcode_kwargs(company_id, entity_id, target))
+                await s.commit()
+
+        results = await asyncio.gather(
+            _patch("item:pa"), _patch("item:pb"), return_exceptions=True
+        )
+        conflicts = [r for r in results if isinstance(r, BarcodeConflictError)]
+        others = [r for r in results if isinstance(r, Exception) and not isinstance(r, BarcodeConflictError)]
+        assert others == [], f"unexpected error (not a clean conflict): {others}"
+        assert len(conflicts) == 1, f"expected exactly one conflict, got {results}"
+
+        async with factory() as check:
+            holders = {
+                t for t in ("item:pa", "item:pb")
+                if (await check.get(Projection, {"company_id": company_id, "entity_id": t})).state["barcode"] == target
+            }
+        assert len(holders) == 1, f"exactly one item must hold {target}, got {holders}"
+    finally:
+        await _cleanup(factory, company_id)
+
+
 @pytest.mark.asyncio
 async def test_assert_barcode_available_excludes_own_entity(_db_engine):
     """exclude_entity_id skips one item's own row so re-asserting its current barcode
