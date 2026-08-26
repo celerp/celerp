@@ -3994,7 +3994,9 @@ function celerpPrintLabel(entityId, templateId) {
                     lst = await api.get_list(token, target_id)
                     combined = (lst.get("line_items") or []) + new_lines
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    # Version-guarded line replacement: pass the version we just read so a concurrent
+                    # edit between this GET and the save is rejected, never silently overwritten.
+                    await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal}, expected_version=lst.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
                     new_lines = await _line_items_from_inventory(token, entity_ids)

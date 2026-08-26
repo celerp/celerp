@@ -2229,6 +2229,8 @@
   "documents.scan_check_off_btn": "ทำเครื่องหมาย",
   "documents.scan_checked_off_prefix": "ทำเครื่องหมายแล้ว",
   "documents.scan_error": "เกิดข้อผิดพลาดในการสแกน",
+  "documents.scan_reload_needed": "The previous scan was saved but the list did not refresh. Reload the page before scanning again.",
+  "documents.scan_run_committed": "The previous scan was already saved. Review the updated list before adding again.",
   "documents.scanned_prefix": "สแกนแล้ว: ",
   "documents.scanning": "กำลังสแกน...",
   "documents.search_contacts": "ค้นหาผู้ติดต่อ...",

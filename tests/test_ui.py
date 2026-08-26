@@ -11846,7 +11846,7 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_lists_from_items_add_appends_lines(self, ui_client):
-        existing_list = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 50}]}
+        existing_list = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 50}], "version": 7}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.get_list", new=AsyncMock(return_value=existing_list)),
@@ -11860,6 +11860,9 @@ class TestBulkActionsPhase6SendTo:
             )
         assert r.status_code == 204
         assert "list:L-001" in r.headers.get("hx-redirect", "")
+        # The append is version-guarded: the version just read from get_list must be forwarded to
+        # patch_list, or the server rejects a line_items replacement with 409 (optimistic lock).
+        assert mock_patch.call_args.kwargs.get("expected_version") == 7
 
     # -- Memos modal + create + add --
 
@@ -12416,6 +12419,36 @@ class TestSendToPurchaseOrder:
         assert b"No draft purchase orders could be created" in r.content
         assert b"PO-" not in r.content                       # no fabricated draft reference
         assert b"acme failed" in r.content and b"beta failed" in r.content
+
+
+class TestSendToExistingList:
+    """Send-to an existing list/shipping doc on the inventory bulk toolbar (/api/items/send-to):
+    the line_items replacement must be version-guarded so a concurrent edit is rejected."""
+
+    _ITEM = {
+        "entity_id": "item:l1", "sku": "WIDGET", "name": "Widget",
+        "sell_by": "piece", "quantity": 2, "attributes": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_send_to_existing_list_forwards_expected_version(self, ui_client):
+        existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}], "version": 4}
+        mock_patch = AsyncMock(return_value={"event_id": "e1"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._ITEM)),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=existing)),
+            patch("ui.api_client.patch_list", new=mock_patch),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Al1&send_to_doc_type=list&send_to_target=list%3AL-001",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "list:L-001" in r.headers.get("hx-redirect", "")
+        # Version just read from get_list must be forwarded, or the server 409s the replacement.
+        assert mock_patch.call_args.kwargs.get("expected_version") == 4
 
 
 async def _api_headers(client) -> dict:

@@ -2230,6 +2230,8 @@
   "documents.scan_check_off_btn": "Abhaken",
   "documents.scan_checked_off_prefix": "Abgehakt",
   "documents.scan_error": "Scanfehler",
+  "documents.scan_reload_needed": "The previous scan was saved but the list did not refresh. Reload the page before scanning again.",
+  "documents.scan_run_committed": "The previous scan was already saved. Review the updated list before adding again.",
   "documents.scanned_prefix": "Gescannt:",
   "documents.scanning": "Wird gescannt...",
   "documents.search_contacts": "Kontakte suchen...",

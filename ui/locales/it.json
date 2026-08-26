@@ -2230,6 +2230,8 @@
   "documents.scan_check_off_btn": "Spunta",
   "documents.scan_checked_off_prefix": "Spuntato",
   "documents.scan_error": "Errore di scansione",
+  "documents.scan_reload_needed": "The previous scan was saved but the list did not refresh. Reload the page before scanning again.",
+  "documents.scan_run_committed": "The previous scan was already saved. Review the updated list before adding again.",
   "documents.scanned_prefix": "Scansionato:",
   "documents.scanning": "Scansione in corso...",
   "documents.search_contacts": "Cerca contatti...",
