@@ -3445,6 +3445,20 @@ async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projec
     return row
 
 
+async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    """Load a list row under a write lock (SELECT ... FOR UPDATE) so a read-modify-write over its
+    line_items is serialized against concurrent writers. Scan check-off and counting read the whole
+    array, mutate it in Python, and write it back; two writers off the same read would lose one
+    update. The lock makes the second writer block until the first commits, then re-read the
+    committed array. populate_existing forces the locking SELECT even if the row is already in the
+    session's identity map."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
+                            with_for_update=True, populate_existing=True)
+    if row is None or row.entity_type != "list":
+        raise HTTPException(status_code=404, detail="List not found")
+    return row
+
+
 async def _emit_list(session, company_id, entity_id, event_type, data, user, idem_key=None, meta=None):
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="list",
@@ -5539,8 +5553,8 @@ def _audit_unit_cost(state: dict) -> float:
     return 0.0
 
 
-async def _get_audit(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await _get_list(session, company_id, entity_id)
+async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
+    row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "audit":
         raise HTTPException(status_code=404, detail="Audit not found")
     return row
@@ -5646,7 +5660,7 @@ async def scan_list(
       Phase 4 seam).
     - FINALIZED quotation / any closed|void list: scanning is disabled (clear 409).
     """
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     status = state.get("status")
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
@@ -5770,7 +5784,7 @@ async def set_audit_count(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
-    row = await _get_audit(session, company_id, entity_id)
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -5798,7 +5812,7 @@ async def set_scanned(
     """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
     rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
     rows, or none for every line. The highlight otherwise persists indefinitely."""
-    row = await _get_audit(session, company_id, entity_id)
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
     targets = set(payload.item_ids)
@@ -5930,8 +5944,8 @@ class WriteoffLineBody(BaseModel):
     comment: str | None = None
 
 
-async def _get_writeoff(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await _get_list(session, company_id, entity_id)
+async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
+    row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "writeoff":
         raise HTTPException(status_code=404, detail="Write-off not found")
     return row
@@ -6010,7 +6024,7 @@ async def set_writeoff_line(
     for an item already selectable on the list - the SAME item can be written off to two accounts
     (spoiled -> wastage, sampled -> marketing). qty_out and account are validated at the function
     level."""
-    row = await _get_writeoff(session, company_id, entity_id)
+    row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail="Write-off lines are editable only while it is a draft")
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -6188,7 +6202,7 @@ async def change_list_type(
     fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
     baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
     Closed/void lists are terminal — duplicate instead."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     new_type = payload.list_type
     if new_type not in LIST_TYPES:
