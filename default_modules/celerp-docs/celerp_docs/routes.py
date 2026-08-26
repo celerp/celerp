@@ -7,6 +7,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import json
 import uuid
 from datetime import datetime, timezone, date as _date
 from typing import Literal
@@ -24,6 +25,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
+from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -5505,9 +5507,9 @@ class AuditCreateBody(BaseModel):
 # submission by count AND by byte size, so a pathological paste can neither build an unbounded
 # in-memory line set behind one write nor bloat the persisted replay data (below).
 MAX_SCAN_BATCH = 200            # max codes in one submitted run
-MAX_CODE_LEN = 64              # max chars in a single scanned code (barcode or SKU)
+MAX_CODE_LEN = MAX_SCAN_CODE_LEN  # max chars in a single scanned code: the inventory scan-code ceiling (max sku/barcode length)
 MAX_RUN_KEY_LEN = 64          # max chars in a client-supplied idempotency run key
-_MAX_SCAN_BODY_LEN = MAX_SCAN_BATCH * (MAX_CODE_LEN + 1)  # comma-joined upper bound
+_MAX_SCAN_BODY_LEN = MAX_SCAN_BATCH * MAX_CODE_LEN + (MAX_SCAN_BATCH - 1) * len(", ")  # comma-space-joined upper bound
 # Recent scan runs retained on the list for retry dedup (post-commit refresh failure).
 _MAX_SCAN_RUNS = 50
 
@@ -5625,7 +5627,7 @@ def _scan_run_fingerprint(codes: list[str], price_list: str | None) -> str:
     """A fixed-size digest identifying one scan batch: its ordered normalized codes and the price
     list they price against. Binds a run_key to the exact batch it acknowledged, so the same key
     reused for a different batch is caught rather than mis-replayed."""
-    payload = "\n".join(codes) + "\x00" + (price_list or "")
+    payload = json.dumps({"codes": codes, "price_list": price_list}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -5692,24 +5694,27 @@ async def scan_list(
     changed = False
 
     # Resolve the whole run against ONE inventory load (vs one load per code).
-    from celerp_inventory.routes import resolve_items_by_codes
+    from celerp_inventory.routes import duplicate_barcode_detail, resolve_items_by_codes
     resolved = await resolve_items_by_codes(session, company_id, codes)
 
     for code in codes:
         res = resolved.get(code)
-        if res is not None and res.ambiguous:
-            item, detail = None, _ambiguous_sku_detail(code)
+        reason = detail = None
+        if res is not None and res.duplicate_barcode:
+            item = None
+            reason, detail = "duplicate_barcode", duplicate_barcode_detail(code)
+        elif res is not None and res.ambiguous:
+            item = None
+            reason, detail = "ambiguous_sku", _ambiguous_sku_detail(code)
         else:
             item = res.one if res is not None else None
             if item is None:
-                detail = f"Unknown barcode or SKU: {code}"
+                reason, detail = "unknown_code", f"Unknown barcode or SKU: {code}"
             elif str((item.state or {}).get("status") or "").lower() == "draft":
-                detail = f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
-            else:
-                detail = None
+                reason, detail = "draft_item", f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
         if detail is not None:
-            failed.append({"code": code, "detail": detail})
-            results.append({"code": code, "state": "error", "detail": detail})
+            failed.append({"code": code, "reason": reason, "label": detail})
+            results.append({"code": code, "state": "error", "reason": reason, "label": detail})
             continue
 
         idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
@@ -5732,8 +5737,8 @@ async def scan_list(
             # list and never adds. An item not on the list is reported (add it while still a draft).
             if idx is None:
                 detail = f"{item.state.get('sku') or code} is not on this audit"
-                failed.append({"code": code, "detail": detail})
-                results.append({"code": code, "state": "error", "detail": detail})
+                failed.append({"code": code, "reason": "not_on_audit", "label": detail})
+                results.append({"code": code, "state": "error", "reason": "not_on_audit", "label": detail})
                 continue
             ln = lines.pop(idx)
             ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for

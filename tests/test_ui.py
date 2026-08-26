@@ -10573,7 +10573,7 @@ class TestListScanInPlace:
         # committed, letting a retry duplicate them. The body carries any Unicode safely.
         _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
-                "failed": [{"code": _bad, "detail": f"Unknown barcode or SKU: {_bad}"}]}
+                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"Unknown barcode or SKU: {_bad}"}]}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
@@ -10582,7 +10582,7 @@ class TestListScanInPlace:
         body = r.json()
         assert body["scanned"] == 1
         assert [f["code"] for f in body["failed"]] == [_bad]
-        assert _bad in body["failed"][0]["detail"]
+        assert _bad in body["failed"][0]["label"]
 
 
 class TestAuditColumnAlignment:

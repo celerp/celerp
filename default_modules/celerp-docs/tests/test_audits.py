@@ -125,7 +125,7 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
     await _item(client, t, "EXTRA-1", loc=loc, qty=2, barcode="1099")
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1099"})
     assert rej.status_code == 200 and rej.json()["scanned"] == 0
-    assert "not on this audit" in rej.json()["failed"][0]["detail"].lower()
+    assert "not on this audit" in rej.json()["failed"][0]["label"].lower()
     assert "EXTRA-1" not in {l["sku"] for l in (await _state(client, t, audit))["line_items"]}  # not added
     # Unknown barcode -> reported as failed in any state, never aborts the submit.
     nf = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})
@@ -216,6 +216,65 @@ async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
     # ONE load for the whole run; the per-code resolver is never used by scanning.
     assert calls["batch"] == 1
     assert calls["single"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, monkeypatch):
+    """A barcode present on more than one lot - only reachable for legacy data predating the
+    per-company barcode unique index - is reported with the single duplicate-barcode message and
+    never silently checked off to one arbitrary lot. The batch resolver is patched to surface the
+    duplicate for one code; every other code resolves normally."""
+    import celerp_inventory.routes as inv
+    from celerp_inventory.routes import ResolveResult, resolve_items_by_codes as _real
+
+    async def _dup(session, company_id, codes):
+        base = await _real(session, company_id, codes)
+        got = base.get("880001")
+        if got is not None and got.kind == "barcode":
+            base["880001"] = ResolveResult("barcode", list(got.matches) * 2)  # legacy: same barcode, two lots
+        return base
+
+    monkeypatch.setattr(inv, "resolve_items_by_codes", _dup)
+
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "DUP1", loc=loc, qty=5, barcode="880001")
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "880001"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 0  # never silently picks a lot
+    fail = body["failed"][0]
+    assert fail["code"] == "880001"
+    assert fail["reason"] == "duplicate_barcode"
+    assert fail["label"] == "Duplicate barcode '880001' exists on multiple inventory items"
+    assert (await _state(client, t, q))["line_items"] == []  # nothing appended
+
+
+def test_scan_run_fingerprint_is_canonical_json_no_separator_collision():
+    """The run fingerprint is canonical JSON, so a code that itself contains the old join separator
+    cannot collide with a two-code batch - a collision a newline-joined payload silently produced."""
+    from celerp_docs.routes import _scan_run_fingerprint
+
+    assert _scan_run_fingerprint(["a\nb"], None) != _scan_run_fingerprint(["a", "b"], None)
+    assert _scan_run_fingerprint(["x"], None) == _scan_run_fingerprint(["x"], None)  # stable for the same batch
+
+
+@pytest.mark.asyncio
+async def test_scan_accepts_code_longer_than_legacy_64_char_cap(client):
+    """The scanner code-length cap shares the inventory scan-code ceiling (max sku/barcode length),
+    so a long but valid SKU is scannable rather than rejected by an out-of-date 64-character cap."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    long_sku = "L" + "0" * 120  # 121 chars: within MAX_SKU_LEN, well over the retired 64 cap
+    await _item(client, t, long_sku, loc=loc, qty=5)
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": long_sku})
+    assert r.status_code == 200, r.text  # not a 422 length rejection
+    assert r.json()["scanned"] == 1
+    assert [l["sku"] for l in (await _state(client, t, q))["line_items"]] == [long_sku]
 
 
 @pytest.mark.asyncio
@@ -347,7 +406,8 @@ async def test_audit_duplicate_sku_distinct_lots_survive_and_scan_binds_lot(clie
     # Scanning/typing the shared SKU is ambiguous -> reported as failed, never a silent check-off.
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "SH"})
     assert rej.status_code == 200 and rej.json()["scanned"] == 0
-    assert "sku" in rej.json()["failed"][0]["detail"].lower()
+    assert rej.json()["failed"][0]["reason"] == "ambiguous_sku"
+    assert "sku" in rej.json()["failed"][0]["label"].lower()
 
     # Count each lot independently, then Adjust: two independent quantity changes.
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 4})).status_code == 200

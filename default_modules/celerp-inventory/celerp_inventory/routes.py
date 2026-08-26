@@ -1164,9 +1164,23 @@ class ResolveResult:
         return self.kind == "sku" and len(self.matches) > 1
 
     @property
+    def duplicate_barcode(self) -> bool:
+        """True when one barcode matched more than one lot. The per-company barcode unique index
+        makes this impossible for new data; it only surfaces for legacy rows written before the
+        index. Distinct from ``ambiguous`` (the SKU-only concept): a duplicate barcode must be
+        reported, never silently resolved to one lot."""
+        return self.kind == "barcode" and len(self.matches) > 1
+
+    @property
     def one(self):
         """The single match, or None when there are zero or (ambiguously) many."""
         return self.matches[0] if len(self.matches) == 1 else None
+
+
+def duplicate_barcode_detail(code: str) -> str:
+    """The single operator-facing message for a barcode that resolves to more than one lot, shared
+    by every scan surface so the wording is sourced in one place."""
+    return f"Duplicate barcode '{code}' exists on multiple inventory items"
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:

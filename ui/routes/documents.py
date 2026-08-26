@@ -7201,7 +7201,7 @@ function _celerpDocTypeParam() {{
         const failed = data.failed || [];
         if (failed.length) {{
             scanInput.value = failed.map(f => f.code).join(', ');
-            scanStatus.textContent = '✗ ' + failed.map(f => f.detail).join('; ');
+            scanStatus.textContent = '✗ ' + failed.map(f => f.label).join('; ');
             scanStatus.className = 'scan-bar-status scan-bar-status--err';
         }} else {{
             scanInput.value = '';

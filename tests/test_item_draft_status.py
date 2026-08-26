@@ -678,7 +678,8 @@ async def test_list_scan_rejects_draft_item(client, session):
     body = scan.json()
     assert body["scanned"] == 0
     assert [f["code"] for f in body["failed"]] == ["999888777666"]
-    assert "draft" in str(body["failed"][0]["detail"]).lower()
+    assert body["failed"][0]["reason"] == "draft_item"
+    assert "draft" in str(body["failed"][0]["label"]).lower()
 
 
 # ── Merge rejects draft sources ────────────────────────────────────────────────
