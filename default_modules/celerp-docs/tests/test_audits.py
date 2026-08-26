@@ -588,9 +588,12 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     audit = (await _audit(client, t, loc))["id"]
 
     # Seeded with one line for the item; inject a second identical line via the editable-save path.
-    line = (await _state(client, t, audit))["line_items"][0]
+    # A line_items patch pins the current version (the concurrency guard a real editor carries).
+    state = await _state(client, t, audit)
+    line = state["line_items"][0]
     await client.patch(f"/lists/{audit}", headers=_h(t),
-                       json={"fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
+                       json={"expected_version": state["version"],
+                             "fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
     assert len((await _state(client, t, audit))["line_items"]) == 2  # duplicate present pre-finalize
 
     await _finalize(client, t, audit)

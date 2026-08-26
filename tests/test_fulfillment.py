@@ -758,10 +758,13 @@ async def test_mixed_invoice_physical_and_service(client, session, auth, _setup_
         "created_at": "", "expires_at": None, "cost_total": 35.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
+    # Picking 3 from a 5-unit lot carves a child parcel (a split), so the caller must inject
+    # the barcode allocator the same way a real fulfillment route does.
     result = await execute_fulfill(
         session, doc_entity_id=doc_id, doc_state=doc_row.state,
         pick_result=pick_result, company_id=_setup_ids["company_id"],
         user_id=str(_setup_ids["user_id"]),
+        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
     )
     await session.commit()
 
