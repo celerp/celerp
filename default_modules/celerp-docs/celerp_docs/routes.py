@@ -3659,6 +3659,13 @@ async def patch_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    # Replacing line_items is a read-modify-write over the whole array: two concurrent editors (or a
+    # scan and a line edit) would each save their own full array and the second would silently drop the
+    # first's lines. Require expected_version for it so the stale writer is rejected; scalar-only patches
+    # touch independent fields and stay backward compatible without a version.
+    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_new_lines, list) and payload.expected_version is None:
+        raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
     try:
@@ -3666,7 +3673,6 @@ async def patch_list(
                                    for f, c in payload.fields_changed.items()})
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
         _existing = {li.get("item_id") for li in row.state.get("line_items") or []}
@@ -3698,7 +3704,9 @@ async def finalize_list(
     transfer `issued_at`, an audit freezes each line's on-hand snapshot (for variance + a stable
     On-hand column while counting). Counting / terminal actions happen in the finalized stage.
     """
-    row = await _get_list(session, company_id, entity_id)
+    # Lock the projection: freeze_onhand rebuilds line_items (read-modify-write), and the status guard
+    # must be a compare-and-set against a concurrent scan/patch so only one draft->finalized wins.
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     if state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
@@ -5881,7 +5889,9 @@ async def adjust_audit(
     closed). The magnitude and the shrinkage/overage JE are computed against the LIVE item qty at
     adjust time (decision 5.2) — `new_qty = counted`, `delta = counted - live`. Uncounted (blank)
     lines are skipped and reported. Reversible via undo-adjust."""
-    row = await _get_audit(session, company_id, entity_id)
+    # Lock the projection: the terminal action reads every counted line, adjusts stock, and writes the
+    # line_items array back (read-modify-write), so it must serialize against a concurrent count/scan.
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
     cycle = int(row.state.get("adjust_count") or 0)
@@ -5936,7 +5946,9 @@ async def undo_audit_adjust(
 ) -> dict:
     """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
     the audit JE. Reopens the audit (closed -> finalized) so it can be re-counted or re-adjusted."""
-    row = await _get_audit(session, company_id, entity_id)
+    # Lock the projection: undo reads each adjusted line, restores its prior qty, and writes the
+    # line_items array back (read-modify-write), so it must serialize against a concurrent re-adjust.
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
         raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1
@@ -6198,7 +6210,9 @@ async def undo_write_off(
     child lot is NOT re-merged into its parent - it returns as its own available lot, so quantity is
     conserved (parent remainder + restored child = the original). Reopens the list (closed -> finalized)
     so it can be re-run."""
-    row = await _get_writeoff(session, company_id, entity_id)
+    # Lock the projection: undo reads each disposed line, restores its lot, and writes the line_items
+    # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
+    row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
         raise HTTPException(status_code=409, detail="This write-off has no removal to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1

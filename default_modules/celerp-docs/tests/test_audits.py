@@ -638,3 +638,28 @@ async def test_list_patch_optimistic_version_rejects_stale_writes(client):
                             json={"fields_changed": {"customer_name": {"new": "Gamma"}}})
     assert r4.status_code == 200
     assert (await _state(client, t, q))["customer_name"] == "Gamma"
+
+
+@pytest.mark.asyncio
+async def test_list_patch_line_items_replacement_requires_version(client):
+    """Replacing line_items is a full-array read-modify-write: a stale editor saving its own array
+    would silently drop a concurrent scan's lines. patch_list rejects a line_items replacement that
+    carries no expected_version (409, no silent last-write-wins); the same replacement pinned to the
+    current version is applied. Scalar-only patches stay version-optional (test above)."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+    v0 = (await client.get(f"/lists/{q}", headers=_h(t))).json()["version"]
+
+    new_lines = [{"item_id": "item:zz", "sku": "ZZ", "quantity": 2}]
+    # Replacement without a version pin -> rejected before it can clobber a concurrent write.
+    r_missing = await client.patch(f"/lists/{q}", headers=_h(t),
+                                   json={"fields_changed": {"line_items": {"new": new_lines}}})
+    assert r_missing.status_code == 409
+    assert (await _state(client, t, q)).get("line_items") in (None, [])  # nothing written
+
+    # Same replacement pinned to the current version -> applied.
+    r_ok = await client.patch(f"/lists/{q}", headers=_h(t),
+                              json={"fields_changed": {"line_items": {"new": new_lines}},
+                                    "expected_version": v0})
+    assert r_ok.status_code == 200, r_ok.text
+    assert [li.get("sku") for li in (await _state(client, t, q)).get("line_items") or []] == ["ZZ"]

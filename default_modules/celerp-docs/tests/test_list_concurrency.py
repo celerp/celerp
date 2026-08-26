@@ -13,6 +13,7 @@ session): a row lock is only observable across separately committed transactions
 from __future__ import annotations
 
 import asyncio
+import types
 import uuid
 
 import pytest
@@ -54,6 +55,74 @@ async def _cleanup(factory, company_id):
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.commit()
+
+
+async def _seed_typed_list(factory, company_id, entity_id, list_type, status):
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=entity_id, entity_type="list",
+            event_type="list.created",
+            data={"list_type": list_type, "status": status, "ref_id": entity_id.split(":")[-1],
+                  "line_items": [{"item_id": "item:x", "sku": "X", "quantity": 1}]},
+            actor_id=None, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+
+
+# Each terminal/undo route reads the list's line_items, mutates stock, and writes the array back, so it
+# must take the list row lock. Seed a status the route's early guard rejects (a fast 409): the block we
+# assert happens at the FOR UPDATE loader, before that guard, so the guard's outcome is irrelevant - all
+# we need is that the route reaches and acquires the lock. Without the lock (the pre-change loader) the
+# route returns immediately and finishes inside the grace window.
+_LOCK_CALLERS = [
+    ("finalize_list", "shipment", "finalized"),  # guard: only a draft can be finalized
+    ("adjust_audit", "audit", "draft"),          # guard: finalize the count before adjusting
+    ("undo_audit_adjust", "audit", "draft"),     # guard: no adjustment to undo
+    ("undo_write_off", "writeoff", "draft"),     # guard: no removal to undo
+]
+
+
+@pytest.mark.parametrize("fn_name, list_type, status", _LOCK_CALLERS)
+@pytest.mark.asyncio
+async def test_terminal_route_takes_list_row_lock(_db_engine, fn_name, list_type, status):
+    """While one transaction holds the list row lock, the terminal/undo route on the same list blocks
+    until that transaction commits. Before the fix each route loaded the row without FOR UPDATE, so it
+    ran immediately against a stale line_items array (a lost update against a concurrent scan/count)."""
+    from celerp_docs import routes as _routes
+    from celerp_docs.routes import _get_list_for_update
+
+    fn = getattr(_routes, fn_name)
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    entity_id = f"list:LOCK-{fn_name}"
+    await _seed_typed_list(factory, company_id, entity_id, list_type, status)
+    user = types.SimpleNamespace(id=uuid.uuid4())
+    s_lock, s_route = factory(), factory()
+    try:
+        await _get_list_for_update(s_lock, company_id, entity_id)  # hold the row lock
+
+        done = asyncio.Event()
+
+        async def _run():
+            try:
+                await fn(entity_id, company_id=company_id, _=None, user=user, session=s_route)
+            except Exception:
+                pass  # a status-guard 409 still proves the route got PAST the FOR UPDATE loader
+            finally:
+                done.set()
+
+        task = asyncio.create_task(_run())
+        await asyncio.sleep(0.3)
+        assert not done.is_set(), f"{fn_name} did not block on the list row lock"
+
+        await s_lock.commit()  # release the lock
+        await asyncio.wait_for(task, timeout=10)
+        assert done.is_set()
+    finally:
+        await s_lock.close()
+        await s_route.close()
+        await _cleanup(factory, company_id)
 
 
 @pytest.mark.asyncio
