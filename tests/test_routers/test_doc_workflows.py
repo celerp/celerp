@@ -1021,6 +1021,46 @@ async def test_receive_return_on_credit_note(client, session):
 
 
 @pytest.mark.asyncio
+async def test_receive_return_mints_fresh_barcode_not_the_sold_lot(client, session):
+    """A returned item is a NEW physical lot: it must get its own freshly allocated
+    barcode, never inherit the sold lot's barcode. The sold lot still holds that
+    barcode, so copying it both mislabels the returned parcel and collides with the
+    live unique index. Red at merge-base: receive-return copied ref.barcode."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Sold item carrying a barcode; mark it sold (it keeps the barcode).
+    sold = await client.post("/items", headers=h, json={
+        "status": "available", "sku": "W-RET", "name": "Returnable",
+        "barcode": "555001", "quantity": 1, "cost_price": 40.0,
+        "unit_price": 50.0, "sell_by": "piece"})
+    assert sold.status_code == 200, sold.text
+    await client.post(f"/items/{sold.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    inv = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice",
+        "line_items": [{"name": "Returnable", "sku": "W-RET", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
+        "subtotal": 50, "tax": 0, "total": 50})
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
+    cn = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note", "original_doc_id": inv_id,
+        "line_items": [{"name": "Returnable", "sku": "W-RET", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
+        "subtotal": 50, "tax": 0, "total": 50})
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-RET", "quantity": 1}]})
+    assert r.status_code == 200, r.text
+    returned_item_id = r.json()["received_items"][0]["item_id"]
+
+    returned = (await client.get(f"/items/{returned_item_id}", headers=h)).json()
+    assert returned.get("barcode"), f"returned parcel must be barcoded: {returned.get('barcode')!r}"
+    assert returned["barcode"] != "555001", "returned parcel must not inherit the sold lot's barcode"
+
+
+@pytest.mark.asyncio
 async def test_receive_return_rejected_on_non_credit_note(client, session):
     """Regression: receive-return must be rejected on non-credit-note doc types."""
     token = await _register(client)

@@ -2534,16 +2534,23 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "bill":
         bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
 
-    # Received parcels each get a fresh sequential barcode so every physical lot is
-    # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
-    # actually holds. Single DB scan; incremented in-memory per created parcel,
-    # mirroring the split path.
-    from celerp_inventory.routes import _next_seq as _inv_next_seq
-    _recv_barcode_seq = await _inv_next_seq(session, company_id)
-
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
+
+    # Received parcels each get a fresh sequential barcode so every physical lot is
+    # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
+    # actually holds. Allocate the whole batch in one locked call AFTER validation so
+    # concurrent receipts mint distinct barcodes; the lock is held until this request
+    # commits. The DB unique index is the backstop, not the normal mechanism.
+    from celerp_inventory.services import allocate_internal_codes
+
+    def _creates_parcel(it) -> bool:
+        return not (it.item_id and not is_inbound) and it.receive_as == "stock"
+
+    _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
+    _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
+    _recv_barcode_idx = 0
 
     for it in payload.received_items:
         if it.item_id and not is_inbound:
@@ -2628,9 +2635,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
             })
-            # Fresh sequential barcode per physical lot (unique + scannable).
-            item_data["barcode"] = str(_recv_barcode_seq).zfill(6)
-            _recv_barcode_seq += 1
+            # Fresh sequential barcode per physical lot (unique + scannable), taken
+            # from the batch allocated under the code-namespace lock above.
+            item_data["barcode"] = _recv_barcodes[_recv_barcode_idx]
+            _recv_barcode_idx += 1
             if it.cost_price is not None:
                 # Emit cost_total when quantity is known (cost_total is the primitive)
                 _recv_qty = float(it.quantity_received) * conversion
@@ -5003,6 +5011,15 @@ async def receive_return(
                     detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
                 )
 
+    # --- Allocate a fresh barcode per returned parcel ---
+    # A returned item is a NEW physical lot and must never inherit the sold lot's or
+    # the invoice line's barcode - that barcode still belongs to the sold item and
+    # reusing it would collide. Allocate the whole batch under the code-namespace lock
+    # after validation and before any item.created event, so concurrent returns mint
+    # distinct barcodes; the lock is held until this request commits.
+    from celerp_inventory.services import allocate_internal_codes
+    _return_barcodes = await allocate_internal_codes(session, company_id, len(payload.items))
+
     # --- Create returned inventory items ---
     now = datetime.now(timezone.utc).isoformat()
     total_cogs = 0.0
@@ -5013,7 +5030,7 @@ async def receive_return(
         "location_id", "location_name", "source_doc_id",
     })
 
-    for it in payload.items:
+    for _ridx, it in enumerate(payload.items):
         # Prefer the exact physical lot when the credit-note line carries an item_id
         # (SKUs can repeat across lots, so item_id/barcode is the authoritative bind).
         # Else fall back to the documented LIFO-by-sku tiebreak (most-recent sold lot),
@@ -5059,7 +5076,7 @@ async def receive_return(
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
-            "barcode": ref.get("barcode") or li_fallback.get("barcode") or None,
+            "barcode": _return_barcodes[_ridx],
             "description": ref.get("description") or li_fallback.get("description") or "",
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
