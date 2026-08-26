@@ -372,6 +372,7 @@ async def build_item(
     if payload.complete:
         states = await _all_item_states(session, company_id)
         run = await _get_order(session, company_id, order_id)
+        await _lock_code_namespace_for_completion(session, company_id)
         await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
         await _receive(session, company_id, user, order_id, run.state, payload.quantity, states)
         run = await _get_order(session, company_id, order_id)
@@ -640,6 +641,7 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
 async def _complete_work_order_now(session, company_id, user, order_id: str, qty: float, states: dict) -> None:
     """One-tap: issue all components, receive the output and close the work order."""
     run = await _get_order(session, company_id, order_id)
+    await _lock_code_namespace_for_completion(session, company_id)
     await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
     await _receive(session, company_id, user, order_id, run.state, qty, states)
     run = await _get_order(session, company_id, order_id)
@@ -877,6 +879,7 @@ async def bulk_run_action(
                 if outstanding:
                     if require_issued:
                         raise ValueError("components must be issued before completing (required by settings)")
+                    await _lock_code_namespace_for_completion(session, company_id)
                     await _issue_and_record(session, company_id, user, run_id, outstanding, states)
                     st = (await _get_order(session, company_id, run_id)).state
                 qty = _outstanding_output(st)
@@ -1386,6 +1389,17 @@ async def _consume_components(session: AsyncSession, company_id, user, order_id:
     return consumed
 
 
+async def _lock_code_namespace_for_completion(session: AsyncSession, company_id) -> None:
+    """Serialize a completion's component issue and output receipt under the company code-namespace
+    lock, acquired BEFORE the first component event. `_receive` mints the output lot's barcode under
+    the same company lock (celerp_inventory.services.allocate_internal_codes); a concurrent barcode
+    edit takes that company lock first too, so both paths agree on lock order and the
+    item-projection then company-lock cycle that would otherwise deadlock cannot form. Issue-only and
+    receive-only flows hold a single lock and never form the cycle, so they do not call this."""
+    from celerp_inventory.services import lock_item_code_namespace
+    await lock_item_code_namespace(session, company_id)
+
+
 async def _issue_and_record(session: AsyncSession, company_id, user, order_id: str,
                             items: list[dict], states: dict[str, dict]) -> list[dict]:
     """Consume the given components and record the issue on the run (auto-advances to In Progress)."""
@@ -1818,6 +1832,7 @@ async def complete_order(
         if (await _mfg_settings(session, company_id)).get("require_issued_before_complete"):
             raise HTTPException(status_code=409,
                                 detail="Issue all components before completing this run (required by settings)")
+        await _lock_code_namespace_for_completion(session, company_id)
         await _issue_and_record(session, company_id, user, order_id, outstanding, states)
         row = await _get_order(session, company_id, order_id)
     qty = _outstanding_output(row.state)
