@@ -596,3 +596,43 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     assert len(lines) == 1                 # collapsed to one line per item_id
     assert lines[0]["item_id"] == iid
     assert lines[0]["on_hand"] == 4.0      # surviving line still froze its on-hand snapshot
+
+
+@pytest.mark.asyncio
+async def test_list_patch_optimistic_version_rejects_stale_writes(client):
+    """A draft list carries a version (its latest ledger-entry id), returned by GET. A patch may pin
+    expected_version; a patch whose expected_version is not the current version is a stale write
+    (another editor moved the list on) and is rejected 409, so concurrent editors cannot silently
+    clobber each other. A patch that omits expected_version stays unchecked (backward compatible)."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+
+    v0 = (await client.get(f"/lists/{q}", headers=_h(t))).json()["version"]
+    assert isinstance(v0, int)
+
+    # Correct version -> applied, and the returned version advances.
+    r1 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Acme"}},
+                                  "expected_version": v0})
+    assert r1.status_code == 200
+    v1 = r1.json()["version"]
+    assert v1 != v0
+
+    # Stale version (v0 again) -> rejected, list unchanged.
+    r2 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Evil"}},
+                                  "expected_version": v0})
+    assert r2.status_code == 409
+    assert (await _state(client, t, q))["customer_name"] == "Acme"
+
+    # Fresh version -> applied again.
+    r3 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Beta"}},
+                                  "expected_version": v1})
+    assert r3.status_code == 200
+
+    # No expected_version -> unchecked, still applied.
+    r4 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Gamma"}}})
+    assert r4.status_code == 200
+    assert (await _state(client, t, q))["customer_name"] == "Gamma"

@@ -4494,11 +4494,16 @@ celerpUpdateBulkAlloc();
             "tax": body.get("tax", 0),
             "total": body.get("total", 0),
         }
+        expected_version = body.get("expected_version")
         try:
-            await api.patch_list(token, entity_id, patch_data)
+            result = await api.patch_list(token, entity_id, patch_data, expected_version=expected_version)
         except APIError as e:
+            # A stale expected_version means someone else saved this list first; surface it
+            # structurally (code, not English text) so the page can prompt a reload.
+            if e.status == 409:
+                return JSONResponse({"code": "stale_version", "error": str(e.detail)}, status_code=409)
             return JSONResponse({"error": str(e.detail)}, status_code=400)
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, "version": result.get("version")})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -7070,6 +7075,9 @@ const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 let _celerpHadLines = {'true' if line_items else 'false'};
+// Optimistic-concurrency token for lists (null for docs). Sent with every line save and
+// refreshed from the save response, so a tab never false-conflicts against its own last write.
+let _celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
@@ -7981,13 +7989,23 @@ async function _celerpPersist() {{
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{line_items: lines, subtotal, tax, total,
-            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount}})
+            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
+            expected_version: _celerpListVersion}})
     }});
     if (resp.ok) {{
+        // Advance the cached version to the one this save produced, so the tab's next
+        // autosave does not false-conflict against its own write. Docs return no version.
+        try {{
+            const data = await resp.json();
+            if (data && data.version != null) _celerpListVersion = data.version;
+        }} catch (_e) {{}}
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
     }} else {{
+        // A stale-version 409 carries {{code: 'stale_version', error: <reload prompt>}}; every
+        // other failure carries {{error}}. Both surface the server's message (no client-side
+        // English matching), so the same display path handles them.
         let msg = _L.save_failed;
         let conflicts = null;
         try {{

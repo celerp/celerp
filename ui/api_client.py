@@ -1390,10 +1390,13 @@ async def create_list(token: str, data: dict) -> dict:
         return _raise(await c.post("/lists", json=data)).json()
 
 
-async def patch_list(token: str, entity_id: str, data: dict) -> dict:
+async def patch_list(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
     async with _api_client(token) as c:
         fields_changed = await _wrap_fields_changed(c, f"/lists/{entity_id}", data)
-        return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
+        body: dict = {"fields_changed": fields_changed}
+        if expected_version is not None:
+            body["expected_version"] = expected_version
+        return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
 
 
 # ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────

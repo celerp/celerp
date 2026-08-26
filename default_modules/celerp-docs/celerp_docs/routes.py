@@ -3426,7 +3426,13 @@ class ListCreatePayload(BaseModel):
         return self
 
 
-ListPatch = DocPatch
+class ListPatch(DocPatch):
+    # Optimistic concurrency: when set, the patch applies only if it equals the list's current
+    # version (its latest ledger-entry id). A mismatch means another editor moved the list on since
+    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
+    expected_version: int | None = None
+
+
 ListVoidBody = DocVoidBody
 
 
@@ -3598,7 +3604,7 @@ async def get_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id}
+    return row.state | {"id": row.entity_id, "version": row.version}
 
 
 @lists_router.post("")
@@ -3639,9 +3645,14 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
+    # patches cannot both read version N, both pass the check, and both write (the second clobbering
+    # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    if payload.expected_version is not None and row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
     try:
         _validate_shipment_values({f: (c or {}).get("new")
                                    for f, c in payload.fields_changed.items()})
@@ -3655,10 +3666,14 @@ async def patch_list(
             session, company_id,
             {li.get("item_id") for li in _new_lines} - _existing,
         )
+    # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
-                             payload.model_dump(exclude_none=True), user, payload.idempotency_key)
+                             payload.model_dump(exclude_none=True, exclude={"expected_version"}),
+                             user, payload.idempotency_key)
     await session.commit()
-    return {"event_id": entry.id}
+    # entry.id is the list's new version (the projection version tracks the latest entry id), so the
+    # client refreshes its cached version from here and its next save pins the value it just wrote.
+    return {"event_id": entry.id, "version": entry.id}
 
 
 @lists_router.post("/{entity_id}/finalize")

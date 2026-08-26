@@ -4070,6 +4070,38 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
+        """POST /lists/{id}/lines forwards expected_version to api.patch_list and returns the
+        new version from the save, so the page can advance its cached token (optimistic
+        concurrency). Without the plumbing the route neither forwards the token nor returns it."""
+        mock = AsyncMock(return_value={"event_id": 42, "version": 42})
+        with patch("ui.api_client.patch_list", new=mock):
+            r = await ui_client.post(
+                "/lists/list:WO-1/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert r.json()["version"] == 42
+        assert mock.await_args.kwargs.get("expected_version") == 7
+
+    @pytest.mark.asyncio
+    async def test_save_list_lines_stale_version_returns_structured_409(self, ui_client):
+        """A stale expected_version (backend 409) surfaces as a structured {code: stale_version}
+        body with status 409, so the page branches on the code, never on English message text."""
+        from ui.api_client import APIError
+        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else; reload to get the latest before saving"))
+        with patch("ui.api_client.patch_list", new=mock):
+            r = await ui_client.post(
+                "/lists/list:WO-1/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 1},
+                cookies=_authed(),
+            )
+        assert r.status_code == 409
+        assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
         """POST /docs/{id}/lines without cookie redirects to login."""
         r = await ui_client.post(
