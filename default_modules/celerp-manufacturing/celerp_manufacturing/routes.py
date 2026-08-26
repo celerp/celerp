@@ -1390,12 +1390,16 @@ async def _consume_components(session: AsyncSession, company_id, user, order_id:
 
 
 async def _lock_code_namespace_for_completion(session: AsyncSession, company_id) -> None:
-    """Serialize a completion's component issue and output receipt under the company code-namespace
-    lock, acquired BEFORE the first component event. `_receive` mints the output lot's barcode under
-    the same company lock (celerp_inventory.services.allocate_internal_codes); a concurrent barcode
-    edit takes that company lock first too, so both paths agree on lock order and the
-    item-projection then company-lock cycle that would otherwise deadlock cannot form. Issue-only and
-    receive-only flows hold a single lock and never form the cycle, so they do not call this."""
+    """Take the company code-namespace lock BEFORE the first component event of a completion.
+
+    `_receive` mints the output lot's barcode under this same company lock
+    (celerp_inventory.services.allocate_internal_codes), and a concurrent barcode edit takes the
+    company lock first and the item-projection lock second. Claiming the company lock up front here
+    makes completion agree on that order, so the (company row, component projection row) pair can
+    never form an AB/BA cycle between the two flows. The lock itself is FOR NO KEY UPDATE, so it also
+    does not deadlock against the KEY SHARE this transaction already holds on the company from its own
+    ledger inserts. Issue-only and receive-only flows hold a single lock and never form the cycle, so
+    they do not call this."""
     from celerp_inventory.services import lock_item_code_namespace
     await lock_item_code_namespace(session, company_id)
 

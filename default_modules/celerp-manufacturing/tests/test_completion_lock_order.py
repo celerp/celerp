@@ -1,57 +1,37 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
-"""A manufacturing completion (issue components, receive the output) races a real, concurrent
-barcode edit on one of the run's own components: both must complete without a hang or a
-Postgres-detected deadlock, and the completion session must claim the company code-namespace
-lock no later than it claims the racing component's own item-projection lock.
+"""The company code-namespace lock must not deadlock when the transaction taking it has
+already emitted a ledger event for the same company.
 
-Both flows serialize the same two row locks - the company code-namespace row
-(celerp_inventory.services.lock_item_code_namespace, SELECT Company FOR UPDATE) and a
-component's projection row (celerp.projections.engine.ProjectionEngine._locked_projection,
-SELECT ... FOR UPDATE). A concurrent barcode edit (default_modules/celerp-inventory
-routes.patch_item) always claims company first, then the item lock. Before the fix, a
-completion claimed the item lock first (item.consumed during issue) and the company lock
-second (minting the output lot's barcode during receive) - the reverse order, which is the
-precondition for an AB/BA cycle between the two sessions. The fix takes the company lock
-first in every issue-then-receive completion path (_lock_code_namespace_for_completion), so
-both flows now agree on lock order.
+Every ledger insert takes an implicit foreign-key KEY SHARE lock on its company row
+(celerp/models/ledger.py: LedgerEntry.company_id -> companies.id) and holds it until the
+transaction ends. A one-tap build (celerp_manufacturing.routes.build_item with complete=True)
+emits mfg.order.created and then, in the same transaction, locks the company row to mint the
+output lot's barcode (_lock_code_namespace_for_completion -> lock_item_code_namespace). If
+that lock is FOR UPDATE it has to upgrade past the transaction's own KEY SHARE, and two such
+transactions - each already holding KEY SHARE on the company, each now requesting the row
+lock - block on each other, so Postgres aborts one with a deadlock (SQLSTATE 40P01). The same
+shape reaches every issue-then-receive completion path: build_item, make_work_orders,
+automatic completion during finalize, and a later run in a bulk transaction after an earlier
+one emitted an event.
+
+The fix takes the lock as FOR NO KEY UPDATE (celerp_inventory.services.lock_item_code_
+namespace, with_for_update(key_share=True)). FOR NO KEY UPDATE does not conflict with KEY
+SHARE, so no upgrade happens; it still conflicts with another FOR NO KEY UPDATE, so barcode
+allocators stay serialized for every module. The two tests below prove both halves: the lock
+still serializes (one holder at a time), and two transactions that each already hold the
+implicit KEY SHARE both commit without a deadlock.
 
 These use independent sessions bound to the shared engine with real commits (not the
 savepoint session): a row lock is only observable, and contention only forms, between two
-separately committed transactions - a single rolled-back savepoint session cannot exercise
-it faithfully.
-
-A free-running race between the two paths is timing-dependent: patch_item's preamble (field
-schema, price config, several other reads) is long enough relative to the completion path
-that the completion transaction usually finishes before the barcode edit ever reaches its
-own lock request, so the two never actually contend. One plain asyncio barrier (not a change
-to production code) makes the interleaving deterministic instead of a matter of luck: the
-barcode edit does not start at all until completion has genuinely issued the racing
-component (holds its item-projection lock) - see _race_once for the exact hook. Everything
-before and after that single gate is the real, unmodified code on each side deciding for
-itself which lock it reaches for, in what order, and whether it blocks.
-
-A companion investigation (a standalone Postgres session pair inserting a child row under an
-open, uncommitted transaction and separately requesting FOR UPDATE on the parent it
-references) confirmed that every ledger insert - including the racing component's own
-item.consumed - takes an implicit row-share lock on the referenced Company row via the
-foreign key check (celerp/models/ledger.py: LedgerEntry.company_id -> companies.id), held
-until that transaction ends. That implicit lock lands before completion's own explicit
-company-lock call on every code path, on both trees, which is why the barrier above cannot
-be extended into forcing a genuine two-way Postgres deadlock (SQLSTATE 40P01) for this exact
-pairing: completion's session touches the company row (implicitly) no later than its first
-item lock regardless of tree, so the two sessions can only ever queue one-way behind each
-other, never cross. The test proves the two guarantees that are actually reachable and are
-exactly what the fix's diff changed: (1) real concurrent contention between the two flows
-never errors or hangs, checked on every race, and (2) the completion session's own lock
-requests are ordered company-then-item, checked directly rather than inferred from whether a
-race happened to fail - true on the fixed tree, false (item-then-company) on the pre-fix
-tree, so it is exactly the fix's guarantee, not a proxy for it."""
+separately committed transactions - a single rolled-back savepoint session cannot exercise it
+faithfully."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 import types
 import uuid
 
@@ -60,69 +40,17 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
+from celerp.inventory_codes import BarcodeConflictError  # noqa: F401 - imported for parity with services
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
-_RACES = 5  # the barrier makes each race deterministic; a handful confirms it is not a fluke
-
-
-async def _cleanup(factory, company_id, user_id) -> None:
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
-
-
-async def _seed_run(factory, company_id, user, i: int) -> tuple[str, str, str]:
-    """A component with 100 on hand, a product with 0 on hand, and a planned run that will
-    consume 5 of the component and receive 2 of the product. Returns
-    (order_id, component_id, old_barcode)."""
-    component_id = f"item:comp-{i}-{uuid.uuid4().hex[:8]}"
-    product_id = f"item:prod-{i}-{uuid.uuid4().hex[:8]}"
-    order_id = f"mfg:{uuid.uuid4()}"
-    # 13 digits: a GTIN-length barcode, excluded from _next_seq's internal-code
-    # scan (celerp_inventory/services.py: only <= 9-digit barcodes count), so the
-    # auto-minted output-lot barcode (a short zero-padded sequence) can never
-    # collide with these manually-assigned values.
-    old_barcode = f"2{i:05d}0000000"
-    async with factory() as s:
-        await emit_event(
-            s, company_id=company_id, entity_id=component_id, entity_type="item",
-            event_type="item.created",
-            data={"sku": f"COMP{i}", "name": "Component", "quantity": 100, "cost_total": 100,
-                  "barcode": old_barcode},
-            actor_id=None, location_id=None, source="test",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        await emit_event(
-            s, company_id=company_id, entity_id=product_id, entity_type="item",
-            event_type="item.created",
-            data={"sku": f"PROD{i}", "name": "Product", "quantity": 0},
-            actor_id=None, location_id=None, source="test",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        await emit_event(
-            s, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-            event_type="mfg.order.created",
-            data={
-                "description": f"Build 2 x PROD{i}", "order_type": "assembly",
-                "inputs": [{"item_id": component_id, "quantity": 5}],
-                "expected_outputs": [{"sku": f"PROD{i}", "name": "Product", "quantity": 2}],
-                "output_item_id": product_id,
-            },
-            actor_id=user.id, location_id=None, source="test",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        await s.commit()
-    return order_id, component_id, old_barcode
+from celerp_inventory.services import lock_item_code_namespace
 
 
 def _is_deadlock(exc: BaseException) -> bool:
     """True if exc (or anything in its cause chain, including a wrapped DBAPI .orig) is a
-    Postgres deadlock (SQLSTATE 40P01), the exact failure the lock-order fix removes."""
+    Postgres deadlock (SQLSTATE 40P01), the exact failure the lock-mode fix removes."""
     seen: list[BaseException] = []
     chain = [exc]
     while chain:
@@ -140,183 +68,173 @@ def _is_deadlock(exc: BaseException) -> bool:
     return False
 
 
-async def _race_once(
-    factory, company_id, user, i: int
-) -> tuple[BaseException | None, BaseException | None, str, str, str, list[str]]:
-    """Run one real completion concurrently with one real barcode edit on the run's own
-    component, each on its own committed transaction. Returns (completion_exc, barcode_exc,
-    order_id, component_id, new_barcode, completion_lock_order).
+async def _cleanup(factory, company_id, user_id) -> None:
+    async with factory() as s:
+        await s.execute(delete(Projection).where(Projection.company_id == company_id))
+        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(Company).where(Company.id == company_id))
+        await s.execute(delete(User).where(User.id == user_id))
+        await s.commit()
 
-    ``completion_lock_order`` is the order, on the completion session only, in which the two
-    contended locks were actually requested: "company" (celerp_inventory.services.
-    lock_item_code_namespace - the code-namespace lock _lock_code_namespace_for_completion
-    takes up front on the fixed tree) and "item" (celerp.projections.engine.ProjectionEngine.
-    _locked_projection for the racing component's own item.consumed). This is the exact
-    invariant the fix establishes (company lock claimed no later than the first item lock, so
-    a concurrent barcode edit - which always claims company then item - can never observe the
-    reverse) and is checked directly, not inferred from whether a race happened to fail.
 
-    One plain asyncio barrier pins the earliest moment a race between the two is even
-    possible, so it is deterministic instead of a matter of scheduling luck, without
-    changing WHEN either side's lock requests resolve or what they do:
-    celerp.projections.engine.ProjectionEngine._locked_projection (reached from
-    celerp_manufacturing.routes._consume_components -> emit_event, the completion path's
-    component-projection lock) signals once completion genuinely holds the racing
-    component's projection row locked, from having issued it (item.consumed). The barcode
-    edit does not start at all until that signal fires, so it can never simply run to
-    completion before completion has touched the shared component - every remaining step on
-    both sides, including which lock each reaches for next and whether it blocks, is the
-    real, unmodified production code deciding for itself.
-    """
-    from celerp_inventory.routes import ItemPatch, patch_item
-    import celerp_inventory.services as inventory_services
-    from celerp_manufacturing.routes import _complete_work_order_now
-    from celerp.projections.engine import ProjectionEngine
-
-    order_id, component_id, old_barcode = await _seed_run(factory, company_id, user, i)
-    new_barcode = f"3{i:05d}0000000"
-    s_completion, s_barcode = factory(), factory()
-    outcome: dict[str, BaseException | None] = {"completion": None, "barcode": None}
-    completion_lock_order: list[str] = []
-
-    completion_holds_component_lock = asyncio.Event()
-    orig_locked_projection = ProjectionEngine._locked_projection
-    orig_lock_namespace_services = inventory_services.lock_item_code_namespace
-
-    async def _patched_locked_projection(session, entry):
-        # Real acquisition, never delayed - only observed, and only to learn the one instant
-        # completion has issued the racing component (this race's session and entity only).
-        result = await orig_locked_projection(session, entry)
-        if session is s_completion and entry.entity_id == component_id and entry.event_type == "item.consumed":
-            completion_holds_component_lock.set()
-            completion_lock_order.append("item")
-        return result
-
-    async def _patched_lock_namespace_services(session, cid):
-        # allocate_internal_codes' internal call and, on the fixed tree,
-        # _lock_code_namespace_for_completion: real acquisition, never delayed, only
-        # observed, to record when the completion session claims the company lock relative
-        # to the racing component's item lock above.
-        if session is s_completion and cid == company_id:
-            completion_lock_order.append("company")
-        return await orig_lock_namespace_services(session, cid)
-
-    async def _run_completion() -> None:
-        try:
-            await _complete_work_order_now(s_completion, company_id, user, order_id, 2.0, {})
-            await s_completion.commit()
-        except Exception as exc:  # noqa: BLE001 - captured for the race assertion, not swallowed
-            outcome["completion"] = exc
-            await s_completion.rollback()
-        finally:
-            # Safety net: never leave the barcode edit's bounded start-wait as the only thing
-            # standing between completion erroring out before consuming the component and a
-            # real hang.
-            completion_holds_component_lock.set()
-
-    async def _run_barcode_edit() -> None:
-        try:
-            # Bounded: if completion never reaches the racing component (e.g. it errored out
-            # earlier), the barcode edit must still be able to run rather than hang.
-            try:
-                await asyncio.wait_for(completion_holds_component_lock.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                pass
-            await patch_item(
-                component_id,
-                ItemPatch(fields_changed={"barcode": {"old": old_barcode, "new": new_barcode}}),
-                company_id=company_id, _=None, user=user, role="owner", settings={}, session=s_barcode,
-            )
-            # patch_item is the raw route handler, called directly (no HTTP layer, no
-            # commit-on-teardown dependency around it) - it never commits its own session,
-            # matching how every other route in this module is exercised in-process elsewhere
-            # in this suite. Without this the edit's transaction, and the company lock it
-            # holds, would stay open (and keep blocking the other side) until s_barcode.close()
-            # much later, which is a test-harness artifact, not the race under test.
-            await s_barcode.commit()
-        except Exception as exc:  # noqa: BLE001 - captured for the race assertion, not swallowed
-            outcome["barcode"] = exc
-            await s_barcode.rollback()
-
-    ProjectionEngine._locked_projection = staticmethod(_patched_locked_projection)
-    inventory_services.lock_item_code_namespace = _patched_lock_namespace_services
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(_run_completion(), _run_barcode_edit()), timeout=15
-        )
-    finally:
-        ProjectionEngine._locked_projection = orig_locked_projection
-        inventory_services.lock_item_code_namespace = orig_lock_namespace_services
-        await s_completion.close()
-        await s_barcode.close()
-
-    return outcome["completion"], outcome["barcode"], order_id, component_id, new_barcode, completion_lock_order
+async def _seed_company(factory) -> tuple[uuid.UUID, uuid.UUID, types.SimpleNamespace]:
+    company_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with factory() as s:
+        s.add(Company(id=company_id, name="Lockrace Co", slug=f"lockrace-{company_id.hex[:8]}"))
+        s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@lockrace.test", name="Race User",
+                   auth_hash="x"))
+        await s.commit()
+    # A bare .id accessor is all production code reads off `user` on these paths (actor_id on
+    # emitted events); the FK target is the committed row above.
+    return company_id, user_id, types.SimpleNamespace(id=user_id)
 
 
 @pytest.mark.asyncio
-async def test_completion_races_barcode_edit_without_deadlock(_db_engine):
-    """Race a manufacturing completion against a concurrent barcode edit on one of its own
-    components, repeatedly, with the interleaving pinned deterministically (see _race_once).
-    Both transactions must always serialize and commit cleanly (the run and the barcode both
-    land in their new state) with no Postgres deadlock; separately, and on every race, the
-    completion session must claim the company lock no later than the racing component's item
-    lock (see _race_once's docstring for why that ordering, not a forced two-way deadlock, is
-    the fix's actual, provable guarantee for this pairing) - true after the fix, false
-    (item-then-company) before it."""
+async def test_company_lock_upgrade_serializes_without_deadlock(_db_engine):
+    """Two transactions each emit a ledger event for the same company (so each holds the
+    implicit KEY SHARE on the company row), synchronize so both hold it, then concurrently
+    take the code-namespace lock. FOR NO KEY UPDATE never has to upgrade past KEY SHARE, so
+    one acquires and the other waits for it to commit; both then commit with no deadlock. On
+    the pre-fix FOR UPDATE lock the same interleaving is a lock upgrade past the peer's KEY
+    SHARE, which Postgres breaks with 40P01."""
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
-    company_id = uuid.uuid4()
-    user_id = uuid.uuid4()
-    deadlocks: list[tuple[int, str, str]] = []
-    other_failures: list[tuple[int, str, str]] = []
-    order_violations: list[tuple[int, list[str]]] = []
-    try:
-        async with factory() as s:
-            s.add(Company(id=company_id, name="Lockrace Co", slug=f"lockrace-{company_id.hex[:8]}"))
-            s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@lockrace.test", name="Race User",
-                       auth_hash="x"))
-            await s.commit()
-        # A bare id/.id accessor is all production code reads off `user` on these paths
-        # (actor_id on emitted events); the FK target is the committed row above.
-        user = types.SimpleNamespace(id=user_id)
+    company_id, user_id, user = await _seed_company(factory)
+    both_hold_key_share = asyncio.Barrier(2)
+    outcome: dict[int, BaseException | None] = {0: None, 1: None}
+    window: dict[int, tuple[float, float]] = {}
 
-        for i in range(_RACES):
-            completion_exc, barcode_exc, order_id, component_id, new_barcode, lock_order = await _race_once(
-                factory, company_id, user, i
+    async def _hold_and_lock(idx: int) -> None:
+        s = factory()
+        try:
+            await emit_event(
+                s, company_id=company_id, entity_id=f"item:ks-{idx}-{uuid.uuid4().hex[:8]}",
+                entity_type="item", event_type="item.created",
+                data={"sku": f"KS{idx}", "name": "Key-share holder", "quantity": 1},
+                actor_id=user.id, location_id=None, source="test",
+                idempotency_key=str(uuid.uuid4()), metadata_={},
             )
-            # The fix's own guarantee, checked directly: the completion session must claim
-            # the company lock no later than the racing component's item lock, on every race,
-            # not just the ones that happened to also error - a concurrent barcode edit always
-            # claims company then item, so the reverse on the completion side is exactly the
-            # ordering that lets the two cross.
-            if lock_order.index("company") > lock_order.index("item"):
-                order_violations.append((i, lock_order))
-            for label, exc in (("completion", completion_exc), ("barcode-edit", barcode_exc)):
-                if exc is None:
-                    continue
-                if _is_deadlock(exc):
-                    deadlocks.append((i, label, str(exc)))
-                else:
-                    other_failures.append((i, label, repr(exc)))
+            # Flush so the INSERT lands and its FK check takes the KEY SHARE on the company row
+            # now, before the barrier - the emit alone would not touch the DB until the next
+            # execute or commit, and the whole point is that both hold KEY SHARE first.
+            await s.flush()
+            await both_hold_key_share.wait()
+            await lock_item_code_namespace(s, company_id)
+            acquired = time.monotonic()
+            # Hold the lock briefly so the two holders' windows are measurable: under a lock
+            # that serializes, the second cannot acquire until the first has committed.
+            await asyncio.sleep(0.15)
+            await s.commit()
+            window[idx] = (acquired, time.monotonic())
+        except Exception as exc:  # noqa: BLE001 - captured for the race assertion, not swallowed
+            outcome[idx] = exc
+            await s.rollback()
+        finally:
+            await s.close()
 
-            if completion_exc is None and barcode_exc is None:
-                # Both sides won the race cleanly: verify the actual outcome, not only the
-                # absence of an exception - the run completed and the barcode edit landed.
-                async with factory() as s:
-                    order = await s.get(Projection, {"company_id": company_id, "entity_id": order_id})
-                    component = await s.get(Projection, {"company_id": company_id, "entity_id": component_id})
-                assert order.state["status"] == "completed"
-                assert component.state["barcode"] == new_barcode
-
-        assert not other_failures, f"race produced unexpected non-deadlock failures: {other_failures}"
-        assert not deadlocks, (
-            f"deadlock detected on {len(deadlocks)}/{_RACES} completion-vs-barcode-edit races "
-            f"(sample: {deadlocks[:3]})"
-        )
-        assert not order_violations, (
-            f"completion claimed the item lock before the company lock on "
-            f"{len(order_violations)}/{_RACES} races (sample: {order_violations[:3]}) - a "
-            f"concurrent barcode edit claims company then item, so this ordering is exactly "
-            f"what lets the two cross"
+    try:
+        await asyncio.wait_for(asyncio.gather(_hold_and_lock(0), _hold_and_lock(1)), timeout=20)
+        failures = {i: repr(e) for i, e in outcome.items() if e is not None}
+        deadlocks = {i: str(e) for i, e in outcome.items() if e is not None and _is_deadlock(e)}
+        assert not deadlocks, f"company-lock upgrade deadlocked (40P01): {deadlocks}"
+        assert not failures, f"lock attempt failed for a non-deadlock reason: {failures}"
+        # Serialization: exactly one holder at a time. Ordered by acquisition, the earlier
+        # holder must have committed (released the lock) no later than the later one acquired
+        # it - the windows do not overlap.
+        first, second = sorted(window.values(), key=lambda w: w[0])
+        assert second[0] >= first[1] - 0.01, (
+            f"the two lock holders overlapped ({first} vs {second}); the namespace lock did "
+            f"not serialize them"
         )
     finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+async def _seed_buildable(factory, company_id, user, i: int) -> str:
+    """A component with 100 on hand and a manufacturable product whose recipe consumes 5 of
+    it. Returns the product's entity_id, ready for a one-tap build_item(complete=True)."""
+    component_id = f"item:comp-{i}-{uuid.uuid4().hex[:8]}"
+    product_id = f"item:prod-{i}-{uuid.uuid4().hex[:8]}"
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=component_id, entity_type="item",
+            event_type="item.created",
+            data={"sku": f"COMP{i}", "name": "Component", "quantity": 100, "cost_total": 100,
+                  "status": "available"},
+            actor_id=user.id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await emit_event(
+            s, company_id=company_id, entity_id=product_id, entity_type="item",
+            event_type="item.created",
+            data={"sku": f"PROD{i}", "name": "Product", "quantity": 0, "status": "available",
+                  "recipe": {"output_qty": 1, "components": [{"item_id": component_id, "quantity": 5}]}},
+            actor_id=user.id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+    return product_id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_one_tap_builds_no_deadlock(_db_engine):
+    """Two real one-tap builds of two independent products (each with its own component, so
+    the company row is the only lock they share) run concurrently on separately committed
+    sessions. Each emits mfg.order.created and then locks the company to mint its output lot -
+    the exact create-and-complete lock upgrade. Both must complete with no deadlock; before
+    the fix this pair aborts one side with 40P01."""
+    from celerp_manufacturing.routes import build_item, BuildBody
+    import celerp_inventory.services as inventory_services
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user_id, user = await _seed_company(factory)
+    product_a = await _seed_buildable(factory, company_id, user, 0)
+    product_b = await _seed_buildable(factory, company_id, user, 1)
+    results: dict[str, dict | BaseException] = {}
+
+    # By the time a completion reaches _lock_code_namespace_for_completion it has already
+    # emitted mfg.order.created and flushed it (the _all_item_states read autoflushes), so it
+    # holds the company KEY SHARE. Barrier the FIRST namespace-lock acquisition per session so
+    # both builds hold KEY SHARE before either takes the company lock, making the upgrade
+    # contention deterministic instead of a matter of scheduling luck. This wraps the real
+    # lock (never delays it beyond the barrier) and _lock_code_namespace_for_completion imports
+    # the name from this module each call, so the wrapper is what completion sees.
+    both_hold_key_share = asyncio.Barrier(2)
+    orig_lock = inventory_services.lock_item_code_namespace
+    synced: set[int] = set()
+
+    async def _barrier_then_lock(session, cid):
+        if cid == company_id and id(session) not in synced:
+            synced.add(id(session))
+            await both_hold_key_share.wait()
+        return await orig_lock(session, cid)
+
+    async def _one_tap(label: str, product_id: str) -> None:
+        s = factory()
+        try:
+            res = await build_item(product_id, BuildBody(quantity=1.0, complete=True),
+                                   company_id=company_id, user=user, _=None, session=s)
+            results[label] = res
+        except Exception as exc:  # noqa: BLE001 - captured for the race assertion, not swallowed
+            results[label] = exc
+            await s.rollback()
+        finally:
+            await s.close()
+
+    inventory_services.lock_item_code_namespace = _barrier_then_lock
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_one_tap("a", product_a), _one_tap("b", product_b)), timeout=30
+        )
+        deadlocks = {k: str(v) for k, v in results.items()
+                     if isinstance(v, BaseException) and _is_deadlock(v)}
+        failures = {k: repr(v) for k, v in results.items() if isinstance(v, BaseException)}
+        assert not deadlocks, f"concurrent one-tap builds deadlocked (40P01): {deadlocks}"
+        assert not failures, f"a one-tap build failed for a non-deadlock reason: {failures}"
+        async with factory() as s:
+            for label, product_id in (("a", product_a), ("b", product_b)):
+                order_id = results[label]["id"]
+                order = await s.get(Projection, {"company_id": company_id, "entity_id": order_id})
+                assert order.state["status"] == "completed", f"build {label} did not complete"
+    finally:
+        inventory_services.lock_item_code_namespace = orig_lock
         await _cleanup(factory, company_id, user_id)

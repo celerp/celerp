@@ -27,9 +27,18 @@ async def lock_item_code_namespace(session: AsyncSession, company_id) -> None:
     commit, so it reads the updated max and mints the next code instead of colliding.
     The lock is held until the caller's transaction commits or rolls back; every
     allocation and barcode check in that request must run after this call.
+
+    The mode is FOR NO KEY UPDATE, not FOR UPDATE. Every ledger insert takes an
+    implicit foreign-key KEY SHARE lock on its company row and holds it to commit,
+    so a plain FOR UPDATE here would have to upgrade past that share lock: two
+    transactions that have each already emitted an event for the company both hold
+    KEY SHARE and then block on each other's row lock, which PostgreSQL breaks by
+    aborting one with a deadlock (40P01). FOR NO KEY UPDATE does not conflict with
+    KEY SHARE, so the upgrade never happens, while it still conflicts with another
+    FOR NO KEY UPDATE, keeping barcode allocators serialized for every module.
     """
     await session.execute(
-        select(Company.id).where(Company.id == company_id).with_for_update()
+        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
     )
 
 

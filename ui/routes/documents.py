@@ -7252,14 +7252,19 @@ function _celerpDocTypeParam() {{
                         pendingRunKey = null;
                         let refreshed = false;
                         try {{ refreshed = await _installListBody('', version); }} catch (_e) {{}}
+                        scanStatus.className = 'scan-bar-status scan-bar-status--err';
                         if (refreshed) {{
+                            // Rows are current again and Add re-enables in finally: the operator can
+                            // carry on, so let the notice clear on its own.
                             scanStatus.textContent = '✗ ' + _L.scan_run_committed;
+                            _clearStatusSoon();
                         }} else {{
+                            // Refresh failed: Add stays locked (keepAddLocked) so no submission runs
+                            // against stale rows. Leave the reload instruction on screen - clearing it
+                            // would hide the only guidance while the field is unusable.
                             keepAddLocked = true;
                             scanStatus.textContent = '✗ ' + _L.scan_reload_needed;
                         }}
-                        scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                        _clearStatusSoon();
                         return;
                     }}
                     // Any other rejection (closed/void list) committed nothing, so keep the field AND the
