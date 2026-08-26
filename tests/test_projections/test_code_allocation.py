@@ -172,3 +172,28 @@ async def test_assert_barcode_available_flags_taken_codes(_db_engine):
             await assert_barcode_available(s, company_id, None)
     finally:
         await _cleanup(factory, company_id)
+
+
+@pytest.mark.asyncio
+async def test_assert_barcode_available_excludes_own_entity(_db_engine):
+    """exclude_entity_id skips one item's own row so re-asserting its current barcode
+    under lock is not read as a self-collision, while a different item holding the
+    same barcode still raises."""
+    from celerp_inventory.services import assert_barcode_available
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:1", "A", "555001"))
+            await emit_event(s, **_item_kwargs(company_id, "item:2", "B", "555002"))
+            await s.commit()
+
+        async with factory() as s:
+            # item:1 re-asserting its own barcode is available when excluded.
+            await assert_barcode_available(s, company_id, "555001", exclude_entity_id="item:1")
+            # Another item's barcode still collides even with the exclusion.
+            with pytest.raises(BarcodeConflictError):
+                await assert_barcode_available(s, company_id, "555002", exclude_entity_id="item:1")
+    finally:
+        await _cleanup(factory, company_id)

@@ -75,6 +75,49 @@ async def test_duplicate_barcode_in_company_raises_conflict(_db_engine):
         await _cleanup(factory, [company_id])
 
 
+def _update_kwargs(company_id, entity_id, barcode):
+    return dict(
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.updated",
+        data={"fields_changed": {"barcode": {"new": barcode}}},
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_to_taken_barcode_raises_conflict(_db_engine):
+    """Changing an existing item's barcode to one another item already holds is
+    rejected as a BarcodeConflictError from the UPDATE applier, not swallowed as a
+    500 at the outer commit. The barcode unique index covers updates, not only the
+    first insert."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = uuid.uuid4()
+    try:
+        async with factory() as s:
+            s.add(Company(id=company_id, name="BU", slug=f"bu-{company_id.hex[:8]}"))
+            await s.flush()
+            await emit_event(s, **_item_kwargs(company_id, "item:1", "A", "12345"))
+            await emit_event(s, **_item_kwargs(company_id, "item:2", "B", "67890"))
+            await s.commit()
+
+        async with factory() as s:
+            with pytest.raises(BarcodeConflictError):
+                await emit_event(s, **_update_kwargs(company_id, "item:2", "12345"))
+            await s.rollback()
+
+        async with factory() as s:
+            # item:2 kept its original barcode; the conflicting update never landed.
+            assert (await s.get(Projection, {"company_id": company_id, "entity_id": "item:2"})).state["barcode"] == "67890"
+    finally:
+        await _cleanup(factory, [company_id])
+
+
 @pytest.mark.asyncio
 async def test_same_barcode_across_companies_is_allowed(_db_engine):
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)

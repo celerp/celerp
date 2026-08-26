@@ -144,8 +144,20 @@ class ProjectionEngine:
                 projection = await ProjectionEngine._locked_projection(session, entry)
                 if projection is None:
                     raise
-        for column, value in ProjectionEngine._next_fields(projection.state, entry, projection.version).items():
+        fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
+        for column, value in fields.items():
             setattr(projection, column, value)
+        # Flush inside a SAVEPOINT so a barcode unique-index violation on an UPDATE
+        # (not only a first insert) surfaces as BarcodeConflictError -> 409 instead
+        # of escaping to the outer commit masked as a 500. Unrelated integrity errors
+        # re-raise unchanged.
+        try:
+            async with session.begin_nested():
+                await session.flush()
+        except IntegrityError as exc:
+            if is_barcode_unique_violation(exc):
+                raise BarcodeConflictError((fields.get("state") or {}).get("barcode")) from exc
+            raise
 
     @staticmethod
     async def rebuild(session, company_id=None) -> None:

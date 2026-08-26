@@ -69,22 +69,27 @@ async def allocate_internal_codes(session: AsyncSession, company_id, count: int 
     return [str(start + i).zfill(_SEQ_WIDTH) for i in range(count)]
 
 
-async def assert_barcode_available(session: AsyncSession, company_id, barcode) -> None:
+async def assert_barcode_available(
+    session: AsyncSession, company_id, barcode, *, exclude_entity_id=None
+) -> None:
     """Raise BarcodeConflictError if another item in the company already holds ``barcode``.
 
     An empty or absent barcode is always available. This is the application-side
     check that yields a clean 409; the DB unique index is the final backstop for
-    writers that bypass it.
+    writers that bypass it. ``exclude_entity_id`` skips one item's own row so a
+    barcode change that re-asserts the item's current value is not read as a
+    self-collision.
     """
     if not barcode:
         return
-    existing = (await session.execute(
-        select(Projection.entity_id).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-            Projection.state["barcode"].as_string() == str(barcode),
-        )
-    )).first()
+    query = select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        Projection.state["barcode"].as_string() == str(barcode),
+    )
+    if exclude_entity_id is not None:
+        query = query.where(Projection.entity_id != exclude_entity_id)
+    existing = (await session.execute(query)).first()
     if existing:
         raise BarcodeConflictError(barcode)
 
