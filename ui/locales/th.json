@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "ไม่สามารถแยกได้ - มีเพียง 1 ชิ้น",
   "inventory.card_sell_prices": "ราคาขาย",
+  "inventory.card_sold_price": "ราคาที่ขาย",
   "inventory.child": "รายการย่อย",
   "inventory.child_pieces_too_high": "จำนวนชิ้นของรายการย่อย ({child}) ต้องน้อยกว่าจำนวนชิ้นของรายการหลัก ({parent}).",
   "inventory.clear_all_rows": "ล้างข้อมูลทุกแถวหรือไม่?",

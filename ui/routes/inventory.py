@@ -7238,6 +7238,18 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             note = None
         cards.append(_card(t("inventory.card_sell_prices"), sell_lists, editable=True, note=note))
 
+    if str(item.get("status") or "").lower() == "sold" and item.get("sold_price") is not None:
+        sold_val = float(item["sold_price"])
+        unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp)
+        cards.append(Div(
+            H3(t("inventory.card_sold_price"), cls="section-title"),
+            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
+                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span)),
+                           Td(_cur(total_span) if has_qty else Span(EMPTY)))),
+                  cls="detail-table"),
+            cls="detail-card",
+        ))
+
     return Div(
         Script("""
 function roundTo(x, d) { var f = Math.pow(10, d); return Math.round((x + Number.EPSILON) * f) / f; }

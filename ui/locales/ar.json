@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "لا يمكن التقسيم - قطعة واحدة فقط",
   "inventory.card_sell_prices": "أسعار البيع",
+  "inventory.card_sold_price": "سعر البيع",
   "inventory.child": "فرعي",
   "inventory.child_pieces_too_high": "يجب أن تكون قطع المنتج الفرعي ({child}) أقل من قطع المنتج الأصلي ({parent}).",
   "inventory.clear_all_rows": "مسح جميع الصفوف؟",

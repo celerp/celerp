@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}：{n}。",
   "inventory.cannot_split_one_piece": "分割できません - 1個のみ",
   "inventory.card_sell_prices": "販売価格",
+  "inventory.card_sold_price": "売却価格",
   "inventory.child": "子",
   "inventory.child_pieces_too_high": "子の個数 ({child}) は親の個数 ({parent}) より少なければなりません。",
   "inventory.clear_all_rows": "すべての行をクリアしますか？",

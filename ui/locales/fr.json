@@ -2336,6 +2336,7 @@
   "inventory.bulk_verb_count": "{verb} : {n}.",
   "inventory.cannot_split_one_piece": "Impossible de diviser - 1 pièce uniquement",
   "inventory.card_sell_prices": "Prix de vente",
+  "inventory.card_sold_price": "Prix vendu",
   "inventory.child": "Enfant",
   "inventory.child_pieces_too_high": "Le nombre de pièces enfants ({child}) doit être inférieur à celui des pièces parents ({parent}).",
   "inventory.clear_all_rows": "Effacer toutes les lignes ?",

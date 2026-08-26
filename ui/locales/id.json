@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "Tidak dapat dibagi - hanya 1 buah",
   "inventory.card_sell_prices": "Harga jual",
+  "inventory.card_sold_price": "Harga terjual",
   "inventory.child": "Anak",
   "inventory.child_pieces_too_high": "Jumlah buah anak ({child}) harus lebih sedikit daripada jumlah buah induk ({parent}).",
   "inventory.clear_all_rows": "Hapus semua baris?",

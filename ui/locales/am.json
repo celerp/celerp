@@ -2438,6 +2438,7 @@
   "inventory.bulk_verb_count": "{verb}፦ {n}።",
   "inventory.cannot_split_one_piece": "መከፋፈል አይቻልም - 1 ቁራጭ ብቻ",
   "inventory.card_sell_prices": "ዋጋዎችን ይሽጡ",
+  "inventory.card_sold_price": "የሽያጭ ዋጋ",
   "inventory.child": "ልጅ",
   "inventory.child_pieces_too_high": "የልጅ ቁርጥራጮች ({child}) ከወላጅ ቁርጥራጮች ({parent}) ያነሱ መሆን አለባቸው።",
   "inventory.clear_all_rows": "ሁሉንም ረድፎች ይጽዱ?",

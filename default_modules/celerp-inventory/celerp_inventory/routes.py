@@ -1126,7 +1126,15 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
     )
-    return filtered[0]
+    result = filtered[0]
+    if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):
+        from celerp.services.holdings import sold_prices
+        sold_doc = await session.get(Projection, {"company_id": company_id, "entity_id": str(row.state["status_doc_id"])})
+        if sold_doc is not None:
+            result["sold_price"] = sold_prices(
+                [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
+            ).get(row.entity_id)
+    return result
 
 
 @router.get("/{entity_id}/reorder-suggestion")

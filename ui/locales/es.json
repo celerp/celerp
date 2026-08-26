@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "No se puede dividir: solo hay 1 unidad",
   "inventory.card_sell_prices": "Precios de venta",
+  "inventory.card_sold_price": "Precio vendido",
   "inventory.child": "Hijo",
   "inventory.child_pieces_too_high": "Las piezas secundarias ({child}) deben ser menos que las piezas principales ({parent}).",
   "inventory.clear_all_rows": "¿Borrar todas las filas?",

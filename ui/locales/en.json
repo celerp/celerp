@@ -2438,6 +2438,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "Cannot split - only 1 piece",
   "inventory.card_sell_prices": "Sell prices",
+  "inventory.card_sold_price": "Sold price",
   "inventory.child": "Child",
   "inventory.child_pieces_too_high": "Child pieces ({child}) must be less than parent pieces ({parent}).",
   "inventory.clear_all_rows": "Clear all rows?",

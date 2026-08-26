@@ -2335,6 +2335,7 @@
   "inventory.bulk_verb_count": "{verb}: {n}.",
   "inventory.cannot_split_one_piece": "Không thể chia nhỏ - chỉ có 1 đơn vị",
   "inventory.card_sell_prices": "Giá bán",
+  "inventory.card_sold_price": "Giá đã bán",
   "inventory.child": "Mục con",
   "inventory.child_pieces_too_high": "Số lượng đơn vị con ({child}) phải nhỏ hơn số lượng đơn vị cha ({parent}).",
   "inventory.clear_all_rows": "Xóa tất cả các hàng?",
